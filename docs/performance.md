@@ -76,7 +76,8 @@ run does not establish optical quality or a speedup.
    settings and storage medium. JPEG is CPU encoding on the Pi 5; a capture lease
    benchmark does not prove an encoder speedup.
 
-Preview, hardware encoders and DNG are outside this version's benchmark scope.
+The capture benchmark still excludes preview, video encoding and DNG.
+Their correctness tests do not establish codec speed or sustained Pi FPS.
 
 ## Local development evidence (not camera performance)
 

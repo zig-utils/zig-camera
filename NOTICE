@@ -22,3 +22,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Additional Home adaptations and reusable modules:
+- src/raw.zig and src/dng.zig adapt Bayer/IFD conventions from packages/image.
+- src/home/jpeg_encoder.zig and jpeg_dct.zig are the native Home baseline JPEG
+  implementation; src/home/mjpeg_stream.zig uses Home Matroska/EBML conventions.
+  Canonical Home contribution: https://github.com/home-lang/home/pull/912
+  Source commit: 458eb0c20 (feat/native-jpeg-mjpeg).
+The Home MIT license and copyright reproduced above apply to these files.

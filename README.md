@@ -14,24 +14,32 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
+New in 0.2: SDL preview, Home-native MJPEG/Matroska recording, Bayer DNG and a
+Picamera2-style synchronous Python subset. [Coverage and remaining gaps](docs/parity.md).
+[Media architecture and limitations](docs/media.md).
+
 ## Build on Raspberry Pi OS (64-bit)
 
 Install **Zig 0.15.2** and the system libraries matching your Raspberry Pi OS image:
 
 ```sh
 sudo apt update
-sudo apt install build-essential libcamera-dev libjpeg-dev pkg-config
-zig build -Doptimize=ReleaseSafe
+sudo apt install build-essential libcamera-dev libsdl2-dev pkg-config
+zig build -Dpreview=true -Doptimize=ReleaseSafe
 ./zig-out/bin/zig-camera info
 ./zig-out/bin/zig-camera capture --output photo.jpg --warmup 60
 # Default size comes from libcamera's still configuration. Inspect `info` first.
 ./zig-out/bin/zig-camera capture --raw --output photo.ppm
+./zig-out/bin/zig-camera capture --output photo.dng --warmup 60
+./zig-out/bin/zig-camera preview --width 1280 --height 720 --frames 0
+./zig-out/bin/zig-camera record --width 1280 --height 720 --fps 30 --frames 300 --output trail.mkv
 ```
 
 JPEG defaults to quality 98 and no chroma subsampling. PPM is lossless 8-bit
 processed RGB, not sensor raw. `--raw` writes paired native planes to
 `photo.ppm.raw.N` and records their negotiated layout in `photo.ppm.json`.
-Packed/compressed raw stays in its native format; it is **not DNG**.
+Native raw plane dumps stay in their negotiated format. `.dng` output negotiates
+uncompressed Bayer and writes calibrated metadata with streamed sample conversion.
 When available, ISP noise reduction uses the HighQuality still-image policy;
 this can limit frame rate and is matched in the Picamera2 comparison.
 Manual exposure requires both `--exposure-us` and `--gain`. Autofocus runs
@@ -50,7 +58,9 @@ PYTHONPATH=python python3 -m unittest discover -s tests -v
 
 Synthetic output requires explicit `--simulate`; synthetic timing is not camera
 FPS. The Linux backend is selected by default on Linux, synthetic on macOS.
-JPEG is optional (`-Djpeg=false`); no image codecs are reimplemented here.
+Home native JPEG and MJPEG recording build without external codec dependencies.
+`-Djpeg=true` optionally selects system libjpeg for still-image acceleration.
+`-Dpreview=true` enables SDL2 windowed preview; `-Dvideo=false` disables recording.
 The real backend builds natively using the system C++ compiler (`CXX` may select
 an alternate compatible compiler). Cross-compiling the synthetic core is supported;
 real libcamera builds require the target system's matching headers and runtime.
@@ -111,9 +121,10 @@ See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
 ## Scope
 
 Implemented: single-camera still/continuous capture, paired processed/raw streams,
-frame leases, selected controls, metadata, JPEG/PPM, and Python access.
-Not yet implemented: GUI preview, video encoders/containers, DNG calibration,
-Python Picamera2 API compatibility, stereo sync, and a general control API.
+frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV
+recording, and a synchronous Picamera2-style Python subset.
+Remaining: H.264/HEVC/AV1 recording, MP4/audio, overlays/DRM/Qt preview, complete
+Picamera2 API signatures, stereo sync, and a general runtime control API.
 Keep Picamera2 for those features until equivalent paths are implemented and
 validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;
 removing Python does not add sensor detail or raise sensor frame-rate limits.

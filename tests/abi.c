@@ -1,6 +1,9 @@
 #include "zig_camera.h"
 #include <assert.h>
 #include <stddef.h>
+_Static_assert(sizeof(zc_capture_options) == 16, "capture options ABI");
+_Static_assert(sizeof(zc_raw_metadata) == 184, "raw metadata ABI");
+_Static_assert(sizeof(zc_video_config) == 32, "video config ABI");
 _Static_assert(sizeof(zc_config) == 72, "config ABI");
 _Static_assert(sizeof(zc_plane) == 40, "plane ABI");
 _Static_assert(sizeof(zc_stream) == 208, "stream ABI");

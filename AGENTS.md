@@ -3,6 +3,7 @@
 - Use the repository's configured human Git author/committer identity.
 - Use conventional commits. Do not add coauthor trailers.
 - Pin Zig 0.15.2 unless updating the toolchain and validating every target together.
+- Recording must use Home codecs and containers; do not add an FFmpeg dependency.
 - Keep queue ownership and public ABI logic in Zig. Use the system C++ toolchain
   for the libcamera bridge so its STL ABI matches the installed libcamera.
 - Run `zig fmt --check build.zig src bench`, synthetic `zig build test`, and C/Python
