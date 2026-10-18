@@ -398,10 +398,11 @@ extern "C" int zcd_start(Device *device) { try { return device->start(); } catch
 extern "C" int zcd_queue(Device *device, uint32_t index) { try { return device->queue(index); } catch (...) { return ZC_DEVICE; } }
 extern "C" int zcd_sync(Device *device, uint32_t index, bool begin) { return device->sync(index, begin); }
 extern "C" int zcd_stop(Device *device) {
-    if (!device->started) return ZC_OK;
+    if (!device->started) {device->pending.clear();return ZC_OK;}
     const int rc = device->camera->stop();
     if (rc < 0) return ZC_DEVICE;
     device->started = false;
+    device->pending.clear();
     return ZC_OK;
 }
 extern "C" void zcd_close(Device *device) { delete device; }

@@ -121,6 +121,10 @@ pub fn stop(h: *Handle) c_int {
         h.fail_stop_once = false;
         return c.ZC_IO;
     }
+    h.pending[c.ZC_AF_TRIGGER] = null;
+    h.pending[c.ZC_AF_PAUSE] = null;
+    h.af_steps = 0;
+    h.af_state = 0;
     return c.ZC_OK;
 }
 pub fn close(h: *Handle) void {

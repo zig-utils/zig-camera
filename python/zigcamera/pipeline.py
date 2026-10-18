@@ -14,7 +14,12 @@ class CapturePump:
                     if error.status==-3: continue
                     raise
                 with frame:
-                    with self.camera._async_lock:
+                    # A stopping worker must be able to release its lease while
+                    # a lifecycle caller holds the subscriber lock and joins it.
+                    if self.stop_event.is_set(): continue
+                    if not self.camera._async_lock.acquire(timeout=.02): continue
+                    try:
+                        if self.stop_event.is_set(): continue
                         recording=self.camera._recording
                         if recording is not None:
                             try: recording.write(frame)
@@ -23,11 +28,14 @@ class CapturePump:
                         if preview is not None:
                             try: preview.publish(frame)
                             except Exception as error: preview.error=error
-                self.camera._maybe_stop_pump()
+                    finally: self.camera._async_lock.release()
+                if self.camera._async_lock.acquire(False):
+                    try: self.camera._maybe_stop_pump()
+                    finally: self.camera._async_lock.release()
         except Exception as error:
             self.error=error
-            with self.camera._async_lock:
-                if self.camera._recording is not None: self.camera._recording.error=error
+            recording=self.camera._recording
+            if recording is not None: recording.error=error
     def close(self):
         self.stop_event.set()
         if threading.current_thread() is not self.thread: self.thread.join()
@@ -36,9 +44,7 @@ class Recording:
     def __init__(self,camera,recorder,fps):
         self.camera=camera;self.recorder=recorder;self.fps=fps;self.frames=0;self.error=None;self.closed=False
     @property
-    def thread(self):
-        # Compatibility for existing callers inspecting worker lifetime.
-        return self._thread
+    def thread(self): return self._thread
     def write(self,frame):
         if self.error is not None: return
         timestamp=self.frames*1_000_000_000//self.fps if self.camera.info['backend']=='synthetic' else frame._native.timestamp_ns

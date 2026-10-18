@@ -177,10 +177,12 @@ class Camera:
         with self._async_lock:
             if self._recording is not None or (self._preview is not None and self._preview.running) or (self._af_job is not None and not self._af_job.done()): return
             pump=self._pump
-            if pump is not None and threading.current_thread() is pump.thread:
-                pump.stop_event.set();return
-            self._pump=None
-        if pump is not None: pump.close()
+            if pump is not None: pump.stop_event.set()
+            if pump is not None and threading.current_thread() is pump.thread: return
+        if pump is not None:
+            pump.close()
+            with self._async_lock:
+                if self._pump is pump: self._pump=None
     def autofocus_cycle(self,wait=None,signal_function=None,*,timeout=5):
         from .jobs import AutofocusJob
         if not isinstance(timeout,(int,float)) or not 0<timeout<=4294967: raise ValueError('Invalid autofocus timeout')
@@ -219,18 +221,21 @@ class Camera:
             return recording
     def stop_recording(self):
         with self._async_lock:
-            recording=self._recording;self._recording=None
+            recording=self._recording;self._recording=None;pump=self._pump
         self._maybe_stop_pump()
-        if recording is not None: recording.close()
+        if recording is not None:
+            if pump is not None and pump.error is not None and recording.error is None: recording.error=pump.error
+            recording.close()
     def start_preview(self,*,title='zig-camera',startup_timeout=5):
         from .async_preview import AsyncPreview
         self._open()
         with self._async_lock:
             if self._preview is not None: raise RuntimeError('Preview already active')
-            window=AsyncPreview(self,title,startup_timeout)
+        window=AsyncPreview(self,title,startup_timeout)
+        with self._async_lock:
             self._preview=window
             if self._started: self._ensure_pump()
-            return window
+        return window
     def stop_preview(self):
         with self._async_lock:
             preview=self._preview;self._preview=None

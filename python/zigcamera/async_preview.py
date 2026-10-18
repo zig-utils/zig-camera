@@ -57,7 +57,10 @@ class AsyncPreview:
         finally: self.lock.release()
     def _close_process(self):
         self.stop.value=True;self.process.join(2)
-        if self.process.is_alive(): self.process.terminate();self.process.join()
+        if self.process.is_alive():
+            self.process.terminate();self.process.join(.5)
+            if self.process.is_alive(): self.process.kill();self.process.join(1)
+            if self.process.is_alive(): raise RuntimeError('Could not reap preview process')
         self.connection.close();self.closed=True
     def close(self):
         if self.camera._preview is self:

@@ -36,7 +36,10 @@ class AutofocusJob:
     def cancel(self):
         if self.done(): return False
         self.camera._check(self.camera._lib.zc_autofocus_cancel(self.camera._handle,self.id))
-        return True
+        state=C.c_uint32()
+        status=self.camera._lib.zc_autofocus_wait(self.camera._handle,self.id,0,C.byref(state))
+        self.camera._check(status)
+        return state.value==5
     def join(self):
         if threading.current_thread() is not self.thread: self.thread.join()
     async def _await(self):

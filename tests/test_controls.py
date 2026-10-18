@@ -66,6 +66,22 @@ class ControlTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): job.result(timeout=3)
             for frame in leases: frame.release()
             camera.start();self.assertTrue(camera.autofocus_cycle())
+    def test_metadata_stop_wakes_observer_and_rapid_worker_handoffs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with Camera(simulate=True,width=16,height=16) as camera:
+                camera.start();latest=camera.wait_metadata();entered=threading.Event();errors=[]
+                def observer():
+                    entered.set()
+                    try: camera.wait_metadata(latest['event_id'],timeout_ms=5000)
+                    except CameraError as error: errors.append(error.status)
+                thread=threading.Thread(target=observer);thread.start();self.assertTrue(entered.wait(1));camera.stop();thread.join(1)
+                self.assertFalse(thread.is_alive());self.assertEqual(errors,[-2]);camera.start()
+                for i in range(8):
+                    self.assertTrue(camera.autofocus_cycle(wait=False).result(3))
+                    recording=camera.start_recording(Path(directory)/f'{i}.mkv')
+                    until(lambda:recording.frames>=2);camera.stop_recording()
+                    self.assertFalse(recording.thread.is_alive())
+                self.assertEqual(camera.stats['leased'],0)
     def test_picamera_configuration_and_runtime_controls(self):
         with Picamera2(simulate=True) as camera:
             config=camera.create_video_configuration(main={'size':(32,24)},controls={'AeEnable':False,'ExposureTime':20000,'AnalogueGain':2,'FrameDurationLimits':(40000,50000)})
