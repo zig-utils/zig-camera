@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.5
+# Picamera2 coverage in 0.6
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -10,11 +10,12 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Configuration roles | Still/video/viewfinder roles; cached raw-mode discovery, exact sensor output size/bit depth; paired RGB/YUV420 lores | Per-mode measured FPS/exposure/crop catalog, arbitrary formats |
 | Preview | Blocking SDL loop or async display process with a bounded shared RGB slot, aspect-preserving resize, Escape/window close; shared capture worker with recording/AF | Qt/DRM zero-copy preview, overlays; full Picamera2 backend signatures |
 | Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, audio, hardware encoders, general profile/preset selection |
-| Recording control | CLI finite frame count, Python Recorder and background start/stop | Circular outputs, split recordings, general encoder/output classes |
+| Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits | Automatic rotation, audio, arbitrary output classes, crash recovery |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
-| Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, mode-switch jobs, request acquire/refcounts |
-| Async capture jobs | Bounded FIFO jobs for request/array/buffer/metadata/file; wait=False, callback, result/wait, asyncio await, queued cancel, frame deadline and stop cleanup | Multi-stage mode-switch jobs, event-loop integration, general signal classes |
+| Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, request acquire/refcounts |
+| Async capture jobs | Bounded FIFO jobs for request/array/buffer/metadata/file; wait=False, callback, result/wait, asyncio await, queued cancel, frame deadline and stop cleanup | Event-loop integration, general signal classes |
+| Mode jobs | Async mode switch/drop-frames and temporary array/buffer/metadata/file capture, previous-mode restoration, preview recreation, lease/recording guards | Old-mode request leases across reconfiguration, switching during encoding, complete signatures |
 | Controls | Typed runtime set_controls, camera capabilities/ranges, atomic batches, 30-name catalog including focus windows and AE/AWB controls; per-frame metadata | Arbitrary vendor controls, HDR modes, full metadata catalog |
 | Autofocus jobs | Auto/Start then revision-filtered Scanning -> Focused/Failed/Idle; cancel/timeout/stop, awaitable results and callback | Optical validation |
 | Multiple cameras | Independent camera indices | Synchronization/stereo capture and tuning |
@@ -72,3 +73,11 @@ exact frame counts/order, regular and gapped capture timelines, GOP boundaries,
 container parsing, final-frame drain, invalid inputs, and background restart.
 Apple AVFoundation also decoded both MP4 fixtures locally. Pi sustained FPS,
 long-run reliability, motion quality and bitrate behaviour remain unmeasured.
+
+
+0.6 adds synthetic mode-change round trips, failure/deadline restoration,
+callback/lifecycle locking, circular byte/frame/time limits, snapshot continuation,
+file-identity checks, split cancellation and stop coverage. Optional codec CI
+independently decodes AVC/HEVC split segments and circular snapshots, checks
+frame order/counts, fresh keyframes, rebased timelines and capture gaps. See
+[mode and recording semantics](mode-recording.md) for remaining limits.

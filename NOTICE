@@ -51,3 +51,11 @@ Home capture plane packing (0.5):
   The Home MIT license above applies.
 
 Canonical Home plane packing contribution: https://github.com/home-lang/home/pull/915
+
+Home encoded history and split recording (0.6):
+- src/home/packet_ring.zig is the verbatim Home bounded encoded-packet arena.
+  Canonical contribution: https://github.com/home-lang/home/pull/916
+  Source commit: 2dab097b2 (feat/keyframe-packet-ring).
+- src/home/native_encoder.{c,h,zig} includes explicit IDR requests from Home
+  source commit 5e6d256f4, updating https://github.com/home-lang/home/pull/913.
+  The Home MIT license above applies.

@@ -14,14 +14,13 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.5: cached sensor mode discovery and exact selection, paired RGB/YUV420
-lores streams, and bounded async capture jobs with callbacks, cancellation,
-deadlines and awaitable results. They share the preview/recording/autofocus pump.
-Home image-plane packing is reused for explicit tight copies; the ISP produces
-lores on hardware. Existing controls, autofocus, preview, H.264/HEVC/MP4,
-MJPEG/MKV, JPEG and Bayer DNG remain available. No FFmpeg dependency.
-[Sensor modes, lores and async capture](docs/pipeline.md),
-[controls and preview](docs/controls.md), [coverage and remaining gaps](docs/parity.md).
+New in 0.6: async mode switching and temporary capture/restore jobs, encoded
+circular pre-roll with byte/frame/time limits, and IDR-aligned split recordings.
+These reuse Home's packet ring, codecs and containers. Sensor/lores streams,
+controls, autofocus, preview, H.264/HEVC/MP4, MJPEG/MKV, JPEG and Bayer DNG remain
+available. No FFmpeg dependency.
+[Mode jobs, circular recording and splits](docs/mode-recording.md),
+[sensor/lores capture](docs/pipeline.md), [coverage and remaining gaps](docs/parity.md).
 
 ## Build on Raspberry Pi OS (64-bit)
 

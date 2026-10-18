@@ -69,7 +69,9 @@ focused = job.result(timeout=6)
 
 Default `autofocus_cycle()` waits and returns bool. `wait=False`, or a supplied
 `signal_function` with default wait, returns a job. The completion callback receives
-the job on its monitor thread, outside the capture worker. Callback exceptions are
+the job on a separate callback thread, outside the capture worker. Callbacks may
+outlive camera close; lifecycle shutdown joins the monitor without waiting for
+application callback code. Callback exceptions are
 available through `job.callback_error`. `camera.wait(job, timeout)` is also supported.
 
 The native job sets AfMode=Auto and AfTrigger=Start, then requires a Scanning

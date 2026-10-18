@@ -61,10 +61,10 @@ jobs:
         run: |
           zig build test -Dlibcamera=false -Dcodecs=true
           zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Doptimize=ReleaseSafe
-          PYTHONPATH=python python3 -m unittest discover -s tests -v
+          c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
+          ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" PYTHONPATH=python python3 -m unittest discover -s tests -v
           ./zig-out/bin/zig-camera record --simulate --codec h264 --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-h264.mp4
           ./zig-out/bin/zig-camera record --simulate --codec hevc --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-hevc.mp4
-          c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
           PYTHONPATH=python python3 tests/test_codecs.py zig-out
           for clip in zig-out/home-*.mp4 zig-out/cli-*.mp4; do
             python3 tests/check_mp4.py "$clip" zig-out/decode-codecs

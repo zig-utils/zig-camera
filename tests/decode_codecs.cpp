@@ -9,15 +9,19 @@
 #include <cstdint>
 #include <cmath>
 static void require(bool ok,const char *why) { if(!ok){std::fprintf(stderr,"%s\n",why);std::exit(1);} }
+static int first_index=0;
 static void picture(const uint8_t *y,int stride,int width,int height,int &count) {
     require(width==128 && height==96,"decoded dimensions differ");
-    const int blue=(count%4)*37;
+    const int blue=((first_index+count)%4)*37;
     const int expected=((66*60+129*25+25*blue+128)>>8)+16;
     require(std::abs((int)y[25*stride+60]-expected)<=4,"decoded pixel/order differs");
     count++;
 }
 int main(int argc,char **argv) {
-    require(argc==3,"usage: decode-codecs h264|hevc file.aus");
+    require(argc>=3 && argc<=5,"usage: decode-codecs h264|hevc file.aus [frames [first_index]]");
+    const int expected_count=argc>=4 ? std::atoi(argv[3]) : 12;
+    first_index=argc>=5 ? std::atoi(argv[4]) : 0;
+    require(expected_count>0 && first_index>=0,"invalid expected frame range");
     std::ifstream f(argv[2],std::ios::binary);require(f.good(),"open AUs");
     ISVCDecoder *avc=nullptr;de265_decoder_context *hevc=nullptr;
     if(!std::strcmp(argv[1],"h264")) {
@@ -59,6 +63,6 @@ int main(int argc,char **argv) {
         while(remaining-->0){unsigned char *planes[3]{};SBufferInfo info{};require(avc->FlushFrame(planes,&info)==dsErrorFree,"OpenH264 flush");if(info.iBufferStatus==1)picture(planes[0],info.UsrData.sSystemBuffer.iStride[0],info.UsrData.sSystemBuffer.iWidth,info.UsrData.sSystemBuffer.iHeight,count);}
         avc->Uninitialize();WelsDestroyDecoder(avc);
     } else {require(de265_isOK(de265_flush_data(hevc)),"libde265 flush");decode_hevc();drain();de265_free_decoder(hevc);}
-    require(count==12,"missing decoded frames");
+    require(count==expected_count,"missing decoded frames");
     std::printf("%s: independently decoded all %d frames with expected luma/order\n",argv[1],count);
 }

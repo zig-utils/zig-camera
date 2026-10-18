@@ -70,3 +70,30 @@ pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_i
     } else return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
+
+pub export fn zc_default_buffer_config(out: *c.zc_buffer_config) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_buffer_config), .max_frames = 300, .max_bytes = 64 * 1024 * 1024, .duration_us = 5_000_000 };
+}
+pub export fn zc_video_open_circular(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_config, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    return @import("video.zig").openCircular(cfg, buffer, out);
+}
+pub export fn zc_video_buffer_stats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
+    return @import("video.zig").bufferStats(p, out);
+}
+pub export fn zc_video_save_buffer(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    return @import("video.zig").saveBuffer(p, path);
+}
+pub export fn zc_video_open_output(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    return @import("video.zig").openOutput(p, path);
+}
+pub export fn zc_video_close_output(p: *c.zc_recorder) c_int {
+    return @import("video.zig").closeOutput(p);
+}
+pub export fn zc_video_split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    return @import("video.zig").split(p, path);
+}
+pub export fn zc_video_cancel_split(p: *c.zc_recorder) c_int {
+    return @import("video.zig").cancelSplit(p);
+}

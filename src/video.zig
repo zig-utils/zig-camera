@@ -1,4 +1,4 @@
-//! Home JPEG/Matroska and header-checked AVC/HEVC with streaming fragmented MP4.
+//! Home codecs and containers with encoded circular history and IDR-aligned splits.
 const std = @import("std");
 const c = @import("abi.zig").c;
 const options = @import("options");
@@ -7,51 +7,140 @@ const mkv = @import("home/mjpeg_stream.zig");
 const mp4 = @import("home/mp4_stream.zig");
 const native = @import("home/native_encoder.zig");
 const rgb = @import("home/rgb_i420.zig");
+const Ring = @import("home/packet_ring.zig").Ring;
 const A = std.heap.c_allocator;
-const Recorder = struct {
+const Output = struct {
     file: std.fs.File,
-    encoder: jpeg.Encoder,
     writer: ?mkv.Writer = null,
     mp4_writer: ?mp4.Writer = null,
-    codec: ?native.Encoder = null,
-    i420: []u8 = &.{},
     pending: std.ArrayList(u8) = .empty,
-    pending_pts: u64 = 0,
+    pending_ns: u64 = 0,
     pending_key: bool = false,
+    first_ns: u64 = 0,
+    frames: u64 = 0,
+    waiting_key: bool = true,
+    fn sink(ctx: *anyopaque, bytes: []const u8) anyerror!void {
+        const self: *Output = @ptrCast(@alignCast(ctx));
+        try self.file.writeAll(bytes);
+    }
+    fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [2]?*Output) !*Output {
+        try validate(std.mem.span(path), cfg);
+        const self = try A.create(Output);
+        errdefer A.destroy(self);
+        // Compare open file identities before truncation, including hardlinks.
+        const file = try std.fs.cwd().createFile(std.mem.span(path), .{ .truncate = false });
+        errdefer file.close();
+        const identity = try std.posix.fstat(file.handle);
+        for (avoid) |existing| if (existing) |other| {
+            const other_id = try std.posix.fstat(other.file.handle);
+            if (identity.dev == other_id.dev and identity.ino == other_id.ino) return error.Invalid;
+        };
+        try file.setEndPos(0);
+        self.* = .{ .file = file };
+        if (cfg.codec == c.ZC_MJPEG) self.writer = try mkv.Writer.init(.{ .context = self, .write = sink }, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den) else self.mp4_writer = try mp4.Writer.init(.{ .context = self, .write = sink }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers);
+        return self;
+    }
+    fn deinit(self: *Output) void {
+        self.file.close();
+        self.pending.deinit(A);
+        A.destroy(self);
+    }
+    fn flushPending(self: *Output, duration: u32) !void {
+        if (self.pending.items.len != 0) {
+            try self.mp4_writer.?.frame(self.pending.items, (self.pending_ns - self.first_ns) / 1000, duration, self.pending_key);
+            self.pending.clearRetainingCapacity();
+        }
+    }
+    fn packet(self: *Output, data: []const u8, timestamp: u64, key: bool) !void {
+        if (self.waiting_key) {
+            if (!key) return;
+            self.first_ns = timestamp;
+            self.waiting_key = false;
+        }
+        if (self.writer) |*writer| try writer.frame(data, timestamp) else {
+            if (self.pending.items.len != 0) {
+                if (timestamp <= self.pending_ns or (timestamp - self.pending_ns) / 1000 > std.math.maxInt(u32) or (timestamp - self.pending_ns) / 1000 == 0) return error.Invalid;
+                try self.flushPending(@intCast((timestamp - self.pending_ns) / 1000));
+            }
+            try self.pending.appendSlice(A, data);
+            self.pending_ns = timestamp;
+            self.pending_key = key;
+        }
+        self.frames += 1;
+    }
+    fn finish(self: *Output, nominal: u32, next: ?u64) !void {
+        if (self.pending.items.len != 0) {
+            const duration = if (next) |ts| (ts - self.pending_ns) / 1000 else nominal;
+            if (duration == 0 or duration > std.math.maxInt(u32)) return error.Invalid;
+            try self.flushPending(@intCast(duration));
+        }
+    }
+};
+const Recorder = struct {
+    encoder: jpeg.Encoder,
+    output: ?*Output = null,
+    next: ?*Output = null,
+    ring: ?Ring = null,
+    codec: ?native.Encoder = null,
+    headers: []u8 = &.{},
+    i420: []u8 = &.{},
     config: c.zc_video_config,
     first_ns: u64 = 0,
     last_ns: u64 = 0,
     frames: u64 = 0,
+    segments: u64 = 0,
     failed: bool = false,
-    fn sink(ctx: *anyopaque, bytes: []const u8) anyerror!void {
-        const self: *Recorder = @ptrCast(@alignCast(ctx));
-        try self.file.writeAll(bytes);
+    fn nominal(self: *const Recorder) u32 {
+        return @intCast(@as(u64, 1000000) * self.config.fps_den / self.config.fps_num);
     }
     fn deinit(self: *Recorder) void {
-        self.file.close();
+        if (self.output) |out| out.deinit();
+        if (self.next) |out| out.deinit();
+        if (self.ring) |*ring| ring.deinit();
         self.encoder.deinit();
         if (options.codecs) {
             if (self.codec) |*encoder| encoder.deinit();
         }
+        A.free(self.headers);
         A.free(self.i420);
-        self.pending.deinit(A);
         A.destroy(self);
     }
-    fn packet(self: *Recorder, encoded: native.Packet) !void {
-        if (encoded.pts < 0) return error.UnexpectedTimestamp;
-        const pts: u64 = @intCast(encoded.pts);
-        if (self.pending.items.len != 0) {
-            if (pts <= self.pending_pts or pts - self.pending_pts > std.math.maxInt(u32)) return error.UnexpectedTimestamp;
-            try self.flushPending(@intCast(pts - self.pending_pts));
+    fn forceKey(self: *Recorder) !void {
+        if (options.codecs) {
+            if (self.codec) |*encoder| {
+                if (!encoder.draining) try encoder.requestKeyframe();
+            }
         }
-        try self.pending.appendSlice(A, encoded.data);
-        self.pending_pts = pts;
-        self.pending_key = encoded.key;
     }
-    fn flushPending(self: *Recorder, duration: u32) !void {
-        if (self.pending.items.len != 0) {
-            try self.mp4_writer.?.frame(self.pending.items, self.pending_pts, duration, self.pending_key);
-            self.pending.clearRetainingCapacity();
+    fn packet(self: *Recorder, data: []const u8, timestamp: u64, key: bool) !void {
+        if (self.ring) |*ring| _ = try ring.push(data, timestamp, key);
+        if (self.next != null and key and self.output.?.frames != 0) {
+            const old = self.output.?;
+            try old.finish(self.nominal(), timestamp);
+            old.deinit();
+            self.output = self.next;
+            self.next = null;
+            self.segments += 1;
+        }
+        if (self.output) |out| try out.packet(data, timestamp, key);
+        // A split requested before the first input still gives the old output
+        // its initial key. Request another IDR instead of creating an empty file.
+        if (self.next != null and key) try self.forceKey();
+    }
+    fn encoded(self: *Recorder, encoded_packet: native.Packet) !void {
+        if (encoded_packet.pts < 0) return error.Invalid;
+        try self.packet(encoded_packet.data, @as(u64, @intCast(encoded_packet.pts)) * 1000, encoded_packet.key);
+    }
+    fn replay(self: *Recorder, out: *Output) !void {
+        const ring = if (self.ring) |*ring| ring else return error.Unsupported;
+        if (ring.count == 0) return error.EmptyBuffer;
+        var largest: usize = 0;
+        for (0..ring.count) |i| largest = @max(largest, ring.entry(i).?.length);
+        const scratch = try A.alloc(u8, largest);
+        defer A.free(scratch);
+        for (0..ring.count) |i| {
+            const e = ring.entry(i).?;
+            try out.packet(try ring.copy(i, scratch), e.timestamp, e.key);
         }
     }
 };
@@ -65,44 +154,55 @@ fn validate(path: []const u8, cfg: *const c.zc_video_config) !void {
     } else return error.Unsupported;
     if (cfg.width == 0 or cfg.height == 0 or cfg.width > 16384 or cfg.height > 16384 or cfg.quality == 0 or cfg.quality > 100 or cfg.fps_num == 0 or cfg.fps_den == 0 or cfg.fps_num > 1000000 or cfg.fps_den > 1000000 or @as(u64, 1000000) * cfg.fps_den / cfg.fps_num == 0 or @as(u64, 1000000) * cfg.fps_den / cfg.fps_num > std.math.maxInt(u32)) return error.Invalid;
 }
-fn openImpl(path: [*:0]const u8, cfg: *const c.zc_video_config) !*Recorder {
-    try validate(std.mem.span(path), cfg);
+fn init(cfg: *const c.zc_video_config) !*Recorder {
+    try validate(if (cfg.codec == c.ZC_MJPEG) "check.mkv" else "check.mp4", cfg);
     const self = try A.create(Recorder);
-    errdefer A.destroy(self);
-    var codec: ?native.Encoder = null;
+    self.* = .{ .encoder = jpeg.Encoder.init(A), .config = cfg.* };
+    errdefer self.deinit();
     if (options.codecs and cfg.codec != c.ZC_MJPEG) {
-        codec = try native.Encoder.init(.{ .codec = cfg.codec, .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .bitrate = cfg.bitrate, .quality = cfg.quality, .gop = cfg.gop });
-    }
-    errdefer if (options.codecs) {
-        if (codec) |*encoder| encoder.deinit();
-    };
-    const planes_buffer = if (cfg.codec != c.ZC_MJPEG) try A.alloc(u8, @as(usize, cfg.width) * cfg.height * 3 / 2) else try A.alloc(u8, 0);
-    errdefer A.free(planes_buffer);
-    const file = try std.fs.cwd().createFile(std.mem.span(path), .{});
-    errdefer file.close();
-    self.* = .{ .file = file, .encoder = jpeg.Encoder.init(A), .config = cfg.*, .codec = codec, .i420 = planes_buffer };
-    if (cfg.codec == c.ZC_MJPEG) {
-        self.writer = try mkv.Writer.init(.{ .context = self, .write = Recorder.sink }, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den);
-    } else if (options.codecs) {
-        self.mp4_writer = try mp4.Writer.init(.{ .context = self, .write = Recorder.sink }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, try self.codec.?.headers());
+        self.codec = try native.Encoder.init(.{ .codec = cfg.codec, .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .bitrate = cfg.bitrate, .quality = cfg.quality, .gop = cfg.gop });
+        self.headers = try A.dupe(u8, try self.codec.?.headers());
+        self.i420 = try A.alloc(u8, @as(usize, cfg.width) * cfg.height * 3 / 2);
     }
     return self;
 }
 fn status(err: anyerror) c_int {
     return switch (err) {
         error.Unsupported => c.ZC_UNSUPPORTED,
-        error.Invalid, error.InvalidConfiguration, error.InvalidFrame, error.InvalidGeometry => c.ZC_INVALID,
+        error.Invalid, error.InvalidConfiguration, error.InvalidFrame, error.InvalidGeometry, error.PacketTooLarge, error.InvalidTimestamp => c.ZC_INVALID,
         error.OutOfMemory => c.ZC_NOMEM,
+        error.EmptyBuffer, error.NoOutput => c.ZC_STATE,
+        error.Busy => c.ZC_BUSY,
         else => c.ZC_IO,
     };
 }
+fn recorder(p: *c.zc_recorder) *Recorder {
+    return @ptrCast(@alignCast(p));
+}
 pub fn open(path: [*:0]const u8, cfg: *const c.zc_video_config, out: *?*c.zc_recorder) c_int {
     out.* = null;
-    out.* = @ptrCast(openImpl(path, cfg) catch |err| return status(err));
+    const self = init(cfg) catch |err| return status(err);
+    self.output = Output.init(path, cfg, self.headers, .{ null, null }) catch |err| {
+        self.deinit();
+        return status(err);
+    };
+    self.segments = 1;
+    out.* = @ptrCast(self);
+    return c.ZC_OK;
+}
+pub fn openCircular(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_config, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (buffer.struct_size != @sizeOf(c.zc_buffer_config) or buffer.max_bytes == 0 or buffer.max_bytes > 1024 * 1024 * 1024 or buffer.max_frames == 0 or buffer.max_frames > 65536 or buffer.duration_us == 0 or buffer.duration_us > std.math.maxInt(u64) / 1000) return c.ZC_INVALID;
+    const self = init(cfg) catch |err| return status(err);
+    self.ring = Ring.init(A, @intCast(buffer.max_bytes), buffer.max_frames, buffer.duration_us * 1000) catch |err| {
+        self.deinit();
+        return status(err);
+    };
+    out.* = @ptrCast(self);
     return c.ZC_OK;
 }
 pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
-    const self: *Recorder = @ptrCast(@alignCast(p));
+    const self = recorder(p);
     if (self.failed) return c.ZC_STATE;
     const s = f.main;
     if (f.token == 0 or s.width != self.config.width or s.height != self.config.height or s.plane_count != 1 or !std.mem.eql(u8, std.mem.sliceTo(&s.format, 0), "BGR888") or s.stride < @as(u64, s.width) * 3 or s.planes[0].bytes_used > s.planes[0].length or s.planes[0].bytes_used < @as(u64, s.stride) * (s.height - 1) + @as(u64, s.width) * 3) return c.ZC_INVALID;
@@ -110,7 +210,7 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     const first = if (self.frames == 0) ts else self.first_ns;
     const pts = (ts - first) / 1000;
     if (self.config.codec != c.ZC_MJPEG and (pts > std.math.maxInt(i64) or (self.frames != 0 and (pts <= (self.last_ns - first) / 1000 or pts - (self.last_ns - first) / 1000 > std.math.maxInt(u32))))) return c.ZC_INVALID;
-    writeImpl(self, &s, ts, pts) catch |err| {
+    writeImpl(self, &s, ts - first, pts) catch |err| {
         self.failed = true;
         return status(err);
     };
@@ -119,33 +219,105 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     self.frames += 1;
     return c.ZC_OK;
 }
-fn writeImpl(self: *Recorder, s: *const c.zc_stream, ts: u64, pts: u64) !void {
+fn writeImpl(self: *Recorder, s: *const c.zc_stream, ns: u64, pts: u64) !void {
     const input = s.planes[0].data[0..@intCast(s.planes[0].bytes_used)];
-    if (self.config.codec == c.ZC_MJPEG) {
-        const bytes = try self.encoder.encode(input, s.width, s.height, s.stride, 3, @intCast(self.config.quality));
-        try self.writer.?.frame(bytes, ts);
-    } else if (options.codecs) {
+    if (self.config.codec == c.ZC_MJPEG) try self.packet(try self.encoder.encode(input, s.width, s.height, s.stride, 3, @intCast(self.config.quality)), ns, true) else if (options.codecs) {
         try rgb.convert(input, s.width, s.height, s.stride, self.i420);
         const pixels = @as(usize, s.width) * s.height;
-        const packet = try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ s.width, s.width / 2, s.width / 2 }, s.width, s.height, @intCast(pts));
-        if (packet) |encoded| try self.packet(encoded);
+        if (try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ s.width, s.width / 2, s.width / 2 }, s.width, s.height, @intCast(pts))) |packet| try self.encoded(packet);
     }
 }
+pub fn bufferStats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
+    const self = recorder(p);
+    out.* = std.mem.zeroes(c.zc_buffer_stats);
+    out.segments = self.segments;
+    out.split_pending = @intFromBool(self.next != null);
+    out.output_open = @intFromBool(self.output != null);
+    if (self.ring) |*ring| {
+        out.frames = ring.count;
+        out.bytes = ring.used;
+        out.evicted = ring.evicted;
+        out.skipped = ring.skipped;
+        if (ring.count != 0) {
+            out.first_ns = ring.entry(0).?.timestamp;
+            out.last_ns = ring.entry(ring.count - 1).?.timestamp;
+        }
+    }
+    return c.ZC_OK;
+}
+pub fn saveBuffer(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    if (self.ring == null) return c.ZC_UNSUPPORTED;
+    if (self.ring.?.count == 0) return c.ZC_STATE;
+    const out = Output.init(path, &self.config, self.headers, .{ self.output, self.next }) catch |err| return status(err);
+    defer out.deinit();
+    self.replay(out) catch |err| return status(err);
+    out.finish(self.nominal(), null) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    if (self.output != null or self.next != null) return c.ZC_BUSY;
+    const out = Output.init(path, &self.config, self.headers, .{ null, null }) catch |err| return status(err);
+    if (self.ring != null and self.ring.?.count != 0) self.replay(out) catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    self.output = out;
+    self.segments += 1;
+    return c.ZC_OK;
+}
+pub fn closeOutput(p: *c.zc_recorder) c_int {
+    const self = recorder(p);
+    if (self.next != null) return c.ZC_BUSY;
+    const out = self.output orelse return c.ZC_STATE;
+    self.output = null;
+    defer out.deinit();
+    out.finish(self.nominal(), null) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    if (self.next != null) return c.ZC_BUSY;
+    if (self.output == null) return c.ZC_STATE;
+    const out = Output.init(path, &self.config, self.headers, .{ self.output, null }) catch |err| return status(err);
+    self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    self.next = out;
+    return c.ZC_OK;
+}
+pub fn cancelSplit(p: *c.zc_recorder) c_int {
+    const self = recorder(p);
+    const out = self.next orelse return c.ZC_STATE;
+    self.next = null;
+    out.deinit();
+    return c.ZC_OK;
+}
 pub fn close(p: *c.zc_recorder) c_int {
-    const self: *Recorder = @ptrCast(@alignCast(p));
+    const self = recorder(p);
     defer self.deinit();
     if (self.failed) return c.ZC_IO;
     if (options.codecs) {
         if (self.codec) |*encoder| {
-            while (encoder.flush() catch return c.ZC_IO) |encoded| self.packet(encoded) catch return c.ZC_IO;
+            while (encoder.flush() catch return c.ZC_IO) |packet| self.encoded(packet) catch return c.ZC_IO;
         }
     }
-    if (self.config.codec != c.ZC_MJPEG) self.flushPending(@intCast(@as(u64, 1000000) * self.config.fps_den / self.config.fps_num)) catch return c.ZC_IO;
-    return c.ZC_OK;
+    if (self.output) |out| out.finish(self.nominal(), null) catch return c.ZC_IO;
+    return if (self.next != null) c.ZC_STATE else c.ZC_OK;
 }
 test {
     _ = jpeg;
     _ = mkv;
     _ = mp4;
     _ = rgb;
+    _ = Ring;
 }

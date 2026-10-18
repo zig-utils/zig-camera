@@ -26,7 +26,10 @@ class AutofocusJob:
             self.event.set()
             self.camera._maybe_stop_pump()
             if self.signal_function is not None:
-                try: self.signal_function(self)
+                def notify():
+                    try: self.signal_function(self)
+                    except Exception as error: self.callback_error=error
+                try: threading.Thread(target=notify,name='zig-camera-autofocus-callback',daemon=True).start()
                 except Exception as error: self.callback_error=error
     def result(self,timeout=None):
         if not self.event.wait(timeout): raise TimeoutError('Job result not ready')
@@ -114,4 +117,58 @@ class CaptureJob:
                     if self.done() and self.value is not None:
                         self.value.release();self.value=None;self.error=CancelledError('Capture await cancelled')
             raise
+    def __await__(self): return self._await().__await__()
+
+class OperationJob:
+    """Serialized lifecycle or segment operation; queued cancellation only."""
+    def __init__(self,operation=None,signal_function=None,release_slot=None,cancel_function=None):
+        self.operation=operation;self.signal_function=signal_function;self.release_slot=release_slot;self.cancel_function=cancel_function
+        self.event=threading.Event();self.lock=threading.Lock();self.state='queued';self.value=None;self.error=None;self.callback_error=None
+        self.thread=None
+    def done(self): return self.event.is_set()
+    def cancelled(self): return self.done() and isinstance(self.error,CancelledError)
+    def _finish(self,value=None,error=None):
+        with self.lock:
+            if self.state=='finished': return
+            self.value=value;self.error=error;self.state='finished';self.event.set()
+        def notify():
+            try:
+                if self.signal_function is not None: self.signal_function(self)
+            except Exception as failure: self.callback_error=failure
+            finally:
+                if self.release_slot is not None: self.release_slot()
+        if self.signal_function is None: notify()
+        else:
+            try: threading.Thread(target=notify,name='zig-camera-operation-callback',daemon=True).start()
+            except Exception as failure:
+                self.callback_error=failure
+                if self.release_slot is not None: self.release_slot()
+    def start(self):
+        def run():
+            with self.lock:
+                if self.state!='queued': return
+                self.state='running'
+            try: value=self.operation()
+            except Exception as failure: self._finish(error=failure)
+            else: self._finish(value)
+        self.thread=threading.Thread(target=run,name='zig-camera-mode',daemon=True)
+        try: self.thread.start()
+        except Exception as error: self._finish(error=error)
+        return self
+    def cancel(self):
+        if self.cancel_function is not None: return self.cancel_function(self)
+        with self.lock:
+            if self.state!='queued': return False
+            self.state='cancelled'
+        self._finish(error=CancelledError('Operation cancelled'));return True
+    def result(self,timeout=None):
+        if not self.event.wait(timeout): raise TimeoutError('Job result not ready')
+        if self.error is not None: raise self.error
+        return self.value
+    get_result=result
+    async def _await(self):
+        try:
+            await asyncio.to_thread(self.event.wait)
+            return self.result()
+        except asyncio.CancelledError: self.cancel();raise
     def __await__(self): return self._await().__await__()

@@ -21,7 +21,7 @@ def boxes(data,start=0,end=None):
 def child(data,start,end,name):
     return next((s,e) for k,s,e in boxes(data,start,end) if k==name)
 
-def inspect(path):
+def parse(path):
     data=path.read_bytes();top=list(boxes(data))
     assert top[0][0]==b'ftyp' and top[1][0]==b'moov'
     s,e=top[1][1:]
@@ -67,15 +67,22 @@ def inspect(path):
             nals.append(sample[pos:pos+n]);pos+=n
         units.append(b''.join(b'\0\0\0\1'+nal for nal in nals))
         times.append(dts);durations.append(duration);keys.append(not bool(flags&0x10000))
+    return {'codec':codec,'units':units,'times':times,'durations':durations,'keys':keys}
+
+def access_units(path,info):
+    aus=path.with_suffix('.aus')
+    with aus.open('wb') as out:
+        for unit in info['units']: out.write(struct.pack('>I',len(unit))+unit)
+    return aus
+
+def inspect(path):
+    info=parse(path);times=info['times'];durations=info['durations'];keys=info['keys']
     assert len(times)==12,len(times)
     expected=[i*1_000_000//24+(100_000 if 'gap' in path.stem and i>=6 else 0) for i in range(12)]
     assert times==expected,(times,expected)
     assert durations==[b-a for a,b in zip(times,times[1:])]+[1_000_000//24],durations
     assert [i for i,key in enumerate(keys) if key]==[0,4,8],keys
-    aus=path.with_suffix('.aus')
-    with aus.open('wb') as out:
-        for unit in units: out.write(struct.pack('>I',len(unit))+unit)
-    return codec,aus
+    return info['codec'],access_units(path,info)
 
 if __name__=='__main__':
     path=Path(sys.argv[1]);codec,aus=inspect(path)

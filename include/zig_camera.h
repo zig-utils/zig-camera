@@ -172,6 +172,26 @@ int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
 int zc_video_close(zc_recorder *);
+/* Encoded circular history, fixed byte arena + frame slots. Duration is an upper
+ * bound; eviction drops through the next keyframe. Serialize recorder calls. */
+typedef struct { uint32_t struct_size,max_frames; uint64_t max_bytes,duration_us; } zc_buffer_config;
+typedef struct {
+    uint64_t frames,bytes,evicted,skipped,first_ns,last_ns,segments;
+    uint32_t split_pending,output_open;
+} zc_buffer_stats;
+void zc_default_buffer_config(zc_buffer_config *);
+int zc_video_open_circular(const zc_video_config *,const zc_buffer_config *,zc_recorder **);
+int zc_video_buffer_stats(zc_recorder *,zc_buffer_stats *);
+/* Snapshot/open includes retained pre-roll, starting at a key with fresh headers.
+ * Snapshot preserves history and live encoding; output errors do not poison it.
+ * Snapshot may omit an input still buffered inside the codec. */
+int zc_video_save_buffer(zc_recorder *,const char *path);
+int zc_video_open_output(zc_recorder *,const char *path);
+int zc_video_close_output(zc_recorder *);
+/* Prepare a fresh file, force a keyframe, move at the next encoded key. No input
+ * duplication/loss across a successful split. stats.split_pending tracks commit. */
+int zc_video_split(zc_recorder *,const char *path);
+int zc_video_cancel_split(zc_recorder *);
 #ifdef __cplusplus
 }
 #endif

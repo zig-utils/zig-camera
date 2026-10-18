@@ -123,3 +123,30 @@ physical layouts and stale/stop lease behavior. The wider Home video graph is no
 represented as validated by these module tests.
 
 Canonical Home plane packing contribution: [Home #915](https://github.com/home-lang/home/pull/915).
+
+## 0.6: pre-roll and independent recording segments
+
+Rechecked video/core/memory.zig RingBuffer and RefCountedBuffer, plus the Home
+streaming Matroska/MP4 and native encoder modules. The general RingBuffer blocks
+on fullness and accepts zero capacity, which cannot suit a capture-history
+consumer. It neither owns encoded byte payloads nor preserves GOP dependencies.
+[Home #916](https://github.com/home-lang/home/pull/916) adds a focused packet ring
+with a fixed arena/entry array, checked capacities, nonblocking push, byte/frame/
+time eviction through the next key and explicit wrap-safe copies. Three module
+tests pass on Zig 0.15.2/0.17, including allocation failure cleanup. It is vendored
+verbatim at 2dab097b2. Broad memory-pool ownership issues remain outside this scope.
+
+The Home header-checked encoder adapter now requests actual AVC/HEVC IDRs for
+segment boundaries, contributed as 5e6d256f4 to the existing [Home #913](https://github.com/home-lang/home/pull/913).
+A standalone eight-frame regression checks actual IDR NAL types under GOP100,
+forced boundaries, delayed AVC drain and post-drain rejection on Zig 0.15.2/0.17.
+zig-camera splits using emitted packet timestamps, remuxes each file with Home's
+fresh sample description, and snapshots encoded history without restarting the
+codec. Python codec CI independently decodes each new segment and snapshot via
+OpenH264/libde265, including frame order and capture gaps. No FFmpeg/Libav is used.
+
+Mode jobs retain the existing bounded capture pump and explicit lease guards.
+They serialize lifecycle work at the facade and restore prior configuration after
+owned captures. No general Home executor or CPU resize graph is imported into
+native camera callbacks. The wider Home video/runtime graph is not represented
+as tested by these focused additions.

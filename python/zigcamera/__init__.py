@@ -28,6 +28,10 @@ class _RawMetadata(C.Structure):
     _fields_ = [("valid",C.c_uint32),("black_levels",C.c_float*4),("camera_to_srgb",C.c_float*9),("model",C.c_char*128)]
 class _VideoConfig(C.Structure):
     _fields_ = [(n,C.c_uint32) for n in ("width","height","fps_num","fps_den","codec","bitrate","quality","gop")]
+class _BufferConfig(C.Structure):
+    _fields_=[('struct_size',C.c_uint32),('max_frames',C.c_uint32),('max_bytes',C.c_uint64),('duration_us',C.c_uint64)]
+class _BufferStats(C.Structure):
+    _fields_=[(n,C.c_uint64) for n in ('frames','bytes','evicted','skipped','first_ns','last_ns','segments')]+[(n,C.c_uint32) for n in ('split_pending','output_open')]
 class _Plane(C.Structure):
     _fields_ = [("data", C.POINTER(C.c_uint8)), ("length", C.c_uint64), ("bytes_used", C.c_uint64),
                 ("offset", C.c_uint64), ("fd", C.c_int32), ("reserved", C.c_uint32)]
@@ -59,6 +63,11 @@ def _load(path=None):
         raise FileNotFoundError("Build zig-camera or set ZIG_CAMERA_LIBRARY to its shared library")
     lib = C.CDLL(str(candidate))
     signatures = {
+        'zc_default_buffer_config':([C.POINTER(_BufferConfig)],None),
+        'zc_video_open_circular':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_buffer_stats':([C.c_void_p,C.POINTER(_BufferStats)],C.c_int),
+        **{name:([C.c_void_p,C.c_char_p],C.c_int) for name in ('zc_video_save_buffer','zc_video_open_output','zc_video_split')},
+        **{name:([C.c_void_p],C.c_int) for name in ('zc_video_close_output','zc_video_cancel_split')},
         "zc_default_pipeline_options":([C.POINTER(_PipelineOptions)],None),
         "zc_open_pipeline":([C.POINTER(_Config),C.POINTER(_PipelineOptions),C.POINTER(C.c_void_p)],C.c_int),
         "zc_get_pipeline_info":([C.c_void_p,C.POINTER(_PipelineInfo)],C.c_int),
@@ -116,7 +125,7 @@ class Camera:
         self._recording = None
         self._preview=None;self._pump=None;self._af_job=None;self._async_lock=threading.RLock();self._control_info=None
         from collections import deque
-        self._capture_jobs=deque();self._job_slots=threading.BoundedSemaphore(32);self._stopping=False
+        self._active_capture_job=None;self._capture_jobs=deque();self._job_slots=threading.BoundedSemaphore(32);self._stopping=False
         self._started = False
         self._leases = {}  # Keep leases alive until explicitly released; deterministic cleanup.
         config = _Config(); self._lib.zc_default_config(C.byref(config))
@@ -229,10 +238,10 @@ class Camera:
             self._ensure_pump();job.start()
         return job.result() if (wait is True or (wait is None and signal_function is None)) else job
     def wait(self,job,timeout=None): return job.result(timeout)
-    def acquire(self, timeout_ms=5000):
+    def acquire(self, timeout_ms=5000, *, _internal=False):
         self._open(); native = _Frame()
         self._check(self._lib.zc_acquire(self._handle, _u32(timeout_ms), C.byref(native)))
-        frame = Frame(self, native)
+        frame = Frame(self, native);frame._internal=_internal
         self._leases[native.token] = frame
         return frame
     @property
@@ -264,16 +273,21 @@ class Camera:
         return self._capture(lambda frame:frame.metadata,wait,signal_function,timeout_ms)
     def capture_file(self,path,timeout_ms=5000,*,wait=None,signal_function=None):
         return self._capture(lambda frame:frame.save(path),wait,signal_function,timeout_ms)
-    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0):
+    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None):
         from .pipeline import Recording
         self._open()
         with self._async_lock:
             if self._recording is not None: raise RuntimeError('Recording already active')
             if not self._started: self.start()
-            recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name)
+            recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular)
             recording=Recording(self,recorder,fps);self._recording=recording
             recording._thread=self._ensure_pump().thread
             return recording
+    def split_recording(self,path,*,wait=None,signal_function=None):
+        with self._async_lock:
+            if self._recording is None: raise RuntimeError('Recording is not active')
+            job=self._recording.split(path,signal_function)
+        return job.result() if (wait is True or (wait is None and signal_function is None)) else job
     def stop_recording(self):
         with self._async_lock:
             recording=self._recording;self._recording=None;pump=self._pump
@@ -447,25 +461,57 @@ class Preview:
 
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
-    def __init__(self,path,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None):
-        self._lib=_load(library); self._handle=C.c_void_p(); config=_VideoConfig()
+    def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None):
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock(); config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
         config.codec=codecs[codec];config.bitrate=_u32(bitrate);config.gop=_u32(gop)
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
-        _check(self._lib,self._lib.zc_video_open(_path(path),C.byref(config),C.byref(self._handle)))
+        if circular is not None:
+            if path is not None: raise ValueError('Circular recording starts without a file; use open_output')
+            if set(circular)-{'max_frames','max_bytes','duration_ms'}: raise ValueError('Unknown circular buffer option')
+            buffer=_BufferConfig();self._lib.zc_default_buffer_config(C.byref(buffer))
+            buffer.max_frames=_u32(circular.get('max_frames',300))
+            for name,value in (('max_bytes',circular.get('max_bytes',64*1024*1024)),('duration_us',circular.get('duration_ms',5000)*1000)):
+                if not isinstance(value,int) or not 0<value<2**64: raise ValueError('Invalid circular buffer limit')
+                setattr(buffer,name,value)
+            _check(self._lib,self._lib.zc_video_open_circular(C.byref(config),C.byref(buffer),C.byref(self._handle)))
+        else:
+            if path is None: raise ValueError('A file or circular buffer configuration is required')
+            _check(self._lib,self._lib.zc_video_open(_path(path),C.byref(config),C.byref(self._handle)))
+    def _open(self):
+        if not self._handle.value: raise RuntimeError('Recorder is closed')
     def write(self,frame,*,timestamp_ns=None):
-        if not self._handle.value: raise RuntimeError("Recorder is closed")
-        frame._live()
-        ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
-        if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError("Invalid timestamp")
-        _check(self._lib,self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+        with self._lock:
+            self._open();frame._live()
+            ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
+            if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError('Invalid timestamp')
+            _check(self._lib,self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+    @property
+    def buffer_stats(self):
+        with self._lock:
+            self._open();out=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(out)))
+            return {name:getattr(out,name) for name,_ in out._fields_}
+    def _path_call(self,name,path):
+        with self._lock:
+            self._open();_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
+    def save_buffer(self,path): self._path_call('zc_video_save_buffer',path)
+    def open_output(self,path): self._path_call('zc_video_open_output',path)
+    def split(self,path): self._path_call('zc_video_split',path)
+    def _call(self,name):
+        with self._lock:
+            self._open();_check(self._lib,getattr(self._lib,name)(self._handle))
+    def close_output(self): self._call('zc_video_close_output')
+    def cancel_split(self): self._call('zc_video_cancel_split')
     def close(self):
-        if self._handle.value:
-            status=self._lib.zc_video_close(self._handle); self._handle=C.c_void_p(); _check(self._lib,status)
+        with self._lock:
+            if self._handle.value:
+                status=self._lib.zc_video_close(self._handle);self._handle=C.c_void_p();_check(self._lib,status)
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
 
+from .outputs import CircularOutput
+__all__ += ["CircularOutput"]
 from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
 __all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]
