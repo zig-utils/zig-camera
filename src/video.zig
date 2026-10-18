@@ -252,17 +252,19 @@ const Recorder = struct {
         }
         return error.EmptyBuffer;
     }
-    fn replayAudio(self: *Recorder, out: *Output, cut: u64) !?u64 {
-        const q = if (self.audio) |*q| q else return null;
+    const AudioReplay = struct { end: ?u64 = null, frames: u64 = 0 };
+    fn replayAudio(self: *Recorder, out: *Output, cut: u64) !AudioReplay {
+        const q = if (self.audio) |*q| q else return .{};
         const minimum = try std.math.add(u64, self.first_ns, out.first_ns);
         const end = try std.math.add(u64, self.first_ns, cut);
         var cursor: pcm.Cursor = .{};
-        var last: ?u64 = null;
+        var result: AudioReplay = .{};
         while (try q.window(minimum, end, &cursor)) |chunk| {
             try out.audioChunk(chunk.data, chunk.timestamp - minimum);
-            last = chunk.end_ns;
+            result.end = chunk.end_ns;
+            result.frames += chunk.frames;
         }
-        return last;
+        return result;
     }
     fn replay(self: *Recorder, out: *Output) !void {
         const ring = if (self.ring) |*ring| ring else return error.Unsupported;
@@ -413,11 +415,12 @@ pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
         out.deinit();
         return status(err);
     };
-    const cursor = if (!out.waiting_key) self.replayAudio(out, self.last_packet_ns.?) catch |err| {
+    const replayed: Recorder.AudioReplay = if (!out.waiting_key) self.replayAudio(out, self.last_packet_ns.?) catch |err| {
         out.deinit();
         return status(err);
-    } else null;
-    self.audio_cursor = cursor;
+    } else .{};
+    self.audio_cursor = replayed.end;
+    self.audio_written += replayed.frames;
     self.output = out;
     self.segments += 1;
     return c.ZC_OK;

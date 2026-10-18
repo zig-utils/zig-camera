@@ -105,6 +105,7 @@ class AudioTests(unittest.TestCase):
                     self.assertEqual(b''.join(p for _,p,_ in info['audio']),expected(7680,start=11520))
                     self.assertEqual(recorder.audio_buffer_stats,before)
                 recorder.open_output(root/'live.mkv')
+                self.assertEqual(recorder.stats['audio_written_frames'],5760)
                 for i in range(10,14):
                     feed.through(recorder,(i+1)*40_000_000)
                     with camera.acquire() as frame: recorder.write(frame,timestamp_ns=i*40_000_000)

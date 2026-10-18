@@ -23,14 +23,15 @@ class CircularAvTests(unittest.TestCase):
                         feed.through(recorder,(i+1)*1_000_000_000//24)
                         with camera.acquire() as frame: recorder.write(frame,timestamp_ns=i*1_000_000_000//24)
                     for i in range(12): write(i)
-                    before=recorder.buffer_stats;audio=recorder.audio_buffer_stats
+                    before=recorder.buffer_stats;audio=recorder.audio_buffer_stats;recording_stats=recorder.stats
                     first=round(before['first_ns']*24/1_000_000_000);count=before['frames']
                     for name in ('one','two'):
                         recorder.save_buffer(root/f'{name}.mp4')
-                        self.assertEqual(recorder.buffer_stats,before);self.assertEqual(recorder.audio_buffer_stats,audio)
+                        self.assertEqual(recorder.buffer_stats,before);self.assertEqual(recorder.audio_buffer_stats,audio);self.assertEqual(recorder.stats,recording_stats)
                         inspect(self,root/f'{name}.mp4',count=count,first=first,samples=count*2000,start_sample=first*2000)
                     self.assertEqual((root/'one.mp4').read_bytes(),(root/'two.mp4').read_bytes())
                     recorder.open_output(root/'live.mp4')
+                    self.assertEqual(recorder.stats['audio_written_frames'],(count-1)*2000)
                     for i in range(12,16): write(i)
                     recorder.save_buffer(root/'during.mp4')
                     recorder.split(root/'split.mp4')
