@@ -11,12 +11,32 @@ class CircularOutput:
         self._recording=recording
     def open_output(self,path): self._live().open_output(path)
     def close_output(self): self._live().close_output()
-    def save_buffer(self,path): self._live().save_buffer(path)
+    def save_buffer(self,path,*,wait=None,signal_function=None): return self._live().save_buffer(path,wait=wait,signal_function=signal_function)
     save=save_buffer
     @property
     def stats(self): return self._live().buffer_stats
     @property
     def audio_stats(self): return self._live().recorder.audio_buffer_stats
+
+class CircularOutput2(CircularOutput):
+    """Bounded delayed A/V forwarding to path outputs.
+
+    close_output drops that file's queued tail; stopping recording flushes it.
+    Arbitrary Picamera2 output objects/pts streams are not supported.
+    """
+    def __init__(self,*,buffer_duration_ms=5000,max_bytes=64*1024*1024,max_frames=300):
+        if not isinstance(buffer_duration_ms,int) or not 0<=buffer_duration_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
+        super().__init__(buffer_duration_ms=buffer_duration_ms,max_bytes=max_bytes,max_frames=max_frames)
+        self.config['delay_ms']=buffer_duration_ms
+    @property
+    def buffer_duration_ms(self): return self.config['delay_ms']
+    @buffer_duration_ms.setter
+    def buffer_duration_ms(self,value):
+        if not isinstance(value,int) or not 0<=value<2**64//1_000_000: raise ValueError('Invalid output delay')
+        if self._recording is not None and not self._recording.closed:
+            recording=self._live()
+            with recording.camera._async_lock: recording.recorder.set_delay(value)
+        self.config['delay_ms']=value;self.config['duration_ms']=value
 
 class RotatingOutput:
     """Exclusive indexed files, rotated at the next independently decodable frame.

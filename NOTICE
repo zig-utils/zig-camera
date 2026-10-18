@@ -85,3 +85,11 @@ Home circular PCM history (0.9):
   at 41b071c04 (feat/pcm-av-streaming), extending the 0.7 queue with rolling
   ownership, non-consuming windows and original-clock chunk endpoints.
   https://github.com/home-lang/home/pull/917
+
+Home owned snapshots and delayed FIFO (0.10):
+- src/home/packet_ring.zig is verbatim Home packages/video/src/core/packet_ring.zig
+  at 07b94d268 (feat/keyframe-packet-ring), with FIFO/backpressure and owned copies.
+  https://github.com/home-lang/home/pull/916
+- src/home/pcm_timeline.zig is verbatim Home packages/video/src/core/pcm_timeline.zig
+  at 860a2ab5a (feat/pcm-av-streaming), with independent sample-window cloning.
+  https://github.com/home-lang/home/pull/917

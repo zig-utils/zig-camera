@@ -130,3 +130,17 @@ pub export fn zc_video_open_circular_av(cfg: *const c.zc_video_config, buffer: *
 pub export fn zc_video_audio_buffer_stats(p: *c.zc_recorder, out: *c.zc_audio_buffer_stats) c_int {
     return @import("video.zig").audioBufferStats(p, out);
 }
+
+pub export fn zc_video_freeze_buffer(p: *c.zc_recorder, path: [*:0]const u8, out: *?*c.zc_snapshot) c_int {
+    return @import("video.zig").freeze(p, path, out);
+}
+pub export fn zc_snapshot_write(p: *c.zc_snapshot) c_int {
+    return @import("video.zig").writeSnapshot(p);
+}
+pub export fn zc_snapshot_close(p: *c.zc_snapshot) void {
+    @import("video.zig").closeSnapshot(p);
+}
+
+pub export fn zc_video_set_delay(p: *c.zc_recorder, delay_ns: u64) c_int {
+    return @import("video.zig").setDelay(p, delay_ns);
+}

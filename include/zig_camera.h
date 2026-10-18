@@ -186,8 +186,25 @@ int zc_video_buffer_stats(zc_recorder *,zc_buffer_stats *);
  * Snapshot preserves history and live encoding; output errors do not poison it.
  * Snapshot may omit an input still buffered inside the codec. */
 int zc_video_save_buffer(zc_recorder *,const char *path);
+/* Freeze copies only the selected encoded/PCM window and reserves an untruncated
+ * destination fd. At most two handles per recorder. Input may resume immediately.
+ * A worker may write/close the snapshot after recorder close. Serialize each
+ * snapshot's calls; write is single-use. Close always frees owned storage/fd.
+ * Cancellation before write leaves existing contents intact (new paths empty).
+ * Active/pending/reserved file identities, including hardlinks, cannot collide. */
+typedef struct zc_snapshot zc_snapshot;
+int zc_video_freeze_buffer(zc_recorder *,const char *path,zc_snapshot **);
+int zc_snapshot_write(zc_snapshot *);
+void zc_snapshot_close(zc_snapshot *);
 int zc_video_open_output(zc_recorder *,const char *path);
 int zc_video_close_output(zc_recorder *);
+/* Convert circular history to bounded delayed FIFO before input/output starts.
+ * Delay may later change; it applies on the next encoded packet. Zero forwards
+ * immediately. open_output attaches without pre-roll replay, close_output drops
+ * the queued tail from that file, recorder close flushes the remaining queue.
+ * Video/sample descriptors and bytes must cover the delay. Overflow fails.
+ * Paths are supported; arbitrary Picamera2 output objects are not accepted. */
+int zc_video_set_delay(zc_recorder *,uint64_t delay_ns);
 /* Prepare a fresh file, force a keyframe, move at the next encoded key. No input
  * duplication/loss across a successful split. stats.split_pending tracks commit. */
 int zc_video_split(zc_recorder *,const char *path);

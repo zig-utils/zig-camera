@@ -14,12 +14,12 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.9: bounded circular audio/video history and synchronized MP4 pre-roll
-snapshots, with non-consuming audio replay and live open/split/close/reopen.
-Home AAC-LC, PCM Matroska, rotation, async capture/mode jobs, controls, autofocus,
-preview and DNG remain available. No FFmpeg dependency.
-[Circular A/V semantics](docs/circular-av.md), [AAC and MP4 recording](docs/aac-mp4.md),
-[coverage and remaining gaps](docs/parity.md).
+New in 0.10: owned async pre-roll snapshot jobs and CircularOutput2-style delayed
+A/V forwarding, including keyframe starts, close-tail exclusion and stop flushing.
+Home AAC-LC, PCM Matroska, rotation, controls, autofocus, preview and DNG remain
+available. No FFmpeg dependency.
+[Async snapshots and delayed A/V](docs/async-delayed.md),
+[circular A/V semantics](docs/circular-av.md), [coverage and gaps](docs/parity.md).
 
 ## Build on Raspberry Pi OS (64-bit)
 

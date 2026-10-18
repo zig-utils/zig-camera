@@ -71,14 +71,15 @@ overlap between separate clips is intentional. If a live output falls behind
 PCM eviction, recording fails explicitly; stop consumes the handle and releases
 resources. Keep enough audio history for encoder delay and consumer stalls.
 
-These synchronous calls serialize with the capture consumer. Snapshot AAC/file
-work can delay that consumer and cause the bounded camera queue to drop frames;
-it never runs inside the libcamera manager callback. There is no background
-snapshot executor or performance claim. Output errors may leave a partial file;
-snapshot errors do not poison the live recording. Identity checks protect the
-active/pending file, including hardlinks. Seekable regular files are required
-for AAC MP4. These APIs retain history; they do not implement Picamera2
-CircularOutput2's delayed forwarding, arbitrary output objects or mutable delay.
+Version 0.10 adds [owned async snapshot jobs and delayed output](async-delayed.md).
+Python freezes the selected history under serialization, then runs snapshot AAC
+and media writes independently; even blocking Python calls wait outside the
+capture lock. Native `zc_video_save_buffer`, live pre-roll `open_output` and
+regular recording writes remain synchronous consumer work. File errors may leave
+a partial output; snapshot errors do not poison live recording. Identity checks
+protect active, pending and reserved destinations, including hardlinks. AAC MP4
+requires seekable files. `CircularOutput` retains immediate replay semantics;
+`CircularOutput2` adds a documented delayed-forwarding subset.
 
 ## C API and validation
 

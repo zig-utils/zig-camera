@@ -220,3 +220,27 @@ without a second muxer or FFmpeg. Current tests independently decode AAC with
 FAAD2/AVFoundation and exercise live splits, PCM Matroska and background capture.
 Snapshots serialize consumer work; performance and physical synchronization are
 not inferred from synthetic tests. See [circular A/V semantics](circular-av.md).
+
+## 0.10: owned worker windows and delayed FIFO
+
+Rechecked Home's async executor/task queues, threading primitives, packet ring,
+PCM timeline and existing completion gate. The general async executor is tied to
+its wider runtime (including queue/task allocation and lifecycle assumptions);
+importing it into capture would add an unrelated execution graph. Python's
+existing bounded job contract now schedules only independently owned native
+snapshots. Camera/queue ownership remains in Zig; no borrowed lease crosses to
+a worker and no manager callback runs media work.
+
+Home #916 at 07b94d268 adds bounded FIFO enqueue/maturity/pop and minimal owned
+suffix cloning to the existing packet ring. Home #917 at 860a2ab5a adds PCM
+window cloning, including a wrapped block in a full 4096-descriptor source. Both
+modules are vendored verbatim. Five packet tests and seven PCM tests pass on Zig
+0.15.2 and Home's development toolchain; allocation-failure, wrap, EOF, overflow
+and rejected-state cases are included. Targeted pickier passes.
+
+Existing Home AAC/MP4 and PCM Matroska writers supply all output encoding and
+muxing. zig-camera adds two-handle ownership limits, file-identity reservations,
+independent worker lifetimes and a delayed shared-clock consumer. Picamera2's
+CircularOutput2 source informed keyframe/open/close/stop semantics; its PyAV output
+path is not imported. See [behavior and differences](async-delayed.md). Synthetic
+and independent decoder tests do not establish physical timing or Pi throughput.

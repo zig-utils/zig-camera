@@ -148,8 +148,10 @@ class Recording:
             self.recorder.cancel_split()
             job._finish(error=CancelledError('Recording split cancelled'))
             return True
-    def save_buffer(self,path):
-        with self.camera._async_lock: self.recorder.save_buffer(path)
+    def save_buffer(self,path,*,wait=None,signal_function=None):
+        with self.camera._async_lock: job=self.recorder.save_buffer(path,wait=False,signal_function=signal_function)
+        if wait is True or (wait is None and signal_function is None): job.result();return None
+        return job
     def open_output(self,path):
         with self.camera._async_lock: self.recorder.open_output(path)
     def close_output(self):

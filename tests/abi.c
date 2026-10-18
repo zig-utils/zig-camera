@@ -72,7 +72,15 @@ int main(void) {
     zc_buffer_stats stats;
     assert(zc_video_buffer_stats(recorder,&stats)==ZC_OK);
     assert(stats.frames==2 && stats.bytes<=100000 && stats.evicted==2 && !stats.output_open);
+    zc_snapshot *frozen=NULL,*cancelled=NULL,*overflow=NULL;
+    assert(zc_video_freeze_buffer(recorder,"zig-out/abi-frozen.mkv",&frozen)==ZC_OK);
+    assert(zc_video_freeze_buffer(recorder,"zig-out/abi-cancelled.mkv",&cancelled)==ZC_OK);
+    assert(zc_video_freeze_buffer(recorder,"zig-out/abi-full.mkv",&overflow)==ZC_BUSY && !overflow);
+    assert(zc_video_open_output(recorder,"zig-out/abi-frozen.mkv")==ZC_BUSY);
     assert(zc_video_close(recorder)==ZC_OK);
+    assert(zc_snapshot_write(frozen)==ZC_OK);
+    assert(zc_snapshot_write(frozen)==ZC_STATE);
+    zc_snapshot_close(frozen);zc_snapshot_close(cancelled);
     zc_recording_options recording;zc_default_recording_options(&recording);
     recording.sample_rate=48000;recording.buffer_frames=48;recording.max_blocks=2;
     assert(zc_video_open_circular_av(&video,&history,&recording,0,&recorder)==ZC_OK);

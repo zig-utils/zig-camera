@@ -151,7 +151,7 @@ class OperationJob:
             try: value=self.operation()
             except Exception as failure: self._finish(error=failure)
             else: self._finish(value)
-        self.thread=threading.Thread(target=run,name='zig-camera-mode',daemon=True)
+        self.thread=threading.Thread(target=run,name=getattr(self,'thread_name','zig-camera-mode'),daemon=True)
         try: self.thread.start()
         except Exception as error: self._finish(error=error)
         return self
@@ -172,3 +172,19 @@ class OperationJob:
             return self.result()
         except asyncio.CancelledError: self.cancel();raise
     def __await__(self): return self._await().__await__()
+
+class SnapshotJob(OperationJob):
+    """Independent owned snapshot; cancellation only wins before worker claim."""
+    def __init__(self,operation,cleanup,signal_function,release_slot):
+        super().__init__(operation=operation,signal_function=signal_function,
+                         release_slot=release_slot if signal_function is not None else None)
+        self._cleanup=cleanup;self._cleanup_lock=threading.Lock();self._release=release_slot
+        self.thread_name='zig-camera-snapshot'
+    def _finish(self,value=None,error=None):
+        # Drop native fd/copies before making completion observable. Slow
+        # callbacks retain only their bounded Python job slot, never media data.
+        with self._cleanup_lock:
+            if self._cleanup is not None:
+                self._cleanup();self._cleanup=None
+                if self.signal_function is None: self._release()
+        super()._finish(value,error)

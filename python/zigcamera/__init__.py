@@ -87,6 +87,10 @@ def _load(path=None):
         'zc_video_open_circular':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(C.c_void_p)],C.c_int),
         'zc_video_open_circular_av':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(_RecordingOptions),C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
         'zc_video_audio_buffer_stats':([C.c_void_p,C.POINTER(_AudioBufferStats)],C.c_int),
+        'zc_video_freeze_buffer':([C.c_void_p,C.c_char_p,C.POINTER(C.c_void_p)],C.c_int),
+        'zc_snapshot_write':([C.c_void_p],C.c_int),
+        'zc_snapshot_close':([C.c_void_p],None),
+        'zc_video_set_delay':([C.c_void_p,C.c_uint64],C.c_int),
         'zc_video_buffer_stats':([C.c_void_p,C.POINTER(_BufferStats)],C.c_int),
         **{name:([C.c_void_p,C.c_char_p],C.c_int) for name in ('zc_video_save_buffer','zc_video_open_output','zc_video_split')},
         **{name:([C.c_void_p],C.c_int) for name in ('zc_video_close_output','zc_video_cancel_split')},
@@ -508,7 +512,7 @@ class Preview:
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
     def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False):
-        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock(); config=_VideoConfig()
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2); config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
@@ -516,10 +520,12 @@ class Recorder:
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
         if circular is not None:
             if path is not None: raise ValueError('Circular recording starts without a file; use open_output')
-            if set(circular)-{'max_frames','max_bytes','duration_ms'}: raise ValueError('Unknown circular buffer option')
+            if set(circular)-{'max_frames','max_bytes','duration_ms','delay_ms'}: raise ValueError('Unknown circular buffer option')
             buffer=_BufferConfig();self._lib.zc_default_buffer_config(C.byref(buffer))
             buffer.max_frames=_u32(circular.get('max_frames',300))
-            for name,value in (('max_bytes',circular.get('max_bytes',64*1024*1024)),('duration_us',circular.get('duration_ms',5000)*1000)):
+            duration_ms=circular.get('duration_ms',5000)
+            if not isinstance(duration_ms,int) or duration_ms<0 or (duration_ms==0 and 'delay_ms' not in circular): raise ValueError('Invalid circular duration')
+            for name,value in (('max_bytes',circular.get('max_bytes',64*1024*1024)),('duration_us',max(1,duration_ms)*1000)):
                 if not isinstance(value,int) or not 0<value<2**64: raise ValueError('Invalid circular buffer limit')
                 setattr(buffer,name,value)
             if audio is None:
@@ -555,6 +561,9 @@ class Recorder:
             if audio_bitrate:
                 _check(self._lib,self._lib.zc_video_open_aac(_path(path),C.byref(config),C.byref(opts),audio_bitrate,C.byref(self._handle)))
             else: _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
+        if circular is not None and 'delay_ms' in circular:
+            try: self.set_delay(circular['delay_ms'])
+            except Exception: self.close();raise
     def _open(self):
         if not self._handle.value: raise RuntimeError('Recorder is closed')
     def write(self,frame,*,timestamp_ns=None):
@@ -591,7 +600,26 @@ class Recorder:
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
         with self._lock:
             self._open();_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
-    def save_buffer(self,path): self._path_call('zc_video_save_buffer',path)
+    def set_delay(self,delay_ms):
+        if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
+        with self._lock:
+            self._open();_check(self._lib,self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000))
+    def save_buffer(self,path,*,wait=None,signal_function=None):
+        from .jobs import SnapshotJob
+        if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
+        if not self._snapshot_slots.acquire(False): raise RuntimeError('Snapshot capacity exhausted')
+        frozen=C.c_void_p();lib=self._lib
+        try:
+            with self._lock:
+                self._open();_check(lib,lib.zc_video_freeze_buffer(self._handle,_path(path),C.byref(frozen)))
+        except Exception: self._snapshot_slots.release();raise
+        def release():
+            lib.zc_snapshot_close(frozen)
+        def write():
+            _check(lib,lib.zc_snapshot_write(frozen));return path
+        job=SnapshotJob(write,release,signal_function,self._snapshot_slots.release).start()
+        if wait is True or (wait is None and signal_function is None): job.result();return None
+        return job
     def open_output(self,path): self._path_call('zc_video_open_output',path)
     def split(self,path): self._path_call('zc_video_split',path)
     def _call(self,name):
@@ -607,7 +635,7 @@ class Recorder:
     def __exit__(self,*exc): self.close()
 
 from .audio import AudioCapture
-from .outputs import CircularOutput, RotatingOutput
-__all__ += ["AudioCapture", "CircularOutput", "RotatingOutput"]
+from .outputs import CircularOutput, CircularOutput2, RotatingOutput
+__all__ += ["AudioCapture", "CircularOutput", "CircularOutput2", "RotatingOutput"]
 from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
 __all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]
