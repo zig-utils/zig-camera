@@ -14,10 +14,12 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.3: H.264/HEVC recording through Home’s header-checked x264/x265 adapter
-and Home streaming fragmented MP4. SDL preview, native MJPEG/Matroska, Bayer DNG
-and a Picamera2-style Python subset are also available. No FFmpeg dependency. [Coverage and remaining gaps](docs/parity.md).
-[Media architecture and limitations](docs/media.md).
+New in 0.4: runtime controls with camera-specific capability/range checks,
+revisioned metadata, autofocus jobs with cancellation/await, and async SDL preview
+sharing a capture worker with recording. Home H.264/HEVC/fragmented MP4, MJPEG/MKV,
+JPEG, Bayer DNG and blocking SDL preview remain available. No FFmpeg dependency.
+[Controls, jobs and preview examples](docs/controls.md),
+[coverage and remaining gaps](docs/parity.md), [media architecture](docs/media.md).
 
 ## Build on Raspberry Pi OS (64-bit)
 
@@ -129,9 +131,10 @@ See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
 
 Implemented: single-camera still/continuous capture, paired processed/raw streams,
 frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV,
-optional Home AVC/HEVC/MP4 recording, and a Picamera2-style Python subset.
+optional Home AVC/HEVC/MP4 recording, typed runtime controls, autofocus jobs,
+async preview, and a Picamera2-style Python subset.
 Remaining: AV1, audio, hardware encoding, overlays/DRM/Qt preview, complete
-Picamera2 API signatures, stereo sync, and a general runtime control API.
+Picamera2 API signatures, stereo sync, HDR controls, and arbitrary vendor controls.
 Keep Picamera2 for those features until equivalent paths are implemented and
 validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;
 removing Python does not add sensor detail or raise sensor frame-rate limits.

@@ -37,3 +37,9 @@ Home AVC/HEVC integration and MP4 streaming additions (0.3):
   optional libx264/libx265 directly; those libraries retain their own licenses.
   Canonical contribution: https://github.com/home-lang/home/pull/913
   Source commit: cf7cd358fd051f1634281adf0596e21e704472ea.
+
+Home job completion (0.4):
+- src/home/completion_gate.zig is the verbatim allocation-free Home async gate.
+  Canonical contribution: https://github.com/home-lang/home/pull/914
+  Source commit: e79c0176184c08b04188712d5a6bbcce63089eee.
+  The Home MIT license above applies.

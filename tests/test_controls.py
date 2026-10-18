@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import CancelledError
+from unittest.mock import patch
 from zigcamera import Camera, CameraError, Picamera2
 from zigcamera.controls import Control,ControlInfo,Metadata
 
@@ -107,6 +108,14 @@ class AsyncPreviewTests(unittest.TestCase):
                 until(lambda:recording.frames>before)
                 camera.stop_recording();self.assertFalse(recording.thread.is_alive());self.assertEqual(camera.stats['leased'],0)
                 again=camera.start_preview();until(lambda:again.published>0);camera.stop();self.assertFalse(again.process.is_alive())
+    @unittest.skipUnless(os.environ.get('ZC_TEST_PREVIEW')=='1','SDL dummy preview job')
+    def test_startup_failure_cleans_resources_and_can_retry(self):
+        with Camera(simulate=True,width=16,height=16) as camera:
+            with patch.dict(os.environ,{'SDL_VIDEODRIVER':'zigcamera-invalid-driver'}):
+                with self.assertRaises(CameraError): camera.start_preview()
+            self.assertIsNone(camera._preview)
+            preview=camera.start_preview();camera.start();until(lambda:preview.published>0)
+            camera.stop_preview();self.assertFalse(preview.process.is_alive())
     @unittest.skipUnless(os.environ.get('ZC_TEST_PREVIEW')=='1','SDL dummy preview job')
     def test_display_failure_is_reported_and_child_reaped(self):
         with Camera(simulate=True,width=16,height=16) as camera:

@@ -1,7 +1,7 @@
-"""Explicit Picamera2-style synchronous subset, backed by native frame leases.
+"""Explicit Picamera2-style subset, backed by native frame leases.
 
-This is not a drop-in Picamera2 module. Controls are applied at configuration;
-preview() is a blocking SDL loop, and recording uses Home MJPEG/MKV or its optional x264/x265 adapter and MP4.
+Includes typed runtime controls, focus jobs and async preview. This is not a
+drop-in Picamera2 module. Recording uses Home MJPEG/MKV or optional AVC/HEVC/MP4.
 """
 from dataclasses import dataclass
 from . import Camera

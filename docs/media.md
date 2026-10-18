@@ -9,7 +9,9 @@ SDL operations run on the creating main/UI thread; an alternate-thread call
 returns a state error. The renderer prefers acceleration/vsync and falls back
 to software. Preview therefore adds a texture upload; it is not a DMA-BUF import
 or a zero-copy DRM implementation. Resize preserves aspect ratio. Escape or
-window close exits the loop.
+window close exits the loop. The 0.4 `start_preview()` process wrapper provides
+async display with a bounded shared slot and nonblocking publication; see
+[controls/jobs/async preview](controls.md).
 
 ```sh
 zig build -Dpreview=true -Doptimize=ReleaseSafe

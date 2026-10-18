@@ -47,6 +47,9 @@ class AsyncPreview:
             self._close_process();raise
     @property
     def running(self): return not self.closed and self.process.is_alive()
+    @property
+    def stats(self):
+        return {'published':self.published,'dropped':self.dropped,'rendered_version':self.rendered.value,'running':self.running}
     def publish(self,frame):
         if not self.running: return
         if self.error is not None: return

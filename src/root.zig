@@ -65,6 +65,35 @@ pub const Camera = struct {
     pub fn stop(self: Camera) Error!void {
         try check(core.zc_stop(self.handle));
     }
+    pub fn controlInfo(self: Camera, id: u32) Error!c.zc_control_info {
+        var out: c.zc_control_info = undefined;
+        try check(core.zc_get_control_info(self.handle, id, &out));
+        return out;
+    }
+    pub fn setControls(self: Camera, values: []const c.zc_control) Error!u64 {
+        if (values.len == 0 or values.len > c.ZC_MAX_CONTROLS) return error.Invalid;
+        var revision: u64 = 0;
+        try check(core.zc_set_controls(self.handle, values.ptr, @intCast(values.len), &revision));
+        return revision;
+    }
+    pub fn waitMetadata(self: Camera, after_event: u64, timeout_ms: u32) Error!c.zc_metadata {
+        var out: c.zc_metadata = undefined;
+        try check(core.zc_wait_metadata(self.handle, after_event, timeout_ms, &out));
+        return out;
+    }
+    pub fn autofocusStart(self: Camera) Error!u64 {
+        var id: u64 = 0;
+        try check(core.zc_autofocus_start(self.handle, &id));
+        return id;
+    }
+    pub fn autofocusWait(self: Camera, id: u64, timeout_ms: u32) Error!u32 {
+        var state: u32 = 0;
+        try check(core.zc_autofocus_wait(self.handle, id, timeout_ms, &state));
+        return state;
+    }
+    pub fn autofocusCancel(self: Camera, id: u64) Error!void {
+        try check(core.zc_autofocus_cancel(self.handle, id));
+    }
     pub fn acquire(self: Camera, timeout_ms: u32) Error!Frame {
         var f: c.zc_frame = undefined;
         try check(core.zc_acquire(self.handle, timeout_ms, &f));
@@ -85,6 +114,11 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.ReleasedFrame;
         const m = self.value.main;
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
+    }
+    pub fn metadata(self: *const Frame) Error!c.zc_metadata {
+        var out: c.zc_metadata = undefined;
+        try check(core.zc_get_frame_metadata(self.camera.handle, self.value.token, &out));
+        return out;
     }
     pub fn saveDng(self: *const Frame, path: [:0]const u8) Error!void {
         try check(core.zc_save_dng(self.camera.handle, self.value.token, path));

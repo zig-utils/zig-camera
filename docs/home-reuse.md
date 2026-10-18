@@ -75,3 +75,28 @@ source commit cf7cd358fd051f1634281adf0596e21e704472ea. Independent Apple AVFoun
 HEVC MP4s; Linux CI uses OpenH264/libde265 plus MP4 parsing and MKVToolNix recognition.
 The existing whole-library codec paths are not represented as validated by these
 focused tests. No FFmpeg is used as an encoder, muxer or validation dependency.
+
+
+## 0.4: event-driven jobs and cancellation
+
+Home async/task, async/channel, runtime/threading/channel and video/perf/threading
+were inspected for camera control/preview work. The general video pool passes
+addresses of init-local queue/shutdown state into workers before returning a copy;
+its waitEmpty also does not account for executing work. It is not reused here.
+The channel/runtime graphs add different ownership/allocation contracts, so the
+camera path retains bounded request slots and explicit synchronization.
+
+Home's Task.cancel unconditionally replaced completed state; an in-flight poll
+could also overwrite Cancelled with Completed or Pending. JoinHandle.await did
+not handle Failed and could spin forever. [Home #914](https://github.com/home-lang/home/pull/914) fixes those
+transitions and adds deterministic tests for both in-flight poll outcomes, late
+cancellation and failed joins. Fourteen task/future/state tests and the complete
+41-test async root suite pass in Debug/ReleaseSafe with Home's 0.17 toolchain;
+focused task/gate tests also pass with camera's pinned Zig 0.15.2.
+
+The new allocation-free Home CompletionGate applies these terminal-state principles
+to revisioned event jobs. zig-camera vendors it verbatim for native autofocus,
+rejecting stale/pre-scan outcomes while keeping callbacks bounded. The display
+handoff uses one fixed shared RGB slot with nonblocking publication; the Python
+capture worker is shared by recording, preview and autofocus, with explicit joins
+before reuse/destruction. It does not import a general executor into a callback.

@@ -508,7 +508,7 @@ pub export fn zc_status_string(status: c_int) [*:0]const u8 {
         0 => "success",
         c.ZC_INVALID => "invalid configuration or argument",
         c.ZC_STATE => "camera is stopped or state invalid",
-        c.ZC_TIMEOUT => "timed out waiting for a frame",
+        c.ZC_TIMEOUT => "operation timed out",
         c.ZC_BUSY => "camera running or outstanding frame leases",
         c.ZC_STALE => "stale or already released frame token",
         c.ZC_IO => "I/O or DMA synchronization failed",
