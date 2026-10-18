@@ -132,7 +132,7 @@ circular recorder with `Recorder(width=..., height=..., circular={"duration_ms":
 during encode. Closing a standalone recorder with an unresolved split reports an
 error; cancel it first or provide frames until the split commits.
 
-Automatic duration/size rotation, audio, arbitrary output classes, crash recovery
+Compressed audio, retention deletion, arbitrary output classes, crash recovery
 and circular disk recording are still gaps. Hardware ISP reconfiguration, focus,
 long-running recording reliability and sustained Pi 5 throughput remain untested.
 

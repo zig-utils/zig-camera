@@ -64,7 +64,7 @@ Home synchronized PCM capture and rotation (0.7):
 - src/home/av_stream.zig, pcm_timeline.zig, recording_policy.zig and
   native_capture.{c,h,zig} are verbatim Home streaming modules.
   Canonical contribution: https://github.com/home-lang/home/pull/917
-  Source commit: b020d5855 (feat/pcm-av-streaming).
+  Source commit: bad4882f9 (feat/pcm-av-streaming).
 - mp4_stream.zig exposes checked avcC/hvcC bytes for Matroska, updating
   https://github.com/home-lang/home/pull/913 at source commit 0a0525f91.
   The Home MIT license above applies. ALSA retains its own license.

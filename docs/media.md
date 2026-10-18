@@ -116,3 +116,6 @@ Independent tests use Pillow for JPEG, libmatroska/MKVToolNix for container demu
 TIFF readers for exact Bayer samples/tags, and LibRaw for DNG recognition/development.
 Real camera calibration, autofocus, display backends and long recording runs
 still need Pi acceptance testing.
+
+0.7 adds optional lossless PCM audio capture and synchronized Matroska A/V;
+see [audio, synchronization and rotation](audio-rotation.md). MP4 remains video-only.

@@ -24,9 +24,12 @@ class RotatingOutput:
     """
     def __init__(self,pattern,*,duration_ms=None,max_bytes=None):
         import string
+        import re
         self.pattern=str(pattern);self.duration_ns=0;self.max_bytes=0;self._recording=None
         fields=[(field,spec,conversion) for _,field,spec,conversion in string.Formatter().parse(self.pattern) if field is not None]
         if len(fields)!=1 or fields[0][0]!='index' or fields[0][2] is not None: raise ValueError('Pattern requires one {index} field')
+        spec=fields[0][1]
+        if not re.fullmatch(r'[0-9]{0,3}d?',spec) or int(spec.removesuffix('d') or '0')>128: raise ValueError('Index format must be decimal with width <=128')
         for value,name in ((duration_ms,'duration_ms'),(max_bytes,'max_bytes')):
             if value is not None and (not isinstance(value,int) or value<=0): raise ValueError(f'{name} must be a positive integer')
         if duration_ms is None and max_bytes is None: raise ValueError('A duration or size limit is required')

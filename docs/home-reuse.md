@@ -161,7 +161,7 @@ These were not treated as working production dependencies.
 [Home #917](https://github.com/home-lang/home/pull/917) adds standalone checked
 ALSA capture with the system headers, sample-count/BOOTTIME timestamps, a fixed
 PCM arena/entry queue, streaming video+PCM Matroska and soft rotation policy.
-The modules are vendored verbatim at b020d5855; their focused tests run on Zig
+The modules are vendored verbatim at bad4882f9; their focused tests run on Zig
 0.15.2 and Home's development toolchain. The broader Home audio graph remains
 outside this validation. Home #913 also exposes its existing avcC/hvcC builder
 for Matroska CodecPrivate, preserving the checked AVC/HEVC configuration path.

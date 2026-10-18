@@ -58,6 +58,15 @@ test "synthetic PCM sample clock and exact ramp; truncation and overflow reject"
     cfg.backend = 0;
     cfg.channels = 2;
     cfg.block_frames = 48;
+    cfg.start_ns = std.math.maxInt(u64) - 1;
+    var overflow: ?*c.zc_audio = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_open(&cfg, "", &overflow));
+    var untouched = [_]u8{77} ** 192;
+    var invalid: c.zc_audio_block = undefined;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_audio_read(overflow.?, &untouched, 192, 0, &invalid));
+    try std.testing.expectEqual(@as(u8, 77), untouched[0]);
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_close(overflow.?));
+    cfg.start_ns = 0;
     var handle: ?*c.zc_audio = null;
     try std.testing.expectEqual(c.ZC_OK, zc_audio_open(&cfg, "", &handle));
     defer _ = zc_audio_close(handle.?);

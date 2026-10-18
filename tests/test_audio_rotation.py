@@ -65,6 +65,19 @@ class AudioTests(unittest.TestCase):
                         with wave.open(str(out),'rb') as wav:
                             self.assertEqual(wav.getframerate(),48000);self.assertEqual(wav.getnchannels(),2);self.assertEqual(wav.readframes(wav.getnframes()),pcm)
                 self.assertEqual(count,12);self.assertEqual(payload,expected(24000,start=48,channels=2))
+    def test_capture_gap_preserves_continuous_pcm_at_fractional_sample_boundary(self):
+        with tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            path=Path(directory)/'gap.mkv';camera.start()
+            with AudioCapture(backend='synthetic',sample_rate=44100,block_frames=441,start_ns=3_998_000_000) as source,Recorder(path,width=32,height=32,fps=25,audio={'sample_rate':44100}) as recorder:
+                feed=AudioFeed(source)
+                for i in range(6):
+                    ts=4_000_000_000+i*40_000_000+(100_000_000 if i>=3 else 0)
+                    feed.through(recorder,ts+40_000_000)
+                    with camera.acquire() as frame: recorder.write(frame,timestamp_ns=ts)
+                self.assertEqual(recorder.stats['audio_trimmed_frames'],89)
+            info=parse(path)
+            self.assertEqual([t for t,_,_ in info['video']],[0,40_000_000,80_000_000,220_000_000,260_000_000,300_000_000])
+            self.assertEqual(b''.join(p for _,p,_ in info['audio']),expected(14994,start=89))
     def test_pcm_queue_bounds_and_unsupported_combinations(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -168,7 +181,7 @@ class RotationTests(unittest.TestCase):
                 with self.assertRaises(CameraError): recording.write(frame)
             recording.close();self.assertEqual((root/'1.mkv').read_bytes(),b'keep')
             with self.assertRaises(CameraError): Recorder(output.path(0),width=32,height=32,exclusive=True)
-        for pattern,options in (('a.mkv',{'max_bytes':1}),('{index!s}.mkv',{'max_bytes':1}),('{index}.mkv',{}),('{index}.mkv',{'duration_ms':0})):
+        for pattern,options in (('a.mkv',{'max_bytes':1}),('{index:999999999d}.mkv',{'max_bytes':1}),('{index!s}.mkv',{'max_bytes':1}),('{index}.mkv',{}),('{index}.mkv',{'duration_ms':0})):
             with self.assertRaises(ValueError): RotatingOutput(pattern,**options)
 
 if __name__=='__main__': unittest.main()
