@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.6
+# Picamera2 coverage in 0.7
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -9,8 +9,9 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Single-camera RGB capture | Zig/C/Python frame leases, owned buffers/NumPy arrays | Additional processed pixel formats |
 | Configuration roles | Still/video/viewfinder roles; cached raw-mode discovery, exact sensor output size/bit depth; paired RGB/YUV420 lores | Per-mode measured FPS/exposure/crop catalog, arbitrary formats |
 | Preview | Blocking SDL loop or async display process with a bounded shared RGB slot, aspect-preserving resize, Escape/window close; shared capture worker with recording/AF | Qt/DRM zero-copy preview, overlays; full Picamera2 backend signatures |
-| Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, audio, hardware encoders, general profile/preset selection |
-| Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits | Automatic rotation, audio, arbitrary output classes, crash recovery |
+| Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, compressed audio/MP4 audio, hardware encoders, general profile/preset selection |
+| Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs | Retention deletion, arbitrary output classes, crash recovery |
+| Audio and synchronized A/V | Explicit ALSA S16LE capture; bounded PCM queue; BOOTTIME/sample-count synchronization, MJPEG/AVC/HEVC + PCM Matroska, sample-clipped splits | Physical latency/drift calibration, adaptive resampling, compressed audio and MP4 audio, circular A/V, other input platforms |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
 | Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, request acquire/refcounts |
@@ -81,3 +82,8 @@ file-identity checks, split cancellation and stop coverage. Optional codec CI
 independently decodes AVC/HEVC split segments and circular snapshots, checks
 frame order/counts, fresh keyframes, rebased timelines and capture gaps. See
 [mode and recording semantics](mode-recording.md) for remaining limits.
+
+0.7 adds [automatic rotation and PCM A/V](audio-rotation.md). Linux acceptance
+includes ALSA null-device capture, independent Matroska identification/WAV
+extraction and AVC/HEVC segment decoding. Physical A/V synchronization and
+sustained Pi performance remain unmeasured.

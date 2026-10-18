@@ -10,6 +10,7 @@ class Metadata(C.Structure):
     _fields_=[('struct_size',C.c_uint32),('valid',C.c_uint32)]+[(n,C.c_uint64) for n in ('event_id','sequence','timestamp_ns','control_revision')]+[('exposure_us',C.c_uint32),('af_state',C.c_int32),('af_pause_state',C.c_int32),('reserved',C.c_uint32)]+[(n,C.c_float) for n in ('analogue_gain','lens_position','red_gain','blue_gain')]+[('frame_duration_us',C.c_uint64),('crop',C.c_int32*4)]
 def metadata(native):
     result={n:getattr(native,n) for n in ('event_id','sequence','timestamp_ns','control_revision','exposure_us','analogue_gain','red_gain','blue_gain')}
+    if native.valid&16: result['timestamp_clock']='boottime'
     if native.valid&1: result['af_state']=native.af_state
     if native.valid&2: result['lens_position']=native.lens_position
     if native.valid&4: result['frame_duration_us']=native.frame_duration_us

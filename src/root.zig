@@ -6,6 +6,10 @@ comptime {
 }
 pub const raw = @import("raw.zig");
 pub const dng = @import("dng.zig");
+pub const audio = @import("audio.zig");
+comptime {
+    _ = audio;
+}
 pub const media = @import("media.zig");
 comptime {
     _ = media;

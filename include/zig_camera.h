@@ -106,7 +106,7 @@ typedef struct {
  double min[4],max[4],def[4]; uint64_t enum_mask;
 } zc_control_info;
 typedef struct {
- uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8 */
+ uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8, timestamp BOOTTIME=16 */
  uint64_t event_id,sequence,timestamp_ns,control_revision;
  uint32_t exposure_us; int32_t af_state,af_pause_state; uint32_t reserved;
  float analogue_gain,lens_position,red_gain,blue_gain;
@@ -192,6 +192,27 @@ int zc_video_close_output(zc_recorder *);
  * duplication/loss across a successful split. stats.split_pending tracks commit. */
 int zc_video_split(zc_recorder *,const char *path);
 int zc_video_cancel_split(zc_recorder *);
+/* Explicit S16LE input. Synthetic backend is deterministic and unpaced; real
+ * ALSA input is optional (-Daudio=true), clocked in Linux CLOCK_BOOTTIME ns. */
+enum { ZC_AUDIO_SYNTHETIC=0,ZC_AUDIO_ALSA=1 };
+typedef struct { uint32_t struct_size,backend,sample_rate,channels,block_frames,reserved;uint64_t start_ns; } zc_audio_config;
+typedef struct { uint64_t timestamp_ns;int64_t clock_error_ns;uint32_t frames,reserved; } zc_audio_block;
+typedef struct zc_audio zc_audio;
+void zc_default_audio_config(zc_audio_config *);
+int zc_audio_open(const zc_audio_config *,const char *device,zc_audio **);
+int zc_audio_read(zc_audio *,uint8_t *output,uint64_t capacity,uint32_t timeout_ms,zc_audio_block *);
+int zc_audio_close(zc_audio *);
+/* Additive recording options. sample_rate=0 disables audio; A/V requires .mkv.
+ * Existing video-only .mp4/.mkv APIs keep their layouts and behavior. */
+typedef struct {uint32_t struct_size,sample_rate,channels,buffer_frames,max_blocks,exclusive;} zc_recording_options;
+typedef struct {uint64_t segments,output_bytes,output_frames,output_duration_ns,audio_frames,audio_written_frames,audio_queued_frames,audio_trimmed_frames;uint32_t rotation_due,audio_enabled;} zc_recording_stats;
+void zc_default_recording_options(zc_recording_options *);
+int zc_video_open_ex(const char *,const zc_video_config *,const zc_recording_options *,zc_recorder **);
+int zc_video_write_audio(zc_recorder *,const uint8_t *s16le,uint64_t length,uint64_t timestamp_ns);
+/* Soft policy only; caller reads rotation_due and stages zc_video_split.
+ * PCM timestamps and frame timestamps must share one nanosecond epoch. */
+int zc_video_set_rotation(zc_recorder *,uint64_t duration_ns,uint64_t max_bytes);
+int zc_video_recording_stats(zc_recorder *,zc_recording_stats *);
 #ifdef __cplusplus
 }
 #endif

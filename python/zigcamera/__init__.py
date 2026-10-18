@@ -28,6 +28,14 @@ class _RawMetadata(C.Structure):
     _fields_ = [("valid",C.c_uint32),("black_levels",C.c_float*4),("camera_to_srgb",C.c_float*9),("model",C.c_char*128)]
 class _VideoConfig(C.Structure):
     _fields_ = [(n,C.c_uint32) for n in ("width","height","fps_num","fps_den","codec","bitrate","quality","gop")]
+class _AudioConfig(C.Structure):
+    _fields_=[(n,C.c_uint32) for n in ('struct_size','backend','sample_rate','channels','block_frames','reserved')]+[('start_ns',C.c_uint64)]
+class _AudioBlock(C.Structure):
+    _fields_=[('timestamp_ns',C.c_uint64),('clock_error_ns',C.c_int64),('frames',C.c_uint32),('reserved',C.c_uint32)]
+class _RecordingOptions(C.Structure):
+    _fields_=[(n,C.c_uint32) for n in ('struct_size','sample_rate','channels','buffer_frames','max_blocks','exclusive')]
+class _RecordingStats(C.Structure):
+    _fields_=[(n,C.c_uint64) for n in ('segments','output_bytes','output_frames','output_duration_ns','audio_frames','audio_written_frames','audio_queued_frames','audio_trimmed_frames')]+[(n,C.c_uint32) for n in ('rotation_due','audio_enabled')]
 class _BufferConfig(C.Structure):
     _fields_=[('struct_size',C.c_uint32),('max_frames',C.c_uint32),('max_bytes',C.c_uint64),('duration_us',C.c_uint64)]
 class _BufferStats(C.Structure):
@@ -63,6 +71,15 @@ def _load(path=None):
         raise FileNotFoundError("Build zig-camera or set ZIG_CAMERA_LIBRARY to its shared library")
     lib = C.CDLL(str(candidate))
     signatures = {
+        'zc_default_audio_config':([C.POINTER(_AudioConfig)],None),
+        'zc_audio_open':([C.POINTER(_AudioConfig),C.c_char_p,C.POINTER(C.c_void_p)],C.c_int),
+        'zc_audio_read':([C.c_void_p,C.POINTER(C.c_uint8),C.c_uint64,C.c_uint32,C.POINTER(_AudioBlock)],C.c_int),
+        'zc_audio_close':([C.c_void_p],C.c_int),
+        'zc_default_recording_options':([C.POINTER(_RecordingOptions)],None),
+        'zc_video_open_ex':([C.c_char_p,C.POINTER(_VideoConfig),C.POINTER(_RecordingOptions),C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_write_audio':([C.c_void_p,C.POINTER(C.c_uint8),C.c_uint64,C.c_uint64],C.c_int),
+        'zc_video_set_rotation':([C.c_void_p,C.c_uint64,C.c_uint64],C.c_int),
+        'zc_video_recording_stats':([C.c_void_p,C.POINTER(_RecordingStats)],C.c_int),
         'zc_default_buffer_config':([C.POINTER(_BufferConfig)],None),
         'zc_video_open_circular':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(C.c_void_p)],C.c_int),
         'zc_video_buffer_stats':([C.c_void_p,C.POINTER(_BufferStats)],C.c_int),
@@ -273,16 +290,40 @@ class Camera:
         return self._capture(lambda frame:frame.metadata,wait,signal_function,timeout_ms)
     def capture_file(self,path,timeout_ms=5000,*,wait=None,signal_function=None):
         return self._capture(lambda frame:frame.save(path),wait,signal_function,timeout_ms)
-    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None):
+    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None,audio=None):
         from .pipeline import Recording
         self._open()
         with self._async_lock:
             if self._recording is not None: raise RuntimeError('Recording already active')
             if not self._started: self.start()
-            recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular)
-            recording=Recording(self,recorder,fps);self._recording=recording
-            recording._thread=self._ensure_pump().thread
-            return recording
+            from .outputs import RotatingOutput
+            rotation=path if isinstance(path,RotatingOutput) else None
+            if rotation is not None:
+                if circular is not None: raise ValueError('Rotation requires a file output')
+                rotation._available()
+                path=rotation.path(0)
+            source=None;recorder=None;recording=None
+            try:
+                if audio is not None and audio is not False:
+                    if circular is not None: raise ValueError('Circular A/V is not supported')
+                    options={} if audio is True else dict(audio)
+                    options.setdefault('backend','alsa')
+                    synthetic=self.info['backend']=='synthetic'
+                    if synthetic != (options['backend']=='synthetic'): raise ValueError('Audio and camera must use the same clock source')
+                    source=AudioCapture(library=self._lib._name,**options)
+                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels},exclusive=rotation is not None)
+                recording=Recording(self,recorder,fps,audio=source,rotation=rotation)
+                self._recording=recording
+                if rotation is not None: rotation._bind(recording)
+                recording._thread=self._ensure_pump().thread
+                return recording
+            except Exception:
+                self._recording=None
+                if recording is not None: recording.close()
+                else:
+                    if recorder is not None: recorder.close()
+                    if source is not None: source.close()
+                raise
     def split_recording(self,path,*,wait=None,signal_function=None):
         with self._async_lock:
             if self._recording is None: raise RuntimeError('Recording is not active')
@@ -461,7 +502,7 @@ class Preview:
 
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
-    def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None):
+    def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False):
         self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock(); config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
@@ -469,6 +510,7 @@ class Recorder:
         config.codec=codecs[codec];config.bitrate=_u32(bitrate);config.gop=_u32(gop)
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
         if circular is not None:
+            if audio is not None or exclusive: raise ValueError('Circular A/V and exclusive circular outputs are unsupported')
             if path is not None: raise ValueError('Circular recording starts without a file; use open_output')
             if set(circular)-{'max_frames','max_bytes','duration_ms'}: raise ValueError('Unknown circular buffer option')
             buffer=_BufferConfig();self._lib.zc_default_buffer_config(C.byref(buffer))
@@ -479,7 +521,13 @@ class Recorder:
             _check(self._lib,self._lib.zc_video_open_circular(C.byref(config),C.byref(buffer),C.byref(self._handle)))
         else:
             if path is None: raise ValueError('A file or circular buffer configuration is required')
-            _check(self._lib,self._lib.zc_video_open(_path(path),C.byref(config),C.byref(self._handle)))
+            opts=_RecordingOptions();self._lib.zc_default_recording_options(C.byref(opts));opts.exclusive=bool(exclusive)
+            if audio is not None:
+                if set(audio)-{'sample_rate','channels','buffer_frames','max_blocks'}: raise ValueError('Unknown PCM recording option')
+                for name,value in audio.items(): setattr(opts,name,_u32(value))
+                if not opts.sample_rate: raise ValueError('Audio sample rate is required')
+                if 'buffer_frames' not in audio: opts.buffer_frames=opts.sample_rate*2
+            _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
     def _open(self):
         if not self._handle.value: raise RuntimeError('Recorder is closed')
     def write(self,frame,*,timestamp_ns=None):
@@ -488,6 +536,20 @@ class Recorder:
             ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
             if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError('Invalid timestamp')
             _check(self._lib,self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+    def write_audio(self,data,*,timestamp_ns):
+        if not isinstance(timestamp_ns,int) or not 0<=timestamp_ns<2**64: raise ValueError('Invalid audio timestamp')
+        data=bytes(data);buf=(C.c_uint8*len(data)).from_buffer_copy(data)
+        with self._lock:
+            self._open();_check(self._lib,self._lib.zc_video_write_audio(self._handle,buf,len(data),timestamp_ns))
+    def set_rotation(self,*,duration_ns=0,max_bytes=0):
+        if any(not isinstance(v,int) or not 0<=v<2**64 for v in (duration_ns,max_bytes)): raise ValueError('Invalid rotation limit')
+        with self._lock:
+            self._open();_check(self._lib,self._lib.zc_video_set_rotation(self._handle,duration_ns,max_bytes))
+    @property
+    def stats(self):
+        with self._lock:
+            self._open();out=_RecordingStats();_check(self._lib,self._lib.zc_video_recording_stats(self._handle,C.byref(out)))
+            return {name:getattr(out,name) for name,_ in out._fields_}
     @property
     def buffer_stats(self):
         with self._lock:
@@ -511,7 +573,8 @@ class Recorder:
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
 
-from .outputs import CircularOutput
-__all__ += ["CircularOutput"]
+from .audio import AudioCapture
+from .outputs import CircularOutput, RotatingOutput
+__all__ += ["AudioCapture", "CircularOutput", "RotatingOutput"]
 from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
 __all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]

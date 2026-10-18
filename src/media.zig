@@ -97,3 +97,21 @@ pub export fn zc_video_split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
 pub export fn zc_video_cancel_split(p: *c.zc_recorder) c_int {
     return @import("video.zig").cancelSplit(p);
 }
+
+pub export fn zc_default_recording_options(out: *c.zc_recording_options) void {
+    out.* = @import("video.zig").defaultRecordingOptions();
+}
+pub export fn zc_video_open_ex(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    return @import("video.zig").openEx(path, cfg, opts, out);
+}
+pub export fn zc_video_write_audio(p: *c.zc_recorder, data: [*]const u8, length: u64, timestamp: u64) c_int {
+    return @import("video.zig").writeAudio(p, data, length, timestamp);
+}
+pub export fn zc_video_set_rotation(p: *c.zc_recorder, duration: u64, bytes: u64) c_int {
+    return @import("video.zig").setRotation(p, duration, bytes);
+}
+pub export fn zc_video_recording_stats(p: *c.zc_recorder, out: *c.zc_recording_stats) c_int {
+    return @import("video.zig").recordingStats(p, out);
+}

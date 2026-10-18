@@ -150,3 +150,25 @@ They serialize lifecycle work at the facade and restore prior configuration afte
 owned captures. No general Home executor or CPU resize graph is imported into
 native camera callbacks. The wider Home video/runtime graph is not represented
 as tested by these focused additions.
+
+## 0.7: bounded PCM input, synchronized Matroska and rotation
+
+Audited Home audio/io/recorder.zig, audio/io/alsa.zig, the audio and video AAC
+encoders, PCM representations and Matroska muxer. The older capture backends and
+AAC coding contain placeholders; the existing muxer accumulates the full output.
+These were not treated as working production dependencies.
+
+[Home #917](https://github.com/home-lang/home/pull/917) adds standalone checked
+ALSA capture with the system headers, sample-count/BOOTTIME timestamps, a fixed
+PCM arena/entry queue, streaming video+PCM Matroska and soft rotation policy.
+The modules are vendored verbatim at b020d5855; their focused tests run on Zig
+0.15.2 and Home's development toolchain. The broader Home audio graph remains
+outside this validation. Home #913 also exposes its existing avcC/hvcC builder
+for Matroska CodecPrivate, preserving the checked AVC/HEVC configuration path.
+
+zig-camera adds explicit source ownership, bounded background audio reads,
+coverage waits, sample-clipped split timelines and exclusive indexed output
+rotation. Linux acceptance uses ALSA null input, independent mkvtoolnix WAV
+extraction, exact synthetic sample checks and OpenH264/libde265 decoding. No
+FFmpeg is used. Physical input latency, long-run drift, compressed audio and
+adaptive resampling remain gaps; see [A/V semantics](audio-rotation.md).

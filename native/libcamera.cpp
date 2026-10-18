@@ -358,6 +358,8 @@ struct Device {
             if (s == 0) { frame.sequence = metadata.sequence; frame.timestamp_ns = metadata.timestamp; }
         }
         const auto &meta = request->metadata();
+        const auto sensor_timestamp=meta.get(controls::SensorTimestamp);
+        if(sensor_timestamp && *sensor_timestamp>0)frame.timestamp_ns=*sensor_timestamp;
         frame.exposure_us = meta.get(controls::ExposureTime).value_or(0);
         frame.analogue_gain = meta.get(controls::AnalogueGain).value_or(0);
         frame.red_gain = 0; frame.blue_gain = 0;
@@ -372,7 +374,7 @@ struct Device {
         const auto matrix = meta.get(controls::ColourCorrectionMatrix);
         if (matrix) { for (int i=0; i<9; ++i) raw_meta.camera_to_srgb[i] = (*matrix)[i]; raw_meta.valid |= 2; }
         if (gains) raw_meta.valid |= 4;
-        zc_metadata extra{};extra.struct_size=sizeof(extra);extra.sequence=frame.sequence;extra.timestamp_ns=frame.timestamp_ns;
+        zc_metadata extra{};if(sensor_timestamp && *sensor_timestamp>0)extra.valid|=16;extra.struct_size=sizeof(extra);extra.sequence=frame.sequence;extra.timestamp_ns=frame.timestamp_ns;
         extra.control_revision=slots[index].control_revision;extra.exposure_us=frame.exposure_us;extra.analogue_gain=frame.analogue_gain;extra.red_gain=frame.red_gain;extra.blue_gain=frame.blue_gain;
         extra.af_state=-1;extra.af_pause_state=-1;
         const auto af=meta.get(controls::AfState);if(af){extra.af_state=*af;extra.valid|=1;}

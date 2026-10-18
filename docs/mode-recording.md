@@ -135,3 +135,6 @@ error; cancel it first or provide frames until the split commits.
 Automatic duration/size rotation, audio, arbitrary output classes, crash recovery
 and circular disk recording are still gaps. Hardware ISP reconfiguration, focus,
 long-running recording reliability and sustained Pi 5 throughput remain untested.
+
+For duration/size automatic rotation and synchronized PCM audio, see
+[audio and rotation](audio-rotation.md). Circular A/V remains unsupported.

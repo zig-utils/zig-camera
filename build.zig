@@ -8,7 +8,10 @@ pub fn build(b: *std.Build) void {
     const preview = b.option(bool, "preview", "Enable SDL2 windowed preview") orelse false;
     const video = b.option(bool, "video", "Enable Home recording") orelse true;
     const codecs = b.option(bool, "codecs", "Enable Home x264/x265 codecs (system libraries)") orelse false;
+    const audio = b.option(bool, "audio", "Enable Linux ALSA audio capture") orelse false;
+    if (audio and target.result.os.tag != .linux) @panic("ALSA capture requires Linux");
     const options = b.addOptions();
+    options.addOption(bool, "audio", audio);
     options.addOption(bool, "codecs", codecs);
     options.addOption(bool, "preview", preview);
     options.addOption(bool, "video", video);
@@ -23,6 +26,10 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("options", options);
     mod.addIncludePath(b.path("include"));
     mod.addIncludePath(b.path("src/home"));
+    if (audio) {
+        mod.addCSourceFile(.{ .file = b.path("src/home/native_capture.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+        mod.linkSystemLibrary("alsa", .{ .use_pkg_config = .force });
+    }
     if (codecs) {
         mod.addCSourceFile(.{ .file = b.path("src/home/native_encoder.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
         mod.linkSystemLibrary("x264", .{ .use_pkg_config = .force });

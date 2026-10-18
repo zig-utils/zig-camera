@@ -144,7 +144,7 @@ class Picamera2:
             else: frame.save(file_output)
         return self._ready()._capture(save,wait,signal_function,timeout_ms)
     @_serialized
-    def start_recording(self,encoder,output,*,fps=30):
+    def start_recording(self,encoder,output,*,fps=30,audio=None):
         if isinstance(encoder,MJPEGEncoder): options={"codec":"mjpeg","quality":encoder.quality}
         elif isinstance(encoder,(H264Encoder,HEVCEncoder)):
             options={"codec":"h264" if isinstance(encoder,H264Encoder) else "hevc","quality":encoder.quality,"bitrate":encoder.bitrate,"gop":encoder.iperiod}
@@ -152,9 +152,9 @@ class Picamera2:
         from .outputs import CircularOutput
         if isinstance(output,CircularOutput):
             if output._recording is not None and not output._recording.closed: raise RuntimeError('Circular output is already bound')
-            recording=self._ready().start_recording(None,fps=fps,circular=output.config,**options)
+            recording=self._ready().start_recording(None,fps=fps,circular=output.config,audio=audio,**options)
             output._bind(recording);return recording
-        return self._ready().start_recording(output,fps=fps,**options)
+        return self._ready().start_recording(output,fps=fps,audio=audio,**options)
     @_serialized
     def split_recording(self,output,*,wait=None,signal_function=None):
         return self._ready().split_recording(output,wait=wait,signal_function=signal_function)

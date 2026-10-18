@@ -79,24 +79,61 @@ class CapturePump:
         if threading.current_thread() is not self.thread: self.thread.join()
 
 class Recording:
-    def __init__(self,camera,recorder,fps):
+    def __init__(self,camera,recorder,fps,*,audio=None,rotation=None):
         self.camera=camera;self.recorder=recorder;self.fps=fps;self.frames=0;self.error=None;self.closed=False;self._split_job=None
+        from .audio import AudioFeed
+        self._audio=None;self._rotation=rotation;self._rotation_pending=None;self._rotation_index=0
+        self.current_path=None if rotation is None else rotation.path(0)
+        if rotation is not None: recorder.set_rotation(duration_ns=rotation.duration_ns,max_bytes=rotation.max_bytes)
+        if audio is not None: self._audio=AudioFeed(audio)
+    @property
+    def stats(self):
+        with self.camera._async_lock:
+            stats=self.recorder.stats
+            if self._audio is not None: stats.update(clock_error_ns=self._audio.clock_error_ns,max_clock_error_ns=self._audio.max_clock_error_ns)
+            return stats
     @property
     def thread(self): return self._thread
     def write(self,frame):
         if self.error is not None: return
         timestamp=self.frames*1_000_000_000//self.fps if self.camera.info['backend']=='synthetic' else frame._native.timestamp_ns
-        try: self.recorder.write(frame,timestamp_ns=timestamp)
+        try:
+            if self._audio is not None:
+                if self.camera.info['backend']!='synthetic' and frame.metadata.get('timestamp_clock')!='boottime': raise RuntimeError('Camera does not provide SensorTimestamp in BOOTTIME')
+                self._audio.through(self.recorder,timestamp+1_000_000_000//self.fps)
+            self.recorder.write(frame,timestamp_ns=timestamp)
+            if self._rotation is not None: self._rotate()
         except Exception as error:
             if self._split_job is not None: self._split_job._finish(error=error)
             raise
         self.frames+=1
         if self._split_job is not None and not self._split_job.done() and not self.recorder.buffer_stats['split_pending']:
             self._split_job._finish(self._split_job.path)
+    def _rotate(self):
+        import os
+        if self._rotation_pending is not None and not self.recorder.buffer_stats['split_pending']:
+            self._rotation_index+=1;self.current_path=self._rotation.path(self._rotation_index);self._rotation_pending=None
+        if self.recorder.stats['rotation_due']:
+            path=self._rotation.path(self._rotation_index+1)
+            self.recorder.split(path)
+            identity=os.stat(path,follow_symlinks=False)
+            self._rotation_pending=(path,identity.st_dev,identity.st_ino)
+    def _discard_rotation(self):
+        import os
+        if self._rotation_pending is None: return
+        if not self.recorder.buffer_stats['split_pending']:
+            self._rotation_index+=1;self.current_path=self._rotation.path(self._rotation_index);self._rotation_pending=None;return
+        self.recorder.cancel_split()
+        path,dev,ino=self._rotation_pending;self._rotation_pending=None
+        try:
+            info=os.stat(path,follow_symlinks=False)
+            if (info.st_dev,info.st_ino)==(dev,ino): os.unlink(path)
+        except FileNotFoundError: pass
     def split(self,path,signal_function=None):
         from .jobs import OperationJob
         with self.camera._async_lock:
             if self.closed or self.error is not None: raise RuntimeError('Recording is not writable')
+            if self._rotation is not None: raise RuntimeError('Manual splits are disabled during automatic rotation')
             if self._split_job is not None and not self._split_job.done(): raise RuntimeError('Split already pending')
             if not self.camera._job_slots.acquire(False): raise RuntimeError('Job capacity exhausted')
             try: self.recorder.split(path)
@@ -126,6 +163,10 @@ class Recording:
             self.camera.stop_recording();return
         self.closed=True
         if self._split_job is not None and not self._split_job.done(): self._cancel_split(self._split_job)
-        try: self.recorder.close()
+        try:
+            if self._audio is not None: self._audio.close()
+            self._discard_rotation()
         finally:
-            if self.error is not None: raise self.error
+            try: self.recorder.close()
+            finally:
+                if self.error is not None: raise self.error
