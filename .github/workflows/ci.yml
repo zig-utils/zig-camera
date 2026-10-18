@@ -46,6 +46,27 @@ jobs:
           ./zig-out/bin/zig-camera record --simulate --width 128 --height 96 --frames 12 --fps 24 --warmup 0 --output zig-out/home.mkv
           python3 tests/check_media_files.py zig-out
           raw-identify zig-out/test.dng
+      - name: Home AVC/HEVC and independent decoder dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libx264-dev libx265-dev libopenh264-dev libde265-dev
+      - name: Test Home codecs and fragmented MP4 without FFmpeg
+        if: runner.os == 'Linux'
+        env:
+          SDL_VIDEODRIVER: dummy
+          ZC_TEST_PREVIEW: '1'
+          ZC_TEST_CODECS: '1'
+        run: |
+          zig build test -Dlibcamera=false -Dcodecs=true
+          zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Doptimize=ReleaseSafe
+          PYTHONPATH=python python3 -m unittest discover -s tests -v
+          ./zig-out/bin/zig-camera record --simulate --codec h264 --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-h264.mp4
+          ./zig-out/bin/zig-camera record --simulate --codec hevc --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-hevc.mp4
+          c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
+          PYTHONPATH=python python3 tests/test_codecs.py zig-out
+          for clip in zig-out/home-*.mp4 zig-out/cli-*.mp4; do
+            python3 tests/check_mp4.py "$clip" zig-out/decode-codecs
+            mkvmerge -J "$clip" > "$clip.identify.json"
+          done
       - name: Test native JPEG encoding with synthetic frames
         if: runner.os == 'Linux'
         run: |

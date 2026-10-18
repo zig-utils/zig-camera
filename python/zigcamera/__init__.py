@@ -147,12 +147,12 @@ class Camera:
         with self.acquire(timeout_ms) as frame: return frame.metadata
     def capture_file(self,path,timeout_ms=5000):
         with self.acquire(timeout_ms) as frame: frame.save(path)
-    def start_recording(self,path,*,fps=30,quality=90):
+    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0):
         self._open()
         if self._recording is not None: raise RuntimeError("Recording already active")
         if not self._started: self.start()
-        recorder=Recorder(path,width=self.info["main"]["width"],height=self.info["main"]["height"],fps=fps,quality=quality,library=self._lib._name)
-        self._recording=_Recording(self,recorder)
+        recorder=Recorder(path,width=self.info["main"]["width"],height=self.info["main"]["height"],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name)
+        self._recording=_Recording(self,recorder,fps)
         return self._recording
     def stop_recording(self):
         if self._recording is not None:
@@ -294,11 +294,13 @@ class Preview:
     def __exit__(self,*exc): self.close()
 
 class Recorder:
-    """Home native JPEG/MJPEG in Matroska. Calls must be serialized by the caller."""
-    def __init__(self,path,*,width,height,fps=30,quality=90,codec="mjpeg",library=None):
+    """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
+    def __init__(self,path,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None):
         self._lib=_load(library); self._handle=C.c_void_p(); config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
-        if codec!="mjpeg": raise ValueError("This version supports the Home MJPEG encoder")
+        codecs={"mjpeg":3,"h264":1,"hevc":2}
+        if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
+        config.codec=codecs[codec];config.bitrate=_u32(bitrate);config.gop=_u32(gop)
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
         _check(self._lib,self._lib.zc_video_open(_path(path),C.byref(config),C.byref(self._handle)))
     def write(self,frame,*,timestamp_ns=None):
@@ -314,8 +316,8 @@ class Recorder:
     def __exit__(self,*exc): self.close()
 
 class _Recording:
-    def __init__(self,camera,recorder):
-        self.camera=camera; self.recorder=recorder; self.stop_event=threading.Event(); self.error=None
+    def __init__(self,camera,recorder,fps):
+        self.camera=camera; self.recorder=recorder; self.fps=fps; self.frames=0; self.stop_event=threading.Event(); self.error=None
         self.thread=threading.Thread(target=self._run,name="zig-camera-recorder",daemon=True);self.thread.start()
     def _run(self):
         try:
@@ -324,12 +326,15 @@ class _Recording:
                 except CameraError as error:
                     if error.status==-3: continue
                     raise
-                with frame: self.recorder.write(frame)
+                with frame:
+                    timestamp=self.frames*1_000_000_000//self.fps if self.camera.info["backend"]=="synthetic" else frame._native.timestamp_ns
+                    self.recorder.write(frame,timestamp_ns=timestamp)
+                self.frames+=1
         except Exception as error: self.error=error
     def close(self):
         self.stop_event.set(); self.thread.join()
         self.recorder.close()
         if self.error: raise self.error
 
-from .picamera2 import Picamera2, MJPEGEncoder
-__all__ += ["Picamera2", "MJPEGEncoder"]
+from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
+__all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]

@@ -1,13 +1,25 @@
 """Explicit Picamera2-style synchronous subset, backed by native frame leases.
 
 This is not a drop-in Picamera2 module. Controls are applied at configuration;
-preview() is a blocking SDL loop, and recording currently uses Home MJPEG/MKV.
+preview() is a blocking SDL loop, and recording uses Home MJPEG/MKV or its optional x264/x265 adapter and MP4.
 """
 from dataclasses import dataclass
 from . import Camera
 
 @dataclass(frozen=True)
 class MJPEGEncoder:
+    quality: int = 90
+
+@dataclass(frozen=True)
+class H264Encoder:
+    bitrate: int = 0
+    iperiod: int = 60
+    quality: int = 90
+
+@dataclass(frozen=True)
+class HEVCEncoder:
+    bitrate: int = 0
+    iperiod: int = 60
     quality: int = 90
 
 def _metadata(frame):
@@ -96,8 +108,11 @@ class Picamera2:
     def capture_file(self,file_output,name="main"):
         with self.captured_request() as request: request.save(name,file_output)
     def start_recording(self,encoder,output,*,fps=30):
-        if not isinstance(encoder,MJPEGEncoder): raise NotImplementedError("Only the Home MJPEGEncoder is supported")
-        return self._ready().start_recording(output,fps=fps,quality=encoder.quality)
+        if isinstance(encoder,MJPEGEncoder): options={"codec":"mjpeg","quality":encoder.quality}
+        elif isinstance(encoder,(H264Encoder,HEVCEncoder)):
+            options={"codec":"h264" if isinstance(encoder,H264Encoder) else "hevc","quality":encoder.quality,"bitrate":encoder.bitrate,"gop":encoder.iperiod}
+        else: raise NotImplementedError("Use a Home MJPEGEncoder, H264Encoder or HEVCEncoder")
+        return self._ready().start_recording(output,fps=fps,**options)
     def stop_recording(self): self._ready().stop_recording()
     def preview(self,frames=300): return self._ready().preview(frames=frames)
     def __enter__(self): return self

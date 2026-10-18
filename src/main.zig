@@ -11,8 +11,10 @@ const help =
     \\  --lens N                 Manual lens position in dioptres; default continuous AF if supported
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
-    \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv (default capture.ppm)
+    \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv/.mp4 (default capture.ppm)
     \\  --fps N                  Preview/record frame rate (default 30)
+    \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
+    \\  --bitrate N --gop N       AVC/HEVC bits/sec (0 CRF) and keyframe interval
     \\  --preview                Also display while recording
     \\  --noise-reduction N      0 off, 1 fast, 2 high quality, 3 minimal
     \\  --quality N              JPEG quality, 1..100 (default 98, 4:4:4)
@@ -46,6 +48,9 @@ fn run() !void {
         cfg.policy = camera.c.ZC_FIFO;
     } else if (eq(command, "preview")) capture_opts.role = camera.c.ZC_PREVIEW;
     var fps: u32 = 30;
+    var codec: u32 = camera.c.ZC_MJPEG;
+    var bitrate: u32 = 0;
+    var gop: u32 = 0;
     var show_preview = eq(command, "preview");
     var output: [:0]const u8 = if (eq(command, "record")) "capture.mkv" else "capture.ppm";
     var simulate = false;
@@ -79,7 +84,9 @@ fn run() !void {
         i += 1;
         if (i >= args.len) return error.MissingOptionValue;
         const value = args[i];
-        if (eq(key, "--output")) {
+        if (eq(key, "--codec")) {
+            codec = if (eq(value, "h264")) camera.c.ZC_H264 else if (eq(value, "hevc")) camera.c.ZC_HEVC else if (eq(value, "mjpeg")) camera.c.ZC_MJPEG else return error.InvalidCodec;
+        } else if (eq(key, "--output")) {
             output = value;
         } else if (eq(key, "--raw-format")) {
             if (value.len >= cfg.raw_format.len) return error.InvalidRawFormat;
@@ -91,7 +98,11 @@ fn run() !void {
             cfg.lens_position = try std.fmt.parseFloat(f32, value);
         } else {
             const n = try std.fmt.parseInt(u32, value, 10);
-            if (eq(key, "--fps")) {
+            if (eq(key, "--bitrate")) {
+                bitrate = n;
+            } else if (eq(key, "--gop")) {
+                gop = n;
+            } else if (eq(key, "--fps")) {
                 fps = n;
             } else if (eq(key, "--noise-reduction")) {
                 capture_opts.noise_reduction = n;
@@ -200,6 +211,9 @@ fn run() !void {
             video_cfg.height = info.main.height;
             video_cfg.fps_num = fps;
             video_cfg.quality = quality;
+            video_cfg.codec = codec;
+            video_cfg.bitrate = bitrate;
+            video_cfg.gop = gop;
             try camera.check(camera.media.zc_video_open(output, &video_cfg, &recorder));
         }
         errdefer if (recorder) |r| {

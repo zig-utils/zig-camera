@@ -7,7 +7,9 @@ pub fn build(b: *std.Build) void {
     if (libcamera and target.result.os.tag != .linux) @panic("libcamera requires Linux");
     const preview = b.option(bool, "preview", "Enable SDL2 windowed preview") orelse false;
     const video = b.option(bool, "video", "Enable Home native MJPEG recording") orelse true;
+    const codecs = b.option(bool, "codecs", "Enable Home x264/x265 codecs (system libraries)") orelse false;
     const options = b.addOptions();
+    options.addOption(bool, "codecs", codecs);
     options.addOption(bool, "preview", preview);
     options.addOption(bool, "video", video);
     options.addOption(bool, "libcamera", libcamera);
@@ -20,6 +22,12 @@ pub fn build(b: *std.Build) void {
     });
     mod.addOptions("options", options);
     mod.addIncludePath(b.path("include"));
+    mod.addIncludePath(b.path("src/home"));
+    if (codecs) {
+        mod.addCSourceFile(.{ .file = b.path("src/home/native_encoder.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+        mod.linkSystemLibrary("x264", .{ .use_pkg_config = .force });
+        mod.linkSystemLibrary("x265", .{ .use_pkg_config = .force });
+    }
     if (libcamera) {
         if (target.result.cpu.arch != @import("builtin").cpu.arch)
             @panic("Build the libcamera backend natively with the target system's C++ toolchain and libcamera packages");

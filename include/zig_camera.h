@@ -95,7 +95,13 @@ void zc_default_video_config(zc_video_config *);
 int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
 /* Synchronous bounded conversion/encode; the input lease can be released after
  * return. Timestamp is a monotonic capture time, in ns; gaps are preserved.
- * This version supports Home MJPEG in .mkv; other codecs return UNSUPPORTED. */
+ * Home MJPEG: .mkv; optional Home x264/x265 adapter (-Dcodecs=true):
+ * H.264/HEVC in fragmented .mp4, 8-bit SDR 4:2:0, even dimensions >=16.
+ * bitrate is bits/sec (0 selects CRF); gop 0 selects 60. Quality 1..100
+ * maps linearly to CRF 51..0. MP4 retains one encoded packet for duration;
+ * close writes the last packet at nominal FPS. No B frames/lookahead.
+ * MP4 timestamps must advance by >=1 microsecond; max gap ~4294 seconds.
+ * Codecs/containers unavailable in this build return UNSUPPORTED. */
 int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
