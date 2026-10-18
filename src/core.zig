@@ -139,16 +139,17 @@ pub export fn zc_start(p: *c.zc_camera) c_int {
 }
 pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_int {
     const self = session(p);
-    const deadline = std.time.nanoTimestamp() + @as(i128, timeout_ms) * std.time.ns_per_ms;
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    const wait_ns = @as(u64, timeout_ms) * std.time.ns_per_ms;
     while (true) {
         self.mutex.lock();
         while (self.running and self.fatal == 0 and self.count == 0) {
-            const remaining = deadline - std.time.nanoTimestamp();
-            if (remaining <= 0) {
+            const elapsed = timer.read();
+            if (elapsed >= wait_ns) {
                 self.mutex.unlock();
                 return c.ZC_TIMEOUT;
             }
-            self.changed.timedWait(&self.mutex, @intCast(remaining)) catch {};
+            self.changed.timedWait(&self.mutex, wait_ns - elapsed) catch {};
         }
         const status = if (self.fatal != 0) self.fatal else if (!self.running) c.ZC_STATE else 0;
         self.mutex.unlock();
