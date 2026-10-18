@@ -115,3 +115,9 @@ pub export fn zc_video_set_rotation(p: *c.zc_recorder, duration: u64, bytes: u64
 pub export fn zc_video_recording_stats(p: *c.zc_recorder, out: *c.zc_recording_stats) c_int {
     return @import("video.zig").recordingStats(p, out);
 }
+
+pub export fn zc_video_open_aac(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    return @import("video.zig").openAac(path, cfg, opts, bitrate, out);
+}

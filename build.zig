@@ -8,10 +8,12 @@ pub fn build(b: *std.Build) void {
     const preview = b.option(bool, "preview", "Enable SDL2 windowed preview") orelse false;
     const video = b.option(bool, "video", "Enable Home recording") orelse true;
     const codecs = b.option(bool, "codecs", "Enable Home x264/x265 codecs (system libraries)") orelse false;
+    const aac = b.option(bool, "aac", "Enable Home AAC-LC codec (standalone FDK library)") orelse false;
     const audio = b.option(bool, "audio", "Enable Linux ALSA audio capture") orelse false;
     if (audio and target.result.os.tag != .linux) @panic("ALSA capture requires Linux");
     const options = b.addOptions();
     options.addOption(bool, "audio", audio);
+    options.addOption(bool, "aac", aac);
     options.addOption(bool, "codecs", codecs);
     options.addOption(bool, "preview", preview);
     options.addOption(bool, "video", video);
@@ -26,6 +28,10 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("options", options);
     mod.addIncludePath(b.path("include"));
     mod.addIncludePath(b.path("src/home"));
+    if (aac) {
+        mod.addCSourceFile(.{ .file = b.path("src/home/native_aac.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+        mod.linkSystemLibrary("fdk-aac", .{ .use_pkg_config = .force });
+    }
     if (audio) {
         mod.addCSourceFile(.{ .file = b.path("src/home/native_capture.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
         mod.linkSystemLibrary("alsa", .{ .use_pkg_config = .force });

@@ -10,6 +10,8 @@ const rgb = @import("home/rgb_i420.zig");
 const Ring = @import("home/packet_ring.zig").Ring;
 const av = @import("home/av_stream.zig");
 const pcm = @import("home/pcm_timeline.zig");
+const aac = @import("home/native_aac.zig");
+const aac_enabled = if (@hasDecl(options, "aac")) options.aac else false;
 const Policy = @import("home/recording_policy.zig").Policy;
 const A = std.heap.c_allocator;
 const Output = struct {
@@ -17,6 +19,9 @@ const Output = struct {
     writer: ?mkv.Writer = null,
     mp4_writer: ?mp4.Writer = null,
     av_writer: ?av.Writer = null,
+    aac_encoder: ?aac.Encoder = null,
+    audio_first_ns: ?u64 = null,
+    audio_frames: u64 = 0,
     bytes: u64 = 0,
     pending: std.ArrayList(u8) = .empty,
     pending_ns: u64 = 0,
@@ -30,8 +35,17 @@ const Output = struct {
         try self.file.writeAll(bytes);
         self.bytes = next;
     }
-    fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [2]?*Output, recording: *const c.zc_recording_options) !*Output {
+    fn patch(ctx: *anyopaque, offset: u64, bytes: []const u8) anyerror!void {
+        const self: *Output = @ptrCast(@alignCast(ctx));
+        try self.file.pwriteAll(bytes, offset);
+    }
+    fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [2]?*Output, recording: *const c.zc_recording_options, audio_bitrate: u32) !*Output {
         try validate(std.mem.span(path), cfg, recording.sample_rate != 0);
+        var audio_codec: ?aac.Encoder = null;
+        if (aac_enabled and recording.sample_rate != 0 and std.mem.endsWith(u8, std.mem.span(path), ".mp4")) audio_codec = try aac.Encoder.init(.{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = if (audio_bitrate != 0) audio_bitrate else 64000 * recording.channels });
+        errdefer if (aac_enabled) {
+            if (audio_codec) |*encoder| encoder.deinit();
+        };
         const self = try A.create(Output);
         errdefer A.destroy(self);
         // Compare open file identities before truncation, including hardlinks.
@@ -43,8 +57,11 @@ const Output = struct {
             if (identity.dev == other_id.dev and identity.ino == other_id.ino) return error.Invalid;
         };
         try file.setEndPos(0);
-        self.* = .{ .file = file };
-        if (recording.sample_rate != 0) {
+        self.* = .{ .file = file, .aac_encoder = audio_codec };
+        if (aac_enabled and audio_codec != null) {
+            const encoder = &self.aac_encoder.?;
+            self.mp4_writer = try mp4.Writer.initAv(.{ .context = self, .write = sink, .patch = patch }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, .{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = encoder.config.bitrate, .delay = encoder.info.delay, .config = encoder.info.config[0..2].* });
+        } else if (recording.sample_rate != 0) {
             var private: [8192]u8 = undefined;
             const bytes = if (cfg.codec == c.ZC_MJPEG) &.{} else try mp4.codecPrivate(if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, &private);
             self.av_writer = try av.Writer.init(.{ .context = self, .write = sink }, .{ .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .codec = cfg.codec, .sample_rate = recording.sample_rate, .channels = recording.channels, .codec_private = bytes });
@@ -53,6 +70,9 @@ const Output = struct {
     }
     fn deinit(self: *Output) void {
         self.file.close();
+        if (aac_enabled) {
+            if (self.aac_encoder) |*encoder| encoder.deinit();
+        }
         self.pending.deinit(A);
         A.destroy(self);
     }
@@ -79,11 +99,43 @@ const Output = struct {
         }
         self.frames += 1;
     }
+    fn audioChunk(self: *Output, data: []const u8, timestamp: u64) !void {
+        if (aac_enabled) {
+            if (self.aac_encoder) |*encoder| {
+                const first = self.audio_first_ns orelse timestamp;
+                const expected = try pcm.at(first, self.audio_frames, encoder.config.sample_rate);
+                if ((if (timestamp > expected) timestamp - expected else expected - timestamp) > 2) return error.InvalidTimestamp;
+                self.audio_first_ns = first;
+                const stride: usize = encoder.config.channels * 2;
+                var offset: usize = 0;
+                var stalled: usize = 0;
+                while (offset < data.len) {
+                    const count: usize = @min((data.len - offset) / stride, 1024);
+                    const result = try encoder.encode(data[offset..][0 .. count * stride]);
+                    if (result.data.len != 0) try self.mp4_writer.?.audio(result.data);
+                    if (result.consumed_frames == 0) {
+                        stalled += 1;
+                        if (stalled > 16) return error.EncoderFailed;
+                    } else stalled = 0;
+                    offset += result.consumed_frames * stride;
+                    self.audio_frames = try std.math.add(u64, self.audio_frames, result.consumed_frames);
+                }
+                return;
+            }
+        }
+        try self.av_writer.?.audio(data, timestamp);
+    }
     fn finish(self: *Output, nominal: u32, next: ?u64) !void {
         if (self.pending.items.len != 0) {
             const duration = if (next) |ts| (ts - self.pending_ns) / 1000 else nominal;
             if (duration == 0 or duration > std.math.maxInt(u32)) return error.Invalid;
             try self.flushPending(@intCast(duration));
+        }
+        if (aac_enabled) {
+            if (self.aac_encoder) |*encoder| {
+                while (try encoder.flush()) |audio_packet| try self.mp4_writer.?.audio(audio_packet);
+                try self.mp4_writer.?.finish((self.audio_first_ns orelse 0) / 1000, self.audio_frames);
+            }
         }
     }
 };
@@ -105,6 +157,7 @@ const Recorder = struct {
     audio: ?pcm.Queue = null,
     audio_frames: u64 = 0,
     audio_written: u64 = 0,
+    audio_bitrate: u32 = 0,
     last_packet_ns: ?u64 = null,
     rotation: Policy = .{},
     fn nominal(self: *const Recorder) u32 {
@@ -160,7 +213,7 @@ const Recorder = struct {
         const minimum = try std.math.add(u64, self.first_ns, out.first_ns);
         const end = try std.math.add(u64, self.first_ns, cut);
         while (try self.audio.?.take(minimum, end)) |chunk| {
-            try out.av_writer.?.audio(chunk.data, chunk.timestamp - minimum);
+            try out.audioChunk(chunk.data, chunk.timestamp - minimum);
             self.audio_written += chunk.frames;
         }
     }
@@ -182,7 +235,7 @@ const Recorder = struct {
     }
 };
 fn validate(path: []const u8, cfg: *const c.zc_video_config, audio: bool) !void {
-    if (audio and !std.mem.endsWith(u8, path, ".mkv")) return error.Unsupported;
+    if (audio and !std.mem.endsWith(u8, path, ".mkv") and !(aac_enabled and std.mem.endsWith(u8, path, ".mp4"))) return error.Unsupported;
     if (cfg.codec == c.ZC_MJPEG) {
         if (!std.mem.endsWith(u8, path, ".mkv")) return error.Unsupported;
         if (cfg.bitrate != 0 or cfg.gop != 0) return error.Invalid;
@@ -220,7 +273,7 @@ fn recorder(p: *c.zc_recorder) *Recorder {
 pub fn open(path: [*:0]const u8, cfg: *const c.zc_video_config, out: *?*c.zc_recorder) c_int {
     out.* = null;
     const self = init(cfg) catch |err| return status(err);
-    self.output = Output.init(path, cfg, self.headers, .{ null, null }, &self.recording) catch |err| {
+    self.output = Output.init(path, cfg, self.headers, .{ null, null }, &self.recording, self.audio_bitrate) catch |err| {
         self.deinit();
         return status(err);
     };
@@ -290,7 +343,7 @@ pub fn saveBuffer(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     if (self.failed) return c.ZC_STATE;
     if (self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.ring.?.count == 0) return c.ZC_STATE;
-    const out = Output.init(path, &self.config, self.headers, .{ self.output, self.next }, &self.recording) catch |err| return status(err);
+    const out = Output.init(path, &self.config, self.headers, .{ self.output, self.next }, &self.recording, self.audio_bitrate) catch |err| return status(err);
     defer out.deinit();
     self.replay(out) catch |err| return status(err);
     out.finish(self.nominal(), null) catch |err| return status(err);
@@ -301,7 +354,7 @@ pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     if (self.audio != null) return c.ZC_UNSUPPORTED;
     if (self.failed) return c.ZC_STATE;
     if (self.output != null or self.next != null) return c.ZC_BUSY;
-    const out = Output.init(path, &self.config, self.headers, .{ null, null }, &self.recording) catch |err| return status(err);
+    const out = Output.init(path, &self.config, self.headers, .{ null, null }, &self.recording, self.audio_bitrate) catch |err| return status(err);
     if (self.ring != null and self.ring.?.count != 0) self.replay(out) catch |err| {
         out.deinit();
         return status(err);
@@ -329,7 +382,7 @@ pub fn split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     if (self.failed) return c.ZC_STATE;
     if (self.next != null) return c.ZC_BUSY;
     if (self.output == null) return c.ZC_STATE;
-    const out = Output.init(path, &self.config, self.headers, .{ self.output, null }, &self.recording) catch |err| return status(err);
+    const out = Output.init(path, &self.config, self.headers, .{ self.output, null }, &self.recording, self.audio_bitrate) catch |err| return status(err);
     self.forceKey() catch |err| {
         out.deinit();
         return status(err);
@@ -347,17 +400,18 @@ pub fn cancelSplit(p: *c.zc_recorder) c_int {
 pub fn close(p: *c.zc_recorder) c_int {
     const self = recorder(p);
     defer self.deinit();
-    if (self.failed) return c.ZC_IO;
-    if (options.codecs) {
+    const failed = self.failed;
+    if (!failed and options.codecs) {
         if (self.codec) |*encoder| {
             while (encoder.flush() catch return c.ZC_IO) |packet| self.encoded(packet) catch return c.ZC_IO;
         }
     }
-    if (self.audio != null and self.frames != 0) self.drainAudio(std.math.add(u64, self.last_ns - self.first_ns, @as(u64, 1_000_000_000) * self.config.fps_den / self.config.fps_num) catch return c.ZC_INVALID) catch return c.ZC_IO;
+    if (!failed and self.audio != null and self.frames != 0) self.drainAudio(std.math.add(u64, self.last_ns - self.first_ns, @as(u64, 1_000_000_000) * self.config.fps_den / self.config.fps_num) catch return c.ZC_INVALID) catch return c.ZC_IO;
     if (self.output) |out| out.finish(self.nominal(), null) catch return c.ZC_IO;
-    return if (self.next != null) c.ZC_STATE else c.ZC_OK;
+    return if (failed) c.ZC_IO else if (self.next != null) c.ZC_STATE else c.ZC_OK;
 }
 test {
+    if (aac_enabled) _ = @import("home/native_aac_test.zig");
     _ = jpeg;
     _ = mkv;
     _ = mp4;
@@ -368,16 +422,26 @@ test {
 pub fn defaultRecordingOptions() c.zc_recording_options {
     return .{ .struct_size = @sizeOf(c.zc_recording_options), .sample_rate = 0, .channels = 1, .buffer_frames = 96000, .max_blocks = 256, .exclusive = 0 };
 }
+pub fn openAac(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!aac_enabled) return c.ZC_UNSUPPORTED;
+    if (opts.sample_rate == 0 or !std.mem.endsWith(u8, std.mem.span(path), ".mp4") or bitrate < 16000 or bitrate > 320000) return c.ZC_INVALID;
+    return openWithBitrate(path, cfg, opts, bitrate, out);
+}
 pub fn openEx(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, out: *?*c.zc_recorder) c_int {
+    return openWithBitrate(path, cfg, opts, 0, out);
+}
+fn openWithBitrate(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
     out.* = null;
     if (opts.struct_size != @sizeOf(c.zc_recording_options) or opts.exclusive > 1) return c.ZC_INVALID;
     const self = init(cfg) catch |err| return status(err);
     self.recording = opts.*;
+    self.audio_bitrate = bitrate;
     if (opts.sample_rate != 0) self.audio = pcm.Queue.init(A, opts.sample_rate, opts.channels, opts.buffer_frames, opts.max_blocks) catch |err| {
         self.deinit();
         return status(err);
     };
-    self.output = Output.init(path, cfg, self.headers, .{ null, null }, opts) catch |err| {
+    self.output = Output.init(path, cfg, self.headers, .{ null, null }, opts, bitrate) catch |err| {
         self.deinit();
         return status(err);
     };
@@ -414,7 +478,7 @@ pub fn recordingStats(p: *c.zc_recorder, out: *c.zc_recording_stats) c_int {
         out.audio_trimmed_frames = queue.trimmed;
     }
     if (self.output) |o| {
-        out.output_bytes = o.bytes + o.pending.items.len;
+        out.output_bytes = o.bytes + o.pending.items.len + (if (o.mp4_writer) |*writer| writer.audio_pending_len else @as(usize, 0));
         out.output_frames = o.frames;
         if (self.frames != 0 and self.last_ns - self.first_ns >= o.first_ns) out.output_duration_ns = self.last_ns - self.first_ns - o.first_ns;
         out.rotation_due = @intFromBool(self.rotation.due(o.frames, out.output_duration_ns, out.output_bytes, self.next != null));

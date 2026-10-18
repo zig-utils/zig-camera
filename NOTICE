@@ -68,3 +68,14 @@ Home synchronized PCM capture and rotation (0.7):
 - mp4_stream.zig exposes checked avcC/hvcC bytes for Matroska, updating
   https://github.com/home-lang/home/pull/913 at source commit 0a0525f91.
   The Home MIT license above applies. ALSA retains its own license.
+
+Home AAC-LC and synchronized MP4 (0.8):
+- src/home/native_aac.{c,h,zig} and native_aac_test.zig are verbatim Home
+  streaming AAC adapter/tests at 53c1b108f (feat/aac-mp4-recording).
+  Canonical contribution: https://github.com/home-lang/home/pull/918
+- src/home/mp4_stream.zig includes synchronized AAC tracks, edit lists, roll
+  groups and final-sample trimming from Home commit 27f5fe0e2, updating
+  https://github.com/home-lang/home/pull/913.
+  The Home MIT license above applies to the adapter and container modules.
+  The optional separately installed FDK AAC library retains its own license:
+  https://github.com/mstorsjo/fdk-aac/blob/v2.0.3/NOTICE

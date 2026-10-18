@@ -172,3 +172,32 @@ rotation. Linux acceptance uses ALSA null input, independent mkvtoolnix WAV
 extraction, exact synthetic sample checks and OpenH264/libde265 decoding. No
 FFmpeg is used. Physical input latency, long-run drift, compressed audio and
 adaptive resampling remain gaps; see [A/V semantics](audio-rotation.md).
+
+## 0.8: real AAC-LC and synchronized MP4
+
+Rechecked both Home AAC prototypes. One emitted quantized amplitude envelopes;
+the other used fixed-width spectral coefficients and placeholder Huffman tables.
+Neither was an interoperable AAC implementation. [Home #918](https://github.com/home-lang/home/pull/918)
+adds a bounded header-checked native AAC-LC adapter around the standalone FDK
+library, matching Home's existing native video adapter pattern. The old encode
+entry points now reject unsupported encoding rather than returning invalid audio;
+legacy partial-allocation cleanup is fixed. Five legacy/configuration/allocation
+checks plus partial PCM/drain/state tests pass on Zig 0.15.2 and Home's development
+toolchain. The new adapter/tests are vendored verbatim at 53c1b108f. This is not
+represented as a pure Zig AAC codec or validation of Home's broader audio graph.
+
+[Home #913](https://github.com/home-lang/home/pull/913) now extends its bounded
+fragmented MP4 writer with AAC `mp4a`/`esds`, independent sample clocks, finite
+64-bit duration/edit patches, initial offset, explicit roll associations and
+short final AAC durations. It uses actual FDK delay, not an assumed constant.
+One packet per encoded track is staged; no file-sized table is built. The muxer
+is vendored verbatim at 27f5fe0e2; four focused tests pass on both toolchains.
+
+Independent Apple playback exposed extra legacy priming and padded tail playback
+that raw packet parsing would miss. The complete roll/edit/final-duration path
+now passes FAAD2 and AVFoundation waveform/count checks for 44.1/48kHz, mono/
+stereo, offsets, short input, gaps, splits and rotation. Linux x86/ARM CI additionally
+decodes video with OpenH264/libde265 and identifies MP4 tracks with mkvtoolnix.
+The optional FDK codec is built directly at pinned 2.0.3; no FFmpeg/Libav is used.
+See [AAC synchronization and limits](aac-mp4.md). Hardware timing, drift and Pi
+throughput remain unmeasured.

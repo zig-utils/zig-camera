@@ -202,12 +202,14 @@ void zc_default_audio_config(zc_audio_config *);
 int zc_audio_open(const zc_audio_config *,const char *device,zc_audio **);
 int zc_audio_read(zc_audio *,uint8_t *output,uint64_t capacity,uint32_t timeout_ms,zc_audio_block *);
 int zc_audio_close(zc_audio *);
-/* Additive recording options. sample_rate=0 disables audio; A/V requires .mkv.
+/* Additive recording options. sample_rate=0 disables audio; .mkv uses PCM, .mp4 requires -Daac=true.
  * Existing video-only .mp4/.mkv APIs keep their layouts and behavior. */
 typedef struct {uint32_t struct_size,sample_rate,channels,buffer_frames,max_blocks,exclusive;} zc_recording_options;
 typedef struct {uint64_t segments,output_bytes,output_frames,output_duration_ns,audio_frames,audio_written_frames,audio_queued_frames,audio_trimmed_frames;uint32_t rotation_due,audio_enabled;} zc_recording_stats;
 void zc_default_recording_options(zc_recording_options *);
 int zc_video_open_ex(const char *,const zc_video_config *,const zc_recording_options *,zc_recorder **);
+/* AAC-LC bitrate in bits/s; requires -Daac=true, audio sample_rate and .mp4. */
+int zc_video_open_aac(const char *,const zc_video_config *,const zc_recording_options *,uint32_t bitrate,zc_recorder **);
 int zc_video_write_audio(zc_recorder *,const uint8_t *s16le,uint64_t length,uint64_t timestamp_ns);
 /* Soft policy only; caller reads rotation_due and stages zc_video_split.
  * PCM timestamps and frame timestamps must share one nanosecond epoch. */

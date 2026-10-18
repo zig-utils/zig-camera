@@ -33,6 +33,11 @@ int main(void) {
     assert(block.timestamp_ns==1000000);
     assert(zc_audio_close(audio)==ZC_OK);
     assert(zc_abi_version() == ZC_ABI_VERSION);
+    zc_video_config aac_video;zc_default_video_config(&aac_video);
+    zc_recording_options aac_options;zc_default_recording_options(&aac_options);
+    zc_recorder *invalid_aac=NULL;
+    int aac_status=zc_video_open_aac("not-created.mp4",&aac_video,&aac_options,128000,&invalid_aac);
+    assert((aac_status==ZC_INVALID || aac_status==ZC_UNSUPPORTED) && !invalid_aac);
     zc_config config;
     zc_default_config(&config);
     assert(config.buffer_count == 4);

@@ -77,6 +77,7 @@ def _load(path=None):
         'zc_audio_close':([C.c_void_p],C.c_int),
         'zc_default_recording_options':([C.POINTER(_RecordingOptions)],None),
         'zc_video_open_ex':([C.c_char_p,C.POINTER(_VideoConfig),C.POINTER(_RecordingOptions),C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_open_aac':([C.c_char_p,C.POINTER(_VideoConfig),C.POINTER(_RecordingOptions),C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
         'zc_video_write_audio':([C.c_void_p,C.POINTER(C.c_uint8),C.c_uint64,C.c_uint64],C.c_int),
         'zc_video_set_rotation':([C.c_void_p,C.c_uint64,C.c_uint64],C.c_int),
         'zc_video_recording_stats':([C.c_void_p,C.POINTER(_RecordingStats)],C.c_int),
@@ -302,16 +303,17 @@ class Camera:
                 if circular is not None: raise ValueError('Rotation requires a file output')
                 rotation._available()
                 path=rotation.path(0)
-            source=None;recorder=None;recording=None
+            source=None;recorder=None;recording=None;encoding={}
             try:
                 if audio is not None and audio is not False:
                     if circular is not None: raise ValueError('Circular A/V is not supported')
                     options={} if audio is True else dict(audio)
+                    encoding={name:options.pop(name) for name in ('codec','bitrate') if name in options}
                     options.setdefault('backend','alsa')
                     synthetic=self.info['backend']=='synthetic'
                     if synthetic != (options['backend']=='synthetic'): raise ValueError('Audio and camera must use the same clock source')
                     source=AudioCapture(library=self._lib._name,**options)
-                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels},exclusive=rotation is not None)
+                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels,**encoding},exclusive=rotation is not None)
                 recording=Recording(self,recorder,fps,audio=source,rotation=rotation)
                 self._recording=recording
                 if rotation is not None: rotation._bind(recording)
@@ -522,12 +524,21 @@ class Recorder:
         else:
             if path is None: raise ValueError('A file or circular buffer configuration is required')
             opts=_RecordingOptions();self._lib.zc_default_recording_options(C.byref(opts));opts.exclusive=bool(exclusive)
+            audio_bitrate=0
             if audio is not None:
-                if set(audio)-{'sample_rate','channels','buffer_frames','max_blocks'}: raise ValueError('Unknown PCM recording option')
+                audio=dict(audio)
+                audio_codec=audio.pop('codec', 'aac' if Path(path).suffix=='.mp4' else 'pcm')
+                audio_bitrate=_u32(audio.pop('bitrate',0))
+                if audio_codec not in ('pcm','aac'): raise ValueError('Audio codec must be pcm or aac')
+                if (audio_codec=='aac') != (Path(path).suffix=='.mp4'): raise ValueError('AAC requires .mp4; PCM requires .mkv')
+                if audio_bitrate and audio_codec!='aac': raise ValueError('PCM does not use a bitrate')
+                if set(audio)-{'sample_rate','channels','buffer_frames','max_blocks'}: raise ValueError('Unknown audio recording option')
                 for name,value in audio.items(): setattr(opts,name,_u32(value))
                 if not opts.sample_rate: raise ValueError('Audio sample rate is required')
                 if 'buffer_frames' not in audio: opts.buffer_frames=opts.sample_rate*2
-            _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
+            if audio_bitrate:
+                _check(self._lib,self._lib.zc_video_open_aac(_path(path),C.byref(config),C.byref(opts),audio_bitrate,C.byref(self._handle)))
+            else: _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
     def _open(self):
         if not self._handle.value: raise RuntimeError('Recorder is closed')
     def write(self,frame,*,timestamp_ns=None):

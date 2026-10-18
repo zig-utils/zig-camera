@@ -14,13 +14,12 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.7: automatic duration/size rotation, explicit ALSA audio capture and
-synchronized lossless PCM A/V in Matroska with MJPEG, H.264 or HEVC. These use
-Home's bounded PCM timeline, streaming muxer and capture adapter. Existing async
-mode jobs, circular video history, controls, autofocus, preview, MP4 and DNG remain
-available. No FFmpeg dependency.
-[Audio, synchronization and rotation](docs/audio-rotation.md),
-[mode jobs and circular recording](docs/mode-recording.md),
+New in 0.8: Home AAC-LC encoding and synchronized H.264/HEVC + AAC MP4,
+with explicit priming/tail metadata, bounded packet staging and independently
+validated segment playback. Duration/size rotation, ALSA capture, PCM Matroska,
+async capture/mode jobs, circular video history, controls, autofocus, preview
+and DNG remain available. No FFmpeg dependency.
+[AAC and MP4 recording](docs/aac-mp4.md), [capture clocks and rotation](docs/audio-rotation.md),
 [coverage and remaining gaps](docs/parity.md).
 
 ## Build on Raspberry Pi OS (64-bit)
@@ -72,7 +71,7 @@ Home native JPEG and MJPEG recording build without external codec dependencies.
 Without it those codecs fail explicitly. MP4 is streamed as fragments; bitrate
 is bits/sec (0 selects CRF), and quality 1..100 maps to CRF 51..0 (AVC minimum 1). This currently
 supports 8-bit SDR 4:2:0 software encoding. Optional ALSA PCM A/V uses Matroska;
-Pi hardware encoding and MP4 audio remain unsupported.
+Add `-Daac=true` for AAC MP4; Pi hardware encoding remains unsupported.
 The real backend builds natively using the system C++ compiler (`CXX` may select
 an alternate compatible compiler). Cross-compiling the synthetic core is supported;
 real libcamera builds require the target system's matching headers and runtime.
@@ -136,7 +135,7 @@ Implemented: single-camera still/continuous capture, paired processed/raw stream
 frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV,
 optional Home AVC/HEVC/MP4 recording, typed runtime controls, autofocus jobs,
 async preview, and a Picamera2-style Python subset.
-Remaining: AV1, compressed audio/MP4 audio, hardware encoding, overlays/DRM/Qt preview, complete
+Remaining: AV1, additional audio codecs, hardware encoding, overlays/DRM/Qt preview, complete
 Picamera2 API signatures, stereo sync, HDR controls, and arbitrary vendor controls.
 Keep Picamera2 for those features until equivalent paths are implemented and
 validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;

@@ -118,4 +118,4 @@ Real camera calibration, autofocus, display backends and long recording runs
 still need Pi acceptance testing.
 
 0.7 adds optional lossless PCM audio capture and synchronized Matroska A/V;
-see [audio, synchronization and rotation](audio-rotation.md). MP4 remains video-only.
+see [audio, synchronization and rotation](audio-rotation.md). 0.8 adds [AAC-LC in MP4](aac-mp4.md).

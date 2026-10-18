@@ -31,9 +31,11 @@ The recording owns the capture device and closes it on stop or startup failure.
 
 Audio is lossless interleaved signed 16-bit little-endian PCM. Home's new streaming
 Matroska writer combines it with MJPEG, H.264 or HEVC in `.mkv`. Video-only H.264/
-HEVC `.mp4` remains supported. **Audio in MP4/AAC, circular A/V snapshots and
-A/V close/reopen output are unsupported** and fail explicitly. The audited Home
-AAC paths contain simplified placeholder coding and are not used as a real encoder.
+HEVC `.mp4` remains supported. Version 0.8 adds optional Home AAC-LC audio in
+MP4 with `-Daac=true`; see [AAC and MP4 timing](aac-mp4.md). **Circular A/V
+snapshots and A/V close/reopen output remain unsupported** and fail explicitly.
+The audited legacy Home AAC prototypes now reject encoding; the new checked
+AAC adapter supplies real packets and codec delay.
 Live A/V splits and automatic A/V rotation are implemented. These are explicit
 zig-camera API extensions; Picamera2's complete audio/output signatures differ.
 The native CLI's `record` command currently remains video-only; use Python or C

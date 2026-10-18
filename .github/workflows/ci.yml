@@ -51,7 +51,16 @@ jobs:
           raw-identify zig-out/test.dng
       - name: Home AVC/HEVC and independent decoder dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev
+        run: sudo apt-get install -y libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev
+      - name: Build pinned standalone AAC codec
+        if: runner.os == 'Linux'
+        run: |
+          git clone --filter=blob:none https://github.com/mstorsjo/fdk-aac.git "$RUNNER_TEMP/fdk-aac"
+          git -C "$RUNNER_TEMP/fdk-aac" checkout --detach 716f4394641d53f0d79c9ddac3fa93b03a49f278
+          cmake -S "$RUNNER_TEMP/fdk-aac" -B "$RUNNER_TEMP/fdk-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build "$RUNNER_TEMP/fdk-build" -j 2
+          sudo cmake --install "$RUNNER_TEMP/fdk-build"
+          sudo ldconfig
       - name: Test Home codecs and fragmented MP4 without FFmpeg
         if: runner.os == 'Linux'
         env:
@@ -59,11 +68,13 @@ jobs:
           ZC_TEST_PREVIEW: '1'
           ZC_TEST_CODECS: '1'
           ZC_TEST_AUDIO: '1'
+          ZC_TEST_AAC: '1'
         run: |
-          zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true
-          zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Daudio=true -Doptimize=ReleaseSafe
+          zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true -Daac=true
+          zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Daudio=true -Daac=true -Doptimize=ReleaseSafe
           c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
-          ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" PYTHONPATH=python python3 -m unittest discover -s tests -v
+          cc -std=c11 -Wall -Wextra -Werror tests/decode_aac.c -lfaad -o zig-out/decode-aac
+          ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" PYTHONPATH=python python3 -m unittest discover -s tests -v
           ./zig-out/bin/zig-camera record --simulate --codec h264 --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-h264.mp4
           ./zig-out/bin/zig-camera record --simulate --codec hevc --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-hevc.mp4
           PYTHONPATH=python python3 tests/test_codecs.py zig-out
