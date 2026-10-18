@@ -107,7 +107,9 @@ rotation. The parser checks sample descriptions, roll associations, data offsets
 per-track clocks, finite durations, priming and tail declarations. FAAD2 decodes
 raw packets independently and verifies waveform alignment after applying the
 container edits. OpenH264/libde265 independently decode each video segment.
-Linux x86/ARM CI also checks mkvtoolnix track identification and ALSA null input.
+The independent decoder also checks and normalizes the duplicated mono output
+of FAAD 2.11.1; FAAD 2.11.4 preserves mono directly. Linux x86/ARM CI checks
+mkvtoolnix track identification and ALSA null input.
 
 `tests/check_mp4_audio.swift` independently checks AVFoundation demux/decode on
 macOS, including presented counts, offsets and lossy waveform comparisons. Set

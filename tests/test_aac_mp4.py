@@ -52,7 +52,7 @@ def inspect(test,path,*,count,first=0,samples,start_sample=0,offset_us=0,rate=48
         import json
         identified=json.loads(subprocess.check_output(['mkvmerge','-J',str(path)]))
         test.assertEqual(len(identified['tracks']),2)
-        test.assertEqual(identified['tracks'][1]['properties']['codec_id'],'A_AAC')
+        test.assertIn('AAC',identified['tracks'][1]['codec'])
     return tracks
 
 class AacTests(unittest.TestCase):
