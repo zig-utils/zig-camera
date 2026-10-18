@@ -5,8 +5,12 @@ const c = @import("abi.zig").c;
 const options = @import("options");
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
-const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame) };
+const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata) };
+const Gate = @import("home/completion_gate.zig").Gate;
 const Session = struct {
+    latest: c.zc_metadata = std.mem.zeroes(c.zc_metadata),
+    af: ?Gate = null,
+    af_id: u64 = 0,
     operation: std.Thread.Mutex = .{},
     mutex: std.Thread.Mutex = .{},
     changed: std.Thread.Condition = .{},
@@ -57,22 +61,31 @@ const Session = struct {
 fn session(p: *c.zc_camera) *Session {
     return @ptrCast(@alignCast(p));
 }
-fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, status: c_int) callconv(.c) void {
+fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: ?*const c.zc_metadata, status: c_int) callconv(.c) void {
     const self: *Session = @ptrCast(@alignCast(ctx.?));
     self.mutex.lock();
     defer self.mutex.unlock();
     if (!self.running) return;
-    if (index >= self.info.buffer_count or self.slots[index].state != .queued or status != 0 or frame == null) {
+    if (index >= self.info.buffer_count or self.slots[index].state != .queued or status != 0 or frame == null or metadata == null) {
         self.fatal = if (status != 0) status else c.ZC_DEVICE;
         self.stats.errors += 1;
         self.changed.broadcast();
         return;
     }
-    self.slots[index] = .{ .state = .ready, .frame = frame.?.* };
+    self.latest = metadata.?.*;
+    self.latest.event_id = self.stats.completed + 1;
+    self.latest.struct_size = @sizeOf(c.zc_metadata);
+    self.slots[index] = .{ .state = .ready, .frame = frame.?.*, .metadata = self.latest };
+    if (self.af) |*af| {
+        if (self.latest.valid & 1 != 0) {
+            const state = self.latest.af_state;
+            af.observe(self.latest.control_revision, state == 1, if (state == 2) true else if (state == 3 or state == 0) false else null);
+        }
+    }
     self.ready[(self.head + self.count) % c.ZC_MAX_BUFFERS] = index;
     self.count += 1;
     self.stats.completed += 1;
-    self.changed.signal();
+    self.changed.broadcast();
 }
 pub export fn zc_abi_version() u32 {
     return c.ZC_ABI_VERSION;
@@ -134,6 +147,7 @@ pub export fn zc_start(p: *c.zc_camera) c_int {
         return c.ZC_BUSY;
     }
     self.fatal = 0;
+    self.latest = std.mem.zeroes(c.zc_metadata);
     self.head = 0;
     self.count = 0;
     for (&self.slots) |*slot| slot.state = .idle;
@@ -256,6 +270,7 @@ pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
 fn stopLocked(self: *Session) c_int {
     self.mutex.lock();
     self.running = false;
+    if (self.af) |*af| af.stop();
     self.changed.broadcast();
     self.mutex.unlock();
     // No queue mutex held: stop waits for completion callbacks to finish.
@@ -301,6 +316,139 @@ pub export fn zc_get_stats(p: *c.zc_camera, out: *c.zc_stats) c_int {
     out.* = self.stats;
     out.ready = @intCast(self.count);
     return c.ZC_OK;
+}
+pub export fn zc_get_control_info(p: *c.zc_camera, id: u32, out: *c.zc_control_info) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return driver.controlInfo(self.device.?, id, out);
+}
+fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u64) c_int {
+    if (values.len == 0 or values.len > c.ZC_MAX_CONTROLS) return c.ZC_INVALID;
+    for (values, 0..) |*v, i| {
+        var info: c.zc_control_info = undefined;
+        const rc = driver.controlInfo(self.device.?, v.id, &info);
+        if (rc != 0) return rc;
+        if (!@import("controls.zig").valid(v, &info)) return c.ZC_INVALID;
+        for (values[0..i]) |prev| {
+            if (prev.id == v.id) return c.ZC_INVALID;
+        }
+    }
+    return driver.setControls(self.device.?, values.ptr, @intCast(values.len), revision);
+}
+pub export fn zc_set_controls(p: *c.zc_camera, values: [*]const c.zc_control, count: u32, revision: *u64) c_int {
+    if (count == 0 or count > c.ZC_MAX_CONTROLS) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    self.mutex.lock();
+    const af_busy = if (self.af) |af| !af.terminal() else false;
+    self.mutex.unlock();
+    if (af_busy) {
+        for (values[0..count]) |v| {
+            if (v.id >= c.ZC_LENS_POSITION and v.id <= c.ZC_AF_WINDOWS or v.id == c.ZC_AF_PAUSE) return c.ZC_BUSY;
+        }
+    }
+    return setControlsLocked(self, values[0..count], revision);
+}
+pub export fn zc_get_frame_metadata(p: *c.zc_camera, token: u64, out: *c.zc_metadata) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.leaseIndex(token)) |i| {
+        out.* = self.slots[i].metadata;
+        return c.ZC_OK;
+    }
+    return c.ZC_STALE;
+}
+pub export fn zc_wait_metadata(p: *c.zc_camera, after: u64, timeout_ms: u32, out: *c.zc_metadata) c_int {
+    const self = session(p);
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    while (true) {
+        if (!self.running) return c.ZC_STATE;
+        if (self.fatal != 0) return self.fatal;
+        if (self.latest.event_id > after) {
+            out.* = self.latest;
+            return c.ZC_OK;
+        }
+        const limit = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        const elapsed = timer.read();
+        if (elapsed >= limit) return c.ZC_TIMEOUT;
+        self.changed.timedWait(&self.mutex, limit - elapsed) catch {};
+    }
+}
+pub export fn zc_autofocus_start(p: *c.zc_camera, job_id: *u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    self.mutex.lock();
+    const running = self.running;
+    const busy = if (self.af) |af| !af.terminal() else false;
+    self.mutex.unlock();
+    if (!running) return c.ZC_STATE;
+    if (busy or self.af_id == std.math.maxInt(u64)) return c.ZC_BUSY;
+    var values: [2]c.zc_control = @splat(std.mem.zeroes(c.zc_control));
+    values[0].id = c.ZC_AF_MODE;
+    values[0].type = c.ZC_INT;
+    values[0].count = 1;
+    values[0].values[0] = 1;
+    values[1].id = c.ZC_AF_TRIGGER;
+    values[1].type = c.ZC_INT;
+    values[1].count = 1;
+    values[1].values[0] = 0;
+    var revision: u64 = 0;
+    const rc = setControlsLocked(self, &values, &revision);
+    if (rc != 0) return rc;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.af_id += 1;
+    self.af = .{ .revision = revision };
+    job_id.* = self.af_id;
+    return c.ZC_OK;
+}
+pub export fn zc_autofocus_cancel(p: *c.zc_camera, id: u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    self.mutex.lock();
+    if (self.af == null or self.af_id != id) {
+        self.mutex.unlock();
+        return c.ZC_STALE;
+    }
+    const terminal = self.af.?.terminal();
+    self.mutex.unlock();
+    if (terminal) return c.ZC_OK;
+    var value: c.zc_control = std.mem.zeroes(c.zc_control);
+    value.id = c.ZC_AF_TRIGGER;
+    value.type = c.ZC_INT;
+    value.count = 1;
+    value.values[0] = 1;
+    var revision: u64 = 0;
+    const rc = setControlsLocked(self, (&value)[0..1], &revision);
+    if (rc != 0) return rc;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.af.?.cancel();
+    self.changed.broadcast();
+    return c.ZC_OK;
+}
+pub export fn zc_autofocus_wait(p: *c.zc_camera, id: u64, timeout_ms: u32, state: *u32) c_int {
+    const self = session(p);
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    while (true) {
+        if (self.af == null or self.af_id != id) return c.ZC_STALE;
+        state.* = @intFromEnum(self.af.?.state);
+        if (self.af.?.terminal()) return c.ZC_OK;
+        if (self.fatal != 0) return self.fatal;
+        const limit = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        const elapsed = timer.read();
+        if (elapsed >= limit) return c.ZC_TIMEOUT;
+        self.changed.timedWait(&self.mutex, limit - elapsed) catch {};
+    }
 }
 extern fn zcd_save_jpeg(*const c.zc_frame, [*:0]const u8, u32) c_int;
 pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, quality: u32) c_int {
@@ -469,4 +617,104 @@ test "device failures consume leases safely and stop can retry" {
         try std.testing.expectEqual(attempts + 1, device.stop_calls);
         try std.testing.expectEqual(0, zc_start(p.?));
     }
+}
+
+fn testControl(id: u32, kind: u32, values: []const f64) c.zc_control {
+    var v = std.mem.zeroes(c.zc_control);
+    v.id = id;
+    v.type = kind;
+    v.count = @intCast(values.len);
+    @memcpy(v.values[0..values.len], values);
+    return v;
+}
+test "runtime batches are atomic; queued and leased metadata retain their revision" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 17;
+    cfg.height = 9;
+    cfg.policy = c.ZC_FIFO;
+    var p: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try std.testing.expectEqual(c.ZC_OK, zc_start(p.?));
+    var rev: u64 = 0;
+    const bad = [_]c.zc_control{ testControl(c.ZC_EXPOSURE_TIME, c.ZC_INT, &.{25000}), testControl(c.ZC_BRIGHTNESS, c.ZC_FLOAT, &.{99}) };
+    try std.testing.expectEqual(c.ZC_INVALID, zc_set_controls(p.?, &bad, bad.len, &rev));
+    try std.testing.expectEqual(@as(u64, 0), rev);
+    const values = [_]c.zc_control{ testControl(c.ZC_AE_ENABLE, c.ZC_BOOL, &.{0}), testControl(c.ZC_EXPOSURE_TIME, c.ZC_INT, &.{25000}), testControl(c.ZC_ANALOGUE_GAIN, c.ZC_FLOAT, &.{2}) };
+    try std.testing.expectEqual(c.ZC_OK, zc_set_controls(p.?, &values, values.len, &rev));
+    try std.testing.expectEqual(@as(u64, 1), rev);
+    var f: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+    var m: c.zc_metadata = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(p.?, f.token, &m));
+    try std.testing.expectEqual(@as(u64, 0), m.control_revision);
+    try std.testing.expectEqual(@as(u32, 10000), m.exposure_us);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    for (0..4) |_| {
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+        try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(p.?, f.token, &m));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    }
+    try std.testing.expectEqual(rev, m.control_revision);
+    try std.testing.expectEqual(@as(u32, 25000), m.exposure_us);
+    const before = session(p.?).stats.delivered;
+    try std.testing.expectEqual(c.ZC_OK, zc_wait_metadata(p.?, 0, 0, &m));
+    try std.testing.expectEqual(before, session(p.?).stats.delivered);
+    const event = m.event_id;
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try std.testing.expectEqual(c.ZC_STATE, zc_wait_metadata(p.?, event, 0, &m));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(p.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_wait_metadata(p.?, event, 0, &m));
+    try std.testing.expect(m.event_id > event);
+}
+test "autofocus observes scan before terminal; cancellation stop and failures are bounded" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    var p: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try std.testing.expectEqual(c.ZC_OK, zc_start(p.?));
+    var id: u64 = 0;
+    var state: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &id));
+    var other: u64 = 0;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_autofocus_start(p.?, &other));
+    const lens = testControl(c.ZC_LENS_POSITION, c.ZC_FLOAT, &.{1});
+    var revision: u64 = 0;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_set_controls(p.?, (&lens)[0..1].ptr, 1, &revision));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_autofocus_wait(p.?, id, 0, &state));
+    for (0..8) |_| {
+        var f: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), state);
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(p.?, id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), state);
+    session(p.?).device.?.fail_af = true;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &other));
+    try std.testing.expectEqual(c.ZC_STALE, zc_autofocus_wait(p.?, id, 0, &state));
+    for (0..8) |_| {
+        var f: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, other, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_FAILED), state);
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(p.?, id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_CANCELLED), state);
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &id));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_STOPPED), state);
 }

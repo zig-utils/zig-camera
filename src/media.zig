@@ -33,3 +33,12 @@ pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     return @import("video.zig").close(p);
 }
+
+pub export fn zc_copy_rgb(f: *const c.zc_frame, out: [*]u8, length: u64) c_int {
+    const m = f.main;
+    if (f.token == 0 or m.width == 0 or m.height == 0 or m.plane_count != 1 or m.width > 16384 or m.height > 16384 or m.stride < @as(u64, m.width) * 3 or m.planes[0].bytes_used > m.planes[0].length or m.planes[0].bytes_used < @as(u64, m.stride) * (m.height - 1) + @as(u64, m.width) * 3 or length < @as(u64, m.width) * m.height * 3) return c.ZC_INVALID;
+    const std = @import("std");
+    if (!std.mem.eql(u8, std.mem.sliceTo(&m.format, 0), "BGR888")) return c.ZC_UNSUPPORTED;
+    for (0..m.height) |y| @memcpy(out[y * @as(usize, m.width) * 3 ..][0 .. m.width * 3], m.planes[0].data[y * @as(usize, m.stride) ..][0 .. m.width * 3]);
+    return c.ZC_OK;
+}

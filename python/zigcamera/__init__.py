@@ -11,6 +11,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from .controls import Control as _Control, ControlInfo as _ControlInfo, Metadata as _Metadata
 
 __all__ = ["Camera", "Frame", "CameraError", "Preview", "Recorder"]
 
@@ -52,6 +53,13 @@ def _load(path=None):
         raise FileNotFoundError("Build zig-camera or set ZIG_CAMERA_LIBRARY to its shared library")
     lib = C.CDLL(str(candidate))
     signatures = {
+        "zc_get_control_info":([C.c_void_p,C.c_uint32,C.POINTER(_ControlInfo)],C.c_int),
+        "zc_set_controls":([C.c_void_p,C.POINTER(_Control),C.c_uint32,C.POINTER(C.c_uint64)],C.c_int),
+        "zc_get_frame_metadata":([C.c_void_p,C.c_uint64,C.POINTER(_Metadata)],C.c_int),
+        "zc_wait_metadata":([C.c_void_p,C.c_uint64,C.c_uint32,C.POINTER(_Metadata)],C.c_int),
+        "zc_autofocus_start":([C.c_void_p,C.POINTER(C.c_uint64)],C.c_int),
+        "zc_autofocus_cancel":([C.c_void_p,C.c_uint64],C.c_int),
+        "zc_autofocus_wait":([C.c_void_p,C.c_uint64,C.c_uint32,C.POINTER(C.c_uint32)],C.c_int),
         "zc_abi_version": ([], C.c_uint32),
         "zc_default_config": ([C.POINTER(_Config)], None),
         "zc_open": ([C.POINTER(_Config), C.POINTER(C.c_void_p)], C.c_int),
@@ -59,6 +67,7 @@ def _load(path=None):
         "zc_open_ex": ([C.POINTER(_Config),C.POINTER(_CaptureOptions),C.POINTER(C.c_void_p)],C.c_int),
         "zc_save_dng": ([C.c_void_p,C.c_uint64,C.c_char_p],C.c_int),
         "zc_get_raw_metadata": ([C.c_void_p,C.c_uint64,C.POINTER(_RawMetadata)],C.c_int),
+        "zc_copy_rgb":([C.POINTER(_Frame),C.POINTER(C.c_uint8),C.c_uint64],C.c_int),
         "zc_preview_open": ([C.c_char_p,C.c_uint32,C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
         "zc_preview_show": ([C.c_void_p,C.POINTER(_Frame)],C.c_int),
         "zc_preview_close": ([C.c_void_p],C.c_int),
@@ -93,6 +102,7 @@ class Camera:
         self._lib = _load(library)
         self._handle = C.c_void_p()
         self._recording = None
+        self._preview=None;self._pump=None;self._af_job=None;self._async_lock=threading.RLock();self._control_info=None
         self._started = False
         self._leases = {}  # Keep leases alive until explicitly released; deterministic cleanup.
         config = _Config(); self._lib.zc_default_config(C.byref(config))
@@ -127,12 +137,62 @@ class Camera:
     def _open(self):
         if not self._handle.value: raise RuntimeError("Camera is closed")
     def start(self):
-        self._open(); self._check(self._lib.zc_start(self._handle)); self._started=True; return self
+        self._open(); self._check(self._lib.zc_start(self._handle)); self._started=True
+        if self._preview is not None: self._ensure_pump()
+        return self
     def stop(self):
+        self._open();failure=None
+        for close in (self.stop_recording,self.stop_preview):
+            try: close()
+            except Exception as error:
+                if failure is None: failure=error
+        with self._async_lock: pump=self._pump;self._pump=None
+        if pump is not None: pump.close()
+        self._check(self._lib.zc_stop(self._handle));self._started=False
+        if self._af_job is not None: self._af_job.join()
+        if failure is not None: raise failure
+    @property
+    def control_info(self):
         self._open()
-        try: self.stop_recording()
-        finally:
-            self._check(self._lib.zc_stop(self._handle)); self._started=False
+        if self._control_info is None:
+            from .controls import capabilities
+            self._control_info=capabilities(self)
+        return self._control_info
+    def set_controls(self,values):
+        from .controls import set_controls
+        return set_controls(self,values)
+    def wait_metadata(self,after_event=0,timeout_ms=5000):
+        from .controls import metadata
+        self._open();out=_Metadata()
+        self._check(self._lib.zc_wait_metadata(self._handle,after_event,_u32(timeout_ms),C.byref(out)))
+        return metadata(out)
+    def _ensure_pump(self):
+        from .pipeline import CapturePump
+        with self._async_lock:
+            if self._pump is not None and (self._pump.stop_event.is_set() or not self._pump.thread.is_alive()):
+                self._pump.close();self._pump=None
+            if self._pump is None: self._pump=CapturePump(self)
+            return self._pump
+    def _maybe_stop_pump(self):
+        with self._async_lock:
+            if self._recording is not None or (self._preview is not None and self._preview.running) or (self._af_job is not None and not self._af_job.done()): return
+            pump=self._pump
+            if pump is not None and threading.current_thread() is pump.thread:
+                pump.stop_event.set();return
+            self._pump=None
+        if pump is not None: pump.close()
+    def autofocus_cycle(self,wait=None,signal_function=None,*,timeout=5):
+        from .jobs import AutofocusJob
+        if not isinstance(timeout,(int,float)) or not 0<timeout<=4294967: raise ValueError('Invalid autofocus timeout')
+        self._open()
+        if not self._started: raise RuntimeError('Start capture before autofocus')
+        with self._async_lock:
+            if self._af_job is not None and not self._af_job.done(): raise RuntimeError('Autofocus job already active')
+            job_id=C.c_uint64();self._check(self._lib.zc_autofocus_start(self._handle,C.byref(job_id)))
+            job=AutofocusJob(self,job_id.value,timeout,signal_function);self._af_job=job
+            self._ensure_pump();job.start()
+        return job.result() if (wait is True or (wait is None and signal_function is None)) else job
+    def wait(self,job,timeout=None): return job.result(timeout)
     def acquire(self, timeout_ms=5000):
         self._open(); native = _Frame()
         self._check(self._lib.zc_acquire(self._handle, _u32(timeout_ms), C.byref(native)))
@@ -148,15 +208,34 @@ class Camera:
     def capture_file(self,path,timeout_ms=5000):
         with self.acquire(timeout_ms) as frame: frame.save(path)
     def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0):
+        from .pipeline import Recording
         self._open()
-        if self._recording is not None: raise RuntimeError("Recording already active")
-        if not self._started: self.start()
-        recorder=Recorder(path,width=self.info["main"]["width"],height=self.info["main"]["height"],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name)
-        self._recording=_Recording(self,recorder,fps)
-        return self._recording
+        with self._async_lock:
+            if self._recording is not None: raise RuntimeError('Recording already active')
+            if not self._started: self.start()
+            recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name)
+            recording=Recording(self,recorder,fps);self._recording=recording
+            recording._thread=self._ensure_pump().thread
+            return recording
     def stop_recording(self):
-        if self._recording is not None:
-            recording=self._recording; self._recording=None; recording.close()
+        with self._async_lock:
+            recording=self._recording;self._recording=None
+        self._maybe_stop_pump()
+        if recording is not None: recording.close()
+    def start_preview(self,*,title='zig-camera',startup_timeout=5):
+        from .async_preview import AsyncPreview
+        self._open()
+        with self._async_lock:
+            if self._preview is not None: raise RuntimeError('Preview already active')
+            window=AsyncPreview(self,title,startup_timeout)
+            self._preview=window
+            if self._started: self._ensure_pump()
+            return window
+    def stop_preview(self):
+        with self._async_lock:
+            preview=self._preview;self._preview=None
+        self._maybe_stop_pump()
+        if preview is not None: preview.close()
     def preview(self,frames=300,timeout_ms=5000):
         if not self._started: self.start()
         with Preview(self.info["main"]["width"],self.info["main"]["height"],library=self._lib._name) as window:
@@ -171,7 +250,7 @@ class Camera:
         self._open(); s = _Stats(); self._check(self._lib.zc_get_stats(self._handle, C.byref(s)))
         return {name: getattr(s, name) for name, _ in s._fields_}
     def close(self):
-        self.stop_recording()
+        if self._handle.value: self.stop()
         if self._handle.value:
             self._check(self._lib.zc_close(self._handle))
             self._handle = C.c_void_p()
@@ -197,8 +276,9 @@ class Frame:
     @property
     def metadata(self):
         self._live()
-        names = ("sequence", "timestamp_ns", "exposure_us", "analogue_gain", "red_gain", "blue_gain")
-        return {n: getattr(self._native, n) for n in names}
+        from .controls import metadata
+        native=_Metadata();self._camera._check(self._camera._lib.zc_get_frame_metadata(self._camera._handle,self._native.token,C.byref(native)))
+        return metadata(native)
     @contextmanager
     def plane(self, index=0, *, raw=False):
         """Borrow a read-only memoryview. Do not keep it or derived views after exit."""
@@ -314,27 +394,6 @@ class Recorder:
             status=self._lib.zc_video_close(self._handle); self._handle=C.c_void_p(); _check(self._lib,status)
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
-
-class _Recording:
-    def __init__(self,camera,recorder,fps):
-        self.camera=camera; self.recorder=recorder; self.fps=fps; self.frames=0; self.stop_event=threading.Event(); self.error=None
-        self.thread=threading.Thread(target=self._run,name="zig-camera-recorder",daemon=True);self.thread.start()
-    def _run(self):
-        try:
-            while not self.stop_event.is_set():
-                try: frame=self.camera.acquire(timeout_ms=100)
-                except CameraError as error:
-                    if error.status==-3: continue
-                    raise
-                with frame:
-                    timestamp=self.frames*1_000_000_000//self.fps if self.camera.info["backend"]=="synthetic" else frame._native.timestamp_ns
-                    self.recorder.write(frame,timestamp_ns=timestamp)
-                self.frames+=1
-        except Exception as error: self.error=error
-    def close(self):
-        self.stop_event.set(); self.thread.join()
-        self.recorder.close()
-        if self.error: raise self.error
 
 from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
 __all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]

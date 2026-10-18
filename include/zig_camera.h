@@ -60,6 +60,41 @@ typedef struct {
     char model[128];
 } zc_raw_metadata;
 typedef struct zc_camera zc_camera;
+/* Typed bounded runtime controls. IDs map to libcamera names in docs/controls.md.
+ * Query support/ranges; a batch is validated atomically and staged for the next
+ * recycled request. Already queued frames and sensor pipeline latency remain.
+ * ControlRevision denotes request submission, not proof of physical application. */
+enum { ZC_BOOL=1,ZC_INT=2,ZC_FLOAT=3,ZC_RECT=4,ZC_MAX_CONTROLS=32 };
+enum { ZC_AE_ENABLE=1,ZC_EXPOSURE_TIME,ZC_ANALOGUE_GAIN,ZC_EXPOSURE_VALUE,
+ ZC_AWB_ENABLE,ZC_COLOUR_GAINS,ZC_BRIGHTNESS,ZC_CONTRAST,ZC_SATURATION,
+ ZC_SHARPNESS,ZC_FRAME_DURATION_LIMITS,ZC_LENS_POSITION,ZC_AF_MODE,ZC_AF_TRIGGER,
+ ZC_AF_RANGE,ZC_AF_SPEED,ZC_AF_METERING,ZC_AF_WINDOWS,ZC_SCALER_CROP,
+ ZC_NOISE_REDUCTION,ZC_AE_METERING,ZC_AE_EXPOSURE,ZC_AWB_MODE,
+ ZC_EXPOSURE_TIME_MODE,ZC_ANALOGUE_GAIN_MODE,ZC_AF_PAUSE,ZC_AE_CONSTRAINT,
+ ZC_COLOUR_TEMPERATURE,ZC_AE_FLICKER_MODE,ZC_AE_FLICKER_PERIOD };
+typedef struct {uint32_t id,type,count,reserved;double values[16];} zc_control;
+typedef struct {
+ uint32_t id,type,min_count,max_count;
+ double min[4],max[4],def[4]; uint64_t enum_mask;
+} zc_control_info;
+typedef struct {
+ uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8 */
+ uint64_t event_id,sequence,timestamp_ns,control_revision;
+ uint32_t exposure_us; int32_t af_state,af_pause_state; uint32_t reserved;
+ float analogue_gain,lens_position,red_gain,blue_gain;
+ uint64_t frame_duration_us; int32_t crop[4];
+} zc_metadata;
+int zc_get_control_info(zc_camera *,uint32_t id,zc_control_info *);
+int zc_set_controls(zc_camera *,const zc_control *,uint32_t count,uint64_t *revision);
+int zc_get_frame_metadata(zc_camera *,uint64_t token,zc_metadata *);
+/* Observer only: consumes no frame. event_id is monotonic across restart.
+ * Wait/AF wait must have returned before close; stop wakes all observers. */
+int zc_wait_metadata(zc_camera *,uint64_t after_event,uint32_t timeout_ms,zc_metadata *);
+enum { ZC_AF_PENDING=1,ZC_AF_SCANNING=2,ZC_AF_SUCCEEDED=3,ZC_AF_FAILED=4,
+ ZC_AF_CANCELLED=5,ZC_AF_STOPPED=6 };
+int zc_autofocus_start(zc_camera *,uint64_t *job_id);
+int zc_autofocus_cancel(zc_camera *,uint64_t job_id);
+int zc_autofocus_wait(zc_camera *,uint64_t job_id,uint32_t timeout_ms,uint32_t *state);
 uint32_t zc_abi_version(void);
 void zc_default_config(zc_config *config);
 /* Camera lifecycle calls must be serialized by the caller. acquire/release/stats
@@ -83,6 +118,8 @@ const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */
 typedef struct zc_preview zc_preview;
+/* Copy active RGB pixels into an owned tightly packed buffer; caller keeps lease. */
+int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);
 int zc_preview_show(zc_preview *, const zc_frame *);
 int zc_preview_close(zc_preview *);

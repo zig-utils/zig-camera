@@ -17,9 +17,10 @@
 #include <algorithm>
 #include <limits>
 #include <new>
+#include <cmath>
 
 using namespace libcamera;
-using Completion = void (*)(void *, uint32_t, const zc_frame *, int);
+using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
 namespace {
 struct Mapping {
     void *base = MAP_FAILED;
@@ -38,6 +39,7 @@ struct Slot {
     size_t fd_count = 0;
     bool used = false;
     zc_raw_metadata raw_metadata{};
+    uint64_t control_revision=0;
 };
 void text(char *dst, size_t n, const std::string &s) {
     std::memcpy(dst, s.data(), std::min(n - 1, s.size()));
@@ -53,6 +55,32 @@ void setMode(ControlList &controls, const std::shared_ptr<Camera> &camera, const
         if (entry.first->name() == name) { controls.set(entry.first->id(), ControlValue(value)); return; }
     }
 }
+// Resolve names in the configured camera map, including vendor controls.
+const char *controlNames[]={nullptr,"AeEnable","ExposureTime","AnalogueGain","ExposureValue",
+ "AwbEnable","ColourGains","Brightness","Contrast","Saturation","Sharpness",
+ "FrameDurationLimits","LensPosition","AfMode","AfTrigger","AfRange","AfSpeed",
+ "AfMetering","AfWindows","ScalerCrop","NoiseReductionMode","AeMeteringMode",
+ "AeExposureMode","AwbMode","ExposureTimeMode","AnalogueGainMode","AfPause",
+ "AeConstraintMode","ColourTemperature","AeFlickerMode","AeFlickerPeriod"};
+bool numbers(const ControlValue &v,double *out) {
+    switch(v.type()) {
+    case ControlTypeBool: out[0]=v.get<bool>(); return true;
+    case ControlTypeInteger32:
+        if(v.isArray()) {const auto values=v.get<Span<const int32_t>>();for(size_t i=0;i<std::min(size_t(4),values.size());i++)out[i]=values[i];}
+        else {out[0]=v.get<int32_t>();} return true;
+    case ControlTypeInteger64:
+        if(v.isArray()) {const auto values=v.get<Span<const int64_t>>();for(size_t i=0;i<std::min(size_t(4),values.size());i++)out[i]=values[i];}
+        else {out[0]=static_cast<double>(v.get<int64_t>());} return true;
+    case ControlTypeFloat:
+        if(v.isArray()) {const auto values=v.get<Span<const float>>();for(size_t i=0;i<std::min(size_t(4),values.size());i++)out[i]=values[i];}
+        else {out[0]=v.get<float>();} return true;
+    case ControlTypeRectangle: {
+        const auto r=v.isArray() ? v.get<Span<const Rectangle>>()[0] : v.get<Rectangle>();
+        out[0]=r.x;out[1]=r.y;out[2]=r.width;out[3]=r.height;return true;
+    }
+    default:return false;
+    }
+}
 struct Device {
     CameraManager manager;
     std::shared_ptr<Camera> camera;
@@ -64,6 +92,66 @@ struct Device {
     zc_info info{};
     void *context = nullptr;
     Completion callback = nullptr;
+    ControlList pending;
+    ControlList desired;
+    uint64_t control_revision=0;
+    const ControlId *controlId(uint32_t id) const {
+        if(id==0 || id>=sizeof(controlNames)/sizeof(*controlNames))return nullptr;
+        for(const auto &entry:camera->controls())if(entry.first->name()==controlNames[id])return entry.first;
+        return nullptr;
+    }
+    int controlInfo(uint32_t id,zc_control_info *out) const {
+        *out={};const auto *control=controlId(id);if(!control)return ZC_UNSUPPORTED;
+        const auto &range=camera->controls().at(control);
+        out->id=id;out->min_count=1;out->max_count=1;
+        switch(control->type()) {
+        case ControlTypeBool:out->type=ZC_BOOL;break;
+        case ControlTypeInteger32:case ControlTypeInteger64:out->type=ZC_INT;break;
+        case ControlTypeFloat:out->type=ZC_FLOAT;break;
+        case ControlTypeRectangle:out->type=ZC_RECT;out->min_count=4;out->max_count=id==ZC_AF_WINDOWS?16:4;break;
+        default:return ZC_UNSUPPORTED;
+        }
+        if(id==ZC_COLOUR_GAINS || id==ZC_FRAME_DURATION_LIMITS)out->min_count=out->max_count=2;
+        for(size_t i=0;i<4;i++)out->def[i]=std::numeric_limits<double>::quiet_NaN();
+        if(!numbers(range.min(),out->min)||!numbers(range.max(),out->max))return ZC_UNSUPPORTED;
+        numbers(range.def(),out->def);
+        if(out->min_count==2 && !range.min().isArray())out->min[1]=out->min[0];
+        if(out->min_count==2 && !range.max().isArray())out->max[1]=out->max[0];
+        if(out->type==ZC_INT && out->max_count==1) {
+            for(const auto &value:range.values()) {double v[4]{};if(numbers(value,v)&&v[0]>=0&&v[0]<64)out->enum_mask|=uint64_t(1)<<static_cast<unsigned>(v[0]);}
+        }
+        return ZC_OK;
+    }
+    int setControls(const zc_control *values,uint32_t count,uint64_t *revision) {
+        if(control_revision==UINT64_MAX)return ZC_STATE;
+        auto next=pending;auto saved=desired;
+        // AeEnable is a convenience for both newer mode controls; explicit modes
+        // in the same batch take precedence, independently of dictionary order.
+        for(uint32_t i=0;i<count;i++)if(values[i].id==ZC_AE_ENABLE) {
+            const int32_t mode=values[i].values[0]!=0 ? 0 : 1;
+            setMode(next,camera,"ExposureTimeMode",mode);setMode(next,camera,"AnalogueGainMode",mode);
+            setMode(saved,camera,"ExposureTimeMode",mode);setMode(saved,camera,"AnalogueGainMode",mode);
+        }
+        for(uint32_t i=0;i<count;i++) {
+            const auto &v=values[i];const auto *id=controlId(v.id);if(!id)return ZC_UNSUPPORTED;
+            ControlValue value;
+            if(v.type==ZC_BOOL)value=ControlValue(v.values[0]!=0);
+            else if(v.type==ZC_RECT) {
+                std::array<Rectangle,4> rect;
+                for(size_t j=0;j<v.count/4;j++)rect[j]=Rectangle(static_cast<int>(v.values[j*4]),static_cast<int>(v.values[j*4+1]),static_cast<unsigned>(v.values[j*4+2]),static_cast<unsigned>(v.values[j*4+3]));
+                if(v.id==ZC_SCALER_CROP)value=ControlValue(rect[0]);else value=ControlValue(Span<const Rectangle>(rect.data(),v.count/4));
+            } else if(id->type()==ControlTypeFloat) {
+                if(v.count==1)value=ControlValue(static_cast<float>(v.values[0]));
+                else {std::array<float,16> f{};for(size_t j=0;j<v.count;j++)f[j]=v.values[j];value=ControlValue(Span<const float>(f.data(),v.count));}
+            } else if(id->type()==ControlTypeInteger64) {
+                if(v.count==1)value=ControlValue(static_cast<int64_t>(v.values[0]));
+                else {std::array<int64_t,16> n{};for(size_t j=0;j<v.count;j++)n[j]=v.values[j];value=ControlValue(Span<const int64_t>(n.data(),v.count));}
+            } else value=ControlValue(static_cast<int32_t>(v.values[0]));
+            next.set(id->id(),value);
+            if(v.id!=ZC_AF_TRIGGER && v.id!=ZC_AF_PAUSE)saved.set(id->id(),value);
+        }
+        pending=std::move(next);desired=std::move(saved);*revision=++control_revision;return ZC_OK;
+    }
     bool manager_started = false, acquired = false, started = false, connected = false;
 
     ~Device() {
@@ -116,6 +204,7 @@ struct Device {
         camera = cameras[cfg.camera_index];
         if (camera->acquire() < 0) return ZC_BUSY;
         acquired = true;
+        pending=ControlList(camera->controls());desired=ControlList(camera->controls());
         const StreamRole role = opts.role == ZC_VIDEO ? StreamRole::VideoRecording : opts.role == ZC_PREVIEW ? StreamRole::Viewfinder : StreamRole::StillCapture;
         const std::vector<StreamRole> roles = cfg.raw ? std::vector<StreamRole>{role, StreamRole::Raw} : std::vector<StreamRole>{role};
         config = camera->generateConfiguration(roles);
@@ -200,11 +289,11 @@ struct Device {
             const auto &metadata = buffer->metadata();
             auto &stream = s == 0 ? frame.main : frame.raw;
             if (metadata.status != FrameMetadata::FrameSuccess || metadata.planes().size() != stream.plane_count) {
-                callback(context, index, nullptr, ZC_DEVICE); return;
+                callback(context, index, nullptr, nullptr,ZC_DEVICE); return;
             }
             for (size_t p = 0; p < stream.plane_count; ++p) {
                 if (metadata.planes()[p].bytesused > stream.planes[p].length) {
-                    callback(context, index, nullptr, ZC_DEVICE); return;
+                    callback(context, index, nullptr, nullptr,ZC_DEVICE); return;
                 }
                 stream.planes[p].bytes_used = metadata.planes()[p].bytesused;
             }
@@ -225,7 +314,15 @@ struct Device {
         const auto matrix = meta.get(controls::ColourCorrectionMatrix);
         if (matrix) { for (int i=0; i<9; ++i) raw_meta.camera_to_srgb[i] = (*matrix)[i]; raw_meta.valid |= 2; }
         if (gains) raw_meta.valid |= 4;
-        callback(context, index, &frame, ZC_OK);
+        zc_metadata extra{};extra.struct_size=sizeof(extra);extra.sequence=frame.sequence;extra.timestamp_ns=frame.timestamp_ns;
+        extra.control_revision=slots[index].control_revision;extra.exposure_us=frame.exposure_us;extra.analogue_gain=frame.analogue_gain;extra.red_gain=frame.red_gain;extra.blue_gain=frame.blue_gain;
+        extra.af_state=-1;extra.af_pause_state=-1;
+        const auto af=meta.get(controls::AfState);if(af){extra.af_state=*af;extra.valid|=1;}
+        const auto pause=meta.get(controls::AfPauseState);if(pause)extra.af_pause_state=*pause;
+        const auto lens=meta.get(controls::LensPosition);if(lens){extra.lens_position=*lens;extra.valid|=2;}
+        const auto duration=meta.get(controls::FrameDuration);if(duration && *duration>=0){extra.frame_duration_us=*duration;extra.valid|=4;}
+        const auto crop=meta.get(controls::ScalerCrop);if(crop){extra.crop[0]=crop->x;extra.crop[1]=crop->y;extra.crop[2]=crop->width;extra.crop[3]=crop->height;extra.valid|=8;}
+        callback(context, index, &frame, &extra,ZC_OK);
     }
     int start() {
         ControlList control(camera->controls());
@@ -247,6 +344,7 @@ struct Device {
             control.set(controls::AfMode, requested.lens_position >= 0 ? controls::AfModeManual : controls::AfModeContinuous);
             if (requested.lens_position >= 0) control.set(controls::LensPosition, requested.lens_position);
         }
+        for(const auto &entry:desired)control.set(entry.first,entry.second);
         const int rc = camera->start(&control);
         if (rc < 0) return ZC_DEVICE;
         started = true;
@@ -257,7 +355,9 @@ struct Device {
         auto &slot = slots[index];
         if (slot.used) slot.request->reuse(Request::ReuseBuffers);
         slot.used = true;
-        return camera->queueRequest(slot.request.get()) < 0 ? ZC_DEVICE : ZC_OK;
+        slot.request->controls()=pending;slot.control_revision=control_revision;
+        if(camera->queueRequest(slot.request.get())<0)return ZC_DEVICE;
+        pending.clear();return ZC_OK;
     }
     int sync(uint32_t index, bool begin) {
         auto &slot = slots[index];
@@ -310,4 +410,11 @@ extern "C" int zcd_metadata(Device *device, uint32_t index, zc_raw_metadata *out
     if (index >= device->slots.size()) return ZC_INVALID;
     *out = device->slots[index].raw_metadata;
     return ZC_OK;
+}
+
+extern "C" int zcd_control_info(Device *device,uint32_t id,zc_control_info *out) {
+    try{return device->controlInfo(id,out);}catch(...){return ZC_DEVICE;}
+}
+extern "C" int zcd_set_controls(Device *device,const zc_control *values,uint32_t count,uint64_t *revision) {
+    try{return device->setControls(values,count,revision);}catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }

@@ -24,8 +24,10 @@ class HEVCEncoder:
 
 def _metadata(frame):
     m=frame.metadata
-    return {"SensorTimestamp":m["timestamp_ns"],"ExposureTime":m["exposure_us"],"AnalogueGain":m["analogue_gain"],
-            "ColourGains":(m["red_gain"],m["blue_gain"]),"Sequence":m["sequence"]}
+    result={"SensorTimestamp":m["timestamp_ns"],"ExposureTime":m["exposure_us"],"AnalogueGain":m["analogue_gain"],"ColourGains":(m["red_gain"],m["blue_gain"]),"Sequence":m["sequence"],"ControlRevision":m['control_revision'],"EventId":m['event_id']}
+    for a,b in (('af_state','AfState'),('af_pause_state','AfPauseState'),('lens_position','LensPosition'),('frame_duration_us','FrameDuration'),('crop','ScalerCrop')):
+        if a in m: result[b]=m[a]
+    return result
 
 class CompletedRequest:
     def __init__(self,frame): self._frame=frame
@@ -71,19 +73,11 @@ class Picamera2:
             if set(raw)-{"format"}: raise NotImplementedError("Raw configuration supports format; size is negotiated")
             options.update(raw=True,unpacked_raw=True)
             if "format" in raw: options["raw_format"]=raw["format"]
-        for name,value in config["controls"].items():
-            if name=="ExposureTime": options["exposure_us"]=value
-            elif name=="AnalogueGain": options["analogue_gain"]=value
-            elif name=="LensPosition": options["lens_position"]=value
-            elif name=="NoiseReductionMode": options["noise_reduction"]=value
-            elif name=="FrameDurationLimits":
-                if len(value)!=2 or value[0]!=value[1]: raise NotImplementedError("Only fixed frame duration is supported")
-                options["frame_duration_us"]=value[0]
-            else: raise NotImplementedError(f"Configuration control not implemented: {name}")
         if self._camera is not None:
             if self._camera._started: raise RuntimeError("Stop before configuring")
             self._camera.close();self._camera=None
         self._camera=Camera(library=self.library,simulate=self.simulate,role=config["role"],**options)
+        if config["controls"]: self._camera.set_controls(config["controls"])
         self._config=config
     def _ready(self):
         if self._camera is None: self.configure(self.create_preview_configuration())
@@ -92,6 +86,15 @@ class Picamera2:
         camera=self._ready();result=dict(self._config)
         result["main"]=dict(result["main"],size=(camera.info["main"]["width"],camera.info["main"]["height"]),stride=camera.info["main"]["stride"])
         return result
+    @property
+    def camera_controls(self):
+        return {name:(info['min'],info['max'],info['default']) for name,info in self._ready().control_info.items()}
+    def set_controls(self,controls): return self._ready().set_controls(controls)
+    def autofocus_cycle(self,wait=None,signal_function=None,*,timeout=5): return self._ready().autofocus_cycle(wait,signal_function,timeout=timeout)
+    def wait(self,job,timeout=None): return job.result(timeout)
+    def start_preview(self,*,title='zig-camera',startup_timeout=5): return self._ready().start_preview(title=title,startup_timeout=startup_timeout)
+    def stop_preview(self):
+        if self._camera is not None: self._camera.stop_preview()
     def start(self): self._ready().start()
     def stop(self):
         if self._camera is not None: self._camera.stop()
