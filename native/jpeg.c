@@ -1,0 +1,39 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <setjmp.h>
+#include <jpeglib.h>
+#include "zig_camera.h"
+struct zc_jpeg_error { struct jpeg_error_mgr base; jmp_buf jump; };
+static void fail(j_common_ptr info) { longjmp(((struct zc_jpeg_error *)info->err)->jump, 1); }
+int zcd_save_jpeg(const zc_frame *f, const char *path, uint32_t quality) {
+    if (!f || !path || quality < 1 || quality > 100 || f->main.plane_count != 1) return ZC_INVALID;
+    const zc_stream *s = &f->main;
+    if (!s->width || !s->height || s->stride < (uint64_t)s->width * 3 ||
+        s->planes[0].bytes_used < (uint64_t)(s->height-1)*s->stride + (uint64_t)s->width*3) return ZC_INVALID;
+    FILE *file = fopen(path, "wb");
+    if (!file) return ZC_IO;
+    /* Heap allocation keeps state well-defined across the C setjmp/longjmp boundary. */
+    struct jpeg_compress_struct *info = calloc(1, sizeof(*info));
+    struct zc_jpeg_error *error = malloc(sizeof(*error));
+    if (!info || !error) { free(info); free(error); fclose(file); return ZC_NOMEM; }
+    info->err = jpeg_std_error(&error->base);
+    error->base.error_exit = fail;
+    if (setjmp(error->jump)) {
+        jpeg_destroy_compress(info); free(info); free(error); fclose(file); return ZC_IO;
+    }
+    jpeg_create_compress(info);
+    jpeg_stdio_dest(info, file);
+    info->image_width = s->width; info->image_height = s->height;
+    info->input_components = 3; info->in_color_space = JCS_RGB;
+    jpeg_set_defaults(info);
+    for (int i=0; i<3; ++i) { info->comp_info[i].h_samp_factor=1; info->comp_info[i].v_samp_factor=1; }
+    jpeg_set_quality(info, (int)quality, TRUE);
+    jpeg_start_compress(info, TRUE);
+    while (info->next_scanline < info->image_height) {
+        JSAMPROW row = (JSAMPROW)(s->planes[0].data + (uint64_t)info->next_scanline * s->stride);
+        jpeg_write_scanlines(info, &row, 1);
+    }
+    jpeg_finish_compress(info);
+    jpeg_destroy_compress(info); free(info); free(error);
+    return fclose(file) == 0 ? ZC_OK : ZC_IO;
+}

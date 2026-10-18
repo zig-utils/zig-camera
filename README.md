@@ -1,0 +1,90 @@
+# zig-camera
+
+A native Zig capture library and CLI for Raspberry Pi 5, backed by libcamera.
+Designed to reduce application CPU overhead and frame copies while retaining
+Raspberry Pi's ISP and camera tuning. Early development: hardware performance
+and image quality have **not yet been measured**. This is not a drop-in Picamera2
+replacement or a claim of feature parity.
+
+- Reusable libcamera requests and persistently mapped DMA-BUF planes.
+- Bounded FIFO/latest-ready queues with explicit, generation-checked frame leases.
+- DMA-BUF CPU read synchronization; stop preserves outstanding leased mappings.
+- Processed RGB, optional paired native raw stream, exposure/gain/focus controls.
+- Lossless PPM and native JPEG with 4:4:4 sampling; capture metadata sidecars.
+- Zig, C and Python interfaces; deterministic synthetic backend for development.
+- Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
+
+## Build on Raspberry Pi OS (64-bit)
+
+Install **Zig 0.15.2** and the system libraries matching your Raspberry Pi OS image:
+
+```sh
+sudo apt update
+sudo apt install libcamera-dev libjpeg-dev pkg-config
+zig build -Doptimize=ReleaseSafe
+./zig-out/bin/zig-camera info
+./zig-out/bin/zig-camera capture --output photo.jpg --warmup 60
+# Default size comes from libcamera's still configuration. Inspect `info` first.
+./zig-out/bin/zig-camera capture --raw --output photo.ppm
+```
+
+JPEG defaults to quality 98 and no chroma subsampling. PPM is lossless 8-bit
+processed RGB, not sensor raw. `--raw` writes paired native planes to
+`photo.ppm.raw.N` and records their negotiated layout in `photo.ppm.json`.
+Packed/compressed raw stays in its native format; it is **not DNG**.
+Manual exposure requires both `--exposure-us` and `--gain`. Autofocus runs
+continuously when available; `--lens` requests manual focus in dioptres.
+Configuration may be adjusted by libcamera; always inspect negotiated geometry.
+
+## Develop without a camera
+
+```sh
+zig build test -Dlibcamera=false -Djpeg=false
+zig build -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseSafe
+./zig-out/bin/zig-camera capture --simulate --width 640 --height 480 --output test.ppm
+zig build bench -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseFast
+PYTHONPATH=python python3 -m unittest discover -s tests -v
+```
+
+Synthetic output requires explicit `--simulate`; synthetic timing is not camera
+FPS. The Linux backend is selected by default on Linux, synthetic on macOS.
+JPEG is optional (`-Djpeg=false`); no image codecs are reimplemented here.
+
+## Ownership
+
+```zig
+const camera = @import("camera");
+var config = camera.defaultConfig();
+config.width = 1920;
+config.height = 1080;
+const cam = try camera.Camera.init(config);
+defer cam.deinit() catch unreachable;
+try cam.start();
+defer cam.stop() catch unreachable;
+var frame = try cam.acquire(5000);
+defer frame.release() catch unreachable;
+const rgb = try frame.rgb(); // borrowed RGB bytes, with row stride
+_ = rgb;
+```
+
+A frame lease keeps its camera buffers out of circulation. Release it exactly
+once, after every CPU/GPU/device user has finished. Views and borrowed file
+descriptors expire on release. Stop preserves leases; close and restart refuse
+outstanding leases. Holding every buffer stalls capture rather than allocating
+more memory. `latest` drops older *ready* frames at acquisition, never a leased
+frame; `--fifo` preserves ready order. Lifecycle calls/close require caller
+serialization; frame acquisition/release/stats may run on separate threads.
+
+See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
+[benchmarks](docs/performance.md), [Home reuse audit](docs/home-reuse.md), and
+[Pi 5 camera selection](docs/hardware.md).
+
+## Scope
+
+Implemented: single-camera still/continuous capture, paired processed/raw streams,
+frame leases, selected controls, metadata, JPEG/PPM, and Python access.
+Not yet implemented: GUI preview, video encoders/containers, DNG calibration,
+Python Picamera2 API compatibility, stereo sync, and a general control API.
+Keep Picamera2 for those features until equivalent paths are implemented and
+validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;
+removing Python does not add sensor detail or raise sensor frame-rate limits.

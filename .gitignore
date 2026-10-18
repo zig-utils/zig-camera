@@ -1,0 +1,7 @@
+.zig-cache/
+zig-out/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+bench/results/

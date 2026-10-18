@@ -1,0 +1,42 @@
+name: CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.15.2
+      - run: zig fmt --check build.zig src bench
+      - name: Test synthetic backend with runtime safety
+        run: zig build test -Dlibcamera=false -Djpeg=false
+      - name: Build synthetic CLI and shared library
+        run: zig build -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseSafe
+      - name: Verify C and Python ABI, lifecycle and CLI
+        run: |
+          cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
+          PYTHONPATH=python python3 -m unittest discover -s tests -v
+          ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --warmup 2 --output zig-out/test.ppm
+          ./zig-out/bin/zig-camera bench --simulate --width 640 --height 480 --frames 100 --warmup 2
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config python3-pil
+      - name: Test native JPEG encoding with synthetic frames
+        if: runner.os == 'Linux'
+        run: |
+          zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
+          ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
+          python3 tests/check_jpeg.py zig-out/test.jpg
+      - name: Compile real libcamera backend and test platform-independent code
+        if: runner.os == 'Linux'
+        run: |
+          zig build test -Dlibcamera=true -Djpeg=true
+          zig build -Dlibcamera=true -Djpeg=true -Doptimize=ReleaseSafe

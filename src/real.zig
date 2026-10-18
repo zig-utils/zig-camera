@@ -1,0 +1,15 @@
+const c = @import("abi.zig").c;
+pub const Handle = opaque {};
+pub const Callback = *const fn (?*anyopaque, u32, ?*const c.zc_frame, c_int) callconv(.c) void;
+pub extern fn zcd_open(*const c.zc_config, ?*anyopaque, Callback, *?*Handle, *c.zc_info) c_int;
+pub extern fn zcd_start(*Handle) c_int;
+pub extern fn zcd_queue(*Handle, u32) c_int;
+pub extern fn zcd_sync(*Handle, u32, bool) c_int;
+pub extern fn zcd_stop(*Handle) c_int;
+pub extern fn zcd_close(*Handle) void;
+pub const open = zcd_open;
+pub const start = zcd_start;
+pub const queue = zcd_queue;
+pub const sync = zcd_sync;
+pub const stop = zcd_stop;
+pub const close = zcd_close;
