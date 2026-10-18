@@ -91,6 +91,6 @@ jobs:
       - name: Compile real libcamera backend and test platform-independent code
         if: runner.os == 'Linux'
         run: |
-          zig build test -Dlibcamera=true -Djpeg=true
-          zig build -Dlibcamera=true -Djpeg=true -Doptimize=ReleaseSafe
+          zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
+          zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
           PYTHONPATH=python python3 tests/native_smoke.py
