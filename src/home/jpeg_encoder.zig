@@ -64,15 +64,7 @@ fn table(counts: [16]u8, values: []const u8) Huffman {
 }
 const DC = table(DC_COUNTS, &DC_VALUES);
 const AC = table(AC_COUNTS, &AC_VALUES);
-const BASIS: [8]@Vector(8, f32) = blk: {
-    @setEvalBranchQuota(10000);
-    var b: [8]@Vector(8, f32) = undefined;
-    for (0..8) |u| for (0..8) |x| {
-        const scale: f64 = if (u == 0) 0.3535533905932738 else 0.5;
-        b[u][x] = @floatCast(scale * @cos((@as(f64, @floatFromInt(x)) * 2 + 1) * @as(f64, @floatFromInt(u)) * std.math.pi / 16));
-    };
-    break :blk b;
-};
+const BASIS = @import("jpeg_dct.zig").BASIS;
 pub const Encoder = struct {
     allocator: std.mem.Allocator,
     output: std.ArrayList(u8) = .empty,

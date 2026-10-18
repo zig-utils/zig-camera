@@ -82,3 +82,21 @@ class MediaTests(unittest.TestCase):
                 thread=threading.Thread(target=close_elsewhere);thread.start();thread.join()
                 self.assertEqual(errors,[-2])
                 with cam.acquire() as frame: self.assertTrue(window.show(frame))
+
+class PicameraSubsetTests(unittest.TestCase):
+    def test_configuration_capture_and_owned_buffers(self):
+        from zigcamera import Picamera2, MJPEGEncoder
+        with tempfile.TemporaryDirectory() as directory:
+            with Picamera2(simulate=True) as camera:
+                config=camera.create_still_configuration(main={'size':(32,24)})
+                camera.configure(config);camera.start()
+                camera.capture_file(Path(directory)/'still.jpg')
+                camera.capture_file(Path(directory)/'still.dng',name='raw')
+                self.assertEqual(len(camera.capture_buffer()),32*24*3)
+                with camera.captured_request() as request:
+                    self.assertGreater(request.get_metadata()['ExposureTime'],0)
+                camera.stop()
+                camera.configure(camera.create_video_configuration(main={'size':(32,24)}))
+                camera.start_recording(MJPEGEncoder(),Path(directory)/'recording.mkv')
+                time.sleep(0.02);camera.stop_recording();camera.stop()
+                self.assertEqual(camera.camera_configuration()['main']['size'],(32,24))

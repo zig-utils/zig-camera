@@ -24,7 +24,7 @@ assert track['properties']['codec_id']=='V_MJPEG',track
 assert track['properties']['pixel_dimensions']=='128x96',track
 # Extracted packets are independently JPEG-decoded and counted.
 raw=root/'mjpeg-packets.bin'
-subprocess.run(['mkvextract',str(root/'home.mkv'),'tracks',f'0:{raw}'],check=True)
+subprocess.run(['mkvextract',str(root/'home.mkv'),'tracks','--raw',f'0:{raw}'],check=True)
 data=raw.read_bytes(); position=0; frames=[]
 while position<len(data):
     start=data.index(b'\xff\xd8',position); end=data.index(b'\xff\xd9',start)+2

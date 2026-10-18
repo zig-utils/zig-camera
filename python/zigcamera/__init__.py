@@ -177,9 +177,17 @@ class Camera:
             self._handle = C.c_void_p()
     def __enter__(self): return self
     def __exit__(self, *exc):
-        self.stop()
-        for lease in list(self._leases.values()): lease.release()
-        self.close()
+        failure=None
+        try: self.stop()
+        except Exception as error: failure=error
+        for lease in list(self._leases.values()):
+            try: lease.release()
+            except Exception as error:
+                if failure is None: failure=error
+        try: self.close()
+        except Exception as error:
+            if failure is None: failure=error
+        if failure is not None and exc[0] is None: raise failure
 
 class Frame:
     def __init__(self, camera, native):
@@ -322,3 +330,6 @@ class _Recording:
         self.stop_event.set(); self.thread.join()
         self.recorder.close()
         if self.error: raise self.error
+
+from .picamera2 import Picamera2, MJPEGEncoder
+__all__ += ["Picamera2", "MJPEGEncoder"]
