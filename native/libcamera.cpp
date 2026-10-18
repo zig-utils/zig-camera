@@ -114,8 +114,8 @@ struct Device {
         camera = cameras[cfg.camera_index];
         if (camera->acquire() < 0) return ZC_BUSY;
         acquired = true;
-        const StreamRoles roles = cfg.raw ? StreamRoles{StreamRole::StillCapture, StreamRole::Raw}
-                                          : StreamRoles{StreamRole::StillCapture};
+        const std::vector<StreamRole> roles = cfg.raw ? std::vector<StreamRole>{StreamRole::StillCapture, StreamRole::Raw}
+                                                    : std::vector<StreamRole>{StreamRole::StillCapture};
         config = camera->generateConfiguration(roles);
         if (!config || config->size() != roles.size()) return ZC_UNSUPPORTED;
         auto &main = config->at(0);

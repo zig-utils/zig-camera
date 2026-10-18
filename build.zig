@@ -17,9 +17,19 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("options", options);
     mod.addIncludePath(b.path("include"));
     if (libcamera) {
-        mod.addCSourceFile(.{ .file = b.path("native/libcamera.cpp"), .flags = &.{ "-std=c++17", "-Wall", "-Wextra", "-Werror" } });
-        mod.linkSystemLibrary("libcamera", .{ .use_pkg_config = .force });
-        mod.link_libcpp = true;
+        if (target.result.cpu.arch != @import("builtin").cpu.arch)
+            @panic("Build the libcamera backend natively with the target system's C++ toolchain and libcamera packages");
+        // libcamera's public API contains STL types. Compile/link its boundary
+        // with the distribution C++ runtime, not Zig's bundled libc++.
+        const bridge = b.addSystemCommand(&.{ "sh", "-c", "exec \"${CXX:-c++}\" -std=c++17 -O2 -fPIC -shared -Wall -Wextra -Werror -I\"$1\" \"$2\" -Wl,-soname,libzigcamera_driver.so -o \"$3\" $(pkg-config --cflags --libs libcamera)", "--" });
+        bridge.addDirectoryArg(b.path("include"));
+        bridge.addFileArg(b.path("native/libcamera.cpp"));
+        const driver_lib = bridge.addOutputFileArg("libzigcamera_driver.so");
+        mod.addObjectFile(driver_lib);
+        mod.addRPath(driver_lib.dirname());
+        mod.addRPathSpecial("$ORIGIN");
+        mod.addRPathSpecial("$ORIGIN/../lib");
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(driver_lib, .lib, "libzigcamera_driver.so").step);
     }
     if (jpeg) {
         mod.addCSourceFile(.{ .file = b.path("native/jpeg.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });

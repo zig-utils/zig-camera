@@ -158,10 +158,16 @@ fn run() !void {
     var checksum: u64 = 0;
     var first: u64 = 0;
     var last: u64 = 0;
+    var first_timestamp: u64 = 0;
+    var last_timestamp: u64 = 0;
     for (0..frames) |n| {
         var f = try cam.acquire(timeout_ms);
-        if (n == 0) first = f.value.sequence;
+        if (n == 0) {
+            first = f.value.sequence;
+            first_timestamp = f.value.timestamp_ns;
+        }
         last = f.value.sequence;
+        last_timestamp = f.value.timestamp_ns;
         checksum +%= f.value.main.planes[0].data[0];
         try f.release();
     }
@@ -169,7 +175,7 @@ fn run() !void {
     const cpu_ns = cpuTime() - cpu_start;
     const s = cam.stats();
     var buf: [1024]u8 = undefined;
-    try std.fs.File.stdout().writeAll(try std.fmt.bufPrint(&buf, "{{\"backend\":\"{s}\",\"mode\":\"lease\",\"frames\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"buffers\":{d},\"wall_ns\":{d},\"cpu_ns\":{d},\"first_sequence\":{d},\"last_sequence\":{d},\"dropped_total\":{d},\"checksum\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frames, info.main.width, info.main.height, info.main.stride, info.buffer_count, ns, cpu_ns, first, last, s.dropped, checksum }));
+    try std.fs.File.stdout().writeAll(try std.fmt.bufPrint(&buf, "{{\"backend\":\"{s}\",\"mode\":\"lease\",\"format\":\"BGR888\",\"frames\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"buffers\":{d},\"wall_ns\":{d},\"cpu_ns\":{d},\"first_sequence\":{d},\"last_sequence\":{d},\"first_timestamp_ns\":{d},\"last_timestamp_ns\":{d},\"dropped_total\":{d},\"checksum\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frames, info.main.width, info.main.height, info.main.stride, info.buffer_count, ns, cpu_ns, first, last, first_timestamp, last_timestamp, s.dropped, checksum }));
 }
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);

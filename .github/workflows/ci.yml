@@ -40,3 +40,4 @@ jobs:
         run: |
           zig build test -Dlibcamera=true -Djpeg=true
           zig build -Dlibcamera=true -Djpeg=true -Doptimize=ReleaseSafe
+          PYTHONPATH=python python3 tests/native_smoke.py
