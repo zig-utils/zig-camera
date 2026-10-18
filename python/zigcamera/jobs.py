@@ -59,7 +59,7 @@ class CaptureJob:
         self.camera=camera;self.operation=operation;self.signal_function=signal_function;self.retain=retain
         self.deadline=time.monotonic()+timeout_ms/1000
         self.event=threading.Event();self.lock=threading.Lock();self.state='queued'
-        self.value=None;self.error=None;self.callback_error=None;self._abandoned=False
+        self.value=None;self.error=None;self.callback_error=None;self._abandoned=False;self._delivered=False
     def done(self): return self.event.is_set()
     def cancelled(self): return isinstance(self.error,CancelledError) and self.done()
     def _finish(self,value=None,error=None):
@@ -76,7 +76,9 @@ class CaptureJob:
                 try: self.signal_function(self)
                 except Exception as failure: self.callback_error=failure
                 finally: self.camera._job_slots.release()
-            threading.Thread(target=notify,name='zig-camera-capture-callback',daemon=True).start()
+            try: threading.Thread(target=notify,name='zig-camera-capture-callback',daemon=True).start()
+            except Exception as failure:
+                self.callback_error=failure;self.camera._job_slots.release()
     def _claim(self):
         import time
         with self.lock:
@@ -95,14 +97,19 @@ class CaptureJob:
         return True
     def result(self,timeout=None):
         if not self.event.wait(timeout): raise TimeoutError('Job result not ready')
-        if self.error is not None: raise self.error
-        return self.value
+        with self.lock:
+            if self.error is not None: raise self.error
+            self._delivered=True
+            return self.value
     get_result=result
     async def _await(self):
-        try: return await asyncio.to_thread(self.result)
+        try:
+            await asyncio.to_thread(self.event.wait)
+            return self.result()
         except asyncio.CancelledError:
             if not self.cancel() and self.retain:
                 with self.lock:
+                    if self._delivered: raise
                     self._abandoned=True
                     if self.done() and self.value is not None:
                         self.value.release();self.value=None;self.error=CancelledError('Capture await cancelled')

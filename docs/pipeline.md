@@ -66,7 +66,8 @@ consumer; avoid mixing it with jobs unless that is intentional.
 - Request results own a native lease. Use their context manager or `release()`;
   close/restart refuses outstanding leases. Owned array/buffer/metadata/file
   results release their frame before notifying the caller. An asyncio-cancelled
-  request await discards/releases a result that was already being dispatched.
+  request await discards/releases a result that was already being dispatched,
+  unless it was already delivered to another caller.
 - At most 32 pending/running capture jobs or unreturned callbacks are accepted;
   new submissions fail at capacity. Callbacks run on separate bounded threads,
   can outlive camera close, and must avoid accessing a closed camera. Their errors

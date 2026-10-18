@@ -110,6 +110,18 @@ class PipelineTests(unittest.TestCase):
                 self.assertTrue(await asyncio.to_thread(job.event.wait,2))
             asyncio.run(cancel())
             self.assertTrue(job.cancelled());self.assertEqual(camera.stats['leased'],0)
+    def test_cancelled_second_awaiter_preserves_delivered_request(self):
+        with Camera(simulate=True,width=16,height=16) as camera:
+            camera.start();job=camera.capture_request(wait=False)
+            with job.result(2) as frame:
+                async def cancel():
+                    async def wait(): return await job
+                    task=asyncio.create_task(wait());await asyncio.sleep(0)
+                    task.cancel()
+                    try: await task
+                    except asyncio.CancelledError: pass
+                asyncio.run(cancel())
+                self.assertEqual(len(frame.copy_rgb()),16*16*3)
     def test_jobs_share_recording_and_focus_and_surface_file_errors(self):
         import tempfile
         from pathlib import Path
