@@ -79,3 +79,9 @@ Home AAC-LC and synchronized MP4 (0.8):
   The Home MIT license above applies to the adapter and container modules.
   The optional separately installed FDK AAC library retains its own license:
   https://github.com/mstorsjo/fdk-aac/blob/v2.0.3/NOTICE
+
+Home circular PCM history (0.9):
+- src/home/pcm_timeline.zig is verbatim Home packages/video/src/core/pcm_timeline.zig
+  at 41b071c04 (feat/pcm-av-streaming), extending the 0.7 queue with rolling
+  ownership, non-consuming windows and original-clock chunk endpoints.
+  https://github.com/home-lang/home/pull/917

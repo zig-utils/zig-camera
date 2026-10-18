@@ -15,6 +15,8 @@ class CircularOutput:
     save=save_buffer
     @property
     def stats(self): return self._live().buffer_stats
+    @property
+    def audio_stats(self): return self._live().recorder.audio_buffer_stats
 
 class RotatingOutput:
     """Exclusive indexed files, rotated at the next independently decodable frame.

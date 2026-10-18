@@ -210,6 +210,15 @@ void zc_default_recording_options(zc_recording_options *);
 int zc_video_open_ex(const char *,const zc_video_config *,const zc_recording_options *,zc_recorder **);
 /* AAC-LC bitrate in bits/s; requires -Daac=true, audio sample_rate and .mp4. */
 int zc_video_open_aac(const char *,const zc_video_config *,const zc_recording_options *,uint32_t bitrate,zc_recorder **);
+/* Circular PCM history is bounded by buffer_frames and max_blocks (<=10 seconds).
+ * Old blocks are evicted; snapshots select the first key after an evicted prefix.
+ * MP4 re-encodes retained PCM to AAC with fresh priming; video is remuxed.
+ * bitrate=0 selects the AAC default. .mkv uses PCM, .mp4 uses AAC.
+ * Audio timestamps/stats use the shared absolute capture clock.
+ * An active output fails explicitly if eviction overtakes unwritten audio. */
+int zc_video_open_circular_av(const zc_video_config *,const zc_buffer_config *,const zc_recording_options *,uint32_t bitrate,zc_recorder **);
+typedef struct {uint64_t frames,bytes,evicted_frames,first_ns,last_ns;} zc_audio_buffer_stats;
+int zc_video_audio_buffer_stats(zc_recorder *,zc_audio_buffer_stats *);
 int zc_video_write_audio(zc_recorder *,const uint8_t *s16le,uint64_t length,uint64_t timestamp_ns);
 /* Soft policy only; caller reads rotation_due and stages zc_video_split.
  * PCM timestamps and frame timestamps must share one nanosecond epoch. */

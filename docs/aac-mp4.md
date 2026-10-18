@@ -26,7 +26,8 @@ capture settings plus `codec` and `bitrate` (bits/s). `.mp4` selects AAC by defa
 to 64kb/s mono or 128kb/s stereo. Supported rates are 8, 11.025, 12, 16, 22.05, 24,
 32, 44.1 and 48kHz; one or two channels, 16–320kb/s. Unsupported combinations fail;
 there is no implicit resampling or fallback encoder. HEVC uses `HEVCEncoder`.
-AAC in Matroska, HE-AAC, circular A/V and MP4 audio-only output remain unsupported.
+AAC in Matroska, HE-AAC and MP4 audio-only output remain unsupported.
+Version 0.9 adds [circular A/V and synchronized pre-roll snapshots](circular-av.md).
 The native CLI remains video-only; use Python or the C API for A/V.
 
 The bitrate field is extracted before opening the input device. Both high-level

@@ -201,3 +201,22 @@ decodes video with OpenH264/libde265 and identifies MP4 tracks with mkvtoolnix.
 The optional FDK codec is built directly at pinned 2.0.3; no FFmpeg/Libav is used.
 See [AAC synchronization and limits](aac-mp4.md). Hardware timing, drift and Pi
 throughput remain unmeasured.
+
+## 0.9: non-consuming circular PCM windows
+
+Rechecked Home's PCM timeline, encoded GOP ring and AAC/MP4 modules alongside
+Picamera2's CircularOutput2. The packet ring already supplies key-safe encoded
+history; the PCM timeline only supported consuming live output. Home #917 now
+adds validated rolling eviction and independent sample-window cursors at
+41b071c04. The updated PCM module is vendored verbatim. Five focused tests pass
+on Zig 0.15.2 and Home's development toolchain, including wrap, descriptor limits,
+repeated replay, fractional sample clipping and rejected-input state preservation.
+Targeted pickier passes.
+
+zig-camera uses those PCM windows for snapshots and a separate live audio
+watermark. Encoded video is reused; retained PCM is encoded with fresh Home AAC
+state per MP4 snapshot. Existing MP4 delay/edit/tail machinery handles rebasing
+without a second muxer or FFmpeg. Current tests independently decode AAC with
+FAAD2/AVFoundation and exercise live splits, PCM Matroska and background capture.
+Snapshots serialize consumer work; performance and physical synchronization are
+not inferred from synthetic tests. See [circular A/V semantics](circular-av.md).

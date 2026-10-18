@@ -121,3 +121,12 @@ pub export fn zc_video_open_aac(path: [*:0]const u8, cfg: *const c.zc_video_conf
     if (!options.video) return c.ZC_UNSUPPORTED;
     return @import("video.zig").openAac(path, cfg, opts, bitrate, out);
 }
+
+pub export fn zc_video_open_circular_av(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    return @import("video.zig").openCircularAv(cfg, buffer, opts, bitrate, out);
+}
+pub export fn zc_video_audio_buffer_stats(p: *c.zc_recorder, out: *c.zc_audio_buffer_stats) c_int {
+    return @import("video.zig").audioBufferStats(p, out);
+}

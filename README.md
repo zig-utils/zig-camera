@@ -14,12 +14,11 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.8: Home AAC-LC encoding and synchronized H.264/HEVC + AAC MP4,
-with explicit priming/tail metadata, bounded packet staging and independently
-validated segment playback. Duration/size rotation, ALSA capture, PCM Matroska,
-async capture/mode jobs, circular video history, controls, autofocus, preview
-and DNG remain available. No FFmpeg dependency.
-[AAC and MP4 recording](docs/aac-mp4.md), [capture clocks and rotation](docs/audio-rotation.md),
+New in 0.9: bounded circular audio/video history and synchronized MP4 pre-roll
+snapshots, with non-consuming audio replay and live open/split/close/reopen.
+Home AAC-LC, PCM Matroska, rotation, async capture/mode jobs, controls, autofocus,
+preview and DNG remain available. No FFmpeg dependency.
+[Circular A/V semantics](docs/circular-av.md), [AAC and MP4 recording](docs/aac-mp4.md),
 [coverage and remaining gaps](docs/parity.md).
 
 ## Build on Raspberry Pi OS (64-bit)

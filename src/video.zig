@@ -158,6 +158,7 @@ const Recorder = struct {
     audio_frames: u64 = 0,
     audio_written: u64 = 0,
     audio_bitrate: u32 = 0,
+    audio_cursor: ?u64 = null,
     last_packet_ns: ?u64 = null,
     rotation: Policy = .{},
     fn nominal(self: *const Recorder) u32 {
@@ -212,6 +213,17 @@ const Recorder = struct {
         if (out.waiting_key or self.audio == null) return;
         const minimum = try std.math.add(u64, self.first_ns, out.first_ns);
         const end = try std.math.add(u64, self.first_ns, cut);
+        if (self.ring != null) {
+            var cursor: pcm.Cursor = .{};
+            const begin = @max(minimum, self.audio_cursor orelse minimum);
+            if (self.audio.?.retention_floor) |floor| if (floor > begin) return error.BufferFull;
+            while (try self.audio.?.window(begin, end, &cursor)) |chunk| {
+                try out.audioChunk(chunk.data, chunk.timestamp - minimum);
+                self.audio_cursor = chunk.end_ns;
+                self.audio_written += chunk.frames;
+            }
+            return;
+        }
         while (try self.audio.?.take(minimum, end)) |chunk| {
             try out.audioChunk(chunk.data, chunk.timestamp - minimum);
             self.audio_written += chunk.frames;
@@ -221,14 +233,45 @@ const Recorder = struct {
         if (encoded_packet.pts < 0) return error.Invalid;
         try self.packet(encoded_packet.data, @as(u64, @intCast(encoded_packet.pts)) * 1000, encoded_packet.key);
     }
+    fn packetEnd(self: *const Recorder) !u64 {
+        const last = self.last_packet_ns orelse return error.EmptyBuffer;
+        const input = (self.last_ns - self.first_ns) / 1000 * 1000;
+        return if (input > last) input else try std.math.add(u64, last, @as(u64, self.nominal()) * 1000);
+    }
+    fn replayStart(self: *const Recorder) !usize {
+        const ring = self.ring orelse return error.Unsupported;
+        // An evicted PCM prefix may never become silent/missing pre-roll.
+        // Start at the first retained video key covered by audio history.
+        const floor = if (self.audio) |q| blk: {
+            if (q.count == 0) return error.EmptyBuffer;
+            break :blk q.retention_floor orelse 0;
+        } else 0;
+        for (0..ring.count) |i| {
+            const e = ring.entry(i).?;
+            if (e.key and try std.math.add(u64, self.first_ns, e.timestamp) >= floor) return i;
+        }
+        return error.EmptyBuffer;
+    }
+    fn replayAudio(self: *Recorder, out: *Output, cut: u64) !?u64 {
+        const q = if (self.audio) |*q| q else return null;
+        const minimum = try std.math.add(u64, self.first_ns, out.first_ns);
+        const end = try std.math.add(u64, self.first_ns, cut);
+        var cursor: pcm.Cursor = .{};
+        var last: ?u64 = null;
+        while (try q.window(minimum, end, &cursor)) |chunk| {
+            try out.audioChunk(chunk.data, chunk.timestamp - minimum);
+            last = chunk.end_ns;
+        }
+        return last;
+    }
     fn replay(self: *Recorder, out: *Output) !void {
         const ring = if (self.ring) |*ring| ring else return error.Unsupported;
-        if (ring.count == 0) return error.EmptyBuffer;
+        const start = try self.replayStart();
         var largest: usize = 0;
         for (0..ring.count) |i| largest = @max(largest, ring.entry(i).?.length);
         const scratch = try A.alloc(u8, largest);
         defer A.free(scratch);
-        for (0..ring.count) |i| {
+        for (start..ring.count) |i| {
             const e = ring.entry(i).?;
             try out.packet(try ring.copy(i, scratch), e.timestamp, e.key);
         }
@@ -339,21 +382,28 @@ pub fn bufferStats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
 }
 pub fn saveBuffer(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     const self = recorder(p);
-    if (self.audio != null) return c.ZC_UNSUPPORTED;
     if (self.failed) return c.ZC_STATE;
     if (self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.ring.?.count == 0) return c.ZC_STATE;
+    _ = self.replayStart() catch |err| return status(err);
+    const end = self.packetEnd() catch |err| return status(err);
+    if (self.audio) |q| {
+        const absolute_end = std.math.add(u64, self.first_ns, end) catch return c.ZC_INVALID;
+        if ((q.last_end orelse 0) < absolute_end) return c.ZC_BUSY;
+    }
     const out = Output.init(path, &self.config, self.headers, .{ self.output, self.next }, &self.recording, self.audio_bitrate) catch |err| return status(err);
     defer out.deinit();
     self.replay(out) catch |err| return status(err);
-    out.finish(self.nominal(), null) catch |err| return status(err);
+    _ = self.replayAudio(out, end) catch |err| return status(err);
+    out.finish(self.nominal(), end) catch |err| return status(err);
     return c.ZC_OK;
 }
 pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     const self = recorder(p);
-    if (self.audio != null) return c.ZC_UNSUPPORTED;
+    if (self.audio != null and self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.failed) return c.ZC_STATE;
     if (self.output != null or self.next != null) return c.ZC_BUSY;
+    if (self.ring != null and self.ring.?.count != 0) _ = self.replayStart() catch |err| return status(err);
     const out = Output.init(path, &self.config, self.headers, .{ null, null }, &self.recording, self.audio_bitrate) catch |err| return status(err);
     if (self.ring != null and self.ring.?.count != 0) self.replay(out) catch |err| {
         out.deinit();
@@ -363,18 +413,30 @@ pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
         out.deinit();
         return status(err);
     };
+    const cursor = if (!out.waiting_key) self.replayAudio(out, self.last_packet_ns.?) catch |err| {
+        out.deinit();
+        return status(err);
+    } else null;
+    self.audio_cursor = cursor;
     self.output = out;
     self.segments += 1;
     return c.ZC_OK;
 }
 pub fn closeOutput(p: *c.zc_recorder) c_int {
     const self = recorder(p);
-    if (self.audio != null) return c.ZC_UNSUPPORTED;
+    if (self.audio != null and self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.next != null) return c.ZC_BUSY;
+    if (self.failed) return c.ZC_STATE;
     const out = self.output orelse return c.ZC_STATE;
+    const end = if (self.last_packet_ns != null) self.packetEnd() catch |err| return status(err) else null;
+    if (end) |cut| self.drainAudio(cut) catch |err| {
+        self.failed = true;
+        return status(err);
+    };
     self.output = null;
+    self.audio_cursor = null;
     defer out.deinit();
-    out.finish(self.nominal(), null) catch |err| return status(err);
+    out.finish(self.nominal(), end) catch |err| return status(err);
     return c.ZC_OK;
 }
 pub fn split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
@@ -454,7 +516,9 @@ pub fn writeAudio(p: *c.zc_recorder, data: [*]const u8, length: u64, timestamp: 
     if (self.failed) return c.ZC_STATE;
     if (self.audio == null) return c.ZC_UNSUPPORTED;
     if (length > std.math.maxInt(usize)) return c.ZC_INVALID;
-    self.audio.?.push(data[0..@intCast(length)], timestamp) catch |err| return status(err);
+    if (self.ring != null) {
+        self.audio.?.pushRolling(data[0..@intCast(length)], timestamp) catch |err| return status(err);
+    } else self.audio.?.push(data[0..@intCast(length)], timestamp) catch |err| return status(err);
     self.audio_frames += length / (self.recording.channels * 2);
     if (self.last_packet_ns) |cut| self.drainAudio(cut) catch |err| {
         self.failed = true;
@@ -482,6 +546,37 @@ pub fn recordingStats(p: *c.zc_recorder, out: *c.zc_recording_stats) c_int {
         out.output_frames = o.frames;
         if (self.frames != 0 and self.last_ns - self.first_ns >= o.first_ns) out.output_duration_ns = self.last_ns - self.first_ns - o.first_ns;
         out.rotation_due = @intFromBool(self.rotation.due(o.frames, out.output_duration_ns, out.output_bytes, self.next != null));
+    }
+    return c.ZC_OK;
+}
+
+pub fn openCircularAv(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (opts.struct_size != @sizeOf(c.zc_recording_options) or opts.sample_rate == 0 or opts.exclusive > 1 or (bitrate != 0 and (bitrate < 16000 or bitrate > 320000))) return c.ZC_INVALID;
+    const result = openCircular(cfg, buffer, out);
+    if (result != c.ZC_OK) return result;
+    const self = recorder(out.*.?);
+    self.recording = opts.*;
+    self.audio_bitrate = bitrate;
+    self.audio = pcm.Queue.init(A, opts.sample_rate, opts.channels, opts.buffer_frames, opts.max_blocks) catch |err| {
+        self.deinit();
+        out.* = null;
+        return status(err);
+    };
+    return c.ZC_OK;
+}
+pub fn audioBufferStats(p: *c.zc_recorder, out: *c.zc_audio_buffer_stats) c_int {
+    out.* = std.mem.zeroes(c.zc_audio_buffer_stats);
+    const self = recorder(p);
+    if (self.ring == null or self.audio == null) return c.ZC_UNSUPPORTED;
+    const q = &self.audio.?;
+    out.frames = q.used;
+    out.bytes = q.used * q.channels * 2;
+    out.evicted_frames = q.trimmed;
+    if (q.count != 0) {
+        var cursor: pcm.Cursor = .{};
+        if (q.window(0, std.math.maxInt(u64), &cursor) catch return c.ZC_INVALID) |chunk| out.first_ns = chunk.timestamp;
+        out.last_ns = q.last_end.?;
     }
     return c.ZC_OK;
 }

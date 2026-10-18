@@ -22,6 +22,7 @@ _Static_assert(sizeof(zc_audio_config)==32,"audio config ABI");
 _Static_assert(sizeof(zc_audio_block)==24,"audio block ABI");
 _Static_assert(sizeof(zc_recording_options)==24,"recording options ABI");
 _Static_assert(sizeof(zc_recording_stats)==72,"recording stats ABI");
+_Static_assert(sizeof(zc_audio_buffer_stats)==40,"audio history ABI");
 int main(void) {
     zc_audio_config audio_config;zc_default_audio_config(&audio_config);
     audio_config.backend=ZC_AUDIO_SYNTHETIC;audio_config.block_frames=48;
@@ -71,6 +72,15 @@ int main(void) {
     zc_buffer_stats stats;
     assert(zc_video_buffer_stats(recorder,&stats)==ZC_OK);
     assert(stats.frames==2 && stats.bytes<=100000 && stats.evicted==2 && !stats.output_open);
+    assert(zc_video_close(recorder)==ZC_OK);
+    zc_recording_options recording;zc_default_recording_options(&recording);
+    recording.sample_rate=48000;recording.buffer_frames=48;recording.max_blocks=2;
+    assert(zc_video_open_circular_av(&video,&history,&recording,0,&recorder)==ZC_OK);
+    for(uint64_t i=0;i<4;i++) assert(zc_video_write_audio(recorder,pcm,sizeof(pcm),i*1000000)==ZC_OK);
+    zc_audio_buffer_stats audio_stats;
+    assert(zc_video_audio_buffer_stats(recorder,&audio_stats)==ZC_OK);
+    assert(audio_stats.frames==48 && audio_stats.bytes==96 && audio_stats.evicted_frames==144);
+    assert(audio_stats.first_ns==3000000 && audio_stats.last_ns==4000000);
     assert(zc_video_close(recorder)==ZC_OK);
     assert(zc_close(camera)==ZC_OK);
     return 0;

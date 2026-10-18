@@ -137,4 +137,4 @@ and circular disk recording are still gaps. Hardware ISP reconfiguration, focus,
 long-running recording reliability and sustained Pi 5 throughput remain untested.
 
 For duration/size automatic rotation and synchronized PCM audio, see
-[audio and rotation](audio-rotation.md). Circular A/V remains unsupported.
+[audio and rotation](audio-rotation.md). For circular A/V and synchronized MP4 snapshots, see [circular A/V](circular-av.md).

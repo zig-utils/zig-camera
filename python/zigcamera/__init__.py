@@ -38,6 +38,8 @@ class _RecordingStats(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('segments','output_bytes','output_frames','output_duration_ns','audio_frames','audio_written_frames','audio_queued_frames','audio_trimmed_frames')]+[(n,C.c_uint32) for n in ('rotation_due','audio_enabled')]
 class _BufferConfig(C.Structure):
     _fields_=[('struct_size',C.c_uint32),('max_frames',C.c_uint32),('max_bytes',C.c_uint64),('duration_us',C.c_uint64)]
+class _AudioBufferStats(C.Structure):
+    _fields_=[(n,C.c_uint64) for n in ('frames','bytes','evicted_frames','first_ns','last_ns')]
 class _BufferStats(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('frames','bytes','evicted','skipped','first_ns','last_ns','segments')]+[(n,C.c_uint32) for n in ('split_pending','output_open')]
 class _Plane(C.Structure):
@@ -83,6 +85,8 @@ def _load(path=None):
         'zc_video_recording_stats':([C.c_void_p,C.POINTER(_RecordingStats)],C.c_int),
         'zc_default_buffer_config':([C.POINTER(_BufferConfig)],None),
         'zc_video_open_circular':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_open_circular_av':([C.POINTER(_VideoConfig),C.POINTER(_BufferConfig),C.POINTER(_RecordingOptions),C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_audio_buffer_stats':([C.c_void_p,C.POINTER(_AudioBufferStats)],C.c_int),
         'zc_video_buffer_stats':([C.c_void_p,C.POINTER(_BufferStats)],C.c_int),
         **{name:([C.c_void_p,C.c_char_p],C.c_int) for name in ('zc_video_save_buffer','zc_video_open_output','zc_video_split')},
         **{name:([C.c_void_p],C.c_int) for name in ('zc_video_close_output','zc_video_cancel_split')},
@@ -306,7 +310,6 @@ class Camera:
             source=None;recorder=None;recording=None;encoding={}
             try:
                 if audio is not None and audio is not False:
-                    if circular is not None: raise ValueError('Circular A/V is not supported')
                     options={} if audio is True else dict(audio)
                     encoding={name:options.pop(name) for name in ('codec','bitrate') if name in options}
                     options.setdefault('backend','alsa')
@@ -512,7 +515,6 @@ class Recorder:
         config.codec=codecs[codec];config.bitrate=_u32(bitrate);config.gop=_u32(gop)
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
         if circular is not None:
-            if audio is not None or exclusive: raise ValueError('Circular A/V and exclusive circular outputs are unsupported')
             if path is not None: raise ValueError('Circular recording starts without a file; use open_output')
             if set(circular)-{'max_frames','max_bytes','duration_ms'}: raise ValueError('Unknown circular buffer option')
             buffer=_BufferConfig();self._lib.zc_default_buffer_config(C.byref(buffer))
@@ -520,7 +522,21 @@ class Recorder:
             for name,value in (('max_bytes',circular.get('max_bytes',64*1024*1024)),('duration_us',circular.get('duration_ms',5000)*1000)):
                 if not isinstance(value,int) or not 0<value<2**64: raise ValueError('Invalid circular buffer limit')
                 setattr(buffer,name,value)
-            _check(self._lib,self._lib.zc_video_open_circular(C.byref(config),C.byref(buffer),C.byref(self._handle)))
+            if audio is None:
+                _check(self._lib,self._lib.zc_video_open_circular(C.byref(config),C.byref(buffer),C.byref(self._handle)))
+            else:
+                audio=dict(audio);audio_codec=audio.pop('codec','pcm' if codec=='mjpeg' else 'aac')
+                audio_bitrate=_u32(audio.pop('bitrate',0))
+                if audio_codec not in ('pcm','aac') or (codec=='mjpeg' and audio_codec=='aac'): raise ValueError('AAC requires H.264/HEVC; PCM supports all video codecs')
+                self._audio_container='.mp4' if audio_codec=='aac' else '.mkv'
+                if audio_bitrate and audio_codec!='aac': raise ValueError('PCM does not use a bitrate')
+                if set(audio)-{'sample_rate','channels','buffer_frames','max_blocks'}: raise ValueError('Unknown audio recording option')
+                opts=_RecordingOptions();self._lib.zc_default_recording_options(C.byref(opts));opts.exclusive=bool(exclusive);opts.max_blocks=4096
+                for name,value in audio.items(): setattr(opts,name,_u32(value))
+                if not opts.sample_rate: raise ValueError('Audio sample rate is required')
+                if 'buffer_frames' not in audio:
+                    opts.buffer_frames=_u32(opts.sample_rate*min(10,(buffer.duration_us+999999)//1000000+1))
+                _check(self._lib,self._lib.zc_video_open_circular_av(C.byref(config),C.byref(buffer),C.byref(opts),audio_bitrate,C.byref(self._handle)))
         else:
             if path is None: raise ValueError('A file or circular buffer configuration is required')
             opts=_RecordingOptions();self._lib.zc_default_recording_options(C.byref(opts));opts.exclusive=bool(exclusive)
@@ -566,7 +582,13 @@ class Recorder:
         with self._lock:
             self._open();out=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(out)))
             return {name:getattr(out,name) for name,_ in out._fields_}
+    @property
+    def audio_buffer_stats(self):
+        with self._lock:
+            self._open();out=_AudioBufferStats();_check(self._lib,self._lib.zc_video_audio_buffer_stats(self._handle,C.byref(out)))
+            return {name:getattr(out,name) for name,_ in out._fields_}
     def _path_call(self,name,path):
+        if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
         with self._lock:
             self._open();_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
     def save_buffer(self,path): self._path_call('zc_video_save_buffer',path)

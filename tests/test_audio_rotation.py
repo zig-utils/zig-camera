@@ -82,7 +82,7 @@ class AudioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             with self.assertRaises(CameraError): Recorder(root/'a.mp4',width=32,height=32,audio={'sample_rate':48000})
-            with self.assertRaises(ValueError): Recorder(width=32,height=32,circular={},audio={'sample_rate':48000})
+            with self.assertRaises(ValueError): Recorder(width=32,height=32,circular={},audio={'sample_rate':48000,'codec':'aac'})
             with Recorder(root/'a.mkv',width=32,height=32,audio={'sample_rate':48000,'buffer_frames':4,'max_blocks':2}) as recorder:
                 recorder.write_audio(expected(4),timestamp_ns=0)
                 for data,ts,status in ((expected(1),1000000,-4),(b'x',1000000,-1)):
@@ -91,6 +91,25 @@ class AudioTests(unittest.TestCase):
                 self.assertEqual(recorder.stats['audio_frames'],4)
                 for op in (lambda:recorder.save_buffer(root/'b.mkv'),recorder.close_output):
                     with self.assertRaises(CameraError): op()
+    def test_circular_pcm_snapshots_and_live_output_do_not_consume_history(self):
+        with tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera,AudioCapture(backend='synthetic') as source:
+            root=Path(directory);camera.start();feed=AudioFeed(source)
+            with Recorder(width=32,height=32,fps=25,circular={'max_frames':4},audio={'sample_rate':48000}) as recorder:
+                for i in range(10):
+                    feed.through(recorder,(i+1)*40_000_000)
+                    with camera.acquire() as frame: recorder.write(frame,timestamp_ns=i*40_000_000)
+                before=recorder.audio_buffer_stats
+                for n in range(2):
+                    path=root/f'{n}.mkv';recorder.save_buffer(path);info=parse(path)
+                    self.assertEqual(len(info['video']),4)
+                    self.assertEqual(b''.join(p for _,p,_ in info['audio']),expected(7680,start=11520))
+                    self.assertEqual(recorder.audio_buffer_stats,before)
+                recorder.open_output(root/'live.mkv')
+                for i in range(10,14):
+                    feed.through(recorder,(i+1)*40_000_000)
+                    with camera.acquire() as frame: recorder.write(frame,timestamp_ns=i*40_000_000)
+                recorder.close_output()
+                self.assertEqual(b''.join(p for _,p,_ in parse(root/'live.mkv')['audio']),expected(15360,start=11520))
     def test_background_facade_recording_and_audio_failure_shutdown(self):
         from test_modes_recording import wait_frames
         with tempfile.TemporaryDirectory() as directory,Picamera2(simulate=True) as camera:
