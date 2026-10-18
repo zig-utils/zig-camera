@@ -3,9 +3,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const libcamera = b.option(bool, "libcamera", "Build the Linux libcamera backend") orelse (target.result.os.tag == .linux);
-    const jpeg = b.option(bool, "jpeg", "Enable system libjpeg encoding") orelse (target.result.os.tag == .linux);
+    const jpeg = b.option(bool, "jpeg", "Use system JPEG acceleration instead of the Home encoder") orelse false;
     if (libcamera and target.result.os.tag != .linux) @panic("libcamera requires Linux");
+    const preview = b.option(bool, "preview", "Enable SDL2 windowed preview") orelse false;
+    const video = b.option(bool, "video", "Enable Home native MJPEG recording") orelse true;
     const options = b.addOptions();
+    options.addOption(bool, "preview", preview);
+    options.addOption(bool, "video", video);
     options.addOption(bool, "libcamera", libcamera);
     options.addOption(bool, "jpeg", jpeg);
     const mod = b.addModule("camera", .{
@@ -34,6 +38,10 @@ pub fn build(b: *std.Build) void {
     if (jpeg) {
         mod.addCSourceFile(.{ .file = b.path("native/jpeg.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
         mod.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
+    }
+    if (preview) {
+        mod.addCSourceFile(.{ .file = b.path("native/preview.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+        mod.linkSystemLibrary("sdl2", .{ .use_pkg_config = .force });
     }
     const lib = b.addLibrary(.{ .name = "zigcamera", .linkage = .dynamic, .root_module = mod });
     b.installArtifact(lib);

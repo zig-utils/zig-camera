@@ -22,6 +22,12 @@ const Session = struct {
     count: usize = 0,
     stats: c.zc_stats = std.mem.zeroes(c.zc_stats),
 
+    fn leaseIndex(self: *Session, token: u64) ?u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.slots[0..self.info.buffer_count], 0..) |*slot, i| if (slot.state == .leased and slot.frame.token == token) return @intCast(i);
+        return null;
+    }
     fn ptr(self: *Session) *c.zc_camera {
         return @ptrCast(self);
     }
@@ -87,12 +93,21 @@ fn valid(cfg: *const c.zc_config) bool {
         cfg.analogue_gain >= 0 and cfg.analogue_gain <= 64 and std.math.isFinite(cfg.lens_position) and
         cfg.lens_position >= -1 and cfg.lens_position <= 100;
 }
+pub export fn zc_default_capture_options(out: *c.zc_capture_options) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_capture_options), .role = c.ZC_STILL, .unpacked_raw = 0, .noise_reduction = std.math.maxInt(u32) };
+}
 pub export fn zc_open(cfg: *const c.zc_config, out: *?*c.zc_camera) c_int {
+    var opts: c.zc_capture_options = undefined;
+    zc_default_capture_options(&opts);
+    return zc_open_ex(cfg, &opts, out);
+}
+pub export fn zc_open_ex(cfg: *const c.zc_config, opts: *const c.zc_capture_options, out: *?*c.zc_camera) c_int {
     out.* = null;
-    if (!valid(cfg)) return c.ZC_INVALID;
+    if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
+        (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.* };
-    const rc = driver.open(cfg, self, completed, &self.device, &self.info);
+    const rc = driver.open(cfg, opts, self, completed, &self.device, &self.info);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
@@ -297,11 +312,47 @@ pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, qua
     for (self.slots[0..self.info.buffer_count]) |*slot| {
         if (slot.state == .leased and slot.frame.token == token) {
             self.mutex.unlock();
-            if (!options.jpeg) return c.ZC_UNSUPPORTED;
-            return zcd_save_jpeg(&slot.frame, path, quality);
+            if (options.jpeg) return zcd_save_jpeg(&slot.frame, path, quality);
+            var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
+            defer encoder.deinit();
+            const m = slot.frame.main;
+            const encoded = encoder.encode(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride, 3, @intCast(quality)) catch return c.ZC_NOMEM;
+            var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+            defer atom.deinit();
+            atom.file_writer.file.writeAll(encoded) catch return c.ZC_IO;
+            atom.finish() catch return c.ZC_IO;
+            return c.ZC_OK;
         }
     }
     self.mutex.unlock();
+    return c.ZC_STALE;
+}
+pub export fn zc_get_raw_metadata(p: *c.zc_camera, token: u64, out: *c.zc_raw_metadata) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.leaseIndex(token)) |i| return driver.metadata(self.device.?, i, out);
+    return c.ZC_STALE;
+}
+pub export fn zc_save_dng(p: *c.zc_camera, token: u64, path: [*:0]const u8) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.leaseIndex(token)) |i| {
+        const slot = &self.slots[i];
+        {
+            var meta: c.zc_raw_metadata = undefined;
+            const rc = driver.metadata(self.device.?, @intCast(i), &meta);
+            if (rc != 0) return rc;
+            @import("dng.zig").save(std.heap.c_allocator, &slot.frame, &meta, std.mem.span(path)) catch |err| return switch (err) {
+                error.OutOfMemory => c.ZC_NOMEM,
+                error.UnsupportedFormat, error.MissingCalibration => c.ZC_UNSUPPORTED,
+                error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge => c.ZC_INVALID,
+                else => c.ZC_IO,
+            };
+            return c.ZC_OK;
+        }
+    }
     return c.ZC_STALE;
 }
 pub export fn zc_status_string(status: c_int) [*:0]const u8 {

@@ -29,6 +29,23 @@ jobs:
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config python3-pil
+      - name: Native Home media and SDL dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libsdl2-dev python3-tifffile libraw-bin mkvtoolnix
+      - name: Test Home media, Bayer DNG and SDL preview
+        if: runner.os == 'Linux'
+        env:
+          SDL_VIDEODRIVER: dummy
+          ZC_TEST_PREVIEW: '1'
+        run: |
+          zig build -Dlibcamera=false -Djpeg=false -Dpreview=true -Doptimize=ReleaseSafe
+          PYTHONPATH=python python3 -m unittest discover -s tests -v
+          ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
+          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/home.jpg
+          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/test.dng
+          ./zig-out/bin/zig-camera record --simulate --width 128 --height 96 --frames 12 --fps 24 --warmup 0 --output zig-out/home.mkv
+          python3 tests/check_media_files.py zig-out
+          raw-identify zig-out/test.dng
       - name: Test native JPEG encoding with synthetic frames
         if: runner.os == 'Linux'
         run: |

@@ -8,14 +8,21 @@ import ctypes as C
 import ctypes.util
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-__all__ = ["Camera", "Frame", "CameraError"]
+__all__ = ["Camera", "Frame", "CameraError", "Preview", "Recorder"]
 
 class _Config(C.Structure):
     _fields_ = [(n, C.c_uint32) for n in ("width", "height", "buffer_count", "camera_index", "policy", "exposure_us", "frame_duration_us")] + [
         ("analogue_gain", C.c_float), ("lens_position", C.c_float), ("raw", C.c_uint32), ("raw_format", C.c_char * 32)]
+class _CaptureOptions(C.Structure):
+    _fields_ = [(n,C.c_uint32) for n in ("struct_size","role","unpacked_raw","noise_reduction")]
+class _RawMetadata(C.Structure):
+    _fields_ = [("valid",C.c_uint32),("black_levels",C.c_float*4),("camera_to_srgb",C.c_float*9),("model",C.c_char*128)]
+class _VideoConfig(C.Structure):
+    _fields_ = [(n,C.c_uint32) for n in ("width","height","fps_num","fps_den","codec","bitrate","quality","gop")]
 class _Plane(C.Structure):
     _fields_ = [("data", C.POINTER(C.c_uint8)), ("length", C.c_uint64), ("bytes_used", C.c_uint64),
                 ("offset", C.c_uint64), ("fd", C.c_int32), ("reserved", C.c_uint32)]
@@ -48,6 +55,17 @@ def _load(path=None):
         "zc_abi_version": ([], C.c_uint32),
         "zc_default_config": ([C.POINTER(_Config)], None),
         "zc_open": ([C.POINTER(_Config), C.POINTER(C.c_void_p)], C.c_int),
+        "zc_default_capture_options": ([C.POINTER(_CaptureOptions)],None),
+        "zc_open_ex": ([C.POINTER(_Config),C.POINTER(_CaptureOptions),C.POINTER(C.c_void_p)],C.c_int),
+        "zc_save_dng": ([C.c_void_p,C.c_uint64,C.c_char_p],C.c_int),
+        "zc_get_raw_metadata": ([C.c_void_p,C.c_uint64,C.POINTER(_RawMetadata)],C.c_int),
+        "zc_preview_open": ([C.c_char_p,C.c_uint32,C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
+        "zc_preview_show": ([C.c_void_p,C.POINTER(_Frame)],C.c_int),
+        "zc_preview_close": ([C.c_void_p],C.c_int),
+        "zc_default_video_config": ([C.POINTER(_VideoConfig)],None),
+        "zc_video_open": ([C.c_char_p,C.POINTER(_VideoConfig),C.POINTER(C.c_void_p)],C.c_int),
+        "zc_video_write": ([C.c_void_p,C.POINTER(_Frame),C.c_uint64],C.c_int),
+        "zc_video_close": ([C.c_void_p],C.c_int),
         "zc_get_info": ([C.c_void_p, C.POINTER(_Info)], C.c_int),
         "zc_start": ([C.c_void_p], C.c_int), "zc_stop": ([C.c_void_p], C.c_int), "zc_close": ([C.c_void_p], C.c_int),
         "zc_acquire": ([C.c_void_p, C.c_uint32, C.POINTER(_Frame)], C.c_int),
@@ -71,9 +89,11 @@ def _u32(value):
     return value
 
 class Camera:
-    def __init__(self, *, library=None, simulate=False, policy="latest", **options):
+    def __init__(self, *, library=None, simulate=False, policy="latest", role="still", unpacked_raw=False, noise_reduction=None, **options):
         self._lib = _load(library)
         self._handle = C.c_void_p()
+        self._recording = None
+        self._started = False
         self._leases = {}  # Keep leases alive until explicitly released; deterministic cleanup.
         config = _Config(); self._lib.zc_default_config(C.byref(config))
         integer = {"width", "height", "buffer_count", "camera_index", "exposure_us", "frame_duration_us"}
@@ -89,7 +109,12 @@ class Camera:
             else: raise TypeError(f"Unknown camera option: {key}")
         if policy not in ("fifo", "latest"): raise ValueError("policy must be fifo or latest")
         config.policy = 0 if policy == "fifo" else 1
-        self._check(self._lib.zc_open(C.byref(config), C.byref(self._handle)))
+        roles={"still":0,"preview":1,"video":2}
+        if role not in roles: raise ValueError("role must be still, preview or video")
+        capture = _CaptureOptions(); self._lib.zc_default_capture_options(C.byref(capture))
+        capture.role=roles[role]; capture.unpacked_raw=bool(unpacked_raw)
+        if noise_reduction is not None: capture.noise_reduction=_u32(noise_reduction)
+        self._check(self._lib.zc_open_ex(C.byref(config),C.byref(capture),C.byref(self._handle)))
         native = _Info()
         self._check(self._lib.zc_get_info(self._handle, C.byref(native)))
         self.info = {"backend": "synthetic" if native.backend == 0 else "libcamera", "camera_id": native.camera_id.decode(),
@@ -102,20 +127,51 @@ class Camera:
     def _open(self):
         if not self._handle.value: raise RuntimeError("Camera is closed")
     def start(self):
-        self._open(); self._check(self._lib.zc_start(self._handle)); return self
+        self._open(); self._check(self._lib.zc_start(self._handle)); self._started=True; return self
     def stop(self):
-        self._open(); self._check(self._lib.zc_stop(self._handle))
+        self._open()
+        try: self.stop_recording()
+        finally:
+            self._check(self._lib.zc_stop(self._handle)); self._started=False
     def acquire(self, timeout_ms=5000):
         self._open(); native = _Frame()
         self._check(self._lib.zc_acquire(self._handle, _u32(timeout_ms), C.byref(native)))
         frame = Frame(self, native)
         self._leases[native.token] = frame
         return frame
+    def capture_array(self, timeout_ms=5000):
+        with self.acquire(timeout_ms) as frame: return frame.numpy()
+    def capture_buffer(self, timeout_ms=5000):
+        with self.acquire(timeout_ms) as frame: return frame.copy_rgb()
+    def capture_metadata(self, timeout_ms=5000):
+        with self.acquire(timeout_ms) as frame: return frame.metadata
+    def capture_file(self,path,timeout_ms=5000):
+        with self.acquire(timeout_ms) as frame: frame.save(path)
+    def start_recording(self,path,*,fps=30,quality=90):
+        self._open()
+        if self._recording is not None: raise RuntimeError("Recording already active")
+        if not self._started: self.start()
+        recorder=Recorder(path,width=self.info["main"]["width"],height=self.info["main"]["height"],fps=fps,quality=quality,library=self._lib._name)
+        self._recording=_Recording(self,recorder)
+        return self._recording
+    def stop_recording(self):
+        if self._recording is not None:
+            recording=self._recording; self._recording=None; recording.close()
+    def preview(self,frames=300,timeout_ms=5000):
+        if not self._started: self.start()
+        with Preview(self.info["main"]["width"],self.info["main"]["height"],library=self._lib._name) as window:
+            n=0
+            while frames==0 or n<frames:
+                with self.acquire(timeout_ms) as frame:
+                    if not window.show(frame): break
+                n+=1
+            return n
     @property
     def stats(self):
         self._open(); s = _Stats(); self._check(self._lib.zc_get_stats(self._handle, C.byref(s)))
         return {name: getattr(s, name) for name, _ in s._fields_}
     def close(self):
+        self.stop_recording()
         if self._handle.value:
             self._check(self._lib.zc_close(self._handle))
             self._handle = C.c_void_p()
@@ -168,9 +224,28 @@ class Frame:
             array = np.ndarray((s.height, s.width, 3), dtype=np.uint8, buffer=view, strides=(s.stride, 3, 1))
             array.setflags(write=False)
             yield array
+    def save_dng(self,path):
+        self._live()
+        self._camera._check(self._camera._lib.zc_save_dng(self._camera._handle,self._native.token,_path(path)))
+    @property
+    def raw_metadata(self):
+        self._live(); meta=_RawMetadata()
+        self._camera._check(self._camera._lib.zc_get_raw_metadata(self._camera._handle,self._native.token,C.byref(meta)))
+        return {"valid":meta.valid,"black_levels":list(meta.black_levels),"camera_to_srgb":list(meta.camera_to_srgb),"model":meta.model.decode()}
+    def save(self,path):
+        suffix=Path(path).suffix.lower()
+        if suffix in (".jpg",".jpeg"): self.save_jpeg(path)
+        elif suffix==".dng": self.save_dng(path)
+        elif suffix==".ppm":
+            self._live(); s=self._native.main
+            with open(path,"wb") as file:
+                file.write(f"P6\n{s.width} {s.height}\n255\n".encode())
+                with self.plane() as data:
+                    for y in range(s.height): file.write(data[y*s.stride:y*s.stride+s.width*3])
+        else: raise ValueError("Supported still formats: JPEG, PPM, DNG")
     def save_jpeg(self, path, quality=98):
         self._live()
-        self._camera._check(self._camera._lib.zc_save_jpeg(self._camera._handle, self._native.token, os.fsencode(path), _u32(quality)))
+        self._camera._check(self._camera._lib.zc_save_jpeg(self._camera._handle, self._native.token, _path(path), _u32(quality)))
     def release(self):
         self._live()
         if self._views: raise RuntimeError("Exit borrowed view contexts before releasing the frame")
@@ -183,3 +258,67 @@ class Frame:
         self._camera._check(status)
     def __enter__(self): self._live(); return self
     def __exit__(self, *exc): self.release()
+
+
+def _path(path):
+    value=os.fsencode(path)
+    if b"\0" in value: raise ValueError("Paths cannot contain NUL")
+    return value
+
+def _check(lib,status):
+    if status: raise CameraError(status,lib.zc_status_string(status).decode())
+
+class Preview:
+    """SDL window. All operations must run on the creating main/UI thread."""
+    def __init__(self,width,height,*,title="zig-camera",library=None):
+        self._lib=_load(library); self._handle=C.c_void_p()
+        _check(self._lib,self._lib.zc_preview_open(title.encode(),_u32(width),_u32(height),C.byref(self._handle)))
+    def show(self,frame):
+        if not self._handle.value: raise RuntimeError("Preview is closed")
+        frame._live()
+        status=self._lib.zc_preview_show(self._handle,C.byref(frame._native))
+        if status==1: return False
+        _check(self._lib,status); return True
+    def close(self):
+        if self._handle.value:
+            _check(self._lib,self._lib.zc_preview_close(self._handle)); self._handle=C.c_void_p()
+    def __enter__(self): return self
+    def __exit__(self,*exc): self.close()
+
+class Recorder:
+    """Home native JPEG/MJPEG in Matroska. Calls must be serialized by the caller."""
+    def __init__(self,path,*,width,height,fps=30,quality=90,codec="mjpeg",library=None):
+        self._lib=_load(library); self._handle=C.c_void_p(); config=_VideoConfig()
+        self._lib.zc_default_video_config(C.byref(config))
+        if codec!="mjpeg": raise ValueError("This version supports the Home MJPEG encoder")
+        config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
+        _check(self._lib,self._lib.zc_video_open(_path(path),C.byref(config),C.byref(self._handle)))
+    def write(self,frame,*,timestamp_ns=None):
+        if not self._handle.value: raise RuntimeError("Recorder is closed")
+        frame._live()
+        ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
+        if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError("Invalid timestamp")
+        _check(self._lib,self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+    def close(self):
+        if self._handle.value:
+            status=self._lib.zc_video_close(self._handle); self._handle=C.c_void_p(); _check(self._lib,status)
+    def __enter__(self): return self
+    def __exit__(self,*exc): self.close()
+
+class _Recording:
+    def __init__(self,camera,recorder):
+        self.camera=camera; self.recorder=recorder; self.stop_event=threading.Event(); self.error=None
+        self.thread=threading.Thread(target=self._run,name="zig-camera-recorder",daemon=True);self.thread.start()
+    def _run(self):
+        try:
+            while not self.stop_event.is_set():
+                try: frame=self.camera.acquire(timeout_ms=100)
+                except CameraError as error:
+                    if error.status==-3: continue
+                    raise
+                with frame: self.recorder.write(frame)
+        except Exception as error: self.error=error
+    def close(self):
+        self.stop_event.set(); self.thread.join()
+        self.recorder.close()
+        if self.error: raise self.error

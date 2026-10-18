@@ -4,6 +4,12 @@ pub const core = @import("core.zig");
 comptime {
     _ = core;
 }
+pub const raw = @import("raw.zig");
+pub const dng = @import("dng.zig");
+pub const media = @import("media.zig");
+comptime {
+    _ = media;
+}
 pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;
 pub const Info = c.zc_info;
@@ -33,6 +39,11 @@ pub const Camera = struct {
     pub fn init(cfg: Config) Error!Camera {
         var ptr: ?*c.zc_camera = null;
         try check(core.zc_open(&cfg, &ptr));
+        return .{ .handle = ptr.? };
+    }
+    pub fn initWithOptions(cfg: Config, opts: c.zc_capture_options) Error!Camera {
+        var ptr: ?*c.zc_camera = null;
+        try check(core.zc_open_ex(&cfg, &opts, &ptr));
         return .{ .handle = ptr.? };
     }
     pub fn deinit(self: Camera) Error!void {
@@ -75,6 +86,9 @@ pub const Frame = struct {
         const m = self.value.main;
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
     }
+    pub fn saveDng(self: *const Frame, path: [:0]const u8) Error!void {
+        try check(core.zc_save_dng(self.camera.handle, self.value.token, path));
+    }
     pub fn saveJpeg(self: *const Frame, path: [:0]const u8, quality: u32) Error!void {
         try check(core.zc_save_jpeg(self.camera.handle, self.value.token, path, quality));
     }
@@ -82,4 +96,7 @@ pub const Frame = struct {
 test {
     _ = core;
     _ = pixels;
+    _ = raw;
+    _ = dng;
+    _ = @import("video.zig");
 }

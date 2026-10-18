@@ -9,6 +9,7 @@ pub const Handle = struct {
     callback: Callback,
     buffers: [c.ZC_MAX_BUFFERS][]u8 = undefined,
     info: c.zc_info,
+    raw_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     sequence: u64 = 0,
     // Fault injection for the shared ownership state machine's tests.
     fail_queue: bool = false,
@@ -17,8 +18,9 @@ pub const Handle = struct {
     fail_stop_once: bool = false,
     stop_calls: u32 = 0,
 };
-pub fn open(config: *const c.zc_config, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info) c_int {
-    if (config.raw != 0 or config.camera_index != 0) return c.ZC_UNSUPPORTED;
+pub fn open(config: *const c.zc_config, opts: *const c.zc_capture_options, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info) c_int {
+    _ = opts;
+    if (config.camera_index != 0) return c.ZC_UNSUPPORTED;
     const h = Alloc.create(Handle) catch return c.ZC_NOMEM;
     const width = if (config.width == 0) 640 else config.width;
     const height = if (config.height == 0) 480 else config.height;
@@ -32,13 +34,46 @@ pub fn open(config: *const c.zc_config, context: ?*anyopaque, callback: Callback
     h.info.main.plane_count = 1;
     @memcpy(h.info.main.format[0..6], "BGR888");
     @memcpy(h.info.camera_id[0..9], "synthetic");
+    if (config.raw != 0) {
+        h.info.raw.width = width;
+        h.info.raw.height = height;
+        h.info.raw.stride = std.mem.alignForward(u32, width * 2, 64);
+        h.info.raw.plane_count = 1;
+        const name = if (config.raw_format[0] == 0) "SRGGB12" else std.mem.sliceTo(&config.raw_format, 0);
+        const format = @import("raw.zig").Format.parse(name) catch {
+            Alloc.destroy(h);
+            return c.ZC_UNSUPPORTED;
+        };
+        if (format.csi2_packed or format.bits == 8) {
+            Alloc.destroy(h);
+            return c.ZC_UNSUPPORTED;
+        }
+        @memcpy(h.info.raw.format[0..name.len], name);
+    }
     var allocated: usize = 0;
     for (0..config.buffer_count) |i| {
         h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height) catch {
             for (h.buffers[0..allocated]) |buf| Alloc.free(buf);
+            for (h.raw_buffers[0..allocated]) |buf| Alloc.free(buf);
             Alloc.destroy(h);
             return c.ZC_NOMEM;
         };
+        if (config.raw != 0) {
+            h.raw_buffers[i] = Alloc.alloc(u8, @as(usize, h.info.raw.stride) * height) catch {
+                Alloc.free(h.buffers[i]);
+                for (h.buffers[0..allocated]) |buf| Alloc.free(buf);
+                for (h.raw_buffers[0..allocated]) |buf| Alloc.free(buf);
+                Alloc.destroy(h);
+                return c.ZC_NOMEM;
+            };
+            @memset(h.raw_buffers[i], 0);
+            const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&h.info.raw.format, 0)) catch unreachable;
+            const black: u32 = @as(u32, 1) << @intCast(format.bits - 6);
+            for (0..height) |y| for (0..width) |x| {
+                const value: u16 = @intCast(black + (x * 17 + y * 31 + i * 13) % (format.white() - black));
+                std.mem.writeInt(u16, h.raw_buffers[i][y * h.info.raw.stride + x * 2 ..][0..2], value, .little);
+            };
+        }
         allocated += 1;
         @memset(h.buffers[i], 0);
         for (0..height) |y| {
@@ -65,6 +100,7 @@ pub fn stop(h: *Handle) c_int {
 }
 pub fn close(h: *Handle) void {
     for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+    for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     Alloc.destroy(h);
 }
 pub fn sync(h: *Handle, _: u32, begin: bool) c_int {
@@ -75,6 +111,13 @@ pub fn queue(h: *Handle, index: u32) c_int {
     if (h.fail_queue) return c.ZC_DEVICE;
     var f = std.mem.zeroes(c.zc_frame);
     f.main = h.info.main;
+    if (h.config.raw != 0) {
+        f.raw = h.info.raw;
+        f.raw.planes[0].data = h.raw_buffers[index].ptr;
+        f.raw.planes[0].length = h.raw_buffers[index].len;
+        f.raw.planes[0].bytes_used = h.raw_buffers[index].len;
+        f.raw.planes[0].fd = -1;
+    }
     f.main.planes[0].data = h.buffers[index].ptr;
     f.main.planes[0].length = h.buffers[index].len;
     f.main.planes[0].bytes_used = h.buffers[index].len;
@@ -87,5 +130,14 @@ pub fn queue(h: *Handle, index: u32) c_int {
     f.red_gain = 1;
     f.blue_gain = 1;
     h.callback(h.context, index, &f, c.ZC_OK);
+    return c.ZC_OK;
+}
+
+pub fn metadata(_: *Handle, _: u32, out: *c.zc_raw_metadata) c_int {
+    out.* = std.mem.zeroes(c.zc_raw_metadata);
+    out.valid = 7;
+    out.black_levels = @splat(1024);
+    out.camera_to_srgb = .{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    @memcpy(out.model[0..20], "zig-camera synthetic");
     return c.ZC_OK;
 }

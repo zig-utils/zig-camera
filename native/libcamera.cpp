@@ -37,6 +37,7 @@ struct Slot {
     std::array<int, ZC_MAX_PLANES * 2> fds{};
     size_t fd_count = 0;
     bool used = false;
+    zc_raw_metadata raw_metadata{};
 };
 void text(char *dst, size_t n, const std::string &s) {
     std::memcpy(dst, s.data(), std::min(n - 1, s.size()));
@@ -59,6 +60,7 @@ struct Device {
     std::unique_ptr<FrameBufferAllocator> allocator;
     std::vector<Slot> slots;
     zc_config requested{};
+    zc_capture_options options{};
     zc_info info{};
     void *context = nullptr;
     Completion callback = nullptr;
@@ -105,8 +107,8 @@ struct Device {
         }
         return ZC_OK;
     }
-    int init(const zc_config &cfg, void *ctx, Completion complete) {
-        requested = cfg; context = ctx; callback = complete;
+    int init(const zc_config &cfg, const zc_capture_options &opts, void *ctx, Completion complete) {
+        requested = cfg; options = opts; context = ctx; callback = complete;
         if (manager.start() < 0) return ZC_DEVICE;
         manager_started = true;
         const auto cameras = manager.cameras();
@@ -114,8 +116,8 @@ struct Device {
         camera = cameras[cfg.camera_index];
         if (camera->acquire() < 0) return ZC_BUSY;
         acquired = true;
-        const std::vector<StreamRole> roles = cfg.raw ? std::vector<StreamRole>{StreamRole::StillCapture, StreamRole::Raw}
-                                                    : std::vector<StreamRole>{StreamRole::StillCapture};
+        const StreamRole role = opts.role == ZC_VIDEO ? StreamRole::VideoRecording : opts.role == ZC_PREVIEW ? StreamRole::Viewfinder : StreamRole::StillCapture;
+        const std::vector<StreamRole> roles = cfg.raw ? std::vector<StreamRole>{role, StreamRole::Raw} : std::vector<StreamRole>{role};
         config = camera->generateConfiguration(roles);
         if (!config || config->size() != roles.size()) return ZC_UNSUPPORTED;
         auto &main = config->at(0);
@@ -129,6 +131,15 @@ struct Device {
         if (cfg.raw) {
             auto &raw = config->at(1);
             raw.bufferCount = cfg.buffer_count;
+            if (opts.unpacked_raw && !cfg.raw_format[0]) {
+                const auto native = raw.pixelFormat.toString();
+                std::string pattern;
+                for (const char *p : {"RGGB", "BGGR", "GRBG", "GBRG"}) if (native.find(p) != std::string::npos) pattern = p;
+                if (pattern.empty()) return ZC_UNSUPPORTED;
+                // Ask for uncompressed 16-bit Bayer; validate() can choose a native
+                // unpacked depth, but compressed/packed substitutions are rejected below.
+                raw.pixelFormat = PixelFormat::fromString("S" + pattern + "16");
+            }
             if (cfg.raw_format[0]) {
                 raw.pixelFormat = PixelFormat::fromString(cfg.raw_format);
                 if (!raw.pixelFormat.isValid()) return ZC_INVALID;
@@ -139,6 +150,10 @@ struct Device {
         if (main.pixelFormat != formats::BGR888) return ZC_UNSUPPORTED;
         if (cfg.raw && cfg.raw_format[0] && config->at(1).pixelFormat.toString() != cfg.raw_format)
             return ZC_UNSUPPORTED;
+        if (cfg.raw && opts.unpacked_raw) {
+            const auto name = config->at(1).pixelFormat.toString();
+            if (name.empty() || name[0] != 'S' || name.find('_') != std::string::npos) return ZC_UNSUPPORTED;
+        }
         if (camera->configure(config.get()) < 0) return ZC_DEVICE;
         if (cfg.exposure_us && (!has(camera, controls::ExposureTime) || !has(camera, controls::AnalogueGain) || !has(camera, controls::AeEnable)))
             return ZC_UNSUPPORTED;
@@ -201,12 +216,22 @@ struct Device {
         frame.red_gain = 0; frame.blue_gain = 0;
         const auto gains = meta.get(controls::ColourGains);
         if (gains) { frame.red_gain = (*gains)[0]; frame.blue_gain = (*gains)[1]; }
+        auto &raw_meta = slots[index].raw_metadata;
+        raw_meta = {};
+        const auto model = camera->properties().get(properties::Model);
+        text(raw_meta.model, sizeof(raw_meta.model), model.value_or(camera->id()));
+        const auto black = meta.get(controls::SensorBlackLevels);
+        if (black) { for (int i=0; i<4; ++i) raw_meta.black_levels[i] = (*black)[i]; raw_meta.valid |= 1; }
+        const auto matrix = meta.get(controls::ColourCorrectionMatrix);
+        if (matrix) { for (int i=0; i<9; ++i) raw_meta.camera_to_srgb[i] = (*matrix)[i]; raw_meta.valid |= 2; }
+        if (gains) raw_meta.valid |= 4;
         callback(context, index, &frame, ZC_OK);
     }
     int start() {
         ControlList control(camera->controls());
         // Match Picamera2's still-image quality policy when the camera supports it.
-        setMode(control, camera, "NoiseReductionMode", 2); // HighQuality
+        const uint32_t nr = options.noise_reduction == UINT32_MAX ? (options.role == ZC_STILL ? 2 : options.role == ZC_VIDEO ? 1 : 3) : options.noise_reduction;
+        setMode(control, camera, "NoiseReductionMode", nr);
         if (requested.exposure_us) {
             control.set(controls::AeEnable, false);
             setMode(control, camera, "ExposureTimeMode", 1);
@@ -259,11 +284,11 @@ struct Device {
     }
 };
 }
-extern "C" int zcd_open(const zc_config *cfg, void *ctx, Completion cb, Device **out, zc_info *info) {
+extern "C" int zcd_open(const zc_config *cfg, const zc_capture_options *opts, void *ctx, Completion cb, Device **out, zc_info *info) {
     *out = nullptr;
     try {
         auto device = std::make_unique<Device>();
-        const int rc = device->init(*cfg, ctx, cb);
+        const int rc = device->init(*cfg, *opts, ctx, cb);
         if (rc) return rc;
         *info = device->info; *out = device.release(); return ZC_OK;
     } catch (const std::bad_alloc &) { return ZC_NOMEM; }
@@ -280,3 +305,9 @@ extern "C" int zcd_stop(Device *device) {
     return ZC_OK;
 }
 extern "C" void zcd_close(Device *device) { delete device; }
+
+extern "C" int zcd_metadata(Device *device, uint32_t index, zc_raw_metadata *out) {
+    if (index >= device->slots.size()) return ZC_INVALID;
+    *out = device->slots[index].raw_metadata;
+    return ZC_OK;
+}

@@ -1,7 +1,7 @@
 const std = @import("std");
 const camera = @import("camera");
 const help =
-    \\zig-camera info|capture|bench [options]
+    \\zig-camera info|capture|preview|record|bench [options]
     \\  --width N --height N      Processed size; omit both for default still size
     \\  --buffers N              Preallocated request count, 2..32 (default 4)
     \\  --camera N               libcamera camera index (default 0)
@@ -11,7 +11,10 @@ const help =
     \\  --lens N                 Manual lens position in dioptres; default continuous AF if supported
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
-    \\  --output PATH            capture: .ppm or .jpg/.jpeg (default capture.ppm)
+    \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv (default capture.ppm)
+    \\  --fps N                  Preview/record frame rate (default 30)
+    \\  --preview                Also display while recording
+    \\  --noise-reduction N      0 off, 1 fast, 2 high quality, 3 minimal
     \\  --quality N              JPEG quality, 1..100 (default 98, 4:4:4)
     \\  --warmup N               Frames discarded before capture/bench (default 30)
     \\  --frames N               bench frame count (default 300)
@@ -34,9 +37,17 @@ fn run() !void {
         return;
     }
     const command = args[1];
-    if (!eq(command, "info") and !eq(command, "capture") and !eq(command, "bench")) return error.InvalidCommand;
+    if (!eq(command, "info") and !eq(command, "capture") and !eq(command, "bench") and !eq(command, "preview") and !eq(command, "record")) return error.InvalidCommand;
     var cfg = camera.defaultConfig();
-    var output: [:0]const u8 = "capture.ppm";
+    var capture_opts: camera.c.zc_capture_options = undefined;
+    camera.core.zc_default_capture_options(&capture_opts);
+    if (eq(command, "record")) {
+        capture_opts.role = camera.c.ZC_VIDEO;
+        cfg.policy = camera.c.ZC_FIFO;
+    } else if (eq(command, "preview")) capture_opts.role = camera.c.ZC_PREVIEW;
+    var fps: u32 = 30;
+    var show_preview = eq(command, "preview");
+    var output: [:0]const u8 = if (eq(command, "record")) "capture.mkv" else "capture.ppm";
     var simulate = false;
     var warmup: u32 = 30;
     var frames: u32 = 300;
@@ -47,6 +58,10 @@ fn run() !void {
         const key = args[i];
         if (eq(key, "--simulate")) {
             simulate = true;
+            continue;
+        }
+        if (eq(key, "--preview")) {
+            show_preview = true;
             continue;
         }
         if (eq(key, "--fifo")) {
@@ -76,7 +91,11 @@ fn run() !void {
             cfg.lens_position = try std.fmt.parseFloat(f32, value);
         } else {
             const n = try std.fmt.parseInt(u32, value, 10);
-            if (eq(key, "--width")) {
+            if (eq(key, "--fps")) {
+                fps = n;
+            } else if (eq(key, "--noise-reduction")) {
+                capture_opts.noise_reduction = n;
+            } else if (eq(key, "--width")) {
                 cfg.width = n;
             } else if (eq(key, "--height")) {
                 cfg.height = n;
@@ -99,8 +118,19 @@ fn run() !void {
             } else return error.UnknownOption;
         }
     }
-    if (frames == 0 or quality == 0 or quality > 100) return error.InvalidArgument;
-    const cam = try camera.Camera.init(cfg);
+    if ((frames == 0 and !eq(command, "preview")) or quality == 0 or quality > 100 or fps == 0 or fps > 1000) return error.InvalidArgument;
+    if (std.mem.endsWith(u8, output, ".dng")) {
+        cfg.raw = 1;
+        capture_opts.unpacked_raw = 1;
+    }
+    if (eq(command, "preview") or eq(command, "record")) {
+        if (cfg.width == 0) {
+            cfg.width = 1280;
+            cfg.height = 720;
+        }
+        if (cfg.frame_duration_us == 0) cfg.frame_duration_us = 1_000_000 / fps;
+    }
+    const cam = try camera.Camera.initWithOptions(cfg, capture_opts);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
@@ -126,14 +156,16 @@ fn run() !void {
     if (eq(command, "capture")) {
         var frame = try cam.acquire(timeout_ms);
         defer frame.release() catch {};
-        if (std.mem.endsWith(u8, output, ".ppm")) {
+        if (std.mem.endsWith(u8, output, ".dng")) {
+            try frame.saveDng(output);
+        } else if (std.mem.endsWith(u8, output, ".ppm")) {
             const file = try std.fs.cwd().createFile(output, .{});
             defer file.close();
             try (try frame.rgb()).savePpm(file);
         } else if (std.mem.endsWith(u8, output, ".jpg") or std.mem.endsWith(u8, output, ".jpeg")) {
             try frame.saveJpeg(output, quality);
         } else return error.UnsupportedOutputExtension;
-        if (frame.value.raw.plane_count > 0) {
+        if (frame.value.raw.plane_count > 0 and !std.mem.endsWith(u8, output, ".dng")) {
             for (0..frame.value.raw.plane_count) |p| {
                 const raw_path = try std.fmt.allocPrint(a, "{s}.raw.{d}", .{ output, p });
                 defer a.free(raw_path);
@@ -152,6 +184,46 @@ fn run() !void {
         const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count });
         try meta_file.writeAll(json);
         std.debug.print("saved {s} and {s}\n", .{ output, meta_path });
+        return;
+    }
+    if (eq(command, "preview") or eq(command, "record")) {
+        var window: ?*camera.c.zc_preview = null;
+        if (show_preview) try camera.check(camera.media.zc_preview_open("zig-camera", info.main.width, info.main.height, &window));
+        defer if (window) |w| {
+            camera.check(camera.media.zc_preview_close(w)) catch {};
+        };
+        var recorder: ?*camera.c.zc_recorder = null;
+        if (eq(command, "record")) {
+            var video_cfg: camera.c.zc_video_config = undefined;
+            camera.media.zc_default_video_config(&video_cfg);
+            video_cfg.width = info.main.width;
+            video_cfg.height = info.main.height;
+            video_cfg.fps_num = fps;
+            video_cfg.quality = quality;
+            try camera.check(camera.media.zc_video_open(output, &video_cfg, &recorder));
+        }
+        errdefer if (recorder) |r| {
+            _ = camera.media.zc_video_close(r);
+        };
+        var n: u64 = 0;
+        while (frames == 0 or n < frames) : (n += 1) {
+            var frame = try cam.acquire(timeout_ms);
+            defer frame.release() catch {};
+            if (window) |w| {
+                const status = camera.media.zc_preview_show(w, &frame.value);
+                if (status == 1) break;
+                try camera.check(status);
+            }
+            if (recorder) |r| {
+                const timestamp = if (info.backend == camera.c.ZC_SYNTHETIC) n * 1_000_000_000 / fps else frame.value.timestamp_ns;
+                try camera.check(camera.media.zc_video_write(r, &frame.value, timestamp));
+            }
+        }
+        if (recorder) |r| {
+            recorder = null;
+            try camera.check(camera.media.zc_video_close(r));
+        }
+        std.debug.print("processed {d} frames\n", .{n});
         return;
     }
     var timer = try std.time.Timer.start();
