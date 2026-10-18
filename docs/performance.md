@@ -30,7 +30,7 @@ python3 bench/compare.py --width 1920 --height 1080 --frames 300 --repeats 5 --o
 The harness alternates native lease, Picamera2 mapped request, and Picamera2
 owned-array request paths in separate processes. It requests the same camera,
 BGR888 (RGB byte order), geometry, FIFO buffering, warmup, fixed exposure/gain,
-and frame duration. It records negotiated geometry, wall time, process CPU,
+frame duration, and high-quality still-image noise reduction. It records negotiated geometry, wall time, process CPU,
 peak RSS, sequence range when available, commands, platform and library versions.
 A mismatched geometry or buffer count aborts the comparison. Keep the raw result
 JSON; medians alone are insufficient evidence. The mapped baseline is the primary
@@ -77,3 +77,23 @@ run does not establish optical quality or a speedup.
    benchmark does not prove an encoder speedup.
 
 Preview, hardware encoders and DNG are outside this version's benchmark scope.
+
+## Local development evidence (not camera performance)
+
+A synthetic ReleaseFast run on the development aarch64 Mac reported:
+
+| Operation | Time |
+| --- | ---: |
+| Lease/release, 100,000 iterations | 69 ns/iteration |
+| Full 1920x1080 RGB copy, 100 iterations | 108,148 ns/frame |
+| RGB-to-luma, 100 iterations | 1,290,206 ns/frame |
+
+These are single-run diagnostic timings, not statistically established results
+or Picamera2 comparisons. The lease case does not copy or process a frame;
+copy and luma are different workloads. Hardware camera speedup is unmeasured.
+The run used Zig 0.15.2 targeting aarch64-macos.15.0, with the executable built
+from bench/core.zig and a synthetic, unpaced device on the host aarch64 Mac.
+On this macOS 27 development host, the older Zig build runner could not link
+against the native OS target; the equivalent direct compiler invocation used
+an explicit macOS 15 deployment target. Standard `zig build` was independently
+validated on macOS 15 and Ubuntu x86_64/aarch64 in CI.

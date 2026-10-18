@@ -13,6 +13,7 @@ def run(args):
     controls = {"AeEnable": False, "ExposureTime": args.exposure_us, "AnalogueGain": args.gain,
                 "FrameDurationLimits": (args.frame_us, args.frame_us)}
     supported = picam.camera_controls
+    if "NoiseReductionMode" in supported: controls["NoiseReductionMode"] = 2  # HighQuality, matching native
     for mode in ("ExposureTimeMode", "AnalogueGainMode"):
         if mode in supported: controls[mode] = 1
     if "AfMode" in supported: controls["AfMode"] = 2  # continuous

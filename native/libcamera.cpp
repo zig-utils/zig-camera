@@ -122,6 +122,8 @@ struct Device {
         // libcamera's BGR888 fourcc stores R,G,B bytes on little endian hosts.
         main.pixelFormat = formats::BGR888;
         main.colorSpace = ColorSpace::Sycc;
+        main.colorSpace->ycbcrEncoding = ColorSpace::YcbcrEncoding::None;
+        main.colorSpace->range = ColorSpace::Range::Full;
         if (cfg.width) main.size = {cfg.width, cfg.height};
         main.bufferCount = cfg.buffer_count;
         if (cfg.raw) {
@@ -203,6 +205,8 @@ struct Device {
     }
     int start() {
         ControlList control(camera->controls());
+        // Match Picamera2's still-image quality policy when the camera supports it.
+        setMode(control, camera, "NoiseReductionMode", 2); // HighQuality
         if (requested.exposure_us) {
             control.set(controls::AeEnable, false);
             setMode(control, camera, "ExposureTimeMode", 1);

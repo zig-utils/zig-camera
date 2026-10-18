@@ -32,6 +32,8 @@ JPEG defaults to quality 98 and no chroma subsampling. PPM is lossless 8-bit
 processed RGB, not sensor raw. `--raw` writes paired native planes to
 `photo.ppm.raw.N` and records their negotiated layout in `photo.ppm.json`.
 Packed/compressed raw stays in its native format; it is **not DNG**.
+When available, ISP noise reduction uses the HighQuality still-image policy;
+this can limit frame rate and is matched in the Picamera2 comparison.
 Manual exposure requires both `--exposure-us` and `--gain`. Autofocus runs
 continuously when available; `--lens` requests manual focus in dioptres.
 Configuration may be adjusted by libcamera; always inspect negotiated geometry.
