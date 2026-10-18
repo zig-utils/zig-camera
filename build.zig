@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const jpeg = b.option(bool, "jpeg", "Use system JPEG acceleration instead of the Home encoder") orelse false;
     if (libcamera and target.result.os.tag != .linux) @panic("libcamera requires Linux");
     const preview = b.option(bool, "preview", "Enable SDL2 windowed preview") orelse false;
-    const video = b.option(bool, "video", "Enable Home native MJPEG recording") orelse true;
+    const video = b.option(bool, "video", "Enable Home recording") orelse true;
     const codecs = b.option(bool, "codecs", "Enable Home x264/x265 codecs (system libraries)") orelse false;
     const options = b.addOptions();
     options.addOption(bool, "codecs", codecs);

@@ -14,7 +14,7 @@ This is a targeted camera-path audit, not a claim that every package was tested.
 | memory/src/pool.zig | Block stride was not aligned to free-list nodes, and alloc ignored requested alignment | Reproduced Debug panic for block_size=9; fixed aligned backing allocation, checked stride rounding, and rejection of unsupported alignment. Regression tests added in Home. |
 | video/src/core/memory.zig | Buffer pooling/refcounts are relevant concepts; init can leak the header if data allocation fails; several pool APIs use older ArrayList forms | Do not import the whole module into a camera callback. Future work: allocator-failure tests, acquire/release ordering, pool provenance and duplicate release checks. |
 | video/src/core/frame.zig | Rich owned frame representation, useful for downstream processing | Capture leases use DMA-BUF descriptors without adopting an owned/copying frame model. A downstream adapter can explicitly copy/import later. |
-| video/src/codecs/video/h264_encoder.zig | Contains placeholder macroblock output in a purported encode path | Do not reuse as a production camera encoder. Video encoding is explicitly outside this version; prefer validated system encoders when added. |
+| video/src/codecs/video/h264_encoder.zig | Contains placeholder macroblock output in a purported encode path | Do not reuse as a production camera encoder. Use the new header-checked Home x264/x265 adapter for actual compressed recording. |
 | video/IMPLEMENTATION_STATUS.md | Broad production-ready descriptions exceed what the inspected codec/GPU paths establish | Rely on code and conformance evidence, not feature lists. |
 | dataplane/src/dataplane.zig | Practical Linux poll/splice architecture, but specific to TCP proxy streams | Reuse the principle of a thin native data path; do not couple camera buffers to proxy-specific sockets. |
 | threading/, collections/, queue/, arena/ | Catalogued as potential building blocks | Use Zig's tested mutex/condition and fixed arrays initially; no dependency added solely because the package exists. |
@@ -49,5 +49,29 @@ work remains separately reviewable in [Home #910](https://github.com/home-lang/h
 
 The new streaming muxer adopts Home's existing EBML/track IDs while replacing
 whole-recording accumulation with a sink-based writer. It does not import the
-broken broader video graph. H.264/HEVC placeholder slices and the handwritten
-x264 ABI remain follow-up work, rather than silently routing through FFmpeg.
+broken broader video graph. The placeholder pure-Zig slice paths remain unused.
+The 0.3 integration below supersedes handwritten vendor ABI declarations.
+
+## 0.3: AVC/HEVC and fragmented MP4
+
+The existing x264/x265 integrations were inspected. Their vendor structure
+layouts and some function declarations are hand-written and do not match modern
+headers reliably. The new Home `codecs/video/native_encoder.{c,h,zig}` integration
+compiles the vendor boundary against installed headers and exposes only Home-owned
+fixed scalar structs. It works with pinned Zig 0.15.2 and Home's 0.17 development
+toolchain, including after @cImport removal. Its VFR buffering, original timestamps,
+flush lifecycle, plane geometry and failure handling have focused regression tests.
+
+Home's existing FragmentedMp4Muxer also had an incorrect ftyp size, incorrect
+fragment header sizes, zero tfdt, incomplete mdia and a missing real sample
+description. The standalone `containers/mp4_stream.zig` uses those box conventions
+with checked fixed-size header storage, real avcC/hvcC, complete video track metadata,
+exact offsets and bounded sink writes. `rgb_i420.zig` improves the existing RGB
+conversion approach with stride/length checks and actual 2x2 chroma averaging.
+
+These modules are vendored verbatim into zig-camera; the Home contribution is
+kept independently reviewable in [Home #913](https://github.com/home-lang/home/pull/913),
+source commit cf7cd358fd051f1634281adf0596e21e704472ea. Independent Apple AVFoundation decoded H.264 and
+HEVC MP4s; Linux CI uses OpenH264/libde265 plus MP4 parsing and MKVToolNix recognition.
+The existing whole-library codec paths are not represented as validated by these
+focused tests. No FFmpeg is used as an encoder, muxer or validation dependency.

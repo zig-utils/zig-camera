@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.2
+# Picamera2 coverage in 0.3
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -9,7 +9,7 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Single-camera RGB capture | Zig/C/Python frame leases, owned buffers/NumPy arrays | Additional processed pixel formats |
 | Configuration roles | Still, video and viewfinder roles; role-specific ISP noise reduction | General sensor mode selection and low-resolution stream |
 | Preview | SDL2 streaming texture, aspect-preserving resize, Escape/window close; optional during recording | Qt/DRM zero-copy preview, overlays; asynchronous Picamera2 preview API |
-| Video encoding | Home native JPEG encoder, reusable output capacity, MJPEG/4:4:4 in streaming Matroska | Production H.264/HEVC/AV1, MP4, audio, hardware encoders |
+| Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, audio, hardware encoders, general profile/preset selection |
 | Recording control | CLI finite frame count, Python Recorder and background start/stop | Circular outputs, split recordings, general encoder/output classes |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
@@ -20,7 +20,7 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 ## Python subset example
 
 ```python
-from zigcamera import Picamera2, MJPEGEncoder
+from zigcamera import Picamera2, H264Encoder
 
 with Picamera2() as camera:
     camera.configure(camera.create_still_configuration())
@@ -32,7 +32,7 @@ with Picamera2() as camera:
     camera.capture_file("trail.dng", name="raw")
     camera.stop()
     camera.configure(camera.create_video_configuration(main={"size": (1280, 720)}))
-    camera.start_recording(MJPEGEncoder(quality=90), "trail.mkv", fps=30)
+    camera.start_recording(H264Encoder(bitrate=12_000_000, iperiod=60), "trail.mp4", fps=30)
     # Application work happens here. stop_recording joins the worker and releases leases.
     camera.stop_recording()
 ```
@@ -52,9 +52,19 @@ There is no object detector, tracking mount or autonomous navigation in this API
 
 ## Acceptance status
 
+Build with `-Dcodecs=true` and install libx264/libx265 for the example above.
+`HEVCEncoder` selects HEVC; `MJPEGEncoder` with `.mkv` remains dependency-free.
+These names are a subset of Picamera2 signatures, not drop-in encoder classes.
+
 Synthetic tests exercise ownership, role/options validation, native JPEG scan
 coding, DNG samples/tags, Matroska demux, frame decode, SDL dummy rendering and
 thread ownership, recording shutdown and API compatibility. LibRaw independently
 opens/develops generated DNG files. These do not establish physical camera
 behaviour, optical quality or Pi frame rates. Pi camera/display validation remains
 required. See [performance and hardware acceptance](performance.md).
+
+AVC/HEVC acceptance includes independent OpenH264/libde265 decoding on Linux,
+exact frame counts/order, regular and gapped capture timelines, GOP boundaries,
+container parsing, final-frame drain, invalid inputs, and background restart.
+Apple AVFoundation also decoded both MP4 fixtures locally. Pi sustained FPS,
+long-run reliability, motion quality and bitrate behaviour remain unmeasured.

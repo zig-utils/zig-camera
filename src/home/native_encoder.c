@@ -31,7 +31,8 @@ int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
     home_encoder *e=calloc(1,sizeof(*e));
     if (!e) return -2;
     e->codec=c->codec; e->width=c->width; e->height=c->height;
-    /* Shared quality scale: 1..100 -> CRF 51..0. bitrate>0 selects ABR. */
+    /* Quality 1..100 -> CRF 51..0; AVC clamps at 1 to keep High-profile
+     * compatibility (CRF0 requires High444 lossless). bitrate>0 selects ABR. */
     const double crf=51.0*(100-c->quality)/99.0;
     if (c->codec==1) {
         x264_param_t p;
@@ -44,7 +45,7 @@ int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
         p.b_open_gop=0; p.b_annexb=0; p.b_repeat_headers=0; p.i_log_level=X264_LOG_ERROR;
         p.vui.b_fullrange=0; p.vui.i_colorprim=1; p.vui.i_transfer=13; p.vui.i_colmatrix=6;
         p.rc.i_rc_method=c->bitrate ? X264_RC_ABR : X264_RC_CRF;
-        p.rc.i_bitrate=(int)(c->bitrate/1000); p.rc.f_rf_constant=(float)crf;
+        p.rc.i_bitrate=(int)(c->bitrate/1000); p.rc.f_rf_constant=(float)(crf<1.0 ? 1.0 : crf);
         if (x264_param_apply_profile(&p,"high")<0) { x264_param_cleanup(&p); goto fail; }
         e->avc=x264_encoder_open(&p);
         x264_param_cleanup(&p);

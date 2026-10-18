@@ -14,8 +14,9 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.2: SDL preview, Home-native MJPEG/Matroska recording, Bayer DNG and a
-Picamera2-style synchronous Python subset. [Coverage and remaining gaps](docs/parity.md).
+New in 0.3: H.264/HEVC recording through Home’s header-checked x264/x265 adapter
+and Home streaming fragmented MP4. SDL preview, native MJPEG/Matroska, Bayer DNG
+and a Picamera2-style Python subset are also available. No FFmpeg dependency. [Coverage and remaining gaps](docs/parity.md).
 [Media architecture and limitations](docs/media.md).
 
 ## Build on Raspberry Pi OS (64-bit)
@@ -24,8 +25,8 @@ Install **Zig 0.15.2** and the system libraries matching your Raspberry Pi OS im
 
 ```sh
 sudo apt update
-sudo apt install build-essential libcamera-dev libsdl2-dev pkg-config
-zig build -Dpreview=true -Doptimize=ReleaseSafe
+sudo apt install build-essential libcamera-dev libsdl2-dev libx264-dev libx265-dev pkg-config
+zig build -Dpreview=true -Dcodecs=true -Doptimize=ReleaseSafe
 ./zig-out/bin/zig-camera info
 ./zig-out/bin/zig-camera capture --output photo.jpg --warmup 60
 # Default size comes from libcamera's still configuration. Inspect `info` first.
@@ -33,6 +34,8 @@ zig build -Dpreview=true -Doptimize=ReleaseSafe
 ./zig-out/bin/zig-camera capture --output photo.dng --warmup 60
 ./zig-out/bin/zig-camera preview --width 1280 --height 720 --frames 0
 ./zig-out/bin/zig-camera record --width 1280 --height 720 --fps 30 --frames 300 --output trail.mkv
+./zig-out/bin/zig-camera record --codec h264 --width 1920 --height 1080 --fps 30 --bitrate 12000000 --gop 60 --output trail.mp4
+./zig-out/bin/zig-camera record --codec hevc --width 1920 --height 1080 --fps 30 --quality 90 --gop 60 --output trail-hevc.mp4
 ```
 
 JPEG defaults to quality 98 and no chroma subsampling. PPM is lossless 8-bit
@@ -61,6 +64,10 @@ FPS. The Linux backend is selected by default on Linux, synthetic on macOS.
 Home native JPEG and MJPEG recording build without external codec dependencies.
 `-Djpeg=true` optionally selects system libjpeg for still-image acceleration.
 `-Dpreview=true` enables SDL2 windowed preview; `-Dvideo=false` disables recording.
+`-Dcodecs=true` enables Home’s AVC/HEVC adapter and links libx264/libx265 directly.
+Without it those codecs fail explicitly. MP4 is streamed as fragments; bitrate
+is bits/sec (0 selects CRF), and quality 1..100 maps to CRF 51..0 (AVC minimum 1). This currently
+supports 8-bit SDR 4:2:0 software encoding, not Pi hardware encoding or audio.
 The real backend builds natively using the system C++ compiler (`CXX` may select
 an alternate compatible compiler). Cross-compiling the synthetic core is supported;
 real libcamera builds require the target system's matching headers and runtime.
@@ -121,9 +128,9 @@ See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
 ## Scope
 
 Implemented: single-camera still/continuous capture, paired processed/raw streams,
-frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV
-recording, and a synchronous Picamera2-style Python subset.
-Remaining: H.264/HEVC/AV1 recording, MP4/audio, overlays/DRM/Qt preview, complete
+frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV,
+optional Home AVC/HEVC/MP4 recording, and a Picamera2-style Python subset.
+Remaining: AV1, audio, hardware encoding, overlays/DRM/Qt preview, complete
 Picamera2 API signatures, stereo sync, and a general runtime control API.
 Keep Picamera2 for those features until equivalent paths are implemented and
 validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;

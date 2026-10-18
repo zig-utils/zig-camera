@@ -40,6 +40,18 @@ class CodecTests(unittest.TestCase):
                             recorder.write(frame,timestamp_ns=40000)
                     self.assertEqual(camera.stats['leased'],0)
     @unittest.skipUnless(ENABLED,'optional Home codec job')
+    def test_quality_endpoints_and_single_frame_drain(self):
+        from check_mp4 import boxes
+        with tempfile.TemporaryDirectory() as directory:
+            for codec in ('h264','hevc'):
+                for quality in (1,100):
+                    path=Path(directory)/f'{codec}-{quality}.mp4'
+                    with Camera(simulate=True,width=32,height=32,role='video') as camera:
+                        camera.start()
+                        with Recorder(path,width=32,height=32,codec=codec,quality=quality) as recorder:
+                            with camera.acquire() as frame: recorder.write(frame,timestamp_ns=1234567)
+                    self.assertEqual(sum(kind==b'mdat' for kind,_,_ in boxes(path.read_bytes())),1)
+    @unittest.skipUnless(ENABLED,'optional Home codec job')
     def test_picamera_recording_drains_and_restarts(self):
         with tempfile.TemporaryDirectory() as directory:
             with Picamera2(simulate=True) as camera:

@@ -30,3 +30,10 @@ Additional Home adaptations and reusable modules:
   Canonical Home contribution: https://github.com/home-lang/home/pull/912
   Source commit: 458eb0c20 (feat/native-jpeg-mjpeg).
 The Home MIT license and copyright reproduced above apply to these files.
+
+Home AVC/HEVC integration and MP4 streaming additions (0.3):
+- src/home/native_encoder.{c,h,zig}, rgb_i420.zig and mp4_stream.zig are
+  verbatim Home modules with the MIT attribution above. The C adapter links
+  optional libx264/libx265 directly; those libraries retain their own licenses.
+  Canonical contribution: https://github.com/home-lang/home/pull/913
+  Source commit: cf7cd358fd051f1634281adf0596e21e704472ea.

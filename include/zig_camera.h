@@ -98,8 +98,9 @@ int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
  * Home MJPEG: .mkv; optional Home x264/x265 adapter (-Dcodecs=true):
  * H.264/HEVC in fragmented .mp4, 8-bit SDR 4:2:0, even dimensions >=16.
  * bitrate is bits/sec (0 selects CRF); gop 0 selects 60. Quality 1..100
- * maps linearly to CRF 51..0. MP4 retains one encoded packet for duration;
- * close writes the last packet at nominal FPS. No B frames/lookahead.
+ * maps linearly to CRF 51..0 (AVC minimum 1). MP4 retains one encoded packet for duration;
+ * close drains encoder output and writes the last packet at nominal FPS.
+ * No B frames/lookahead; AVC VFR retains one input internally.
  * MP4 timestamps must advance by >=1 microsecond; max gap ~4294 seconds.
  * Codecs/containers unavailable in this build return UNSUPPORTED. */
 int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);

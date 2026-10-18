@@ -30,7 +30,7 @@ read sequentially without a final whole-file assembly.
 Capture timestamps set cluster times relative to the first frame at 1ms precision;
 gaps remain gaps. Track DefaultDuration records the nominal requested FPS. Out-of-order
 or repeated nanosecond timestamps are rejected. Real sensor FPS can differ from
-the request. Synthetic CLI recording supplies a deterministic nominal timeline.
+the request. Synthetic CLI/background recording supplies a deterministic nominal timeline.
 There is no FFmpeg build or runtime dependency. `-Dvideo=false` can omit recording;
 Home still JPEG/DNG remain available. `-Djpeg=true` is an optional pre-existing
 system JPEG acceleration path for stills; native Home JPEG is the default.
@@ -39,12 +39,53 @@ system JPEG acceleration path for stills; native Home JPEG is the default.
 ./zig-out/bin/zig-camera record --width 1920 --height 1080 --fps 30 --quality 90 --frames 300 --output trail.mkv
 ```
 
-This does not implement H.264/HEVC, rate-controlled bitrate, MP4 or audio. Asking
-for those codecs/containers fails; it never silently changes the requested codec.
-MJPEG bitrate and Pi CPU cost can be substantial. No sustained Pi 5 FPS claim is
-made without real-camera measurements. Home's existing H.264/HEVC pure Zig paths
-contain placeholder slice data, and its x264 wrapper hand-declares a version-sensitive
-C structure. They were inspected but not advertised as production encoders.
+### H.264 / HEVC / MP4 (0.3)
+
+Build with `-Dcodecs=true`, using `libx264-dev` and `libx265-dev`. The reusable
+Home `native_encoder` module wraps a small C adapter compiled against the actual
+vendor headers. It replaces unsafe assumptions about x264/x265 structure layouts
+in the legacy Home integrations. Neither the adapter nor the container calls
+FFmpeg, Libav or an external encoder process. libx264/libx265 are direct optional
+codec dependencies; their GPL/commercial licensing applies independently of the
+MIT Home/zig-camera source.
+
+Home's new `mp4_stream` writer adapts its existing MP4 box/fragment conventions,
+with a complete video sample description, avcC/hvcC generated from real encoder
+parameter sets, mvex/trex, accurate fragment sizes and data offsets, 64-bit tfdt,
+and sync/non-sync sample flags. Each encoded access unit is a moof/mdat fragment.
+No file-sized media buffer, growing sample table or final rewrite is needed.
+There is no global seek index or audio track; compatibility is with fragmented
+MP4 readers, not every older flat-MP4-only player.
+
+```sh
+zig build -Dpreview=true -Dcodecs=true -Doptimize=ReleaseSafe
+./zig-out/bin/zig-camera record --codec h264 --width 1920 --height 1080 --fps 30 --bitrate 12000000 --gop 60 --output trail.mp4
+./zig-out/bin/zig-camera record --codec hevc --width 1920 --height 1080 --fps 30 --quality 90 --output trail-hevc.mp4
+```
+
+Both codecs use 8-bit I420 software encoding, veryfast preset, one frame thread,
+no B frames/lookahead, and closed GOPs. H.264 uses High profile; HEVC uses Main
+with fixed CTU16 across instances. RGB byte order/row stride are respected. Home
+converts to limited-range BT.601 I420 with actual 2x2 averaged chroma; VUI and
+MP4 nclx signal sRGB transfer, BT.709 primaries and BT.601 matrix. This is an SDR
+conversion, not HDR preservation. Dimensions must be even and at least 16.
+
+`bitrate` is bits/sec, >=1000; nonzero selects average bitrate (not a hard CBR
+ceiling). Zero selects CRF: quality 1..100 maps linearly to CRF 51..0 (AVC minimum 1). GOP zero
+means 60; scene-cut keyframes are disabled to respect the configured interval.
+This API does not expose general encoder preset/profile/level or 10-bit modes.
+
+AVC's VFR path retains one input for rate control. The recorder retains one
+encoded packet to derive duration from the next output timestamp. Encoder output
+is drained on close; the last sample uses nominal duration. Input leases can be
+released immediately after write. Capture timestamps become relative microseconds
+(PTS=DTS); gaps remain gaps. Repeated/backward times, sub-microsecond advancement
+and gaps beyond the 32-bit microsecond sample-duration limit are rejected. Empty
+recordings contain an initialization segment with no media samples.
+
+Home's legacy pure-Zig H.264/HEVC slice encoders still contain placeholders and
+are not used here. No sustained Pi 5 FPS or compression-quality advantage over
+Picamera2 is claimed without hardware measurements. Software HEVC can be costly.
 
 ## DNG
 

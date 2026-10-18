@@ -17,7 +17,7 @@ const help =
     \\  --bitrate N --gop N       AVC/HEVC bits/sec (0 CRF) and keyframe interval
     \\  --preview                Also display while recording
     \\  --noise-reduction N      0 off, 1 fast, 2 high quality, 3 minimal
-    \\  --quality N              JPEG quality, 1..100 (default 98, 4:4:4)
+    \\  --quality N              Quality 1..100 (still 98, video 90); CRF AVC 51..1, HEVC 51..0
     \\  --warmup N               Frames discarded before capture/bench (default 30)
     \\  --frames N               bench frame count (default 300)
     \\  --timeout-ms N           Frame wait deadline (default 5000)
@@ -56,7 +56,7 @@ fn run() !void {
     var simulate = false;
     var warmup: u32 = 30;
     var frames: u32 = 300;
-    var quality: u32 = 98;
+    var quality: u32 = if (eq(command, "record")) 90 else 98;
     var timeout_ms: u32 = 5000;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {

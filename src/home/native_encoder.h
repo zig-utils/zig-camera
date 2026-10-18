@@ -5,7 +5,7 @@
 #include <stdint.h>
 typedef struct home_encoder home_encoder;
 typedef struct { uint32_t codec, width, height, fps_num, fps_den, bitrate, quality, gop; } home_encoder_config;
-/* Length-prefixed NAL units; borrowed until the next call. pts uses caller units.
+/* Length-prefixed NAL units; borrowed until the next call. pts uses microseconds.
  * Low latency: no B frames/lookahead; AVC VFR buffers one input for duration.
  * Empty output means buffered. Drain flush() before close; serialize calls. */
 typedef struct { const uint8_t *data; size_t size; int64_t pts; int key; } home_packet;
