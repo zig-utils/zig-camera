@@ -46,6 +46,23 @@ pub const Camera = struct {
         try check(core.zc_open_ex(&cfg, &opts, &ptr));
         return .{ .handle = ptr.? };
     }
+    pub fn initPipeline(cfg: Config, opts: c.zc_pipeline_options) Error!Camera {
+        var ptr: ?*c.zc_camera = null;
+        try check(core.zc_open_pipeline(&cfg, &opts, &ptr));
+        return .{ .handle = ptr.? };
+    }
+    pub fn pipelineInfo(self: Camera) c.zc_pipeline_info {
+        var out: c.zc_pipeline_info = undefined;
+        check(core.zc_get_pipeline_info(self.handle, &out)) catch unreachable;
+        return out;
+    }
+    /// Caller supplies storage; query with an empty slice to obtain total count.
+    pub fn sensorModes(self: Camera, modes: []c.zc_sensor_mode) Error!u32 {
+        if (modes.len > std.math.maxInt(u32)) return error.Invalid;
+        var count: u32 = 0;
+        try check(core.zc_get_sensor_modes(self.handle, if (modes.len == 0) null else modes.ptr, @intCast(modes.len), &count));
+        return count;
+    }
     pub fn deinit(self: Camera) Error!void {
         try check(core.zc_close(self.handle));
     }
@@ -114,6 +131,11 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.ReleasedFrame;
         const m = self.value.main;
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
+    }
+    pub fn stream(self: *const Frame, id: u32) Error!c.zc_stream {
+        var out: c.zc_stream = undefined;
+        try check(core.zc_get_stream(self.camera.handle, self.value.token, id, &out));
+        return out;
     }
     pub fn metadata(self: *const Frame) Error!c.zc_metadata {
         var out: c.zc_metadata = undefined;

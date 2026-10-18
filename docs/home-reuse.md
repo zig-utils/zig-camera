@@ -100,3 +100,26 @@ rejecting stale/pre-scan outcomes while keeping callbacks bounded. The display
 handoff uses one fixed shared RGB slot with nonblocking publication; the Python
 capture worker is shared by recording, preview and autofocus, with explicit joins
 before reuse/destruction. It does not import a general executor into a callback.
+
+## 0.5: sensor streams and owned plane copies
+
+Rechecked Home async result futures/job state, image resize and video pixel
+conversion. Existing async cancellation improvements remain in #914; camera
+capture jobs use the same immutable-terminal-state rules, with Python locks and
+bounded submission around the existing capture pump. No whole-runtime dependency
+is introduced. ISP-generated lores avoids importing a CPU resize graph on the
+hardware path; synthetic YUV fixtures reuse Home rgb_i420 with chroma averaging.
+
+Home pixel conversion assumes caller-provided plane geometry and includes broader
+conversion paths beyond the tested camera scope. The new standalone
+`video/src/core/plane_pack.zig` adds checked active-row copies and I420 packing,
+validates all planes before writes, accepts omitted final-row padding and preserves
+caller ownership. It is exported from Home video, documented, and vendored verbatim
+here at source commit 9d5a70a00. Independent U/V strides are supported in Home;
+the libcamera adapter derives half-Y chroma strides for YUV420 and handles either
+one contiguous physical plane or three planes. Focused tests pass on Zig 0.15.2
+and Home's 0.17 development toolchain; the camera C/Python suites exercise both
+physical layouts and stale/stop lease behavior. The wider Home video graph is not
+represented as validated by these module tests.
+
+Canonical Home plane packing contribution: [Home #915](https://github.com/home-lang/home/pull/915).

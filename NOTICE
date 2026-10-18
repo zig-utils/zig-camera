@@ -43,3 +43,11 @@ Home job completion (0.4):
   Canonical contribution: https://github.com/home-lang/home/pull/914
   Source commit: e79c0176184c08b04188712d5a6bbcce63089eee.
   The Home MIT license above applies.
+
+Home capture plane packing (0.5):
+- src/home/plane_pack.zig is the verbatim checked, allocation-free Home module
+  from packages/video/src/core/plane_pack.zig.
+  Source commit: 9d5a70a00 (feat/checked-plane-packing).
+  The Home MIT license above applies.
+
+Canonical Home plane packing contribution: https://github.com/home-lang/home/pull/915

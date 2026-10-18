@@ -1,7 +1,7 @@
 const c = @import("abi.zig").c;
 pub const Handle = opaque {};
 pub const Callback = *const fn (?*anyopaque, u32, ?*const c.zc_frame, ?*const c.zc_metadata, c_int) callconv(.c) void;
-pub extern fn zcd_open(*const c.zc_config, *const c.zc_capture_options, ?*anyopaque, Callback, *?*Handle, *c.zc_info) c_int;
+pub extern fn zcd_open(*const c.zc_config, *const c.zc_pipeline_options, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
 pub extern fn zcd_start(*Handle) c_int;
 pub extern fn zcd_queue(*Handle, u32) c_int;
 pub extern fn zcd_sync(*Handle, u32, bool) c_int;
@@ -21,3 +21,8 @@ pub extern fn zcd_control_info(*Handle, u32, *c.zc_control_info) c_int;
 pub extern fn zcd_set_controls(*Handle, [*]const c.zc_control, u32, *u64) c_int;
 pub const controlInfo = zcd_control_info;
 pub const setControls = zcd_set_controls;
+
+pub extern fn zcd_sensor_modes(*Handle, ?[*]c.zc_sensor_mode, u32, *u32) c_int;
+pub extern fn zcd_lores(*Handle, u32, *c.zc_stream) c_int;
+pub const sensorModes = zcd_sensor_modes;
+pub const lores = zcd_lores;

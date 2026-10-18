@@ -1,6 +1,9 @@
 #include "zig_camera.h"
 #include <assert.h>
 #include <stddef.h>
+_Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
+_Static_assert(sizeof(zc_pipeline_info)==224,"pipeline info ABI");
+_Static_assert(sizeof(zc_sensor_mode)==44,"sensor mode ABI");
 _Static_assert(sizeof(zc_control)==144,"control ABI");
 _Static_assert(sizeof(zc_control_info)==120,"control info ABI");
 _Static_assert(sizeof(zc_metadata)==96,"extended metadata ABI");
@@ -21,6 +24,14 @@ int main(void) {
     config.width = 1; /* deliberately mismatched geometry */
     zc_camera *camera = NULL;
     assert(zc_open(&config, &camera) == ZC_INVALID);
+    assert(!camera);
+    zc_pipeline_options options;
+    zc_default_pipeline_options(&options);
+    assert(options.struct_size==sizeof(options));
+    assert(options.capture.struct_size==sizeof(options.capture));
+    config.width=0;
+    options.lores_width=17;options.lores_height=10;
+    assert(zc_open_pipeline(&config,&options,&camera)==ZC_INVALID);
     assert(!camera);
     return 0;
 }

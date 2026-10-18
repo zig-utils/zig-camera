@@ -32,11 +32,9 @@ def _metadata(frame):
 class CompletedRequest:
     def __init__(self,frame): self._frame=frame
     def make_array(self,name="main"):
-        if name!="main": raise NotImplementedError("Use save_dng for the raw stream")
-        return self._frame.numpy()
+        return self._frame.numpy(name)
     def make_buffer(self,name="main"):
-        if name!="main": raise NotImplementedError("Raw byte access uses the native Frame API")
-        return self._frame.copy_rgb()
+        return self._frame.copy_buffer(name)
     def get_metadata(self): return _metadata(self._frame)
     def save(self,name,file_output):
         if name=="raw": self._frame.save_dng(file_output)
@@ -49,20 +47,20 @@ class CompletedRequest:
 class Picamera2:
     def __init__(self,camera_num=0,*,simulate=False,library=None):
         self.camera_num=camera_num;self.simulate=simulate;self.library=library;self._camera=None;self._config=None
-    def _configuration(self,role,main,raw,buffer_count,controls,default_size):
+    def _configuration(self,role,main,raw,buffer_count,controls,default_size,lores=None,sensor=None):
         main=dict(main or {})
         if set(main)-{"size","format"}: raise NotImplementedError("Main configuration supports size and format")
         if main.get("format","BGR888")!="BGR888": raise NotImplementedError("Only BGR888 (RGB byte order) is supported")
         size=tuple(main.get("size",default_size))
         if len(size)!=2: raise ValueError("size must be (width,height)")
         return {"role":role,"main":{"size":size,"format":"BGR888"},"raw":None if raw is None else dict(raw),
-                "buffer_count":buffer_count,"controls":dict(controls or {})}
-    def create_preview_configuration(self,main=None,*,raw=None,buffer_count=4,controls=None):
-        return self._configuration("preview",main,raw,buffer_count,controls,(640,480))
-    def create_video_configuration(self,main=None,*,raw=None,buffer_count=6,controls=None):
-        return self._configuration("video",main,raw,buffer_count,controls,(1920,1080))
-    def create_still_configuration(self,main=None,*,raw={},buffer_count=4,controls=None):
-        return self._configuration("still",main,raw,buffer_count,controls,(0,0))
+                "buffer_count":buffer_count,"controls":dict(controls or {}),"lores":None if lores is None else dict(lores),"sensor":None if sensor is None else dict(sensor)}
+    def create_preview_configuration(self,main=None,*,raw=None,buffer_count=4,controls=None,lores=None,sensor=None):
+        return self._configuration("preview",main,raw,buffer_count,controls,(640,480),lores,sensor)
+    def create_video_configuration(self,main=None,*,raw=None,buffer_count=6,controls=None,lores=None,sensor=None):
+        return self._configuration("video",main,raw,buffer_count,controls,(1920,1080),lores,sensor)
+    def create_still_configuration(self,main=None,*,raw={},buffer_count=4,controls=None,lores=None,sensor=None):
+        return self._configuration("still",main,raw,buffer_count,controls,(0,0),lores,sensor)
     def configure(self,config):
         if isinstance(config,str):
             if config not in ("preview","video","still"): raise ValueError("Unknown configuration")
@@ -76,7 +74,7 @@ class Picamera2:
         if self._camera is not None:
             if self._camera._started: raise RuntimeError("Stop before configuring")
             self._camera.close();self._camera=None
-        self._camera=Camera(library=self.library,simulate=self.simulate,role=config["role"],**options)
+        self._camera=Camera(library=self.library,simulate=self.simulate,role=config["role"],lores=config.get("lores"),sensor=config.get("sensor"),**options)
         if config["controls"]: self._camera.set_controls(config["controls"])
         self._config=config
     def _ready(self):
@@ -85,7 +83,12 @@ class Picamera2:
     def camera_configuration(self):
         camera=self._ready();result=dict(self._config)
         result["main"]=dict(result["main"],size=(camera.info["main"]["width"],camera.info["main"]["height"]),stride=camera.info["main"]["stride"])
+        result['sensor']=dict(camera.info['sensor'])
+        if camera.info['lores']['width']:
+            l=camera.info['lores'];result['lores']={'size':(l['width'],l['height']),'format':l['format'],'stride':l['stride']}
         return result
+    @property
+    def sensor_modes(self): return self._ready().sensor_modes
     @property
     def camera_controls(self):
         return {name:(info['min'],info['max'],info['default']) for name,info in self._ready().control_info.items()}
@@ -100,16 +103,21 @@ class Picamera2:
         if self._camera is not None: self._camera.stop()
     def close(self):
         if self._camera is not None: self._camera.close();self._camera=None
-    def capture_request(self,*,timeout_ms=5000): return CompletedRequest(self._ready().acquire(timeout_ms))
+    def capture_request(self,*,timeout_ms=5000,wait=None,signal_function=None):
+        return self._ready()._capture(lambda frame:CompletedRequest(frame),wait,signal_function,timeout_ms,retain=True)
     def captured_request(self,*,timeout_ms=5000): return self.capture_request(timeout_ms=timeout_ms)
-    def capture_array(self,name="main"):
-        with self.captured_request() as request: return request.make_array(name)
-    def capture_buffer(self,name="main"):
-        with self.captured_request() as request: return request.make_buffer(name)
-    def capture_metadata(self):
-        with self.captured_request() as request: return request.get_metadata()
-    def capture_file(self,file_output,name="main"):
-        with self.captured_request() as request: request.save(name,file_output)
+    def capture_array(self,name="main",*,wait=None,signal_function=None,timeout_ms=5000):
+        return self._ready().capture_array(timeout_ms,name=name,wait=wait,signal_function=signal_function)
+    def capture_buffer(self,name="main",*,wait=None,signal_function=None,timeout_ms=5000):
+        return self._ready().capture_buffer(timeout_ms,name=name,wait=wait,signal_function=signal_function)
+    def capture_metadata(self,*,wait=None,signal_function=None,timeout_ms=5000):
+        return self._ready()._capture(_metadata,wait,signal_function,timeout_ms)
+    def capture_file(self,file_output,name="main",*,wait=None,signal_function=None,timeout_ms=5000):
+        if name not in ('main','raw'): raise ValueError('Still saving supports main and raw')
+        def save(frame):
+            if name=='raw': frame.save_dng(file_output)
+            else: frame.save(file_output)
+        return self._ready()._capture(save,wait,signal_function,timeout_ms)
     def start_recording(self,encoder,output,*,fps=30):
         if isinstance(encoder,MJPEGEncoder): options={"codec":"mjpeg","quality":encoder.quality}
         elif isinstance(encoder,(H264Encoder,HEVCEncoder)):

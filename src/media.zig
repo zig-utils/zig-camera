@@ -42,3 +42,31 @@ pub export fn zc_copy_rgb(f: *const c.zc_frame, out: [*]u8, length: u64) c_int {
     for (0..m.height) |y| @memcpy(out[y * @as(usize, m.width) * 3 ..][0 .. m.width * 3], m.planes[0].data[y * @as(usize, m.stride) ..][0 .. m.width * 3]);
     return c.ZC_OK;
 }
+
+/// Descriptors and DMA access remain borrowed for the duration of this call.
+pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_int {
+    const std = @import("std");
+    const pack = @import("home/plane_pack.zig");
+    if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384 or m.plane_count == 0 or m.plane_count > c.ZC_MAX_PLANES or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    for (m.planes[0..m.plane_count]) |p| {
+        if (p.data == null or p.bytes_used > p.length or p.bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
+    }
+    const name = std.mem.sliceTo(&m.format, 0);
+    if (std.mem.eql(u8, name, "BGR888")) {
+        if (m.plane_count != 1) return c.ZC_INVALID;
+        pack.rows(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.stride, @as(usize, m.width) * 3, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
+    } else if (std.mem.eql(u8, name, "YUV420")) {
+        if ((m.stride | m.width | m.height) & 1 != 0) return c.ZC_INVALID;
+        var planes: [3][]const u8 = undefined;
+        if (m.plane_count == 3) {
+            for (0..3) |i| planes[i] = m.planes[i].data[0..@intCast(m.planes[i].bytes_used)];
+        } else if (m.plane_count == 1) {
+            const ysize = @as(usize, m.stride) * m.height;
+            const data = m.planes[0].data[0..@intCast(m.planes[0].bytes_used)];
+            if (data.len < ysize + ysize / 4) return c.ZC_INVALID;
+            planes = .{ data[0..ysize], data[ysize..][0 .. ysize / 4], data[ysize + ysize / 4 ..] };
+        } else return c.ZC_UNSUPPORTED;
+        pack.packI420(planes, .{ m.stride, m.stride / 2, m.stride / 2 }, m.width, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
+    } else return c.ZC_UNSUPPORTED;
+    return c.ZC_OK;
+}

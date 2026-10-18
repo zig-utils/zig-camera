@@ -34,8 +34,9 @@ struct Mapping {
 struct Slot {
     std::unique_ptr<Request> request;
     zc_frame frame{};
+    zc_stream lores{};
     std::vector<Mapping> mappings;
-    std::array<int, ZC_MAX_PLANES * 2> fds{};
+    std::array<int, ZC_MAX_PLANES * 3> fds{};
     size_t fd_count = 0;
     bool used = false;
     zc_raw_metadata raw_metadata{};
@@ -89,6 +90,13 @@ struct Device {
     std::vector<Slot> slots;
     zc_config requested{};
     zc_capture_options options{};
+    zc_pipeline_info pipeline{};
+    std::vector<zc_sensor_mode> modes;
+    bool has_lores=false;
+    size_t raw_index=1;
+    zc_stream &stream(Slot &slot,size_t index) {
+        return index==0 ? slot.frame.main : has_lores && index==1 ? slot.lores : slot.frame.raw;
+    }
     zc_info info{};
     void *context = nullptr;
     Completion callback = nullptr;
@@ -195,7 +203,8 @@ struct Device {
         }
         return ZC_OK;
     }
-    int init(const zc_config &cfg, const zc_capture_options &opts, void *ctx, Completion complete) {
+    int init(const zc_config &cfg, const zc_pipeline_options &pipe, void *ctx, Completion complete) {
+        const auto &opts=pipe.capture;
         requested = cfg; options = opts; context = ctx; callback = complete;
         if (manager.start() < 0) return ZC_DEVICE;
         manager_started = true;
@@ -205,20 +214,56 @@ struct Device {
         if (camera->acquire() < 0) return ZC_BUSY;
         acquired = true;
         pending=ControlList(camera->controls());desired=ControlList(camera->controls());
+        // Inspect raw formats once, before configuring. Discovery never changes
+        // a live pipeline and deliberately does not invent per-mode frame rates.
+        auto raw_modes=camera->generateConfiguration({StreamRole::Raw});
+        if(raw_modes && raw_modes->size()==1) {
+            const auto &formats=raw_modes->at(0).formats();
+            for(const auto &pixel:formats.pixelformats()) {
+                const auto name=pixel.toString();
+                if(name.empty() || name[0]!='S')continue;
+                const auto digit=name.find_first_of("0123456789");
+                if(digit==std::string::npos)continue;
+                const auto depth=std::stoul(name.substr(digit));
+                if(depth<8 || depth>16)continue;
+                for(const auto &size:formats.sizes(pixel)) {
+                    zc_sensor_mode mode{};mode.width=size.width;mode.height=size.height;mode.bit_depth=depth;
+                    text(mode.format,sizeof(mode.format),name);modes.push_back(mode);
+                }
+            }
+        }
+        has_lores=pipe.lores_width!=0;raw_index=has_lores?2:1;
         const StreamRole role = opts.role == ZC_VIDEO ? StreamRole::VideoRecording : opts.role == ZC_PREVIEW ? StreamRole::Viewfinder : StreamRole::StillCapture;
-        const std::vector<StreamRole> roles = cfg.raw ? std::vector<StreamRole>{role, StreamRole::Raw} : std::vector<StreamRole>{role};
+        std::vector<StreamRole> roles{role};
+        if(has_lores)roles.push_back(StreamRole::Viewfinder);
+        if(cfg.raw)roles.push_back(StreamRole::Raw);
         config = camera->generateConfiguration(roles);
         if (!config || config->size() != roles.size()) return ZC_UNSUPPORTED;
-        auto &main = config->at(0);
+        auto &main_request = config->at(0);
         // libcamera's BGR888 fourcc stores R,G,B bytes on little endian hosts.
-        main.pixelFormat = formats::BGR888;
-        main.colorSpace = ColorSpace::Sycc;
-        main.colorSpace->ycbcrEncoding = ColorSpace::YcbcrEncoding::None;
-        main.colorSpace->range = ColorSpace::Range::Full;
-        if (cfg.width) main.size = {cfg.width, cfg.height};
-        main.bufferCount = cfg.buffer_count;
+        main_request.pixelFormat = formats::BGR888;
+        main_request.colorSpace = ColorSpace::Sycc;
+        main_request.colorSpace->ycbcrEncoding = ColorSpace::YcbcrEncoding::None;
+        main_request.colorSpace->range = ColorSpace::Range::Full;
+        if (cfg.width) main_request.size = {cfg.width, cfg.height};
+        main_request.bufferCount = cfg.buffer_count;
+        if(has_lores) {
+            auto &lores=config->at(1);
+            lores.size={pipe.lores_width,pipe.lores_height};
+            lores.pixelFormat=pipe.lores_format==ZC_RGB24 ? formats::BGR888 : formats::YUV420;
+            lores.colorSpace=pipe.lores_format==ZC_RGB24 ? main_request.colorSpace : std::optional<ColorSpace>(ColorSpace::Sycc);
+            lores.bufferCount=cfg.buffer_count;
+        }
+        if(pipe.sensor_width) {
+            const bool found=std::any_of(modes.begin(),modes.end(),[&](const zc_sensor_mode &m){return m.width==pipe.sensor_width && m.height==pipe.sensor_height && m.bit_depth==pipe.sensor_bit_depth;});
+            if(!found)return ZC_UNSUPPORTED;
+            config->sensorConfig=SensorConfiguration();
+            config->sensorConfig->outputSize={pipe.sensor_width,pipe.sensor_height};
+            config->sensorConfig->bitDepth=pipe.sensor_bit_depth;
+        }
         if (cfg.raw) {
-            auto &raw = config->at(1);
+            auto &raw = config->at(raw_index);
+            if(pipe.sensor_width)raw.size={pipe.sensor_width,pipe.sensor_height};
             raw.bufferCount = cfg.buffer_count;
             if (opts.unpacked_raw && !cfg.raw_format[0]) {
                 const auto native = raw.pixelFormat.toString();
@@ -235,13 +280,25 @@ struct Device {
             }
         }
         const auto status = config->validate();
-        if (status == CameraConfiguration::Invalid) return ZC_UNSUPPORTED;
+        if (status == CameraConfiguration::Invalid || config->size()!=roles.size()) return ZC_UNSUPPORTED;
+        const auto &main = config->at(0);
         if (main.pixelFormat != formats::BGR888) return ZC_UNSUPPORTED;
-        if (cfg.raw && cfg.raw_format[0] && config->at(1).pixelFormat.toString() != cfg.raw_format)
+        if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format)
             return ZC_UNSUPPORTED;
         if (cfg.raw && opts.unpacked_raw) {
-            const auto name = config->at(1).pixelFormat.toString();
+            const auto name = config->at(raw_index).pixelFormat.toString();
             if (name.empty() || name[0] != 'S' || name.find('_') != std::string::npos) return ZC_UNSUPPORTED;
+        }
+        pipeline.struct_size=sizeof(pipeline);
+        if(config->sensorConfig) {
+            const auto &sensor=*config->sensorConfig;
+            pipeline.sensor_width=sensor.outputSize.width;pipeline.sensor_height=sensor.outputSize.height;pipeline.sensor_bit_depth=sensor.bitDepth;
+        }
+        if(pipe.sensor_width && (pipeline.sensor_width!=pipe.sensor_width || pipeline.sensor_height!=pipe.sensor_height || pipeline.sensor_bit_depth!=pipe.sensor_bit_depth))return ZC_UNSUPPORTED;
+        if(has_lores) {
+            const auto &lores=config->at(1);
+            if(lores.pixelFormat!=(pipe.lores_format==ZC_RGB24 ? formats::BGR888 : formats::YUV420) || lores.size.width>main.size.width || lores.size.height>main.size.height || (pipe.lores_format==ZC_YUV420 && ((lores.size.width|lores.size.height|lores.stride)&1)))return ZC_UNSUPPORTED;
+            pipeline.lores=geometry(lores);
         }
         if (camera->configure(config.get()) < 0) return ZC_DEVICE;
         if (cfg.exposure_us && (!has(camera, controls::ExposureTime) || !has(camera, controls::AnalogueGain) || !has(camera, controls::AeEnable)))
@@ -259,23 +316,24 @@ struct Device {
         info.backend = ZC_LIBCAMERA; info.buffer_count = count;
         text(info.camera_id, sizeof(info.camera_id), camera->id());
         info.main = geometry(main);
-        if (cfg.raw) info.raw = geometry(config->at(1));
+        if (cfg.raw) info.raw = geometry(config->at(raw_index));
         slots.resize(count);
         for (size_t i = 0; i < count; ++i) {
             auto &slot = slots[i];
             slot.request = camera->createRequest(i);
             if (!slot.request) return ZC_NOMEM;
-            slot.frame.main = info.main; slot.frame.raw = info.raw;
+            slot.frame.main = info.main; slot.frame.raw = info.raw;slot.lores=pipeline.lores;
             for (size_t s = 0; s < config->size(); ++s) {
                 auto *stream = config->at(s).stream();
                 auto *buffer = allocator->buffers(stream)[i].get();
                 if (slot.request->addBuffer(stream, buffer) < 0) return ZC_DEVICE;
-                const int rc = map(buffer, s == 0 ? slot.frame.main : slot.frame.raw, slot);
+                const int rc = map(buffer, this->stream(slot,s), slot);
                 if (rc) return rc;
             }
         }
         info.main.plane_count = slots[0].frame.main.plane_count;
         info.raw.plane_count = slots[0].frame.raw.plane_count;
+        pipeline.lores.plane_count=slots[0].lores.plane_count;
         camera->requestCompleted.connect(this, &Device::completed);
         connected = true;
         return ZC_OK;
@@ -287,7 +345,7 @@ struct Device {
         for (size_t s = 0; s < config->size(); ++s) {
             const auto *buffer = request->findBuffer(config->at(s).stream());
             const auto &metadata = buffer->metadata();
-            auto &stream = s == 0 ? frame.main : frame.raw;
+            auto &stream = this->stream(slots[index],s);
             if (metadata.status != FrameMetadata::FrameSuccess || metadata.planes().size() != stream.plane_count) {
                 callback(context, index, nullptr, nullptr,ZC_DEVICE); return;
             }
@@ -384,13 +442,13 @@ struct Device {
     }
 };
 }
-extern "C" int zcd_open(const zc_config *cfg, const zc_capture_options *opts, void *ctx, Completion cb, Device **out, zc_info *info) {
+extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
     *out = nullptr;
     try {
         auto device = std::make_unique<Device>();
         const int rc = device->init(*cfg, *opts, ctx, cb);
         if (rc) return rc;
-        *info = device->info; *out = device.release(); return ZC_OK;
+        *info = device->info; *pipeline=device->pipeline; *out = device.release(); return ZC_OK;
     } catch (const std::bad_alloc &) { return ZC_NOMEM; }
       catch (...) { return ZC_DEVICE; }
 }
@@ -418,4 +476,16 @@ extern "C" int zcd_control_info(Device *device,uint32_t id,zc_control_info *out)
 }
 extern "C" int zcd_set_controls(Device *device,const zc_control *values,uint32_t count,uint64_t *revision) {
     try{return device->setControls(values,count,revision);}catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+
+extern "C" int zcd_sensor_modes(Device *device,zc_sensor_mode *modes,uint32_t capacity,uint32_t *count) {
+    *count=device->modes.size();
+    if(!modes)return capacity==0 ? ZC_OK : ZC_INVALID;
+    if(capacity<*count)return ZC_INVALID;
+    std::copy(device->modes.begin(),device->modes.end(),modes);return ZC_OK;
+}
+extern "C" int zcd_lores(Device *device,uint32_t index,zc_stream *out) {
+    if(index>=device->slots.size())return ZC_INVALID;
+    if(!device->has_lores)return ZC_UNSUPPORTED;
+    *out=device->slots[index].lores;return ZC_OK;
 }

@@ -24,6 +24,9 @@ jobs:
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
           PYTHONPATH=python python3 -m unittest discover -s tests -v
+          ./zig-out/bin/zig-camera modes --simulate
+          ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
+          python3 -c 'import json,pathlib; p=pathlib.Path("zig-out/lores.ppm"); m=json.loads(p.with_suffix(".ppm.json").read_text()); assert m["sensor_width"] == 640 and m["lores_width"] == 18; assert pathlib.Path(str(p)+".lores.i420").stat().st_size == 270'
           ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --warmup 2 --output zig-out/test.ppm
           ./zig-out/bin/zig-camera bench --simulate --width 640 --height 480 --frames 100 --warmup 2
       - name: Linux dependencies

@@ -19,6 +19,7 @@ const Session = struct {
     next_token: u64 = 1,
     config: c.zc_config,
     info: c.zc_info = std.mem.zeroes(c.zc_info),
+    pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     device: ?*driver.Handle = null,
     slots: [c.ZC_MAX_BUFFERS]Slot = @splat(.{}),
     ready: [c.ZC_MAX_BUFFERS]u32 = undefined,
@@ -115,12 +116,30 @@ pub export fn zc_open(cfg: *const c.zc_config, out: *?*c.zc_camera) c_int {
     return zc_open_ex(cfg, &opts, out);
 }
 pub export fn zc_open_ex(cfg: *const c.zc_config, opts: *const c.zc_capture_options, out: *?*c.zc_camera) c_int {
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    pipeline.capture = opts.*;
+    return zc_open_pipeline(cfg, &pipeline, out);
+}
+pub export fn zc_default_pipeline_options(out: *c.zc_pipeline_options) void {
+    out.* = std.mem.zeroes(c.zc_pipeline_options);
+    out.struct_size = @sizeOf(c.zc_pipeline_options);
+    zc_default_capture_options(&out.capture);
+}
+pub export fn zc_open_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, out: *?*c.zc_camera) c_int {
     out.* = null;
+    const opts = &pipeline.capture;
+    if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
+        pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
+        ((pipeline.sensor_width == 0) != (pipeline.sensor_height == 0)) or ((pipeline.sensor_width == 0) != (pipeline.sensor_bit_depth == 0)) or
+        pipeline.lores_width > 16384 or pipeline.lores_height > 16384 or
+        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_RGB24 or
+        (pipeline.lores_format == c.ZC_YUV420 and (pipeline.lores_width | pipeline.lores_height) & 1 != 0)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.* };
-    const rc = driver.open(cfg, opts, self, completed, &self.device, &self.info);
+    const rc = driver.open(cfg, pipeline, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
@@ -132,6 +151,24 @@ pub export fn zc_open_ex(cfg: *const c.zc_config, opts: *const c.zc_capture_opti
     }
     out.* = self.ptr();
     return c.ZC_OK;
+}
+pub export fn zc_get_pipeline_info(p: *c.zc_camera, out: *c.zc_pipeline_info) c_int {
+    out.* = session(p).pipeline;
+    return c.ZC_OK;
+}
+pub export fn zc_get_sensor_modes(p: *c.zc_camera, modes: ?[*]c.zc_sensor_mode, capacity: u32, count: *u32) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return driver.sensorModes(self.device.?, modes, capacity, count);
+}
+pub export fn zc_get_stream(p: *c.zc_camera, token: u64, stream: u32, out: *c.zc_stream) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const i = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (stream == c.ZC_MAIN) out.* = self.slots[i].frame.main else if (stream == c.ZC_RAW) out.* = self.slots[i].frame.raw else if (stream == c.ZC_LORES) return driver.lores(self.device.?, i, out) else return c.ZC_INVALID;
+    return if (out.plane_count == 0) c.ZC_UNSUPPORTED else c.ZC_OK;
 }
 pub export fn zc_get_info(p: *c.zc_camera, out: *c.zc_info) c_int {
     out.* = session(p).info;
@@ -717,4 +754,42 @@ test "autofocus observes scan before terminal; cancellation stop and failures ar
     try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
     try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, id, 0, &state));
     try std.testing.expectEqual(@as(u32, c.ZC_AF_STOPPED), state);
+}
+
+test "pipeline mode selection and lores preserve ownership and ABI" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 64;
+    cfg.height = 32;
+    var opts: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&opts);
+    opts.sensor_width = 640;
+    opts.sensor_height = 480;
+    opts.sensor_bit_depth = 10;
+    var p: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_open_pipeline(&cfg, &opts, &p));
+    opts.sensor_bit_depth = 12;
+    opts.lores_width = 16;
+    opts.lores_height = 8;
+    try std.testing.expectEqual(c.ZC_OK, zc_open_pipeline(&cfg, &opts, &p));
+    defer _ = zc_close(p.?);
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_sensor_modes(p.?, null, 0, &count));
+    try std.testing.expectEqual(@as(u32, 3), count);
+    var modes: [3]c.zc_sensor_mode = undefined;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_get_sensor_modes(p.?, &modes, 2, &count));
+    try std.testing.expectEqual(c.ZC_OK, zc_get_sensor_modes(p.?, &modes, 3, &count));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(p.?));
+    var f: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+    var lores: c.zc_stream = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_stream(p.?, f.token, c.ZC_LORES, &lores));
+    try std.testing.expectEqual(@as(u32, 3), lores.plane_count);
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_get_stream(p.?, f.token, c.ZC_RAW, &lores));
+    try std.testing.expectEqual(c.ZC_INVALID, zc_get_stream(p.?, f.token, 3, &lores));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_get_stream(p.?, f.token, c.ZC_LORES, &lores));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_get_stream(p.?, f.token, c.ZC_LORES, &lores));
 }

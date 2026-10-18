@@ -1,7 +1,7 @@
 const std = @import("std");
 const camera = @import("camera");
 const help =
-    \\zig-camera info|capture|preview|record|bench [options]
+    \\zig-camera info|modes|capture|preview|record|bench [options]
     \\  --width N --height N      Processed size; omit both for default still size
     \\  --buffers N              Preallocated request count, 2..32 (default 4)
     \\  --camera N               libcamera camera index (default 0)
@@ -9,6 +9,9 @@ const help =
     \\  --exposure-us N --gain N  Manual exposure (set both); default auto exposure
     \\  --frame-us N             Requested frame duration, microseconds
     \\  --lens N                 Manual lens position in dioptres; default continuous AF if supported
+    \\  --sensor-width N --sensor-height N --sensor-depth N   Exact advertised mode
+    \\  --lores-width N --lores-height N  Add a paired analysis stream
+    \\  --lores-format NAME      YUV420 (default) or BGR888
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
     \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv/.mp4 (default capture.ppm)
@@ -39,7 +42,7 @@ fn run() !void {
         return;
     }
     const command = args[1];
-    if (!eq(command, "info") and !eq(command, "capture") and !eq(command, "bench") and !eq(command, "preview") and !eq(command, "record")) return error.InvalidCommand;
+    if (!eq(command, "modes") and !eq(command, "info") and !eq(command, "capture") and !eq(command, "bench") and !eq(command, "preview") and !eq(command, "record")) return error.InvalidCommand;
     var cfg = camera.defaultConfig();
     var capture_opts: camera.c.zc_capture_options = undefined;
     camera.core.zc_default_capture_options(&capture_opts);
@@ -47,6 +50,8 @@ fn run() !void {
         capture_opts.role = camera.c.ZC_VIDEO;
         cfg.policy = camera.c.ZC_FIFO;
     } else if (eq(command, "preview")) capture_opts.role = camera.c.ZC_PREVIEW;
+    var pipeline: camera.c.zc_pipeline_options = undefined;
+    camera.core.zc_default_pipeline_options(&pipeline);
     var fps: u32 = 30;
     var codec: u32 = camera.c.ZC_MJPEG;
     var bitrate: u32 = 0;
@@ -84,7 +89,9 @@ fn run() !void {
         i += 1;
         if (i >= args.len) return error.MissingOptionValue;
         const value = args[i];
-        if (eq(key, "--codec")) {
+        if (eq(key, "--lores-format")) {
+            pipeline.lores_format = if (eq(value, "YUV420")) camera.c.ZC_YUV420 else if (eq(value, "BGR888")) camera.c.ZC_RGB24 else return error.InvalidLoresFormat;
+        } else if (eq(key, "--codec")) {
             codec = if (eq(value, "h264")) camera.c.ZC_H264 else if (eq(value, "hevc")) camera.c.ZC_HEVC else if (eq(value, "mjpeg")) camera.c.ZC_MJPEG else return error.InvalidCodec;
         } else if (eq(key, "--output")) {
             output = value;
@@ -98,7 +105,17 @@ fn run() !void {
             cfg.lens_position = try std.fmt.parseFloat(f32, value);
         } else {
             const n = try std.fmt.parseInt(u32, value, 10);
-            if (eq(key, "--bitrate")) {
+            if (eq(key, "--sensor-width")) {
+                pipeline.sensor_width = n;
+            } else if (eq(key, "--sensor-height")) {
+                pipeline.sensor_height = n;
+            } else if (eq(key, "--sensor-depth")) {
+                pipeline.sensor_bit_depth = n;
+            } else if (eq(key, "--lores-width")) {
+                pipeline.lores_width = n;
+            } else if (eq(key, "--lores-height")) {
+                pipeline.lores_height = n;
+            } else if (eq(key, "--bitrate")) {
                 bitrate = n;
             } else if (eq(key, "--gop")) {
                 gop = n;
@@ -141,11 +158,20 @@ fn run() !void {
         }
         if (cfg.frame_duration_us == 0) cfg.frame_duration_us = 1_000_000 / fps;
     }
-    const cam = try camera.Camera.initWithOptions(cfg, capture_opts);
+    pipeline.capture = capture_opts;
+    const cam = try camera.Camera.initPipeline(cfg, pipeline);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
     if (info.backend != camera.c.ZC_SYNTHETIC and simulate) return error.SimulateRequiresSyntheticBuild;
+    const negotiated = cam.pipelineInfo();
+    if (eq(command, "modes")) {
+        const modes = try a.alloc(camera.c.zc_sensor_mode, try cam.sensorModes(&.{}));
+        defer a.free(modes);
+        _ = try cam.sensorModes(modes);
+        for (modes) |mode| std.debug.print("{d}x{d} depth={d} format={s}\n", .{ mode.width, mode.height, mode.bit_depth, std.mem.sliceTo(&mode.format, 0) });
+        return;
+    }
     if (eq(command, "info")) {
         std.debug.print("backend={s} camera={s} main={d}x{d} stride={d} buffers={d} raw={s}\n", .{
             if (info.backend == camera.c.ZC_SYNTHETIC) "synthetic" else "libcamera",
@@ -156,6 +182,7 @@ fn run() !void {
             info.buffer_count,
             std.mem.sliceTo(&info.raw.format, 0),
         });
+        std.debug.print("sensor={d}x{d} depth={d} lores={d}x{d} format={s} stride={d}\n", .{ negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, std.mem.sliceTo(&negotiated.lores.format, 0), negotiated.lores.stride });
         return;
     }
     try cam.start();
@@ -186,13 +213,26 @@ fn run() !void {
                 try file.writeAll(plane.data[0..@intCast(plane.bytes_used)]);
             }
         }
+        if (negotiated.lores.width != 0) {
+            const lores = try frame.stream(camera.c.ZC_LORES);
+            const rgb = std.mem.eql(u8, std.mem.sliceTo(&lores.format, 0), "BGR888");
+            const size = @as(usize, lores.width) * lores.height * 3 / @as(usize, if (rgb) 1 else 2);
+            const bytes = try a.alloc(u8, size);
+            defer a.free(bytes);
+            try camera.check(camera.media.zc_copy_stream(&lores, bytes.ptr, bytes.len));
+            const path = try std.fmt.allocPrint(a, "{s}.lores.{s}", .{ output, if (rgb) "rgb" else "i420" });
+            defer a.free(path);
+            const file = try std.fs.cwd().createFile(path, .{});
+            defer file.close();
+            try file.writeAll(bytes);
+        }
         const meta_path = try std.fmt.allocPrint(a, "{s}.json", .{output});
         defer a.free(meta_path);
         const meta_file = try std.fs.cwd().createFile(meta_path, .{});
         defer meta_file.close();
         var meta: [4096]u8 = undefined;
         // Names are fixed libcamera pixel-format identifiers, not arbitrary user input.
-        const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count });
+        const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d},\"sensor_width\":{d},\"sensor_height\":{d},\"sensor_bit_depth\":{d},\"lores_width\":{d},\"lores_height\":{d},\"lores_stride\":{d},\"lores_format\":\"{s}\"}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count, negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, negotiated.lores.stride, std.mem.sliceTo(&negotiated.lores.format, 0) });
         try meta_file.writeAll(json);
         std.debug.print("saved {s} and {s}\n", .{ output, meta_path });
         return;

@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.4
+# Picamera2 coverage in 0.5
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -7,15 +7,16 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Capability | Current implementation | Remaining gap |
 | --- | --- | --- |
 | Single-camera RGB capture | Zig/C/Python frame leases, owned buffers/NumPy arrays | Additional processed pixel formats |
-| Configuration roles | Still, video and viewfinder roles; role-specific ISP noise reduction | General sensor mode selection and low-resolution stream |
+| Configuration roles | Still/video/viewfinder roles; cached raw-mode discovery, exact sensor output size/bit depth; paired RGB/YUV420 lores | Per-mode measured FPS/exposure/crop catalog, arbitrary formats |
 | Preview | Blocking SDL loop or async display process with a bounded shared RGB slot, aspect-preserving resize, Escape/window close; shared capture worker with recording/AF | Qt/DRM zero-copy preview, overlays; full Picamera2 backend signatures |
 | Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, audio, hardware encoders, general profile/preset selection |
 | Recording control | CLI finite frame count, Python Recorder and background start/stop | Circular outputs, split recordings, general encoder/output classes |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
-| Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, jobs/signals/events, request acquire/refcounts |
+| Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, mode-switch jobs, request acquire/refcounts |
+| Async capture jobs | Bounded FIFO jobs for request/array/buffer/metadata/file; wait=False, callback, result/wait, asyncio await, queued cancel, frame deadline and stop cleanup | Multi-stage mode-switch jobs, event-loop integration, general signal classes |
 | Controls | Typed runtime set_controls, camera capabilities/ranges, atomic batches, 30-name catalog including focus windows and AE/AWB controls; per-frame metadata | Arbitrary vendor controls, HDR modes, full metadata catalog |
-| Autofocus jobs | Auto/Start then revision-filtered Scanning -> Focused/Failed/Idle; cancel/timeout/stop, awaitable results and callback | General capture jobs/signals; optical validation |
+| Autofocus jobs | Auto/Start then revision-filtered Scanning -> Focused/Failed/Idle; cancel/timeout/stop, awaitable results and callback | Optical validation |
 | Multiple cameras | Independent camera indices | Synchronization/stereo capture and tuning |
 
 ## Python subset example
@@ -38,7 +39,7 @@ with Picamera2() as camera:
     camera.stop_recording()
 ```
 
-`capture_array` requires NumPy and returns owned HxWx3 RGB bytes. BGR888 is the
+`capture_array` requires NumPy and returns owned HxWx3 RGB or (H*3/2)xW I420 arrays. BGR888 is the
 libcamera format name for RGB byte order. The facade's raw stream requests
 uncompressed Bayer for DNG; a camera that cannot negotiate it reports an error.
 Its metadata dictionary exposes the implemented timestamp/exposure/gain/WB/sequence
@@ -47,9 +48,10 @@ reconfiguration; outstanding leases prevent camera destruction.
 
 `camera.preview(frames=300)` remains a blocking UI-thread loop. `start_preview()`
 starts an async display process; it can run alongside recording and autofocus
-on one shared capture worker. Direct capture still competes for requests during
-background work. See [runtime controls, focus jobs and preview](controls.md) for
-API semantics, process startup requirements and remaining limits.
+on one shared capture worker. Capture helpers also submit jobs to that worker;
+only low-level `Camera.acquire` competes directly for requests. See [runtime controls, focus jobs and preview](controls.md) for
+API semantics and process startup requirements. See [pipeline and capture jobs](pipeline.md)
+for sensor, lores and capture cancellation/ownership details.
 There is no object detector, tracking mount or autonomous navigation in this API.
 
 ## Acceptance status

@@ -53,13 +53,41 @@ enum { ZC_STILL=0, ZC_PREVIEW=1, ZC_VIDEO=2 };
 typedef struct {
     uint32_t struct_size, role, unpacked_raw, noise_reduction; /* NR: 0..4, UINT32_MAX = role default */
 } zc_capture_options;
+typedef struct zc_camera zc_camera;
+/* Pipeline extensions preserve zc_config/zc_frame/zc_info ABI v1 layouts.
+ * Explicit sensor selection requires both size and bit depth. Zero = automatic.
+ * Lores: both dimensions zero disable; YUV420 requires even dimensions.
+ * Its negotiated size must not exceed main. All three streams share one lease. */
+enum { ZC_MAIN=0, ZC_RAW=1, ZC_LORES=2 };
+enum { ZC_YUV420=0, ZC_RGB24=1 };
+typedef struct {
+    uint32_t struct_size;
+    zc_capture_options capture;
+    uint32_t sensor_width, sensor_height, sensor_bit_depth;
+    uint32_t lores_width, lores_height, lores_format;
+} zc_pipeline_options;
+typedef struct { uint32_t width,height,bit_depth; char format[32]; } zc_sensor_mode;
+typedef struct {
+    uint32_t struct_size,sensor_width,sensor_height,sensor_bit_depth;
+    zc_stream lores;
+} zc_pipeline_info;
+void zc_default_pipeline_options(zc_pipeline_options *);
+int zc_open_pipeline(const zc_config *,const zc_pipeline_options *,zc_camera **);
+int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
+/* Cached discovery: no reconfiguration or capture interruption. Query with
+ * NULL/0 first. count is total; insufficient capacity returns INVALID. Formats
+ * advertise raw outputs, not measured FPS, exposure or optical guarantees. */
+int zc_get_sensor_modes(zc_camera *,zc_sensor_mode *,uint32_t capacity,uint32_t *count);
+/* Borrowed descriptor valid only for this lease. Disabled stream: UNSUPPORTED. */
+int zc_get_stream(zc_camera *,uint64_t token,uint32_t stream,zc_stream *);
+/* Tight owned copy: BGR888 => RGB bytes; YUV420 => I420 Y,U,V. */
+int zc_copy_stream(const zc_stream *,uint8_t *out,uint64_t length);
 typedef struct {
     uint32_t valid; /* bit 0 black levels, bit 1 CCM, bit 2 white balance */
     float black_levels[4]; /* R, Gr, Gb, B; normalized to a 16-bit range */
     float camera_to_srgb[9]; /* libcamera ColourCorrectionMatrix; WB is separate */
     char model[128];
 } zc_raw_metadata;
-typedef struct zc_camera zc_camera;
 /* Typed bounded runtime controls. IDs map to libcamera names in docs/controls.md.
  * Query support/ranges; a batch is validated atomically and staged for the next
  * recycled request. Already queued frames and sensor pipeline latency remain.

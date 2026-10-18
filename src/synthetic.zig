@@ -7,7 +7,9 @@ pub const Handle = struct {
     config: c.zc_config,
     context: ?*anyopaque,
     callback: Callback,
-    buffers: [c.ZC_MAX_BUFFERS][]u8 = undefined,
+    buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
+    lores_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
+    pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     info: c.zc_info,
     raw_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     sequence: u64 = 0,
@@ -26,14 +28,37 @@ pub const Handle = struct {
     fail_stop_once: bool = false,
     stop_calls: u32 = 0,
 };
-pub fn open(config: *const c.zc_config, opts: *const c.zc_capture_options, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info) c_int {
-    _ = opts;
+pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    if (opts.sensor_width != 0) {
+        var found = false;
+        for (modes) |mode| if (mode.width == opts.sensor_width and mode.height == opts.sensor_height and mode.bit_depth == opts.sensor_bit_depth) {
+            found = true;
+        };
+        if (!found) return c.ZC_UNSUPPORTED;
+    }
     if (config.camera_index != 0) return c.ZC_UNSUPPORTED;
     const h = Alloc.create(Handle) catch return c.ZC_NOMEM;
     const width = if (config.width == 0) 640 else config.width;
     const height = if (config.height == 0) 480 else config.height;
     const stride = std.mem.alignForward(u32, width * 3, 64);
     h.* = .{ .config = config.*, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
+    h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
+    h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else width;
+    h.pipeline.sensor_height = if (opts.sensor_width != 0) opts.sensor_height else height;
+    h.pipeline.sensor_bit_depth = if (opts.sensor_width != 0) opts.sensor_bit_depth else 12;
+    if (opts.lores_width > width or opts.lores_height > height) {
+        Alloc.destroy(h);
+        return c.ZC_INVALID;
+    }
+    if (opts.lores_width != 0) {
+        const l = &h.pipeline.lores;
+        l.width = opts.lores_width;
+        l.height = opts.lores_height;
+        l.stride = std.mem.alignForward(u32, l.width * @as(u32, if (opts.lores_format == c.ZC_RGB24) 3 else 1), 64);
+        l.plane_count = if (opts.lores_format == c.ZC_RGB24) 1 else 3;
+        const name = if (opts.lores_format == c.ZC_RGB24) "BGR888" else "YUV420";
+        @memcpy(l.format[0..name.len], name);
+    }
     h.info.backend = c.ZC_SYNTHETIC;
     h.info.buffer_count = config.buffer_count;
     h.info.main.width = width;
@@ -43,11 +68,11 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_capture_options, conte
     @memcpy(h.info.main.format[0..6], "BGR888");
     @memcpy(h.info.camera_id[0..9], "synthetic");
     if (config.raw != 0) {
-        h.info.raw.width = width;
-        h.info.raw.height = height;
-        h.info.raw.stride = std.mem.alignForward(u32, width * 2, 64);
+        h.info.raw.width = if (opts.sensor_width != 0) opts.sensor_width else width;
+        h.info.raw.height = if (opts.sensor_width != 0) opts.sensor_height else height;
+        h.info.raw.stride = std.mem.alignForward(u32, h.info.raw.width * 2, 64);
         h.info.raw.plane_count = 1;
-        const name = if (config.raw_format[0] == 0) "SRGGB12" else std.mem.sliceTo(&config.raw_format, 0);
+        const name = if (config.raw_format[0] == 0) (if (h.pipeline.sensor_bit_depth == 10) "SRGGB10" else "SRGGB12") else std.mem.sliceTo(&config.raw_format, 0);
         const format = @import("raw.zig").Format.parse(name) catch {
             Alloc.destroy(h);
             return c.ZC_UNSUPPORTED;
@@ -58,36 +83,62 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_capture_options, conte
         }
         @memcpy(h.info.raw.format[0..name.len], name);
     }
-    var allocated: usize = 0;
     for (0..config.buffer_count) |i| {
         h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height) catch {
-            for (h.buffers[0..allocated]) |buf| Alloc.free(buf);
-            for (h.raw_buffers[0..allocated]) |buf| Alloc.free(buf);
-            Alloc.destroy(h);
+            close(h);
             return c.ZC_NOMEM;
         };
+        @memset(h.buffers[i], 0);
+        for (0..height) |y| for (0..width) |x| {
+            h.buffers[i][y * stride + x * 3 ..][0..3].* = .{ @truncate(x), @truncate(y), @truncate(i * 37) };
+        };
         if (config.raw != 0) {
-            h.raw_buffers[i] = Alloc.alloc(u8, @as(usize, h.info.raw.stride) * height) catch {
-                Alloc.free(h.buffers[i]);
-                for (h.buffers[0..allocated]) |buf| Alloc.free(buf);
-                for (h.raw_buffers[0..allocated]) |buf| Alloc.free(buf);
-                Alloc.destroy(h);
+            const raw = h.info.raw;
+            h.raw_buffers[i] = Alloc.alloc(u8, @as(usize, raw.stride) * raw.height) catch {
+                close(h);
                 return c.ZC_NOMEM;
             };
             @memset(h.raw_buffers[i], 0);
-            const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&h.info.raw.format, 0)) catch unreachable;
+            const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&raw.format, 0)) catch unreachable;
             const black: u32 = @as(u32, 1) << @intCast(format.bits - 6);
-            for (0..height) |y| for (0..width) |x| {
+            for (0..raw.height) |y| for (0..raw.width) |x| {
                 const value: u16 = @intCast(black + (x * 17 + y * 31 + i * 13) % (format.white() - black));
-                std.mem.writeInt(u16, h.raw_buffers[i][y * h.info.raw.stride + x * 2 ..][0..2], value, .little);
+                std.mem.writeInt(u16, h.raw_buffers[i][y * raw.stride + x * 2 ..][0..2], value, .little);
             };
         }
-        allocated += 1;
-        @memset(h.buffers[i], 0);
-        for (0..height) |y| {
-            for (0..width) |x| {
-                const off = y * stride + x * 3;
-                h.buffers[i][off..][0..3].* = .{ @truncate(x), @truncate(y), @truncate(i * 37) };
+        if (opts.lores_width != 0) {
+            const l = h.pipeline.lores;
+            const rgb = opts.lores_format == c.ZC_RGB24;
+            h.lores_buffers[i] = Alloc.alloc(u8, @as(usize, l.stride) * l.height * @as(usize, if (rgb) 1 else 3) / @as(usize, if (rgb) 1 else 2)) catch {
+                close(h);
+                return c.ZC_NOMEM;
+            };
+            const buf = h.lores_buffers[i];
+            @memset(buf, 0);
+            if (rgb) {
+                for (0..l.height) |y| for (0..l.width) |x| {
+                    buf[y * l.stride + x * 3 ..][0..3].* = .{ @truncate(x * width / l.width), @truncate(y * height / l.height), @truncate(i * 37) };
+                };
+            } else {
+                const pixels = @as(usize, l.width) * l.height;
+                const tmp = Alloc.alloc(u8, pixels * 3) catch {
+                    close(h);
+                    return c.ZC_NOMEM;
+                };
+                defer Alloc.free(tmp);
+                const yuv = Alloc.alloc(u8, pixels * 3 / 2) catch {
+                    close(h);
+                    return c.ZC_NOMEM;
+                };
+                defer Alloc.free(yuv);
+                for (0..l.height) |y| for (0..l.width) |x| {
+                    tmp[(y * l.width + x) * 3 ..][0..3].* = .{ @truncate(x * width / l.width), @truncate(y * height / l.height), @truncate(i * 37) };
+                };
+                @import("home/rgb_i420.zig").convert(tmp, l.width, l.height, l.width * 3, yuv) catch unreachable;
+                for (0..l.height) |y| @memcpy(buf[y * l.stride ..][0..l.width], yuv[y * l.width ..][0..l.width]);
+                for (0..2) |plane| for (0..l.height / 2) |y| {
+                    @memcpy(buf[@as(usize, l.stride) * l.height + plane * @as(usize, l.stride / 2) * (l.height / 2) + y * (l.stride / 2) ..][0 .. l.width / 2], yuv[pixels + plane * pixels / 4 + y * (l.width / 2) ..][0 .. l.width / 2]);
+                };
             }
         }
     }
@@ -108,6 +159,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_capture_options, conte
         h.active[c.ZC_LENS_POSITION].values[0] = config.lens_position;
         h.active[c.ZC_AF_MODE].values[0] = 0;
     }
+    pipeline.* = h.pipeline;
     info.* = h.info;
     out.* = h;
     return c.ZC_OK;
@@ -130,6 +182,7 @@ pub fn stop(h: *Handle) c_int {
 pub fn close(h: *Handle) void {
     for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+    for (h.lores_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     Alloc.destroy(h);
 }
 pub fn sync(h: *Handle, _: u32, begin: bool) c_int {
@@ -323,5 +376,33 @@ pub fn setControls(h: *Handle, values: [*]const c.zc_control, count: u32, revisi
     for (values[0..count]) |value| h.pending[value.id] = value;
     h.revision += 1;
     revision.* = h.revision;
+    return c.ZC_OK;
+}
+
+const modes = [_]c.zc_sensor_mode{
+    .{ .width = 640, .height = 480, .bit_depth = 12, .format = "SRGGB12".* ++ @as([25]u8, @splat(0)) },
+    .{ .width = 1920, .height = 1080, .bit_depth = 10, .format = "SRGGB10".* ++ @as([25]u8, @splat(0)) },
+    .{ .width = 4056, .height = 3040, .bit_depth = 12, .format = "SRGGB12".* ++ @as([25]u8, @splat(0)) },
+};
+pub fn sensorModes(_: *Handle, out: ?[*]c.zc_sensor_mode, capacity: u32, count: *u32) c_int {
+    count.* = modes.len;
+    if (out == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < modes.len) return c.ZC_INVALID;
+    @memcpy(out.?[0..modes.len], &modes);
+    return c.ZC_OK;
+}
+pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
+    out.* = h.pipeline.lores;
+    if (out.plane_count == 0) return c.ZC_UNSUPPORTED;
+    const buf = h.lores_buffers[index];
+    const ysize = @as(usize, out.stride) * out.height;
+    for (0..out.plane_count) |i| {
+        const offset = if (i == 0) 0 else ysize + (i - 1) * ysize / 4;
+        const len = if (out.plane_count == 1) buf.len else if (i == 0) ysize else ysize / 4;
+        out.planes[i].data = buf[offset..].ptr;
+        out.planes[i].length = len;
+        out.planes[i].bytes_used = len;
+        out.planes[i].fd = -1;
+    }
     return c.ZC_OK;
 }

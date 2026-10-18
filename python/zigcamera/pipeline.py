@@ -6,16 +6,32 @@ class CapturePump:
         self.camera=camera;self.stop_event=threading.Event();self.error=None
         self.thread=threading.Thread(target=self._run,name='zig-camera-capture',daemon=True)
         self.thread.start()
+    def _expire(self):
+        import time
+        expired=[]
+        if not self.camera._async_lock.acquire(False): return
+        try:
+            for job in list(self.camera._capture_jobs):
+                if time.monotonic()>=job.deadline:
+                    with job.lock: job.state='expired'
+                    self.camera._capture_jobs.remove(job);expired.append(job)
+        finally: self.camera._async_lock.release()
+        for job in expired: job._finish(error=TimeoutError('Capture frame deadline expired'))
     def _run(self):
         try:
             while not self.stop_event.is_set():
+                self._expire()
                 try: frame=self.camera.acquire(timeout_ms=100)
                 except CameraError as error:
-                    if error.status==-3: continue
+                    if error.status==-3:
+                        self._expire()
+                        if self.camera._async_lock.acquire(False):
+                            try: self.camera._maybe_stop_pump()
+                            finally: self.camera._async_lock.release()
+                        continue
                     raise
-                with frame:
-                    # A stopping worker must be able to release its lease while
-                    # a lifecycle caller holds the subscriber lock and joins it.
+                job=None;retained=False;value=None;failure=None
+                try:
                     if self.stop_event.is_set(): continue
                     if not self.camera._async_lock.acquire(timeout=.02): continue
                     try:
@@ -28,7 +44,20 @@ class CapturePump:
                         if preview is not None:
                             try: preview.publish(frame)
                             except Exception as error: preview.error=error
+                        if self.camera._capture_jobs:
+                            job=self.camera._capture_jobs.popleft()
+                            if not job._claim(): failure=TimeoutError('Capture frame deadline expired')
                     finally: self.camera._async_lock.release()
+                    if job is not None and failure is None:
+                        try: value=job.operation(frame);retained=job.retain
+                        except Exception as error: failure=error
+                finally:
+                    if not retained:
+                        try: frame.release()
+                        except Exception as error:
+                            if failure is None: failure=error
+                    if job is not None: job._finish(value,failure)
+                if failure is not None and job is None: raise failure
                 if self.camera._async_lock.acquire(False):
                     try: self.camera._maybe_stop_pump()
                     finally: self.camera._async_lock.release()
@@ -36,6 +65,12 @@ class CapturePump:
             self.error=error
             recording=self.camera._recording
             if recording is not None: recording.error=error
+            while not self.stop_event.is_set():
+                if self.camera._async_lock.acquire(timeout=.02):
+                    try: pending=list(self.camera._capture_jobs);self.camera._capture_jobs.clear()
+                    finally: self.camera._async_lock.release()
+                    for job in pending: job._finish(error=error)
+                    break
     def close(self):
         self.stop_event.set()
         if threading.current_thread() is not self.thread: self.thread.join()
