@@ -20,7 +20,7 @@ Install **Zig 0.15.2** and the system libraries matching your Raspberry Pi OS im
 
 ```sh
 sudo apt update
-sudo apt install libcamera-dev libjpeg-dev pkg-config
+sudo apt install build-essential libcamera-dev libjpeg-dev pkg-config
 zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/zig-camera info
 ./zig-out/bin/zig-camera capture --output photo.jpg --warmup 60
@@ -49,6 +49,9 @@ PYTHONPATH=python python3 -m unittest discover -s tests -v
 Synthetic output requires explicit `--simulate`; synthetic timing is not camera
 FPS. The Linux backend is selected by default on Linux, synthetic on macOS.
 JPEG is optional (`-Djpeg=false`); no image codecs are reimplemented here.
+The real backend builds natively using the system C++ compiler (`CXX` may select
+an alternate compatible compiler). Cross-compiling the synthetic core is supported;
+real libcamera builds require the target system's matching headers and runtime.
 
 ## Ownership
 
@@ -74,6 +77,30 @@ outstanding leases. Holding every buffer stalls capture rather than allocating
 more memory. `latest` drops older *ready* frames at acquisition, never a leased
 frame; `--fifo` preserves ready order. Lifecycle calls/close require caller
 serialization; frame acquisition/release/stats may run on separate threads.
+
+## Python
+
+```python
+from zigcamera import Camera
+
+with Camera(width=1920, height=1080) as camera:
+    camera.start()
+    for _ in range(30):
+        with camera.acquire():
+            pass  # Let exposure, white balance and autofocus settle.
+    with camera.acquire() as frame:
+        frame.save_jpeg("trail.jpg", quality=98)
+        with frame.plane() as rgb_bytes:
+            print(rgb_bytes[0])  # Read-only borrowed view, includes row padding.
+        owned_rgb = frame.copy_rgb()  # Explicit tightly packed copy.
+```
+
+Install the Python wrapper with `python3 -m pip install .` after building the
+shared library, or set `PYTHONPATH=python`. Set `ZIG_CAMERA_LIBRARY` to the
+installed `libzigcamera.so` if it is outside the system library search path.
+NumPy is optional: `frame.numpy()` returns an owned array and
+`frame.mapped_array()` borrows one inside a context. Borrowed views must not
+escape the frame lease. Use `Camera(simulate=True)` with synthetic builds.
 
 See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
 [benchmarks](docs/performance.md), [Home reuse audit](docs/home-reuse.md), and

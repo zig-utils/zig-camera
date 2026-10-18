@@ -69,6 +69,7 @@ fn run() !void {
         } else if (eq(key, "--raw-format")) {
             if (value.len >= cfg.raw_format.len) return error.InvalidRawFormat;
             @memcpy(cfg.raw_format[0..value.len], value);
+            cfg.raw = 1;
         } else if (eq(key, "--gain")) {
             cfg.analogue_gain = try std.fmt.parseFloat(f32, value);
         } else if (eq(key, "--lens")) {

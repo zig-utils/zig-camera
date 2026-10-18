@@ -232,6 +232,7 @@ struct Device {
     }
     int sync(uint32_t index, bool begin) {
         auto &slot = slots[index];
+        int result = ZC_OK;
         for (size_t i = 0; i < slot.fd_count; ++i) {
             dma_buf_sync sync{};
             sync.flags = (begin ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) | DMA_BUF_SYNC_READ;
@@ -245,10 +246,12 @@ struct Device {
                         do { undo_rc = ioctl(slot.fds[j], DMA_BUF_IOCTL_SYNC, &undo); } while (undo_rc < 0 && errno == EINTR);
                     }
                 }
-                return ZC_IO;
+                if (begin) return ZC_IO;
+                // End CPU access on every plane even if an earlier fd failed.
+                result = ZC_IO;
             }
         }
-        return ZC_OK;
+        return result;
     }
 };
 }

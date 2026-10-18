@@ -10,6 +10,12 @@ pub const Handle = struct {
     buffers: [c.ZC_MAX_BUFFERS][]u8 = undefined,
     info: c.zc_info,
     sequence: u64 = 0,
+    // Fault injection for the shared ownership state machine's tests.
+    fail_queue: bool = false,
+    fail_sync_begin: bool = false,
+    fail_sync_end: bool = false,
+    fail_stop_once: bool = false,
+    stop_calls: u32 = 0,
 };
 pub fn open(config: *const c.zc_config, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info) c_int {
     if (config.raw != 0 or config.camera_index != 0) return c.ZC_UNSUPPORTED;
@@ -49,17 +55,24 @@ pub fn open(config: *const c.zc_config, context: ?*anyopaque, callback: Callback
 pub fn start(_: *Handle) c_int {
     return c.ZC_OK;
 }
-pub fn stop(_: *Handle) c_int {
+pub fn stop(h: *Handle) c_int {
+    h.stop_calls += 1;
+    if (h.fail_stop_once) {
+        h.fail_stop_once = false;
+        return c.ZC_IO;
+    }
     return c.ZC_OK;
 }
 pub fn close(h: *Handle) void {
     for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     Alloc.destroy(h);
 }
-pub fn sync(_: *Handle, _: u32, _: bool) c_int {
+pub fn sync(h: *Handle, _: u32, begin: bool) c_int {
+    if ((begin and h.fail_sync_begin) or (!begin and h.fail_sync_end)) return c.ZC_IO;
     return c.ZC_OK;
 }
 pub fn queue(h: *Handle, index: u32) c_int {
+    if (h.fail_queue) return c.ZC_DEVICE;
     var f = std.mem.zeroes(c.zc_frame);
     f.main = h.info.main;
     f.main.planes[0].data = h.buffers[index].ptr;

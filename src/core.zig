@@ -81,6 +81,7 @@ fn valid(cfg: *const c.zc_config) bool {
     return cfg.buffer_count >= 2 and cfg.buffer_count <= c.ZC_MAX_BUFFERS and
         cfg.width <= 16384 and cfg.height <= 16384 and ((cfg.width == 0) == (cfg.height == 0)) and
         cfg.policy <= c.ZC_LATEST and cfg.raw <= 1 and cfg.raw_format[31] == 0 and
+        (cfg.raw != 0 or cfg.raw_format[0] == 0) and
         ((cfg.exposure_us == 0) == (cfg.analogue_gain == 0)) and cfg.exposure_us <= 1_000_000_000 and
         cfg.frame_duration_us <= 1_000_000_000 and std.math.isFinite(cfg.analogue_gain) and
         cfg.analogue_gain >= 0 and cfg.analogue_gain <= 64 and std.math.isFinite(cfg.lens_position) and
@@ -222,7 +223,7 @@ pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
             self.mutex.lock();
             slot.state = .idle;
             self.stats.leased -= 1;
-            const running = self.running;
+            const running = self.running and self.fatal == 0;
             if (rc != 0) {
                 self.fatal = rc;
                 self.stats.errors += 1;
@@ -377,4 +378,43 @@ test "FIFO exhausts at bounded capacity and waits time out" {
     var spare: c.zc_frame = undefined;
     try std.testing.expectEqual(c.ZC_TIMEOUT, zc_acquire(p.?, 1, &spare));
     for (frames) |f| try std.testing.expectEqual(0, zc_release(p.?, f.token));
+}
+
+test "device failures consume leases safely and stop can retry" {
+    if (!options.libcamera) {
+        var cfg: c.zc_config = undefined;
+        zc_default_config(&cfg);
+        cfg.width = 1;
+        cfg.height = 1;
+        cfg.policy = c.ZC_FIFO;
+        var p: ?*c.zc_camera = null;
+        try std.testing.expectEqual(0, zc_open(&cfg, &p));
+        defer std.testing.expectEqual(0, zc_close(p.?)) catch unreachable;
+        const self = session(p.?);
+        const device = self.device.?;
+        device.fail_queue = true;
+        try std.testing.expectEqual(c.ZC_DEVICE, zc_start(p.?));
+        device.fail_queue = false;
+        try std.testing.expectEqual(0, zc_start(p.?));
+        device.fail_sync_begin = true;
+        var frame: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_IO, zc_acquire(p.?, 0, &frame));
+        try std.testing.expectEqual(@as(u32, 0), self.stats.leased);
+        device.fail_sync_begin = false;
+        try std.testing.expectEqual(0, zc_stop(p.?));
+        try std.testing.expectEqual(0, zc_start(p.?));
+        try std.testing.expectEqual(0, zc_acquire(p.?, 0, &frame));
+        device.fail_sync_end = true;
+        try std.testing.expectEqual(c.ZC_IO, zc_release(p.?, frame.token));
+        try std.testing.expectEqual(c.ZC_STALE, zc_release(p.?, frame.token));
+        try std.testing.expectEqual(@as(u32, 0), self.stats.leased);
+        try std.testing.expectEqual(c.ZC_IO, zc_acquire(p.?, 0, &frame));
+        device.fail_sync_end = false;
+        device.fail_stop_once = true;
+        try std.testing.expectEqual(c.ZC_IO, zc_stop(p.?));
+        const attempts = device.stop_calls;
+        try std.testing.expectEqual(0, zc_stop(p.?));
+        try std.testing.expectEqual(attempts + 1, device.stop_calls);
+        try std.testing.expectEqual(0, zc_start(p.?));
+    }
 }

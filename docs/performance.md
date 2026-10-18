@@ -43,6 +43,18 @@ this benchmark. Use an actual supported FPS for that sensor mode: a full-size
 64MP frame will not run at a nominal 30 FPS just because it was requested.
 CPU time per frame is the primary expected gain; FPS can remain sensor-limited.
 
+## Hardware smoke runner
+
+```sh
+PYTHONPATH=python python3 bench/pi_acceptance.py --frames 1000 --cycles 10 --output pi-check
+# Add --raw to exercise paired raw DMA-BUF reads and synchronization.
+```
+
+This exercises all-buffers-held backpressure, timeout, leased memory across stop,
+restart/close refusal, release/restart, monotonic timestamps, JPEG output, and
+process memory samples. It writes a report and sample JPEG. A successful smoke
+run does not establish optical quality or a speedup.
+
 ## Hardware acceptance before production claims
 
 1. Run `rpicam-hello --list-cameras` and save sensor modes, OS/kernel and libcamera
