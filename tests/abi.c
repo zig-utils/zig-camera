@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 _Static_assert(sizeof(zc_output_packet)==32,"output packet ABI");
+_Static_assert(sizeof(zc_output_stats)==48,"output stats ABI");
 _Static_assert(sizeof(zc_output_callbacks)==56,"output callbacks ABI");
 _Static_assert(sizeof(zc_buffer_config)==24,"buffer config ABI");
 _Static_assert(sizeof(zc_buffer_stats)==64,"buffer stats ABI");
@@ -136,6 +137,32 @@ int main(void) {
     }
     assert(delivered==2 && second_delivered==4);
     assert(zc_video_buffer_stats(recorder,&stats)==ZC_OK && stats.segments==2 && !stats.split_pending && !stats.frames);
+    assert(zc_video_close(recorder)==ZC_OK);
+    assert(zc_video_create(&video,&recording,0,&recorder)==ZC_OK);
+    delivered=0;second_delivered=0;
+    assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+    uint64_t extra_id=0,path_id=0;
+    zc_output_stats output_stats;
+    for(uint64_t i=0;i<6;i++) {
+        if(i==2) {
+            zc_output_callbacks extra=callbacks;extra.context=&second_delivered;
+            assert(zc_video_add_callbacks(recorder,&extra,&extra_id)==ZC_OK && extra_id>0);
+            assert(zc_video_add_output(recorder,"zig-out/abi-parallel.mkv",&path_id)==ZC_OK && path_id!=extra_id);
+        }
+        if(i==4) {
+            assert(zc_video_remove_output(recorder,0)==ZC_OK);
+            assert(zc_video_output_stats(recorder,0,&output_stats)==ZC_STATE);
+        }
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(zc_video_write(recorder,&frame,i*40000000)==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+    }
+    assert(delivered==4 && second_delivered==4);
+    assert(zc_video_output_stats(recorder,extra_id,&output_stats)==ZC_OK);
+    assert(output_stats.frames==4 && !output_stats.waiting_key && output_stats.first_ns==80000000);
+    assert(zc_video_remove_output(recorder,extra_id)==ZC_OK);
+    assert(zc_video_remove_output(recorder,extra_id)==ZC_STATE);
+    assert(zc_video_output_stats(recorder,path_id,&output_stats)==ZC_OK && output_stats.frames==4);
     assert(zc_video_close(recorder)==ZC_OK);
     assert(zc_close(camera)==ZC_OK);
     return 0;

@@ -163,3 +163,16 @@ pub export fn zc_video_create(cfg: *const c.zc_video_config, opts: *const c.zc_r
 pub export fn zc_video_split_callbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
     return @import("video.zig").splitCallbacks(p, cb);
 }
+
+pub export fn zc_video_add_callbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks, id: *u64) c_int {
+    return @import("video.zig").addCallbacks(p, cb, id);
+}
+pub export fn zc_video_add_output(p: *c.zc_recorder, path: [*:0]const u8, id: *u64) c_int {
+    return @import("video.zig").addOutput(p, path, id);
+}
+pub export fn zc_video_remove_output(p: *c.zc_recorder, id: u64) c_int {
+    return @import("video.zig").removeOutput(p, id);
+}
+pub export fn zc_video_output_stats(p: *c.zc_recorder, id: u64, stats: *c.zc_output_stats) c_int {
+    return @import("video.zig").outputStats(p, id, stats);
+}

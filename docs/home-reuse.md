@@ -294,3 +294,30 @@ aliases and completes existing bounded split jobs. Home remains responsible for
 encoding/muxing. Independent FAAD2/AVFoundation audio checks and Linux
 OpenH264/libde265 video decoding validate segments without FFmpeg. Synthetic
 validation does not establish physical A/V timing or Raspberry Pi performance.
+
+## 0.13: bounded attachments and shared encoded packets
+
+Rechecked Picamera2's encoder output-list and runtime stream-metadata handling,
+Home's packet output helpers, accumulating video sink graph, PCM windows and
+streaming MP4/MKV writers. The existing focused helpers provide the byte/PCM
+boundaries needed for one encoded-video producer with multiple independent sinks.
+The larger sink graph still has unrelated dependencies and is not imported.
+
+[Home 4e886d52b](https://github.com/home-lang/home/commit/4e886d52b) adds a fixed,
+allocation-free `packet_output.Slots(T, capacity)` registry with monotonically
+assigned nonzero IDs. Capacity and ID exhaustion are checked without mutating
+entries; a removed ID cannot address a later payload reusing that slot. Its four
+focused packet/PTS/registry tests pass on Zig 0.15.2 and Home's development compiler.
+Targeted pickier passes. Home source is vendored verbatim with MIT attribution;
+only `origin/main` was pushed, without a PR or coauthor trailer.
+
+Zig-camera uses Home's registry for native attachment ownership and its PCM
+`window` API for per-output audio cursors. Live audio is reclaimed only after all
+consumers advance; zero-consumer capture releases unused samples. Encoded video
+is shared without re-encoding. Existing Home writers independently produce AAC
+MP4 and PCM MKV, including fresh priming on a late join and complete removal
+finalization. Native/C/Python tests and independent AAC/video decoding cover
+simultaneous outputs, dynamic joins, primary splits and failure cleanup. Home's
+repository currently rejects Actions dispatches as disabled; local focused tests
+and zig-camera's cross-platform integration CI provide the reported evidence.
+No FFmpeg/Libav or physical camera timing claim is introduced.

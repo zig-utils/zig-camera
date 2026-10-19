@@ -231,6 +231,18 @@ int zc_video_open_callbacks(zc_recorder *,const zc_output_callbacks *);
  * Retain BOTH contexts until stats.split_pending clears, cancellation or close.
  * A pending split accepts no packets until commit; initialization can write headers. */
 int zc_video_split_callbacks(zc_recorder *,const zc_output_callbacks *);
+/* Up to 8 simultaneous outputs, one shared video encoder. Additions start on
+ * the next forwarded key (no history replay), each with its own PCM cursor and
+ * container/AAC state. Stable IDs >0 identify additions; 0 is the primary.
+ * Removal finishes that output through the emitted timeline; delayed tail is
+ * excluded. Failed writes poison recording; close still finalizes all sinks.
+ * Keep callbacks alive until removal consumes the ID or recorder close. */
+typedef struct {uint64_t id,frames,bytes,first_ns,audio_frames;uint32_t waiting_key,reserved;} zc_output_stats;
+int zc_video_add_callbacks(zc_recorder *,const zc_output_callbacks *,uint64_t *id);
+int zc_video_add_output(zc_recorder *,const char *path,uint64_t *id);
+int zc_video_remove_output(zc_recorder *,uint64_t id);
+int zc_video_output_stats(zc_recorder *,uint64_t id,zc_output_stats *);
+
 int zc_video_get_headers(zc_recorder *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact Picamera2-style milliseconds with 3 decimals/LF, from microsecond PTS. */
 int zc_format_pts(uint64_t timestamp_us,uint8_t *,uint32_t capacity,uint32_t *length);

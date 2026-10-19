@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.12)
+# Reusable outputs and PTS streams (0.13)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -31,6 +31,84 @@ For synthetic development select `Picamera2(simulate=True)` and
 `audio={"backend":"synthetic"}`. See [AAC setup](aac-mp4.md) for standalone
 FDK dependencies and supported rates. Physical camera/microphone synchronization
 and Pi throughput remain unmeasured.
+
+## Simultaneous recording and dynamic attachment
+
+```python
+import time
+from zigcamera import Picamera2, H264Encoder, FileOutput, MuxedOutput
+
+with Picamera2() as camera:
+    camera.configure(camera.create_video_configuration(main={"size": (1920, 1080)}))
+    movie = MuxedOutput("trail.mp4", pts="trail.pts")
+    elementary = FileOutput("trail.h264", pts="elementary.pts")
+    recording = camera.start_recording(H264Encoder(bitrate=16_000_000, iperiod=30),
+                                       [movie, elementary], fps=30)
+    time.sleep(3)
+    backup = MuxedOutput("backup.mp4", pts="backup.pts")
+    attachment_id = recording.add_output(backup)
+    time.sleep(3)
+    print(recording.output_stats(attachment_id))
+    recording.remove_output(attachment_id)  # Finalizes backup; others continue.
+    time.sleep(2)
+    camera.stop_recording()
+```
+
+`Recorder`, `Camera.start_recording` and `Picamera2.start_recording` accept a
+list or tuple of paths/output objects. The limit is eight simultaneous outputs.
+An empty list starts encoding without a sink, for later dynamic attachment.
+`Recorder` and `Recording` expose `outputs`, `add_output`, `remove_output` and
+`output_stats`. `Camera`/`Picamera2` also provide `add_recording_output` and
+`remove_recording_output`. Add returns a nonzero attachment ID; remove/stats accept
+that ID, the original output object, or the same path. IDs are not reused during
+a recorder's lifetime, so stale removals cannot detach another addition. Duplicate
+object claims, shared memory streams and file aliases are rejected. A group
+startup failure closes every successfully started output and the native recorder;
+preparation can already have written new headers, so it is not a file transaction.
+
+Video is encoded once, then the same packet is delivered to each native output.
+Initial outputs receive the same first key. Dynamic additions receive metadata
+and initialization headers during attachment, then wait for the next forwarded
+key; a new IDR is requested. Each starts its own zero-based PTS and fresh AVC/HEVC
+parameter sets. Adding to circular recording does not replay history; use the
+primary `open_output` or a snapshot for retained pre-roll. A recorder's delay
+applies to all its outputs; adding during delayed recording can start with an
+already queued key when it matures. Sink execution is serialized, with bounded
+attachment storage and no per-sink worker or unbounded packet queue. A slow sink
+applies backpressure; there is no silent dropping for other sinks.
+
+Every output owns its container and AAC state. Home's non-consuming PCM windows
+provide independent sample cursors; live PCM is released only after every active
+consumer has read it. Rolling history keeps its existing retention/overrun rules.
+MP4 receives AAC-LC, MKV receives PCM, and custom packet outputs receive PCM.
+All outputs share source sample rate/channels and video encoding parameters.
+`FileOutput` still rejects audio; use audio-capable outputs for an A/V recorder.
+No implicit resampling is performed. Finite output removal finishes buffered
+video and AAC through the emitted timeline; it excludes that sink's delayed tail.
+Other sinks continue, and recorder stop drains their remaining encoder/FIFO tail.
+
+The first initial output is the legacy primary, ID `0`. Existing
+`split_recording`, `Recorder.split`, rotation and `close_output` operate on that
+primary while added outputs continue uninterrupted. Pending primary splits count
+as a replacement, not a ninth active output. Removal of a primary with a pending
+split is rejected; cancel or finish that split first. Rotation manages its own
+primary, so remove additional outputs freely but do not detach the rotating
+primary. With an empty initial list, use the returned IDs for additions;
+`open_output` may later create a primary if capacity permits.
+
+Attachment/removal runs under the same recording lock as frame delivery. It
+finishes native ownership before Python `stop` and keeps all callback contexts
+alive through finalization. Failed preparation releases only the attempted new
+attachment. A packet/write failure poisons the whole recording and is surfaced to
+the owner; close is required. Close attempts to finalize every sink and calls every
+stop hook even when another sink fails. A removed sink's finish/stop error is
+reported after detachment; remaining healthy sinks can continue. There is no
+independent error-recovery policy or per-added-output async split API yet.
+`output_stats` reports each attachment's frames, bytes, relative recorder start,
+PCM frames delivered and whether it is still waiting for a key. Legacy recorder
+stats remain primary-specific for media bytes/frames and rotation; the audio
+written counter sums sample deliveries across all sinks. Source audio frames
+remain a single input count.
 
 ## Direct recording and async splits
 
@@ -202,6 +280,11 @@ exception is raised to the recording owner. No exception unwinds through C.
 
 ## Native API and limits
 
+`zc_video_add_callbacks` and `zc_video_add_output` add bounded independent sinks
+and return stable IDs; `zc_video_remove_output` finishes/detaches an ID, and
+`zc_video_output_stats` fills an additive 48-byte structure. ID zero denotes the
+primary. For a removal error, query stats: `ZC_STATE` means the ID was consumed;
+otherwise retain its callbacks until detach or recorder close.
 `zc_video_create` creates an output-less direct recorder with optional PCM
 configuration and no history. `zc_video_open_callbacks` attaches a 56-byte
 callback descriptor to direct, circular or delayed recording.
@@ -227,5 +310,8 @@ Validation covers sequential reuse across recorders, owned/borrowed streams,
 exact PTS, capture gaps, PCM offsets, fresh AVC/HEVC parameter sets, file identity
 collisions, partial writes, lifecycle/metadata/PTS failures, callback re-entry and
 C/Python ABI, direct object startup, async object/path splits, cancellation,
-per-segment headers/PTS and fractional 44.1 kHz sample boundaries. FAAD2/AVFoundation independently check stream-backed AAC MP4 audio;
+per-segment headers/PTS and fractional 44.1 kHz sample boundaries. Simultaneous
+coverage includes identical packets, shared encoder behavior, bounded capacity,
+stale IDs, joins/removals, primary splits with continuous parallel A/V, descriptor
+collisions, snapshot reservations, failure cleanup and zero-consumer PCM release. FAAD2/AVFoundation independently check stream-backed AAC MP4 audio;
 Linux CI additionally decodes elementary and muxed video with OpenH264/libde265.

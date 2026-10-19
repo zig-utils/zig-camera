@@ -111,6 +111,20 @@ class Recording:
         self.frames+=1
         if self._split_job is not None and not self._split_job.done() and not self.recorder.buffer_stats['split_pending']:
             self._split_job._finish(self._split_job.path)
+    @property
+    def outputs(self):
+        with self.camera._async_lock: return self.recorder.outputs
+    def add_output(self,output):
+        with self.camera._async_lock:
+            if self.closed or self.error is not None: raise RuntimeError('Recording is not writable')
+            return self.recorder.add_output(output)
+    def remove_output(self,output):
+        with self.camera._async_lock:
+            if self.closed: raise RuntimeError('Recording is closed')
+            if self._rotation is not None and self.recorder._output_id(output)==0: raise RuntimeError('Primary output is managed by rotation')
+            return self.recorder.remove_output(output)
+    def output_stats(self,output=0):
+        with self.camera._async_lock: return self.recorder.output_stats(output)
     def _rotate(self):
         import os
         if self._rotation_pending is not None and not self.recorder.buffer_stats['split_pending']:

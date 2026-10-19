@@ -14,12 +14,11 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.12: direct recording to reusable output objects and keyframe-aligned
-async splits between paths, elementary outputs and Home MP4/MKV sinks. Each
-segment has fresh codec/container state and rebased PTS. CircularOutput2 sidecars
-continue across splits. Home now preserves fractional PCM clocks at 44.1 kHz.
-Async snapshots, delayed A/V, controls, autofocus, preview and DNG remain
-available. No FFmpeg dependency.
+New in 0.13: up to eight simultaneous recording outputs from one video encoder,
+with dynamic attachment/removal, per-output PTS and independent Home MP4/MKV audio
+state. Start with a list of outputs, then use `recording.add_output` and
+`recording.remove_output` while capture continues. Async splits, delayed A/V,
+controls, autofocus, preview and DNG remain available. No FFmpeg dependency.
 [Output objects and PTS](docs/output-objects.md),
 [async snapshots and delayed A/V](docs/async-delayed.md), [coverage and gaps](docs/parity.md).
 

@@ -105,3 +105,9 @@ Home fractional PCM clock correction (0.12):
   at 3a63fce82 (main), carrying sample phase across blocks, wraps and frozen windows.
   Supersedes the earlier PCM timeline versions listed above.
   https://github.com/home-lang/home/commit/3a63fce82
+
+Home bounded output attachment helpers (0.13):
+- src/home/packet_output.zig is now verbatim Home packages/video/src/core/packet_output.zig
+  at 4e886d52b (main), including fixed-capacity stable attachment IDs.
+  Supersedes the earlier packet_output version listed above.
+  https://github.com/home-lang/home/commit/4e886d52b
