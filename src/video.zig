@@ -1442,3 +1442,12 @@ pub fn drainOutputIo(p: *c.zc_recorder, id: u64) c_int {
     }
     return out.failure;
 }
+pub fn drainOutputAsync(p: *c.zc_recorder, id: u64, result: *?*c.zc_output_job) c_int {
+    result.* = null;
+    const out = recorder(p).getOutput(id) orelse return c.ZC_STATE;
+    if (out.worker == null and out.failure != c.ZC_OK) return out.failure;
+    const job = io.Drain.create(out.worker, if (out.retired) |old| old.worker else null) catch |err| return status(err);
+    job.initial_failure = out.failure;
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
+}

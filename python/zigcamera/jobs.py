@@ -2,7 +2,26 @@
 import asyncio
 import ctypes as C
 import threading
+from functools import wraps
 from concurrent.futures import CancelledError
+
+def output_operation(method):
+    """Optional bounded lifecycle job; preserve the synchronous default."""
+    @wraps(method)
+    def call(self,*args,wait=None,signal_function=None,**kwargs):
+        from .output_objects import guard_callback
+        guard_callback()
+        asynchronous=wait is False or (wait is None and signal_function is not None)
+        if method.__name__=='close' and self._close_job is not None:
+            job=self._close_job
+            if threading.current_thread() is job.thread: return method(self,*args,**kwargs)
+            if asynchronous: return job
+            if job.done() and not self._handle.value: return None
+            return job.result()
+        if not asynchronous and method.__name__!='close': return method(self,*args,**kwargs)
+        job=self._submit_lifecycle(lambda:method(self,*args,**kwargs),signal_function,closing=method.__name__=='close')
+        return job if asynchronous else job.result()
+    return call
 class AutofocusJob:
     def __init__(self,camera,job_id,timeout,signal_function):
         self.camera=camera;self.id=job_id;self.timeout=timeout;self.signal_function=signal_function

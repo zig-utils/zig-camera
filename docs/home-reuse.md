@@ -402,3 +402,29 @@ delays, using FAAD2/AVFoundation and Linux OpenH264/libde265, with no FFmpeg.
 Only origin/main is published under the configured human identity, without
 coauthor trailers or PRs. Synthetic validation is not Pi performance or physical
 camera/microphone evidence.
+
+
+## 0.17: retained FIFO completion prefixes
+
+Rechecked Home's async result futures, atomic task state, revision-aware
+completion gate and owned operation FIFO. The completion gate handles a job's
+active/terminal transition; it does not track an admitted FIFO prefix. Futures
+also carry executor ownership that a small independent C wait ticket does not
+need. Existing Home encoders and MP4/MKV writers continue unchanged.
+
+[Home df4b991ef](https://github.com/home-lang/home/commit/df4b991ef) adds
+`CompletionWatermark`: allocation-free checked admission/acknowledgement, fixed
+prefix polling, immutable completed prefixes, first-failure preservation and
+sequence overflow checks. It is exported from the async package and covered by
+the focused async workflow. Its two standalone tests pass with Zig 0.15.2 and
+Home's development compiler; targeted pickier passes. Home workflow dispatch
+still returns HTTP 422 (Actions disabled), despite enabled permission flags;
+zig-camera CI runs the vendored tests on all three targets.
+
+Zig-camera vendors the helper verbatim with MIT attribution and supplies mutexes,
+conditions, reference-counted fences and bounded C drain tickets. Waiters do not
+retain borrowed recorder/worker pointers. Python adds bounded lifecycle/close
+jobs and retains retiring callbacks/files through stop hooks. Tests cover prefix
+boundaries, survival after close, bounded admission, cancellation, thread-start
+failure, slow hooks, split exceptions, async stop/restart and callback reentry.
+No FFmpeg/Libav/PyAV dependency or hardware performance claim is introduced.

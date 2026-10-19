@@ -9,8 +9,9 @@ class CircularOutput:
     def _bind(self,recording):
         if self._recording is not None and not self._recording.closed: raise RuntimeError('Circular output is already bound')
         self._recording=recording
-    def open_output(self,path): self._live().open_output(path)
-    def close_output(self): self._live().close_output()
+    def open_output(self,path,**options): return self._live().open_output(path,**options)
+    def close_output(self,**options): return self._live().close_output(**options)
+    def drain_output_io(self,output=0,**options): return self._live().drain_output_io(output,**options)
     def save_buffer(self,path,*,wait=None,signal_function=None): return self._live().save_buffer(path,wait=wait,signal_function=signal_function)
     save=save_buffer
     @property
@@ -38,9 +39,9 @@ class CircularOutput2(CircularOutput):
         active=self._recording is not None and not self._recording.closed and self._recording.recorder.buffer_stats['output_open']
         if self._pts.stream is not None or active: raise RuntimeError('Close output before changing its PTS stream')
         self._pts=PtsStream(value)
-    def open_output(self,output):
+    def open_output(self,output,*,async_io=None,wait=None,signal_function=None):
         recording=self._live()
-        with recording.camera._async_lock: recording.recorder.open_output(output,_pts=self._pts)
+        with recording.camera._async_lock: return recording.recorder.open_output(output,_pts=self._pts,async_io=async_io,wait=wait,signal_function=signal_function)
     @property
     def buffer_duration_ms(self): return self.config['delay_ms']
     @buffer_duration_ms.setter

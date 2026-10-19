@@ -7,12 +7,92 @@ pub const Event = struct { kind: enum { write, patch, packet }, offset: u64 = 0,
 pub const Config = struct { bytes: usize, items: u32, wait_ns: u64 };
 const Fence = struct {
     refs: std.atomic.Value(usize) = .init(1),
+    jobs: std.atomic.Value(usize) = .init(0),
     event: std.Thread.ResetEvent = .{},
+    mutex: std.Thread.Mutex = .{},
+    changed: std.Thread.Condition = .{},
+    progress: @import("home/completion_watermark.zig").Watermark = .{},
+    fn reserve(s: *Fence) !void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        _ = try s.progress.reserve();
+    }
+    fn complete(s: *Fence) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        s.progress.complete() catch unreachable;
+        s.changed.broadcast();
+    }
+    fn finish(s: *Fence, code: c_int) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        if (code != c.ZC_OK) s.progress.fail(code);
+        s.changed.broadcast();
+    }
     fn retain(s: *Fence) void {
         _ = s.refs.fetchAdd(1, .monotonic);
     }
     fn release(s: *Fence) void {
         if (s.refs.fetchSub(1, .acq_rel) == 1) A.destroy(s);
+    }
+};
+/// A retained prefix, never a borrowed Worker/Output/Recorder pointer.
+pub const Drain = struct {
+    const Prefix = struct { fence: *Fence, target: u64 };
+    current: ?Prefix,
+    previous: ?Prefix,
+    initial_failure: c_int = c.ZC_OK,
+    fn pin(worker: ?*Worker) ?Prefix {
+        const w = worker orelse return null;
+        w.done.retain();
+        w.done.mutex.lock();
+        defer w.done.mutex.unlock();
+        return .{ .fence = w.done, .target = w.done.progress.issued };
+    }
+    pub fn create(current: ?*Worker, previous: ?*Worker) !*Drain {
+        if (current) |w| {
+            if (w.done.jobs.fetchAdd(1, .acq_rel) >= 32) {
+                _ = w.done.jobs.fetchSub(1, .acq_rel);
+                return error.BufferFull;
+            }
+        }
+        errdefer if (current) |w| {
+            _ = w.done.jobs.fetchSub(1, .acq_rel);
+        };
+        const s = try A.create(Drain);
+        s.* = .{ .current = pin(current), .previous = pin(previous) };
+        return s;
+    }
+    pub fn destroy(s: *Drain) void {
+        if (s.current) |p| {
+            _ = p.fence.jobs.fetchSub(1, .acq_rel);
+            p.fence.release();
+        }
+        if (s.previous) |p| p.fence.release();
+        A.destroy(s);
+    }
+    pub fn wait(s: *Drain, timeout_ms: u32) c_int {
+        var timer = std.time.Timer.start() catch return c.ZC_IO;
+        const limit = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        var failure: c_int = s.initial_failure;
+        for ([_]?Prefix{ s.previous, s.current }) |maybe| {
+            const p = maybe orelse continue;
+            p.fence.mutex.lock();
+            defer p.fence.mutex.unlock();
+            while (true) {
+                switch (p.fence.progress.poll(p.target) catch unreachable) {
+                    .success => break,
+                    .failure => |code| {
+                        if (failure == c.ZC_OK) failure = code;
+                        break;
+                    },
+                    .pending => {},
+                }
+                if (timer.read() >= limit) return c.ZC_TIMEOUT;
+                p.fence.changed.timedWait(&p.fence.mutex, limit -| timer.read()) catch {};
+            }
+        }
+        return failure;
     }
 };
 pub const Worker = struct {
@@ -115,7 +195,8 @@ pub const Worker = struct {
             if (s.finalizing) s.changed.wait(&s.mutex) else s.changed.timedWait(&s.mutex, s.config.wait_ns -| timer.read()) catch {};
             if (s.failure != c.ZC_OK or s.closing) return error.AsyncOutputFailed;
         }
-        try s.queue.push(event, data);
+        try s.done.reserve();
+        s.queue.push(event, data) catch unreachable;
         s.accepted += 1;
         s.high_bytes = @max(s.high_bytes, s.queue.used);
         s.high_items = @max(s.high_items, s.queue.count);
@@ -141,7 +222,10 @@ pub const Worker = struct {
         defer s.done.event.set();
         var first = true;
         s.mutex.lock();
-        defer s.mutex.unlock();
+        defer {
+            s.done.finish(s.failure);
+            s.mutex.unlock();
+        }
         while (true) {
             while (s.queue.count == 0 and !s.closing) s.changed.wait(&s.mutex);
             if (s.failure != c.ZC_OK or s.queue.count == 0) {
@@ -168,7 +252,10 @@ pub const Worker = struct {
             const code = s.apply(s.context, event, data);
             s.mutex.lock();
             s.queue.pop();
-            if (code == c.ZC_OK) s.completed += 1 else if (s.failure == c.ZC_OK) {
+            if (code == c.ZC_OK) {
+                s.completed += 1;
+                s.done.complete();
+            } else if (s.failure == c.ZC_OK) {
                 s.failure = code;
                 s.closing = true;
             }

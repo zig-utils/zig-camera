@@ -259,7 +259,7 @@ class OutputBridge:
                 self.output.outputframe(C.string_at(e.data,e.length),keyframe=key,timestamp=timestamp,packet=info,audio=audio)
             if not audio and self.pts is not None: self.pts.write(timestamp)
         return self._invoke(deliver)
-    def start(self):
+    def start(self,streams=None):
         if not all(callable(getattr(self.output,name,None)) for name in ('start','stop','outputframe')): raise TypeError('Output requires start, stop and outputframe')
         if self.recorder._audio_spec is not None and not getattr(self.output,'supports_audio',True): raise ValueError('This output does not support audio')
         with _claim_lock:
@@ -270,7 +270,7 @@ class OutputBridge:
             self.started=True;self._hook(self.output.start)
             add_stream=getattr(self.output,'_add_stream',None)
             if add_stream is not None:
-                for info,params in self.recorder._streams(): self._hook(lambda:add_stream(info,info.codec,**params))
+                for info,params in self.recorder._streams() if streams is None else streams: self._hook(lambda:add_stream(info,info.codec,**params))
             if self.pts is not None and self.owns_pts: self.pts.start(self.recorder._lib)
             if isinstance(self.output,FileOutput): self.cb.file_fd=_fd(self.output._stream)
             if isinstance(self.output,Output): self.cb.pts_fd=_fd(self.output._pts.stream)
@@ -286,7 +286,7 @@ class OutputBridge:
                 if self.output._pts.target is None and (self.pts is None or self.pts.target is None): self.cb.packet=type(self.packet_callback)()
         except Exception:
             self.stop();raise
-    def check_distinct(self,other):
+    def check_distinct(self,other,*,files=False):
         # Native fstat guards files, including hardlinks. Borrowed memory streams
         # have no descriptor, so compare their live object identities here.
         def streams(bridge):
@@ -298,8 +298,30 @@ class OutputBridge:
         shared=self.pts.stream if self.pts is not None and self.pts is other.pts else None
         if any(a is b and a is not shared for a in streams(self) for b in streams(other)):
             raise ValueError('Pending and active output streams must be distinct')
+        if files:
+            def identity(stream):
+                fd=_fd(stream)
+                if fd<0: return None
+                info=os.fstat(fd);return info.st_dev,info.st_ino
+            # Native retirement is over, but a slow Python stop may still flush
+            # an owned file. Keep its inode reserved until that hook releases it.
+            first=[identity(s) for s in streams(self) if s is not shared]
+            second=[identity(s) for s in streams(other) if s is not shared]
+            if any(a is not None and a==b for a in first for b in second): raise ValueError('Output file is still retiring')
     def commit(self):
         self._hook(self._commit)
+    def check_path(self,path):
+        try: target=os.stat(path)
+        except FileNotFoundError: return
+        streams=[]
+        if isinstance(self.output,FileOutput): streams.append(self.output._stream)
+        if isinstance(self.output,Output): streams.append(self.output._pts.stream)
+        if self.pts is not None: streams.append(self.pts.stream)
+        for stream in streams:
+            fd=_fd(stream)
+            if fd>=0:
+                info=os.fstat(fd)
+                if (target.st_dev,target.st_ino)==(info.st_dev,info.st_ino): raise ValueError('Output file is still retiring')
     def _commit(self):
         # Only truncate auxiliary/elementary files after native descriptor and
         # snapshot-reservation checks accepted the complete attachment.

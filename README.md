@@ -14,11 +14,11 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.16: opt-in async sink workers with bounded owned queues, per-output
-fail-on-full or timed-wait backpressure, queue statistics and explicit draining.
-Splits preserve worker/context ownership while healthy outputs advance. Home
-codecs, containers, sample clocks and fixed-capacity helpers remain the media
-implementation. No FFmpeg.
+New in 0.17: bounded async output lifecycle jobs, fixed-prefix drain jobs that
+survive recorder shutdown, and close jobs that retain callbacks through cleanup.
+Retired async outputs stop off the capture thread, and split jobs include their
+hook completion. Reuses Home's FIFO completion watermark and existing media
+codecs/containers. No FFmpeg.
 [Output objects and PTS](docs/output-objects.md),
 [async snapshots and delayed A/V](docs/async-delayed.md), [coverage and gaps](docs/parity.md).
 

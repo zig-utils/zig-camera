@@ -128,3 +128,9 @@ Home owned operation FIFO (0.16):
 - src/home/owned_fifo.zig is verbatim Home packages/video/src/core/owned_fifo.zig
   at f3c64ed41 (main), with fixed byte/entry bounds and in-flight acknowledgement.
   https://github.com/home-lang/home/commit/f3c64ed41
+
+Home FIFO completion (0.17):
+- src/home/completion_watermark.zig is verbatim from Home's
+  packages/async/src/completion_watermark.zig at df4b991ef.
+  Source: https://github.com/home-lang/home/commit/df4b991ef
+  The Home MIT license above applies.

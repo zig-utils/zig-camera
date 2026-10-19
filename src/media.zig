@@ -221,3 +221,14 @@ pub export fn zc_video_output_io_stats(p: *c.zc_recorder, id: u64, out: *c.zc_ou
 pub export fn zc_video_drain_output_io(p: *c.zc_recorder, id: u64) c_int {
     return @import("video.zig").drainOutputIo(p, id);
 }
+pub export fn zc_video_drain_output_async(p: *c.zc_recorder, id: u64, job: *?*c.zc_output_job) c_int {
+    return @import("video.zig").drainOutputAsync(p, id, job);
+}
+pub export fn zc_output_job_wait(job: *c.zc_output_job, timeout_ms: u32) c_int {
+    const drain: *@import("output_io.zig").Drain = @ptrCast(@alignCast(job));
+    return drain.wait(timeout_ms);
+}
+pub export fn zc_output_job_close(job: ?*c.zc_output_job) void {
+    const drain: *@import("output_io.zig").Drain = @ptrCast(@alignCast(job orelse return));
+    drain.destroy();
+}

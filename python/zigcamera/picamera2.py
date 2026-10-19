@@ -162,9 +162,9 @@ class Picamera2:
     def split_recording_output(self,current,output,*,wait=None,signal_function=None):
         return self._ready().split_recording_output(current,output,wait=wait,signal_function=signal_function)
     @_serialized
-    def add_recording_output(self,output): return self._ready().add_recording_output(output)
+    def add_recording_output(self,output,*,async_io=None,wait=None,signal_function=None): return self._ready().add_recording_output(output,async_io=async_io,wait=wait,signal_function=signal_function)
     @_serialized
-    def remove_recording_output(self,output): return self._ready().remove_recording_output(output)
+    def remove_recording_output(self,output,*,wait=None,signal_function=None): return self._ready().remove_recording_output(output,wait=wait,signal_function=signal_function)
     def _switch(self,config,operation,wait,signal_function,num_frames,timeout_ms):
         from .modes import submit
         return submit(self,config,operation,wait,signal_function,num_frames,timeout_ms)
@@ -186,7 +186,7 @@ class Picamera2:
             return _metadata(frame)
         return self._switch(config,save,wait,signal_function,num_frames,timeout_ms)
     @_serialized
-    def stop_recording(self): self._ready().stop_recording()
+    def stop_recording(self,*,wait=None,signal_function=None): return self._ready().stop_recording(wait=wait,signal_function=signal_function)
     @_serialized
     def preview(self,frames=300): return self._ready().preview(frames=frames)
     def __enter__(self): return self

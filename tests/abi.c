@@ -271,7 +271,19 @@ int main(void) {
     assert(io_stats.accepted_ops==2 && io_stats.completed_ops==2 && !io_stats.rejected_ops);
     assert(zc_video_output_state(recorder,extra_id,&state)==ZC_OK && state.generation==1 && !state.pending);
     assert(zc_video_set_output_io(recorder,0,32768,8,0)==ZC_STATE);
+    zc_output_job *drains[32],*output_overflow=(zc_output_job *)1;
+    assert(zc_video_drain_output_async(recorder,999,&output_overflow)==ZC_STATE && output_overflow==NULL);
+    for(unsigned i=0;i<32;i++) {
+        assert(zc_video_drain_output_async(recorder,0,&drains[i])==ZC_OK);
+        assert(zc_output_job_wait(drains[i],0)==ZC_OK);
+    }
+    assert(zc_video_drain_output_async(recorder,0,&output_overflow)==ZC_BUSY && output_overflow==NULL);
     assert(zc_video_close(recorder)==ZC_OK);
+    for(unsigned i=0;i<32;i++) {
+        assert(zc_output_job_wait(drains[i],0)==ZC_OK);
+        zc_output_job_close(drains[i]);
+    }
+    zc_output_job_close(NULL);
     assert(zc_close(camera)==ZC_OK);
     return 0;
 }

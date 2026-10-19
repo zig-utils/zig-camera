@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.16
+# Picamera2 coverage in 0.17
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -12,7 +12,7 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, additional audio codecs, hardware encoders, general profile/preset selection |
 | Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs; owned async pre-roll jobs; bounded CircularOutput2-style delayed A/V with close-tail exclusion and stop flushing | Retention deletion, complete upstream sink signatures, repairing partially written containers after process/device crashes |
 | Audio and synchronized A/V | Explicit ALSA S16LE capture; bounded PCM queue; BOOTTIME/sample-count synchronization, MJPEG/AVC/HEVC + PCM Matroska; Home AAC-LC + AVC/HEVC fragmented MP4 with priming/tail metadata; sample-clipped splits; bounded circular PCM/video and synchronized MP4 pre-roll snapshots | Physical latency/drift calibration, adaptive resampling, other audio codecs/HE-AAC, other input platforms |
-| Reusable outputs and PTS | Eight simultaneous outputs with dynamic add/remove, independent async splits (cancellable before keyframe commit), per-output stats/state, independent bounded A/V delays, opt-in asynchronous sink I/O with per-output byte/operation limits and fail/timed-wait backpressure, and sink failure isolation/recovery with fresh targets and bounded retry/backoff; shared encoded video and independent sample-clipped audio/container state; Direct/circular/delayed packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; async object/path splits with bounded jobs, cancellation and lifecycle cleanup; exact per-segment PTS and shared CircularOutput2 sidecars | Per-sink encoding settings, asynchronous lifecycle hooks, socket-specific options, PyAV packet interoperability, every upstream constructor signature |
+| Reusable outputs and PTS | Eight simultaneous outputs with dynamic add/remove, independent async splits (cancellable before keyframe commit), per-output stats/state, independent bounded A/V delays, bounded async lifecycle/drain/close jobs, opt-in asynchronous sink I/O with per-output byte/operation limits and fail/timed-wait backpressure, and sink failure isolation/recovery with fresh targets and bounded retry/backoff; shared encoded video and independent sample-clipped audio/container state; Direct/circular/delayed packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; async object/path splits with bounded jobs, cancellation and lifecycle cleanup; exact per-segment PTS and shared CircularOutput2 sidecars | Per-sink encoding settings, socket-specific options, PyAV packet interoperability, every upstream constructor signature |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
 | Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, request acquire/refcounts |
@@ -131,3 +131,14 @@ fatal. Tests include eight simultaneous pending splits, cancellation, re-entry,
 old/new sink and hook failures, delayed AVC/HEVC + AAC MP4 segment decoding, final
 close reports and continued healthy audio/video. This remains an incremental
 compatibility implementation, with Pi throughput/physical synchronization unmeasured.
+
+
+0.17 adds optional awaitable output lifecycle jobs (start/stream metadata,
+attachment/recovery, split preparation, removal and close), a reserved recorder
+close job, and independent fixed-prefix native drain handles. Drains capture
+already admitted I/O and retain completion state after workers/recorders are
+freed. Retired async-output stop hooks run off capture; split completion includes
+cleanup and preserves late exceptions. Tests cover bounded admission, close
+races, queued cancellation, blocked hooks, file reservations and reentry.
+Serialized native preparation/finalization can still pause encoder input; this
+is not full Picamera2 compatibility or measured Pi performance.

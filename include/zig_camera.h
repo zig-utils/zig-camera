@@ -333,6 +333,13 @@ typedef struct {uint64_t queued_bytes,queued_ops,accepted_ops,completed_ops,reje
 int zc_video_set_output_io(zc_recorder *,uint64_t id,uint64_t max_bytes,uint32_t max_ops,uint64_t wait_ns);
 int zc_video_output_io_stats(zc_recorder *,uint64_t id,zc_output_io_stats *);
 int zc_video_drain_output_io(zc_recorder *,uint64_t id);
+/* Fixed admitted prefix; independent of recorder lifetime. At most 32 live jobs
+ * per worker epoch. wait returns TIMEOUT while pending; close releases a job,
+ * never cancels I/O. Serialize job close against wait on the same job. */
+typedef struct zc_output_job zc_output_job;
+int zc_video_drain_output_async(zc_recorder *,uint64_t id,zc_output_job **);
+int zc_output_job_wait(zc_output_job *,uint32_t timeout_ms);
+void zc_output_job_close(zc_output_job *);
 
 #ifdef __cplusplus
 }

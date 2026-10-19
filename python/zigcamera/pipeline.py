@@ -118,11 +118,13 @@ class Recording:
     @property
     def outputs(self):
         with self.camera._async_lock: return self.recorder.outputs
-    def add_output(self,output,*,async_io=None):
+    def add_output(self,output,*,async_io=None,wait=None,signal_function=None):
         with self.camera._async_lock:
             if self.closed or self.error is not None: raise RuntimeError('Recording is not writable')
-            return self.recorder.add_output(output,async_io=async_io)
-    def remove_output(self,output):
+            return self.recorder.add_output(output,async_io=async_io,wait=wait,signal_function=signal_function)
+    def remove_output(self,output,*,wait=None,signal_function=None):
+        if wait is False or (wait is None and signal_function is not None):
+            return self.recorder._submit_lifecycle(lambda:self.remove_output(output),signal_function)
         with self.camera._async_lock:
             if self.closed: raise RuntimeError('Recording is closed')
             if self._rotation is not None and self.recorder._output_id(output)==0: raise RuntimeError('Primary output is managed by rotation')
@@ -168,10 +170,13 @@ class Recording:
         with self.camera._async_lock: return self.recorder.set_output_io(output,**options)
     def output_io_stats(self,output=0):
         with self.camera._async_lock: return self.recorder.output_io_stats(output)
-    def drain_output_io(self,output=0):
+    def drain_output_io(self,output=0,*,wait=None,signal_function=None):
         with self.camera._async_lock:
-            try: return self.recorder.drain_output_io(output)
-            finally: self._complete_splits()
+            job=self.recorder.drain_output_io(output,wait=False,signal_function=signal_function)
+        if wait is False or (wait is None and signal_function is not None): return job
+        job.result()
+        with self.camera._async_lock:
+            self.recorder._sync_split();self._complete_splits()
     def set_output_delay(self,output=0,**options):
         with self.camera._async_lock: return self.recorder.set_output_delay(output,**options)
     def output_delay(self,output=0):
@@ -180,8 +185,8 @@ class Recording:
         with self.camera._async_lock: return self.recorder.set_output_recovery(output,factory,**options)
     def recovery_status(self,output=0):
         with self.camera._async_lock: return self.recorder.recovery_status(output)
-    def recover_output(self,output,replacement):
-        with self.camera._async_lock: return self.recorder.recover_output(output,replacement)
+    def recover_output(self,output,replacement,*,wait=None,signal_function=None):
+        with self.camera._async_lock: return self.recorder.recover_output(output,replacement,wait=wait,signal_function=signal_function)
     def _complete_splits(self):
         for identity,job in list(self._split_jobs.items()):
             if job.done(): continue
@@ -216,7 +221,7 @@ class Recording:
             except Exception as error:
                 job._finish(error=error);raise
             if job.done(): return False
-            baseline=self.recorder._split_generation if job.output_id==0 else self.recorder._extra_pending[job.output_id][2]
+            baseline=job.generation
             if self.recorder._state(job.output_id)['generation']>baseline: return False
             try: self.recorder.cancel_output_split(job.output_id)
             except Exception as error:
@@ -227,19 +232,25 @@ class Recording:
         with self.camera._async_lock: job=self.recorder.save_buffer(path,wait=False,signal_function=signal_function)
         if wait is True or (wait is None and signal_function is None): job.result();return None
         return job
-    def open_output(self,path,*,async_io=None):
-        with self.camera._async_lock: self.recorder.open_output(path,async_io=async_io)
-    def close_output(self):
-        with self.camera._async_lock: self.recorder.close_output()
+    def open_output(self,path,*,async_io=None,wait=None,signal_function=None):
+        with self.camera._async_lock: return self.recorder.open_output(path,async_io=async_io,wait=wait,signal_function=signal_function)
+    def close_output(self,*,wait=None,signal_function=None):
+        with self.camera._async_lock: return self.recorder.close_output(wait=wait,signal_function=signal_function)
     @property
     def buffer_stats(self):
         with self.camera._async_lock: return self.recorder.buffer_stats
-    def close(self):
+    def close(self,*,wait=None,signal_function=None):
         from .output_objects import guard_callback
         guard_callback()
+        asynchronous=wait is False or (wait is None and signal_function is not None)
+        job=self.recorder._close_job
+        if job is not None and threading.current_thread() is not job.thread:
+            return job if asynchronous else job.result()
         if self.closed: return
         if self.camera._recording is self:
-            self.camera.stop_recording();return
+            return self.camera.stop_recording(wait=wait,signal_function=signal_function)
+        if asynchronous:
+            return self.recorder._submit_lifecycle(lambda:self.close(),signal_function,closing=True)
         self.closed=True
         failure=self.error
         operations=[]

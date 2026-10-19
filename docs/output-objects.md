@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.16)
+# Reusable outputs and PTS streams (0.17)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -74,7 +74,7 @@ parameter sets. Adding to circular recording does not replay history; use the
 primary `open_output` or a snapshot for retained pre-roll. A recorder's delay
 applies to all its outputs; adding during delayed recording can start with an
 already queued key when it matures. Sink execution is serialized, with bounded
-attachment storage and no per-sink worker or unbounded packet queue. A slow sink
+attachment storage. Optional bounded workers are described below. A synchronous slow sink
 applies backpressure; there is no silent dropping for other sinks.
 
 Every output owns its container and AAC state. Home's non-consuming PCM windows
@@ -475,7 +475,7 @@ starts a deadline; retry delay doubles for later attempts up to its cap. Zero de
 allows an immediate attempt. Time advances with media input, so paused capture
 also pauses retries. This is not a wall-clock reconnect service. Factories run on
 the serialized recording consumer, under the output callback re-entry guard;
-keep them short. Camera manager callbacks do not execute factories. Factories and lifecycle hooks still run on that consumer. Enable the optional
+keep them short. Camera manager callbacks do not execute factories. Factories still run on that consumer; optional lifecycle jobs are described below. Enable the optional
 async I/O workers below to move runtime sink calls off it.
 
 The factory receives `(attempt, error)` with attempts starting at one and returns
@@ -558,7 +558,8 @@ Runtime media writes, random-access MP4 patches, raw video/PCM packet callbacks
 and PTS notifications run in FIFO order on that sink's native worker. User calls
 are made outside the queue mutex. Home muxing/AAC encoding still run on the
 recording consumer. Target opening, headers/history replay before worker enable,
-`start`, stream metadata, commit and `stop` lifecycle hooks remain synchronous.
+lifecycle hooks use the synchronous API by default; optional lifecycle jobs and
+retired-output stop workers are described below.
 This is asynchronous sink delivery, with no hardware throughput claim.
 
 Backpressure is selected independently:
@@ -591,7 +592,7 @@ A completion fence prevents its worker from delivering callbacks before the old
 worker ends, preserving shared CircularOutput2 PTS epoch order. The old context,
 file identity and object claim remain reserved until completion. Generation
 advances at keyframe commit, while state `pending` remains set until retirement;
-the async split job completes then. It cannot be cancelled after commit. A late
+the async split job completes after the Python stop hook too (see below). It cannot be cancelled after commit. A late
 old-worker failure fails that split job and records `split_error`, while the new
 sink can remain healthy under isolation. New splits/removals are busy until that
 retirement finishes. The capture pump checks completions even during frame
@@ -615,3 +616,85 @@ statistics require a live recorder; final output errors remain queryable after
 close. Native C callers can enable/query/drain with `zc_video_set_output_io`,
 `zc_video_output_io_stats`, and `zc_video_drain_output_io`; old ABI layouts remain
 unchanged and the 88-byte I/O statistics structure is additive.
+
+## Async lifecycle hooks, drain and close jobs (0.17)
+
+```python
+# Inside a running recording; the result is the stable attachment ID.
+adding = recording.add_output(MuxedOutput("backup.mp4"), wait=False)
+backup_id = adding.result(5)
+# In an asyncio coroutine, these jobs can instead be awaited directly.
+draining = recording.drain_output_io(backup_id, wait=False)
+draining.result(5)
+recording.remove_output(backup_id, wait=False).result(5)
+closing = camera.stop_recording(wait=False)
+closing.result(10)  # Final encoder/container writes, worker drain and stop hooks.
+```
+
+`Recorder` and `Recording` expose `wait=None` and `signal_function=None` on
+`add_output`, `open_output`, `recover_output`, `remove_output`, `close_output`,
+`drain_output_io` and `close`. `Camera` and `Picamera2` forward these options on
+`add_recording_output`, `remove_recording_output` and `stop_recording`.
+`CircularOutput`/`CircularOutput2` forward open/close/drain options too.
+The default waits and preserves the existing return value. `wait=False`, or a
+signal function with unspecified wait, returns an awaitable `OperationJob`.
+`result(timeout)` limits only the observer's wait. Exceptions preserve their
+original Python objects; signal callback exceptions appear in `callback_error`.
+Callbacks run separately and may outlive close.
+
+There are sixteen user output-job slots per recorder, including drain jobs and
+slots retained by running signal callbacks. One extra close slot is reserved so
+capacity exhaustion cannot prevent cleanup. Preparation and cleanup threads are
+bounded by those slots, plus at most one retiring stop job per attachment.
+Async addition snapshots owned stream metadata under the recorder lock, then
+runs `start` and `_add_stream` off that lock. Existing capture can continue while
+those hooks wait. Native acceptance checks the current recorder state again;
+failed or superseded preparation stops and releases only its attempted output.
+Other lifecycle operations serialize native preparation/finalization with encoder
+input, including header writes, commits and explicit detach drains. Their jobs
+move that work off the submitting thread; they do not promise uninterrupted
+capture while native ownership is changing. The automatic retry factory retains
+its existing synchronous behavior.
+
+Low-level `Recorder.split(..., wait=False)` and `split_output(..., wait=False)`
+return **preparation** jobs: success means the replacement is staged, not that a
+keyframe has committed. The existing `Recording.split`/`split_output` jobs and
+Camera/Picamera2 split APIs still represent the complete keyframe handoff.
+For an async-I/O attachment, the retired output's `stop` runs on a separate
+bounded worker after native callback ownership ends. Its replacement and healthy
+peers can continue. The full split job stays pending until that hook returns;
+a late hook failure is reported by that job and `output_errors` under isolation.
+Object claims, memory-stream identity and owned file inode reservations remain
+live through hook cleanup. Another split, removal or recovery of that ID is busy
+until cleanup finishes. Native `pending` describes native retirement only;
+the Python job also covers the following stop hook.
+
+Drain submission captures the current and any retiring worker's admitted FIFO
+prefix. New packets cannot extend it. A later failure cannot poison an already
+completed prefix; failure already observed at submission is still reported.
+Waiters retain completion fences, never recorder/worker pointers, and can finish
+after recorder close. Drain jobs do not retain camera buffers, flush encoder
+latency, release delayed A/V tails, flush Python buffers, or imply `fsync`.
+Queued cancellation releases the wait ticket without cancelling media I/O;
+running jobs finish. No wait holds the recorder lock.
+
+A recorder close job immediately closes admission to new input and output jobs,
+waits for claimed lifecycle work to clean up, then drains native workers and
+calls every stop hook. It is non-cancellable once accepted. Repeated async close
+returns the same job; synchronous close waits for it and is idempotent after
+cleanup. Native callback trampolines, output claims and owned streams remain
+alive until final use. Camera stop detaches recording from capture first, retains
+the closing recording, and prevents starting another until cleanup finishes.
+Camera close waits for a previous async stop. Borrowed streams remain open.
+Hooks must return eventually: arbitrary Python/native callbacks cannot safely be
+forcefully terminated. Callback reentry is rejected before acquiring locks or
+waiting on jobs.
+
+The additive C API is `zc_video_drain_output_async(recorder, id, &job)`,
+`zc_output_job_wait(job, timeout_ms)` and `zc_output_job_close(job)`. A worker
+epoch allows 32 live tickets; admission overflow returns `ZC_BUSY`. Wait with
+zero polls; `ZC_TIMEOUT` means pending. Close releases just the ticket and may
+run after recorder destruction. Serialize ticket release against its own wait.
+C callers still finalize outputs/recorders with the existing serialized close
+functions; Python supplies the bounded close/lifecycle jobs around them. Existing
+C struct sizes and ABI version remain unchanged.

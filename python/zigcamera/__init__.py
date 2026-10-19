@@ -113,6 +113,9 @@ def _load(path=None):
         'zc_video_set_output_io':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint32,C.c_uint64],C.c_int),
         'zc_video_output_io_stats':([C.c_void_p,C.c_uint64,C.POINTER(_OutputIoStats)],C.c_int),
         'zc_video_drain_output_io':([C.c_void_p,C.c_uint64],C.c_int),
+        'zc_video_drain_output_async':([C.c_void_p,C.c_uint64,C.POINTER(C.c_void_p)],C.c_int),
+        'zc_output_job_wait':([C.c_void_p,C.c_uint32],C.c_int),
+        'zc_output_job_close':([C.c_void_p],None),
         'zc_video_set_output_delay':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint64,C.c_uint32],C.c_int),
         'zc_video_output_delay':([C.c_void_p,C.c_uint64,C.POINTER(_OutputDelay)],C.c_int),
         'zc_video_set_output_recovery':([C.c_void_p,C.c_uint64,C.c_uint32,C.c_uint64,C.c_uint64],C.c_int),
@@ -192,6 +195,7 @@ class Camera:
         self._lib = _load(library)
         self._handle = C.c_void_p()
         self._recording = None
+        self._stopping_recording = None
         self._preview=None;self._pump=None;self._af_job=None;self._async_lock=CallbackLock();self._control_info=None
         from collections import deque
         self._active_capture_job=None;self._capture_jobs=deque();self._job_slots=threading.BoundedSemaphore(32);self._stopping=False
@@ -351,6 +355,10 @@ class Camera:
         self._open()
         with self._async_lock:
             if self._recording is not None: raise RuntimeError('Recording already active')
+            if self._stopping_recording is not None:
+                job=self._stopping_recording.recorder._close_job
+                if job is None or not job.done(): raise RuntimeError('Previous recording is still closing')
+                self._stopping_recording=None
             if not self._started: self.start()
             from .outputs import RotatingOutput
             rotation=path if isinstance(path,RotatingOutput) else None
@@ -391,25 +399,31 @@ class Camera:
             if self._recording is None: raise RuntimeError('Recording is not active')
             job=self._recording.split_output(current,output,signal_function)
         return job.result() if (wait is True or (wait is None and signal_function is None)) else job
-    def add_recording_output(self,output):
+    def add_recording_output(self,output,*,async_io=None,wait=None,signal_function=None):
         self._open()
         with self._async_lock:
             if self._recording is None: raise RuntimeError('Recording is not active')
-            return self._recording.add_output(output)
-    def remove_recording_output(self,output):
+            return self._recording.add_output(output,async_io=async_io,wait=wait,signal_function=signal_function)
+    def remove_recording_output(self,output,*,wait=None,signal_function=None):
         self._open()
         with self._async_lock:
             if self._recording is None: raise RuntimeError('Recording is not active')
-            return self._recording.remove_output(output)
-    def stop_recording(self):
+            return self._recording.remove_output(output,wait=wait,signal_function=signal_function)
+    def stop_recording(self,*,wait=None,signal_function=None):
         from .output_objects import guard_callback
         guard_callback()
         with self._async_lock:
-            recording=self._recording;self._recording=None;pump=self._pump
+            recording=self._recording or self._stopping_recording
+            self._recording=None;self._stopping_recording=recording;pump=self._pump
         self._maybe_stop_pump()
         if recording is not None:
             if pump is not None and pump.error is not None and recording.error is None: recording.error=pump.error
-            recording.close()
+            try: return recording.close(wait=wait,signal_function=signal_function)
+            finally:
+                job=recording.recorder._close_job
+                if job is not None and job.done():
+                    with self._async_lock:
+                        if self._stopping_recording is recording: self._stopping_recording=None
     def start_preview(self,*,title='zig-camera',startup_timeout=5):
         from .async_preview import AsyncPreview
         self._open()
@@ -578,6 +592,8 @@ class Preview:
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
 
+from .jobs import output_operation
+
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
     def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False,failure_policy="fail_fast",async_io=None):
@@ -591,6 +607,7 @@ class Recorder:
             elif len(async_io)<=8 and all(isinstance(key,int) and 0<=key<=8 and isinstance(value,dict) for key,value in async_io.items()): self._initial_io={key:dict(value) for key,value in async_io.items()}
             else: raise ValueError('Invalid per-output async_io mapping')
         self._isolation=failure_policy=="isolate"
+        self._lifecycle_slots=threading.BoundedSemaphore(16);self._lifecycle_lock=threading.Lock();self._output_jobs=set();self._close_job=None;self._retiring={}
         initial_outputs=list(path) if isinstance(path,(list,tuple)) else None
         if initial_outputs is not None and len(initial_outputs)>8: raise ValueError('At most 8 simultaneous outputs')
         direct_object=initial_outputs is not None or (path is not None and not is_path(path))
@@ -679,7 +696,26 @@ class Recorder:
     def _open(self):
         from .output_objects import guard_callback
         guard_callback()
+        if self._close_job is not None and threading.current_thread() is not self._close_job.thread: raise RuntimeError('Recorder is closing')
         if not self._handle.value: raise RuntimeError('Recorder is closed')
+    def _submit_lifecycle(self,operation,signal_function,*,closing=False):
+        from .jobs import OperationJob
+        with self._lifecycle_lock:
+            if closing and self._close_job is not None: return self._close_job
+            self._open()
+            if not closing and not self._lifecycle_slots.acquire(False): raise RuntimeError('Output job capacity exhausted')
+            def release():
+                with self._lifecycle_lock: self._output_jobs.discard(job)
+                if not closing: self._lifecycle_slots.release()
+            job=OperationJob(operation,signal_function,release)
+            if closing: job.cancel_function=lambda _:False
+            job.thread_name='zig-camera-output-lifecycle'
+            if closing: self._close_job=job
+            self._output_jobs.add(job)
+        job.start()
+        if closing and job.done() and job.error is not None and job.thread.ident is None:
+            with self._lifecycle_lock: self._close_job=None
+        return job
     def _checked(self,status):
         if status and self._callback_error is not None:
             error=self._callback_error;self._callback_error=None;raise error
@@ -696,6 +732,7 @@ class Recorder:
             info=StreamInfo(1,'pcm_s16le',**self._audio_spec);result.append((info,dict(self._audio_spec)))
         return result
     def write(self,frame,*,timestamp_ns=None):
+        self._open()
         with self._lock:
             self._open();frame._live()
             ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
@@ -703,6 +740,7 @@ class Recorder:
             self._after_native(self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
             self._auto_recover()
     def write_audio(self,data,*,timestamp_ns):
+        self._open()
         if not isinstance(timestamp_ns,int) or not 0<=timestamp_ns<2**64: raise ValueError('Invalid audio timestamp')
         data=bytes(data);buf=(C.c_uint8*len(data)).from_buffer_copy(data)
         with self._lock:
@@ -729,7 +767,7 @@ class Recorder:
     def _path_call(self,name,path):
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
         with self._lock:
-            self._open();_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
+            self._open();self._check_retiring_path(path);_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
     def set_delay(self,delay_ms):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
@@ -747,17 +785,35 @@ class Recorder:
             self._open();state=_OutputIoStats()
             _check(self._lib,self._lib.zc_video_output_io_stats(self._handle,self._output_id(output),C.byref(state)))
             return {name:getattr(state,name) for name,_ in state._fields_}
-    def drain_output_io(self,output=0):
+    def drain_output_io(self,output=0,*,wait=None,signal_function=None):
+        from .jobs import SnapshotJob
         with self._lock:
             self._open();identity=self._output_id(output)
-            bridge=self._bridge if identity==0 else self._extra_bridges.get(identity)
-            status=self._lib.zc_video_drain_output_io(self._handle,identity)
-            try: self._checked_bridge(status,bridge)
-            except BaseException:
-                try: self._sync_split()
-                except Exception: pass
-                raise
-            self._sync_split()
+            bridges=[self._bridge,self._next_bridge] if identity==0 else [self._extra_bridges.get(identity),self._extra_pending.get(identity,(None,))[0]]
+            if not self._lifecycle_slots.acquire(False): raise RuntimeError('Output job capacity exhausted')
+            lib=self._lib;native=C.c_void_p()
+            try: self._checked_bridge(lib.zc_video_drain_output_async(self._handle,identity,C.byref(native)),bridges[0])
+            except BaseException: self._lifecycle_slots.release();raise
+        def drain():
+            while True:
+                status=lib.zc_output_job_wait(native,100)
+                if status==-3: continue
+                if status:
+                    for bridge in bridges:
+                        if bridge is not None and bridge.error is not None: raise bridge.error
+                _check(lib,status);return None
+        job=SnapshotJob(drain,lambda:lib.zc_output_job_close(native),signal_function,self._lifecycle_slots.release)
+        job.thread_name='zig-camera-output-drain';job.start()
+        if wait is False or (wait is None and signal_function is not None): return job
+        try: return job.result()
+        finally:
+            with self._lock:
+                if self._handle.value and self._close_job is None: self._sync_split()
+                retiring=self._retiring.get(identity)
+            if retiring is not None:
+                retiring[0].result()
+                with self._lock:
+                    if self._handle.value and self._close_job is None: self._sync_split()
     def set_output_delay(self,output=0,*,delay_ms,max_bytes=8*1024*1024,max_frames=300):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         if not isinstance(max_bytes,int) or not 0<max_bytes<=1024**3: raise ValueError('Invalid output queue size')
@@ -791,10 +847,12 @@ class Recorder:
             result['last_error']=self._recovery_errors.get(identity)
             result['last_failure']=self._recovery_failures.get(identity)
             return result
+    @output_operation
     def recover_output(self,current,replacement):
         from .output_objects import OutputBridge,MuxedOutput,_path as is_path
         with self._lock:
             self._open();identity=self._output_id(current);self._sync_split()
+            if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             state=self._state(identity)
             if not self._isolation or not state['error_code']: raise RuntimeError('Recovery requires an isolated, quarantined output')
             self._recovery_failures[identity]=self._error_for(identity,state)
@@ -848,7 +906,7 @@ class Recorder:
         frozen=C.c_void_p();lib=self._lib
         try:
             with self._lock:
-                self._open();_check(lib,lib.zc_video_freeze_buffer(self._handle,_path(path),C.byref(frozen)))
+                self._open();self._check_retiring_path(path);_check(lib,lib.zc_video_freeze_buffer(self._handle,_path(path),C.byref(frozen)))
         except Exception: self._snapshot_slots.release();raise
         def release():
             lib.zc_snapshot_close(frozen)
@@ -860,6 +918,9 @@ class Recorder:
     def _check_bridge_distinct(self,bridge):
         for other in (self._bridge,self._next_bridge,*self._extra_bridges.values(),*(p[0] for p in self._extra_pending.values())):
             if other is not None: bridge.check_distinct(other)
+        for _,_,other in self._retiring.values(): bridge.check_distinct(other,files=True)
+    def _check_retiring_path(self,path):
+        for _,_,bridge in self._retiring.values(): bridge.check_path(path)
     @property
     def outputs(self):
         with self._lock:
@@ -880,29 +941,35 @@ class Recorder:
             self._open();stats=_OutputStats();identity=self._output_id(output)
             _check(self._lib,self._lib.zc_video_output_stats(self._handle,identity,C.byref(stats)))
             return {name:getattr(stats,name) for name,_ in stats._fields_ if name!='reserved'}
+    @output_operation
     def add_output(self,output,*,async_io=None):
         from .output_objects import OutputBridge,MuxedOutput,_path as is_path
         with self._lock:
             self._open()
             if len(self.outputs)>=8: raise RuntimeError('Output capacity exhausted')
             bridge=OutputBridge(self,MuxedOutput(output) if is_path(output) else output)
-            identity=C.c_uint64();accepted=False
-            try:
-                bridge.start();self._check_bridge_distinct(bridge)
+            streams=self._streams()
+        identity=C.c_uint64();accepted=False
+        try:
+            bridge.start(streams)
+            with self._lock:
+                self._open();self._check_bridge_distinct(bridge)
                 self._checked_bridge(self._lib.zc_video_add_callbacks(self._handle,C.byref(bridge.cb),C.byref(identity)),bridge)
                 accepted=True;self._extra_bridges[identity.value]=bridge;self._extra_targets[identity.value]=output
                 bridge.commit()
                 self._configure_io(identity.value,async_io)
                 return identity.value
-            except BaseException:
-                try:
-                    if accepted: self.remove_output(identity.value)
-                    else: bridge.stop()
-                except Exception: pass
-                raise
+        except BaseException:
+            try:
+                if accepted: self.remove_output(identity.value)
+                else: bridge.stop()
+            except Exception: pass
+            raise
+    @output_operation
     def remove_output(self,output):
         with self._lock:
             self._open();self._sync_split();identity=self._output_id(output)
+            if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             if identity==0: self.close_output();return
             original=self._extra_bridges.get(identity)
             status=self._lib.zc_video_remove_output(self._handle,identity)
@@ -957,6 +1024,9 @@ class Recorder:
                 if error is not None: result[identity]=error
             return result
     def _sync_split(self):
+        with self._lock: return self._sync_split_locked()
+    def _sync_split_locked(self):
+        self._collect_retiring()
         identities=([0] if self._split_staged else [])+list(self._extra_pending)
         first_failure=None
         for identity in identities:
@@ -990,6 +1060,16 @@ class Recorder:
                 if state['error_code'] and new is not None and new.error is not None: failure=new.error
                 stopped=old
             else: stopped=new
+            if stopped is not None and self.output_io_stats(identity)['max_ops']:
+                from .jobs import OperationJob
+                job=OperationJob(stopped.stop);job.thread_name='zig-camera-output-stop'
+                self._retiring[identity]=(job,failure,stopped);job.start()
+                if job.thread.ident is None and job.done() and job.error is not None:
+                    # No worker claimed ownership. Cleanup still has to run;
+                    # preserve the spawn error while releasing the object claim.
+                    try: stopped.stop()
+                    except Exception: pass
+                continue
             if stopped is not None:
                 try: stopped.stop()
                 except Exception as error:
@@ -998,12 +1078,25 @@ class Recorder:
             self._split_results[identity]=failure
             if failure is not None and not self._isolation and first_failure is None: first_failure=failure
         if first_failure is not None: raise first_failure
+    def _collect_retiring(self):
+        first=None
+        for identity,(job,failure,_) in list(self._retiring.items()):
+            if not job.done(): continue
+            self._retiring.pop(identity)
+            failure=failure or job.error
+            self._split_results[identity]=failure
+            if failure is not None:
+                self._lifecycle_errors[identity]=failure
+                if first is None: first=failure
+        if first is not None and not self._isolation: raise first
+    @output_operation
     def split_output(self,current,output):
         from .output_objects import OutputBridge,MuxedOutput,_path as is_path
         with self._lock:
             self._open();identity=self._output_id(current)
             if identity==0: self.split(output);return
             self._sync_split();state=self._state(identity)
+            if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             if state['pending']: raise RuntimeError('Split already pending for this output')
             if state['error_code']: raise RuntimeError('Output is quarantined; detach before reattaching')
             self._split_results.pop(identity,None);self._lifecycle_errors.pop(identity,None)
@@ -1063,6 +1156,7 @@ class Recorder:
                 else: bridge.stop()
             except Exception: pass
             raise
+    @output_operation
     def open_output(self,output,*,_pts=None,async_io=None):
         from .output_objects import _path
         with self._lock:
@@ -1078,18 +1172,23 @@ class Recorder:
                 except Exception: pass
                 raise
             return
+    @output_operation
     def split(self,output):
         from .output_objects import _path
         with self._lock:
             self._open();self._sync_split()
+            if 0 in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             if self.buffer_stats['split_pending']: raise RuntimeError('Split already pending')
             self._split_generation=self._state(0)['generation'];self._split_results.pop(0,None);self._lifecycle_errors.pop(0,None)
             if _path(output) and (self._bridge is None or self._bridge.pts is None or self._bridge.pts.target is None):
                 self._path_call('zc_video_split',output);self._split_staged=True;self._next_output=output
             else: self._attach_object(output,None,True)
+    @output_operation
     def close_output(self):
         with self._lock:
-            self._open();self._sync_split();status=self._lib.zc_video_close_output(self._handle)
+            self._open();self._sync_split()
+            if 0 in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
+            status=self._lib.zc_video_close_output(self._handle)
             stats=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(stats)))
             try: self._checked(status)
             finally:
@@ -1106,10 +1205,17 @@ class Recorder:
             bridge=self._next_bridge;self._next_bridge=None;self._split_staged=False;self._next_output=None
             if bridge is not None: bridge.stop()
     def _stop_bridges(self):
+        retirement_failure=None
+        for identity,(job,failure,_) in list(self._retiring.items()):
+            job.event.wait()
+            if failure is not None or job.error is not None:
+                self._final_output_errors.setdefault(identity,failure or job.error)
+                retirement_failure=retirement_failure or failure or job.error
+        self._retiring.clear()
         bridges=[(0,self._bridge),(0,self._next_bridge),*self._extra_bridges.items(),*((identity,pending[0]) for identity,pending in self._extra_pending.items())]
         self._bridge=self._next_bridge=None;self._split_staged=False
         self._extra_bridges.clear();self._extra_pending.clear();self._extra_targets.clear();self._primary_output=self._next_output=None
-        failure=None
+        failure=retirement_failure
         for identity,bridge in bridges:
             if bridge is not None:
                 try: bridge.stop()
@@ -1117,9 +1223,16 @@ class Recorder:
                     self._final_output_errors.setdefault(identity,error)
                     if failure is None: failure=error
         if failure is not None and not self._isolation: raise failure
+    @output_operation
     def close(self):
         from .output_objects import guard_callback
         guard_callback()
+        # Claimed preparation owns its hooks until cleanup; queued work observes
+        # _close_job and fails before touching native state. Never wait under the
+        # recorder lock, which those operations still need to release ownership.
+        with self._lifecycle_lock: pending=list(self._output_jobs)
+        for job in pending:
+            if threading.current_thread() is not job.thread: job.event.wait()
         with self._lock:
             if self._handle.value:
                 for identity in ([0] if self._primary_output is not None else [])+list(self._extra_targets):
