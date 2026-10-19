@@ -14,6 +14,9 @@ import {
   Recorder,
   FileOutput,
   MuxedOutput,
+  CircularOutput2,
+  PtsStream,
+  PtsOutput,
   CameraError,
   JobCancelledError,
   type CustomOutput,
@@ -1012,3 +1015,582 @@ preview(
     }
   },
 )
+
+function history(maxFrames = 8) {
+  return new Recorder(null, {
+    width: 32,
+    height: 24,
+    fps: 25,
+    circular: { maxBytes: 1024 * 1024, maxFrames, durationMs: 1000 },
+    outputQueue: { maxBytes: 65536, maxOperations: 2 },
+  })
+}
+test('custom pre-roll owns evicted packets and joins live capture within a tiny host queue', async () => {
+  const camera = cam(),
+    recorder = history(4),
+    output = new Collector(),
+    gate = deferred()
+  let first = false
+  output.outputframe = async (packet) => {
+    output.packets.push(packet)
+    if (!first) {
+      first = true
+      await gate.promise
+    }
+  }
+  try {
+    camera.start()
+    for (let i = 0; i < 6; i++) await feed(camera, recorder, i)
+    const job = recorder.openOutput(output)
+    await until(() => first)
+    code(() => recorder.split(new Collector()), -4)
+    code(
+      () => recorder.setRotation('held-{index}.mkv', { durationMs: 100 }),
+      -4,
+    )
+    for (let i = 6; i < 8; i++) await feed(camera, recorder, i)
+    expect(output.packets.length).toBe(1)
+    gate.release()
+    await job
+    await feed(camera, recorder, 8)
+    await recorder.close()
+    expect(output.packets.map((p) => p.sourceTimestampNs)).toEqual(
+      Array.from({ length: 7 }, (_, i) => BigInt(i + 2) * 40_000_000n),
+    )
+    expect(output.packets.map((p) => p.timestampNs)).toEqual(
+      Array.from({ length: 7 }, (_, i) => BigInt(i) * 40_000_000n),
+    )
+    expect(output.packets.every((p) => p.keyframe && p.data[0] === 0xff)).toBe(
+      true,
+    )
+    expect(output.events).toEqual(['start', 'streams', 'stop'])
+  } finally {
+    gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+test('cancelled pre-roll waits for its hook, discards its target, and preserves healthy output', async () => {
+  const camera = cam(),
+    recorder = history(),
+    gate = deferred(),
+    output = new Collector()
+  const dir = root(),
+    path = join(dir, 'healthy.mkv')
+  let entered = false
+  output.outputframe = async () => {
+    entered = true
+    await gate.promise
+  }
+  try {
+    camera.start()
+    recorder.addOutput(path)
+    for (let i = 0; i < 4; i++) await feed(camera, recorder, i)
+    const job = recorder.openOutput(output)
+    await until(() => entered)
+    expect(job.cancel()).toBe(true)
+    await feed(camera, recorder, 4)
+    expect(job.done).toBe(false)
+    gate.release()
+    await expectJob(job).rejects.toBeInstanceOf(JobCancelledError)
+    expect(output.events.at(-1)).toBe('stop')
+    const next = new Collector()
+    await recorder.openOutput(next)
+    await feed(camera, recorder, 5)
+    await recorder.close()
+    expect(mkvFrames(path).length).toBe(6)
+    expect(next.packets.length).toBe(6)
+  } finally {
+    gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+test('pre-roll live backlog overflow fails only the unpublished attachment', async () => {
+  const camera = cam(),
+    recorder = history(2),
+    gate = deferred(),
+    output = new Collector()
+  let entered = false
+  output.outputframe = async () => {
+    entered = true
+    await gate.promise
+  }
+  const path = join(root(), 'healthy.mkv')
+  try {
+    camera.start()
+    recorder.addOutput(path)
+    await feed(camera, recorder, 0)
+    await feed(camera, recorder, 1)
+    const job = recorder.openOutput(output)
+    await until(() => entered)
+    for (let i = 2; i < 5; i++) await feed(camera, recorder, i)
+    gate.release()
+    await expectJob(job).rejects.toMatchObject({ code: -4 })
+    await feed(camera, recorder, 5)
+    await recorder.close()
+    expect(mkvFrames(path).length).toBe(6)
+  } finally {
+    gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+test('CircularOutput2 shares exact source PTS through async splits, close/open gaps and EOF tail', async () => {
+  const dir = root(),
+    path = join(dir, 'shared.pts'),
+    pts = await PtsStream.open(path)
+  const camera = cam(),
+    recorder = new CircularOutput2({
+      width: 32,
+      height: 24,
+      fps: 25,
+      bufferDurationMs: 80,
+      pts,
+      circular: { maxBytes: 1024 * 1024, maxFrames: 16 },
+    })
+  const localA = join(dir, 'a.pts'),
+    localB = join(dir, 'b.pts'),
+    localC = join(dir, 'c.pts')
+  const a = new FileOutput(join(dir, 'a.mjpg'), { pts: localA }),
+    gate = deferred()
+  const original = a.stop.bind(a)
+  let stopping = false
+  a.stop = async (reason) => {
+    stopping = true
+    await gate.promise
+    await original(reason)
+  }
+  try {
+    camera.start()
+    for (let i = 0; i < 6; i++) await feed(camera, recorder, i)
+    await recorder.openOutput(a)
+    code(() => pts.close(), -4)
+    await feed(camera, recorder, 6)
+    await feed(camera, recorder, 7)
+    const split = recorder.split(
+      new FileOutput(join(dir, 'b.mjpg'), { pts: localB }),
+    )
+    await until(() => {
+      recorder.poll()
+      return split.status.staged
+    })
+    await feed(camera, recorder, 8)
+    await until(() => stopping)
+    expect(readFileSync(path, 'utf8')).toBe('0.000\n40.000\n')
+    expect(split.status.done).toBe(false)
+    gate.release()
+    await split
+    split.close()
+    await recorder.drain()
+    expect(readFileSync(path, 'utf8')).toBe('0.000\n40.000\n80.000\n')
+    await recorder.closeOutput()
+    await feed(camera, recorder, 9)
+    await recorder.openOutput(
+      new FileOutput(join(dir, 'c.mjpg'), { pts: localC }),
+    )
+    await feed(camera, recorder, 10)
+    await recorder.close()
+    await pts.close()
+    expect(readFileSync(localA, 'utf8')).toBe('0.000\n40.000\n')
+    expect(readFileSync(localB, 'utf8')).toBe('0.000\n')
+    expect(readFileSync(localC, 'utf8')).toBe('0.000\n40.000\n80.000\n')
+    expect(readFileSync(path, 'utf8')).toBe(
+      '0.000\n40.000\n80.000\n160.000\n200.000\n240.000\n',
+    )
+  } finally {
+    gate.release()
+    await recorder.close()
+    await pts.close()
+    await camera.close()
+  }
+})
+test('shared PTS excludes PCM and retains nonzero recorder source epochs', async () => {
+  const bytes = new Bytes(),
+    pts = await PtsStream.open(bytes),
+    output = new Collector(),
+    camera = cam()
+  const recorder = await Recorder.open(new PtsOutput(output, pts), {
+    width: 32,
+    height: 24,
+    fps: 25,
+    audio: { sampleRate: 48000, channels: 1 },
+  })
+  try {
+    camera.start()
+    for (let i = 0; i < 4; i++) {
+      recorder.writeAudio(
+        new Uint8Array(1920 * 2),
+        1_000_000_000n + BigInt(i) * 40_000_000n,
+      )
+      using frame = camera.acquire()
+      recorder.write(frame, 1_000_000_000n + BigInt(i) * 40_000_000n)
+    }
+    await recorder.close()
+    await pts.close()
+    expect(output.packets.filter((p) => p.audio).length).toBeGreaterThan(0)
+    expect(bytes.data.toString()).toBe('0.000\n40.000\n80.000\n120.000\n')
+  } finally {
+    await recorder.close()
+    await pts.close()
+    await camera.close()
+  }
+})
+test('shared PTS rejects independent output scopes and aliases before truncating', async () => {
+  const dir = root(),
+    path = join(dir, 'shared.pts')
+  writeFileSync(path, 'KEEP')
+  const pts = await PtsStream.open(path, { exclusive: false })
+  try {
+    await expect(
+      Recorder.open(
+        new PtsOutput(new FileOutput(path, { exclusive: false }), pts),
+        { width: 32, height: 24 },
+      ),
+    ).rejects.toBeInstanceOf(CameraError)
+    expect(readFileSync(path, 'utf8')).toBe('KEEP')
+    const recorder = await Recorder.open(new PtsOutput(new Collector(), pts), {
+      width: 32,
+      height: 24,
+    })
+    try {
+      await expectJob(
+        recorder.addOutput(new PtsOutput(new Collector(), pts)),
+      ).rejects.toMatchObject({ code: -4 })
+    } finally {
+      await recorder.close()
+    }
+  } finally {
+    await pts.close()
+  }
+})
+test('cancelled PTS replacement does not wait on or close the active shared stream', async () => {
+  const bytes = new Bytes(),
+    pts = await PtsStream.open(bytes),
+    camera = cam(),
+    old = new Collector()
+  const recorder = await Recorder.open(new PtsOutput(old, pts), {
+    width: 32,
+    height: 24,
+    fps: 25,
+  })
+  const gate = deferred(),
+    next = new Collector()
+  ;(next as CustomOutput).commit = async () => {
+    await gate.promise
+  }
+  try {
+    camera.start()
+    await feed(camera, recorder, 0)
+    const job = recorder.split(new PtsOutput(next, pts))
+    await until(() => next.events.includes('start'))
+    expect(job.cancel()).toBe(true)
+    gate.release()
+    await expectJob(job).rejects.toBeInstanceOf(JobCancelledError)
+    job.close()
+    await feed(camera, recorder, 1)
+    const replacement = recorder.split(new PtsOutput(new Collector(), pts))
+    await until(() => {
+      recorder.poll()
+      return replacement.status.staged
+    })
+    await feed(camera, recorder, 2)
+    await replacement
+    replacement.close()
+    await recorder.close()
+    await pts.close()
+    expect(bytes.data.toString()).toBe('0.000\n40.000\n80.000\n')
+  } finally {
+    gate.release()
+    await recorder.close()
+    await pts.close()
+    await camera.close()
+  }
+})
+for (const codec of ['h264', 'hevc'] as const) {
+  const run =
+    process.env.ZC_TEST_AAC === '1' && process.env.ZC_TEST_CODECS === '1'
+      ? test
+      : test.skip
+  run(
+    `${codec} custom MP4 pre-roll retains exact GOP and synchronized AAC samples`,
+    async () => {
+      const camera = cam(128, 96),
+        bytes = new Bytes(),
+        sequences: bigint[] = []
+      const recorder = new Recorder(null, {
+        width: 128,
+        height: 96,
+        fps: 25,
+        codec,
+        gop: 4,
+        circular: { maxFrames: 6, maxBytes: 1024 * 1024, durationMs: 1000 },
+        audio: { sampleRate: 48000, channels: 2 },
+      })
+      const frame = async (i: number) => {
+        const pcm = new Uint8Array(1920 * 4),
+          d = new DataView(pcm.buffer)
+        for (let s = 0; s < 1920; s++) {
+          const value = (((i * 1920 + s) % 200) - 100) * 100
+          d.setInt16(s * 4, value, true)
+          d.setInt16(s * 4 + 2, -value, true)
+        }
+        recorder.writeAudio(pcm, BigInt(i) * 40_000_000n)
+        sequences.push(await feed(camera, recorder, i))
+      }
+      try {
+        camera.start()
+        for (let i = 0; i < 8; i++) await frame(i)
+        await recorder.openOutput(new MuxedOutput(bytes))
+        const first = Number(recorder.outputStats().firstNs / 40_000_000n)
+        expect(first).toBe(4)
+        for (let i = 8; i < 16; i++) await frame(i)
+        await recorder.close()
+        const path = join(root(), `${codec}-preroll.mp4`)
+        writeFileSync(path, bytes.data)
+        const tracks = mp4(path),
+          video = tracks.get(1)!,
+          audio = tracks.get(2)!
+        expect(video.samples.length).toBe(16 - first)
+        decodeVideo(path, video, sequences.slice(first))
+        decodeAudio(path, audio, first * 1920, (16 - first) * 1920)
+      } finally {
+        await recorder.close()
+        await camera.close()
+      }
+    },
+    30000,
+  )
+}
+
+test('delayed packets survive an asynchronous CircularOutput2 commit hook', async () => {
+  const camera = cam(),
+    recorder = new CircularOutput2({
+      width: 32,
+      height: 24,
+      fps: 25,
+      bufferDurationMs: 80,
+      circular: { maxBytes: 1024 * 1024, maxFrames: 8 },
+    }),
+    output = new Collector(),
+    gate = deferred()
+  let committing = false
+  ;(output as CustomOutput).commit = async () => {
+    committing = true
+    await gate.promise
+  }
+  try {
+    camera.start()
+    for (let i = 0; i < 6; i++) await feed(camera, recorder, i)
+    const job = recorder.openOutput(output)
+    await until(() => committing)
+    await feed(camera, recorder, 6)
+    await feed(camera, recorder, 7)
+    gate.release()
+    await job
+    await recorder.drain()
+    expect(output.packets.map((p) => p.sourceTimestampNs)).toEqual([
+      160_000_000n,
+      200_000_000n,
+    ])
+    await recorder.close()
+    expect(output.packets.length).toBe(4)
+  } finally {
+    gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+test('recorder close cancels pre-roll and waits for an in-flight owned hook', async () => {
+  const camera = cam(),
+    recorder = history(),
+    output = new Collector(),
+    gate = deferred()
+  let entered = false
+  output.outputframe = async () => {
+    entered = true
+    await gate.promise
+  }
+  try {
+    camera.start()
+    for (let i = 0; i < 4; i++) await feed(camera, recorder, i)
+    const job = recorder.openOutput(output)
+    await until(() => entered)
+    const closing = recorder.close()
+    await until(() => job.cancelRequested)
+    expect(job.done).toBe(false)
+    gate.release()
+    await closing
+    await expectJob(job).rejects.toMatchObject({ code: -2 })
+    expect(output.events.filter((x) => x === 'stop').length).toBe(1)
+  } finally {
+    gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+test('shared PTS failure isolates its output and a fresh observer can recover', async () => {
+  const original = new Error('PTS write failure'),
+    bytes = new Bytes(),
+    camera = cam()
+  let writes = 0
+  const bad = await PtsStream.open({
+    write(data) {
+      if (++writes === 2) throw original
+      return bytes.write(data)
+    },
+  })
+  const freshBytes = new Bytes(),
+    fresh = await PtsStream.open(freshBytes),
+    path = join(root(), 'healthy.mkv')
+  const recorder = new CircularOutput2({
+    width: 32,
+    height: 24,
+    fps: 25,
+    isolate: true,
+    bufferDurationMs: 0,
+    pts: bad,
+    circular: { maxFrames: 8, maxBytes: 1024 * 1024 },
+  })
+  try {
+    camera.start()
+    recorder.addOutput(path)
+    await recorder.openOutput(new Collector())
+    await feed(camera, recorder, 0)
+    await feed(camera, recorder, 1)
+    await until(() => recorder.outputState().errorCode !== 0)
+    expect(recorder.outputErrors.get(0n)).toBe(original)
+    await feed(camera, recorder, 2)
+    const job = recorder.recover(new PtsOutput(new Collector(), fresh))
+    await job
+    job.close()
+    for (let i = 3; i < 6; i++) await feed(camera, recorder, i)
+    await recorder.close()
+    await fresh.close()
+    let failure: unknown
+    try {
+      await bad.close()
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBe(original)
+    expect(freshBytes.data.toString()).toBe('0.000\n40.000\n80.000\n')
+    expect(mkvFrames(path).length).toBe(6)
+  } finally {
+    await recorder.close()
+    await fresh.close()
+    try {
+      await bad.close()
+    } catch {}
+    await camera.close()
+  }
+})
+
+test('CircularOutput2 changes delay on its media clock without resetting shared PTS', async () => {
+  const camera = cam(),
+    bytes = new Bytes(),
+    pts = await PtsStream.open(bytes)
+  const recorder = new CircularOutput2({
+      width: 32,
+      height: 24,
+      fps: 25,
+      bufferDurationMs: 80,
+      pts,
+      circular: { maxFrames: 8, maxBytes: 1024 * 1024 },
+    }),
+    output = new Collector()
+  try {
+    camera.start()
+    for (let i = 0; i < 4; i++) await feed(camera, recorder, i)
+    await recorder.openOutput(output)
+    expect(() => {
+      recorder.bufferDurationMs = -1
+    }).toThrow(RangeError)
+    expect(recorder.bufferDurationMs).toBe(80)
+    recorder.bufferDurationMs = 40
+    await feed(camera, recorder, 4)
+    await recorder.drain()
+    expect(output.packets.map((p) => p.sourceTimestampNs)).toEqual([
+      80_000_000n,
+      120_000_000n,
+    ])
+    recorder.bufferDurationMs = 0
+    await feed(camera, recorder, 5)
+    await recorder.close()
+    await pts.close()
+    expect(bytes.data.toString()).toBe('0.000\n40.000\n80.000\n120.000\n')
+  } finally {
+    await recorder.close()
+    await pts.close()
+    await camera.close()
+  }
+})
+
+test('CircularOutput2 opens Home container paths with its shared PTS observer', async () => {
+  const dir = root(),
+    camera = cam(),
+    path = join(dir, 'capture.mkv'),
+    sidecar = join(dir, 'capture.pts')
+  const pts = await PtsStream.open(sidecar),
+    recorder = new CircularOutput2({
+      width: 32,
+      height: 24,
+      fps: 25,
+      bufferDurationMs: 0,
+      pts,
+    })
+  try {
+    camera.start()
+    await recorder.openOutput(path)
+    for (let i = 0; i < 3; i++) await feed(camera, recorder, i)
+    await recorder.close()
+    await pts.close()
+    expect(mkvFrames(path).length).toBe(3)
+    expect(readFileSync(sidecar, 'utf8')).toBe('0.000\n40.000\n80.000\n')
+  } finally {
+    await recorder.close()
+    await pts.close()
+    await camera.close()
+  }
+})
+
+for (const codec of ['h264', 'hevc'] as const) {
+  codecs(
+    `${codec} direct custom startup requests a new key after its async hook consumed the initial one`,
+    async () => {
+      const camera = cam(128, 96),
+        recorder = new Recorder(null, {
+          width: 128,
+          height: 96,
+          fps: 25,
+          codec,
+          gop: 60,
+        })
+      const output = new Collector(),
+        gate = deferred()
+      let committing = false
+      ;(output as CustomOutput).commit = async () => {
+        committing = true
+        await gate.promise
+      }
+      try {
+        camera.start()
+        await feed(camera, recorder, 0)
+        const job = recorder.openOutput(output)
+        await until(() => committing)
+        for (let i = 1; i < 6; i++) await feed(camera, recorder, i)
+        gate.release()
+        await job
+        for (let i = 6; i < 9; i++) await feed(camera, recorder, i)
+        await recorder.close()
+        expect(output.packets.length).toBeGreaterThan(0)
+        expect(output.packets[0].keyframe).toBe(true)
+        expect(output.packets[0].sourceTimestampNs).toBe(240_000_000n)
+      } finally {
+        gate.release()
+        await recorder.close()
+        await camera.close()
+      }
+    },
+  )
+}

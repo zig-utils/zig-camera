@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 _Static_assert(sizeof(zc_output_event)==48,"output mailbox event ABI");
+_Static_assert(sizeof(zc_pts_clock)==24,"shared PTS clock ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
 _Static_assert(sizeof(zc_automatic_state)==16,"automatic state ABI");
 _Static_assert(sizeof(zc_output_delay)==40,"output delay ABI");
@@ -47,6 +48,14 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
 int main(void) {
+    zc_pts_clock pts_clock;
+    zc_default_pts_clock(&pts_clock);
+    uint64_t timestamp=123;
+    assert(zc_pts_clock_accept(&pts_clock,9000000123ULL,&timestamp)==ZC_OK && timestamp==0);
+    assert(zc_pts_clock_accept(&pts_clock,9040000123ULL,&timestamp)==ZC_OK && timestamp==40000);
+    zc_pts_clock before=pts_clock;
+    assert(zc_pts_clock_accept(&pts_clock,9040000999ULL,&timestamp)==ZC_INVALID && timestamp==40000);
+    assert(memcmp(&before,&pts_clock,sizeof(pts_clock))==0);
     zc_preparation_state preparation;
     zc_default_preparation_state(&preparation);
     assert(preparation.phase==0 && !preparation.cancel_requested);

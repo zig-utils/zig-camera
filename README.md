@@ -6,11 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.20 adds Bun mode-switch jobs, temporary still captures and custom
-asynchronous output objects. Native workers own mode reconfiguration and Home
-container preparation. A bounded acknowledged mailbox delivers owned packets,
-MP4/MKV writes and patches on Bun's event loop. Header acceptance precedes
-publication; split/recovery jobs retain stable IDs and wait for old hooks to retire.
+Version 0.21 adds custom-output pre-roll and shared CircularOutput2 PTS streams
+in Bun. Held replay owns a frozen keyframe/PCM window and a bounded live FIFO;
+header and delivery acknowledgements precede publication. Shared PTS preserves
+the recorder's source-time gaps across splits and output close/open, while each
+segment keeps its local zero-based timestamps. Home supplies the exact integer
+clock and the existing media/queue implementations.
 
 The former Python facade has been removed. This is a feature-oriented alternative
 to Picamera2, not a drop-in package or a claim of full parity. The Bun facade

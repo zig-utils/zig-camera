@@ -390,3 +390,54 @@ test "new output hold excludes media until initial host validation completes" {
     try frameWrite(rec, 5);
     try std.testing.expectEqual(@as(usize, 1), held_count);
 }
+
+fn circular() !*c.zc_recorder {
+    const cfg = c.zc_video_config{ .width = 16, .height = 16, .fps_num = 25, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 80, .gop = 0 };
+    const ring = c.zc_buffer_config{ .struct_size = @sizeOf(c.zc_buffer_config), .max_frames = 4, .max_bytes = 65536, .duration_us = 5000000 };
+    var rec: ?*c.zc_recorder = null;
+    try std.testing.expectEqual(c.ZC_OK, v.openCircular(&cfg, &ring, &rec));
+    return rec.?;
+}
+test "held custom pre-roll owns evicted history and joins live packets exactly once" {
+    const rec = try circular();
+    defer _ = v.close(rec);
+    for (0..4) |i| try frameWrite(rec, i);
+    var delivered: usize = 0;
+    var cb = packets(&delivered);
+    try std.testing.expectEqual(c.ZC_OK, v.openHeldCallbacks(rec, &cb));
+    var stats: c.zc_buffer_stats = undefined;
+    _ = v.bufferStats(rec, &stats);
+    try std.testing.expectEqual(@as(u64, 0), stats.segments);
+    var blocked: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_BUSY, v.prepareAsync(rec, 0, null, &cb, 0, &blocked));
+    try std.testing.expectEqual(c.ZC_BUSY, v.splitCallbacks(rec, &cb));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, v.publishHeldOutput(rec));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, v.stepHeldOutput(rec));
+    for (4..7) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+    while (v.stepHeldOutput(rec) == c.ZC_TIMEOUT) {}
+    try std.testing.expectEqual(@as(usize, 7), delivered);
+    try std.testing.expectEqual(c.ZC_OK, v.publishHeldOutput(rec));
+    _ = v.bufferStats(rec, &stats);
+    try std.testing.expectEqual(@as(u64, 1), stats.segments);
+    try frameWrite(rec, 7);
+    try std.testing.expectEqual(@as(usize, 8), delivered);
+}
+test "held replay overflow can be discarded without poisoning healthy consumers" {
+    const rec = try circular();
+    defer _ = v.close(rec);
+    var healthy: usize = 0;
+    var peer = packets(&healthy);
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, v.addCallbacks(rec, &peer, &id));
+    for (0..4) |i| try frameWrite(rec, i);
+    var pending: usize = 0;
+    var cb = packets(&pending);
+    try std.testing.expectEqual(c.ZC_OK, v.openHeldCallbacks(rec, &cb));
+    for (4..12) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(c.ZC_BUSY, v.stepHeldOutput(rec));
+    try std.testing.expectEqual(c.ZC_OK, v.discardHeldOutput(rec));
+    try frameWrite(rec, 12);
+    try std.testing.expectEqual(@as(usize, 13), healthy);
+    try std.testing.expectEqual(@as(usize, 0), pending);
+}

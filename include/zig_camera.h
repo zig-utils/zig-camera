@@ -414,6 +414,19 @@ int zc_video_fail_output(zc_recorder *,uint64_t id,int code);
 /* Initial attachment only, before its first frame; held sinks receive no media
  * and retain no PCM. Release requests a fresh keyframe. */
 int zc_video_hold_output(zc_recorder *,uint64_t id,uint32_t held);
+/* Held primary attachment owns a frozen GOP/PCM pre-roll and bounded live FIFO.
+ * Step at most one video interval, drain host delivery, repeat while TIMEOUT.
+ * Publish is atomic only when replay/live backlog is empty, else TIMEOUT.
+ * Discard retires an unpublished target without finalization or source failure. */
+int zc_video_open_held_callbacks(zc_recorder *,const zc_output_callbacks *);
+int zc_video_step_held_output(zc_recorder *);
+int zc_video_publish_held_output(zc_recorder *);
+int zc_video_discard_held_output(zc_recorder *);
+/* Mailbox packet event.offset is the unre-based recorder source timestamp, ns.
+ * Write/patch offsets retain their existing byte-offset interpretation. */
+typedef struct {uint64_t first_ns,last_ns;uint32_t initialized,reserved;} zc_pts_clock;
+void zc_default_pts_clock(zc_pts_clock *);
+int zc_pts_clock_accept(zc_pts_clock *,uint64_t source_ns,uint64_t *timestamp_us);
 
 #ifdef __cplusplus
 }

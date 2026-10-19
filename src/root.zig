@@ -14,6 +14,7 @@ pub const recording_path = @import("home/recording_path.zig");
 pub const output_mailbox = @import("output_mailbox.zig");
 comptime {
     _ = output_mailbox;
+    _ = @import("home/pts_clock.zig");
 }
 pub const media = @import("media.zig");
 comptime {

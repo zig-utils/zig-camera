@@ -22,6 +22,7 @@ Bun facade are the active implementation and test surfaces.
 | async completion_gate / completion_watermark | Terminal completion and retained fixed-prefix I/O drains |
 | async preparation_gate | Cooperative cancellation and serialized ready/publication boundary |
 | video recording_path (new in 0.19) | Allocation-free indexed filenames, bounded padding/storage and strict field validation |
+| video pts_clock (new in 0.21) | Exact integer source epochs for shared PTS across output replacement |
 | video delivery_fifo (new in 0.20) | Sequence-checked host copy/ack, in-flight accounting and retained completion prefixes |
 
 The new recording_path module was contributed to Home before being vendored
@@ -48,3 +49,11 @@ Bun wraps additive ABI calls, bounds capture/tasks and uses workers for close,
 snapshots and fixed-prefix drains. It does not implement or substitute codecs.
 Linux independent decoders and native race tests validate these boundaries.
 No FFmpeg, Libav, PyAV or Python implementation/test dependency is introduced.
+
+The 0.21 audit retains Home packet_ring.cloneFrom, pcm_timeline.cloneWindow and
+acknowledged delivery_fifo for custom pre-roll, rather than buffering borrowed
+packets in TypeScript. The new pts_clock helper was contributed on Home main at
+ffb6a26ad3983c13ebc20df8d768b439b272aea8 and vendored verbatim. Tests cover source
+gaps, nanosecond epochs near u64 maximum, microsecond collisions and rejection
+without state changes on both pinned and development Zig. Home's helper workflow
+includes the module in its compiler/architecture matrix.

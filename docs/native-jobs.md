@@ -107,3 +107,19 @@ manual mutation with automatic ownership of the same output; stop its automation
 when idle first. One worker per preparing output and eight per recorder are the
 hard bounds; thresholds can be exceeded while preparation or keyframe delivery
 is slow. No retention deletion, crash repair or sustained Pi rate is claimed.
+
+## Held custom pre-roll
+
+zc_video_open_held_callbacks validates a primary sink and freezes retained GOP/PCM
+ownership. zc_video_step_held_output produces at most one video interval and
+returns TIMEOUT while history/live packets remain. The host acknowledges its
+mailbox prefix between steps. zc_video_publish_held_output publishes only when
+that backlog is empty; otherwise it returns TIMEOUT without mutation. Capture
+queues new packets under the source ring's byte/frame limits. Held errors are
+excluded from fail-fast recorder polling until publication, so a failed startup
+can be discarded without poisoning healthy outputs. Split, delay mutation and
+legacy unhold calls cannot steal a held replay's ownership.
+
+zc_video_discard_held_output destroys an unpublished target without finalizing
+its writer. Bun stop/close cancels the job, waits for hooks, then discards before
+closing native storage. A committed target follows ordinary finalization.

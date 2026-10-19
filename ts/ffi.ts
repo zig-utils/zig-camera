@@ -13,6 +13,12 @@ const library =
 export const native = dlopen(library, {
   zc_default_preparation_state: { args: [p], returns: v },
   zc_preparation_step: { args: [p, u], returns: i },
+  zc_default_pts_clock: { args: [p], returns: v },
+  zc_pts_clock_accept: { args: [p, n, p], returns: i },
+  zc_video_open_held_callbacks: { args: [p, p], returns: i },
+  zc_video_step_held_output: { args: [p], returns: i },
+  zc_video_publish_held_output: { args: [p], returns: i },
+  zc_video_discard_held_output: { args: [p], returns: i },
   zc_video_open_callbacks: { args: [p, p], returns: i },
   zc_video_add_callbacks: { args: [p, p, p], returns: i },
   zc_video_get_headers: { args: [p, p, n, p], returns: i },

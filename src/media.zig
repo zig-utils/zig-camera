@@ -305,3 +305,26 @@ pub export fn zc_preparation_job_abort_pending(p: *c.zc_preparation_job) c_int {
 pub export fn zc_video_hold_output(p: *c.zc_recorder, id: u64, held: u32) c_int {
     return @import("video.zig").holdOutput(p, id, held);
 }
+pub export fn zc_video_open_held_callbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    return @import("video.zig").openHeldCallbacks(p, cb);
+}
+pub export fn zc_video_step_held_output(p: *c.zc_recorder) c_int {
+    return @import("video.zig").stepHeldOutput(p);
+}
+pub export fn zc_video_publish_held_output(p: *c.zc_recorder) c_int {
+    return @import("video.zig").publishHeldOutput(p);
+}
+pub export fn zc_video_discard_held_output(p: *c.zc_recorder) c_int {
+    return @import("video.zig").discardHeldOutput(p);
+}
+pub export fn zc_default_pts_clock(out: *c.zc_pts_clock) void {
+    out.* = @import("std").mem.zeroes(c.zc_pts_clock);
+}
+pub export fn zc_pts_clock_accept(state: *c.zc_pts_clock, source: u64, out: *u64) c_int {
+    if (state.initialized > 1 or state.reserved != 0 or (state.initialized == 1 and state.last_ns < state.first_ns)) return c.ZC_INVALID;
+    var clock: @import("home/pts_clock.zig").Clock = .{ .first = if (state.initialized != 0) state.first_ns else null, .last = if (state.initialized != 0) state.last_ns else null };
+    const value = clock.accept(source) catch return c.ZC_INVALID;
+    state.* = .{ .first_ns = clock.first.?, .last_ns = clock.last.?, .initialized = 1, .reserved = 0 };
+    out.* = value;
+    return c.ZC_OK;
+}

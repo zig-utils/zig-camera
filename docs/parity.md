@@ -1,4 +1,4 @@
-# Feature coverage in 0.20
+# Feature coverage in 0.21
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -14,8 +14,8 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Still images | Home JPEG 4:4:4, PPM; Bayer DNG with metadata/calibration | JPEG/DNG capture; PiSP compressed raw and advanced DNG profiles missing |
 | Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Recorder; no hardware encoder or per-output codec settings |
 | Audio/A/V | ALSA or synthetic PCM, independent sample cursors, PCM MKV / AAC-LC MP4 with priming/tail edits | AudioCapture, manual writeAudio and shared recording pump; physical drift/latency calibration missing |
-| Circular and delayed output | Bounded GOP history, synchronized owned snapshots, global/per-output delays, tail rules | Circular recorder, async snapshots, setDelay; complete CircularOutput2 class/signatures not ported |
-| Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, FileOutput/PTS, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |
+| Circular and delayed output | Bounded GOP history, synchronized owned snapshots, global/per-output delays, tail rules | CircularOutput2 typed Bun recorder, dynamic delay, custom pre-roll and shared PTS; arbitrary upstream signatures remain unsupported |
+| Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, owned pre-roll, FileOutput/local PTS and shared PtsStream, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |
 | Async recording preparation | Native bounded workers, held header acceptance, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, custom lifecycle coordination, per-output async splits/recovery; initial native attachment setup remains synchronous |
 | Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
 | Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drain jobs | Async start/streams/commit/stop, owned packet/write/patch delivery, isolated errors and drains; host queues use fail-fast pressure, automatic custom factories/host telemetry remain gaps |
@@ -27,9 +27,10 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 Native Zig tests exercise bounded queues, ownership, media clocks, codecs and
 preparation races. C checks preserve the ABI v1 layouts. Bun tests cover leases,
 controls, capture jobs, mode rollback, preview recreation, async output hooks,
-publication cancellation, circular snapshots and rotation. Custom primary replay
-from an already populated circular ring and shared CircularOutput2 PTS observers
-are not yet exposed in Bun.
+publication cancellation, circular snapshots, custom pre-roll/live handoff and
+shared PTS ordering across asynchronous split/retirement and close/open gaps.
+Custom pre-roll MP4 tests independently decode GOP-aligned AVC/HEVC and verify
+AAC priming, waveform alignment and exact presented sample counts.
 Linux x86_64/aarch64 CI compiles/loads libcamera and independently decodes AVC/HEVC
 and AAC segments, validating frame order, keyframe boundaries, priming and sample
 counts. Libjpeg and LibRaw provide independent still-media checks. The suite uses

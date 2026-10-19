@@ -155,3 +155,10 @@ Home acknowledged host delivery (0.20):
   The Home MIT license above applies.
   Source: 51422a0c728730dae97f45b2e44ab0bff0253ee6.
   https://github.com/home-lang/home/commit/51422a0c728730dae97f45b2e44ab0bff0253ee6
+
+Home shared PTS clock (0.21):
+- src/home/pts_clock.zig is verbatim from Home's
+  packages/video/src/core/pts_clock.zig at ffb6a26ad3983c13ebc20df8d768b439b272aea8.
+  It supplies exact source-clock epochs across separately rebased output segments.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/ffb6a26ad3983c13ebc20df8d768b439b272aea8

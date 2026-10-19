@@ -13,6 +13,7 @@ import {
 } from './ffi'
 export interface OutputPacket {
   data: Uint8Array
+  sourceTimestampNs: bigint
   timestampNs: bigint
   codec: number
   keyframe: boolean
@@ -50,7 +51,12 @@ export interface ByteSink {
   ): void | number | Promise<void | number>
 }
 const hooks = new AsyncLocalStorage<boolean>()
-const claims = new WeakMap<object, OutputBridge>()
+const claims = new WeakMap<object, object>()
+export interface OutputScope {
+  owner: object
+  id: bigint | symbol
+}
+const outputScope = Symbol('output scope')
 export function guardOutputHook() {
   if (hooks.getStore())
     throw new CameraError(-2, 'output hook cannot re-enter camera/recorder')
@@ -100,6 +106,7 @@ export class OutputBridge {
   constructor(
     readonly output: CustomOutput,
     options: { maxBytes?: number; maxOperations?: number } = {},
+    readonly scope: OutputScope = { owner: {}, id: Symbol() },
   ) {
     const format = output.format ?? 'packets'
     if (!['packets', 'mp4', 'mkv'].includes(format))
@@ -149,6 +156,13 @@ export class OutputBridge {
   }
   async start(streams: OutputStreams) {
     try {
+      await call(() =>
+        (
+          this.output as CustomOutput & {
+            [outputScope]?: (scope: OutputScope) => void
+          }
+        )[outputScope]?.(this.scope),
+      )
       await call(() => this.output.start?.())
       await call(() =>
         this.output.streams?.({
@@ -226,6 +240,7 @@ export class OutputBridge {
                 this.output.outputframe!({
                   data,
                   timestampNs,
+                  sourceTimestampNs: offset,
                   codec,
                   keyframe: !!(flags & 1),
                   audio: !!(flags & 2),
@@ -498,5 +513,227 @@ export class MuxedOutput implements CustomOutput {
   }
   async stop(reason?: { discard: boolean }) {
     await this.sink.stop?.(reason)
+  }
+}
+
+interface PtsLease {
+  scope: OutputScope
+  done: Promise<void>
+  write(
+    packet: Pick<OutputPacket, 'audio' | 'sourceTimestampNs'>,
+  ): Promise<void>
+  release(discard?: boolean): void
+}
+/** Explicitly owned shared video PTS sink. Close after every segment retires. */
+export class PtsStream {
+  private clock = storage(24)
+  private active = 0
+  private tail?: Pick<PtsLease, 'scope' | 'done'>
+  private committed = false
+  private committing?: Promise<void>
+  private closed?: Promise<void>
+  private resources: object[] = []
+  error: unknown
+  private constructor(readonly sink: ByteSink & Partial<CustomOutput>) {
+    n.zc_default_pts_clock(ptr(this.clock))
+  }
+  static async open(
+    target: string | ByteSink,
+    options: { exclusive?: boolean } = {},
+  ) {
+    guardOutputHook()
+    const sink =
+      typeof target === 'string'
+        ? new FileSink(target, options.exclusive ?? true)
+        : target
+    if (typeof sink.write !== 'function')
+      throw new TypeError('PTS sink requires write')
+    const stream = new PtsStream(sink)
+    const resources = [
+      stream,
+      sink,
+      ...(await call(
+        () => (sink as Partial<CustomOutput>).resources?.() ?? [],
+      )),
+    ]
+    for (const resource of resources) {
+      if (
+        !resource ||
+        (typeof resource !== 'object' && typeof resource !== 'function')
+      )
+        throw new TypeError('invalid PTS resource')
+      if (claims.has(resource)) throw new CameraError(-4, 'PTS resource active')
+    }
+    stream.resources = [...new Set(resources)]
+    for (const resource of stream.resources) claims.set(resource, stream)
+    try {
+      await call(() => stream.sink.start?.())
+      return stream
+    } catch (error) {
+      try {
+        await stream.close()
+      } catch {}
+      throw error
+    }
+  }
+  descriptor() {
+    return this.sink instanceof FileSink
+      ? this.sink.fd
+      : (this.sink.descriptors?.().file ?? -1)
+  }
+  async commit() {
+    if (this.error !== undefined) throw this.error
+    if (this.closed) throw new CameraError(-2, 'PTS stream closed')
+    if (this.committed) return
+    if (!this.committing)
+      this.committing = (async () => {
+        try {
+          await this.sink.commit?.()
+          this.committed = true
+        } catch (error) {
+          this.error = failure(error)
+          throw this.error
+        }
+      })()
+    await this.committing
+  }
+  lease(scope: OutputScope): PtsLease {
+    if (this.closed) throw new CameraError(-2, 'PTS stream closed')
+    if (this.error !== undefined) throw this.error
+    const previous = this.tail
+    if (
+      previous &&
+      (previous.scope.owner !== scope.owner || previous.scope.id !== scope.id)
+    )
+      throw new CameraError(-4, 'shared PTS requires one logical output')
+    let finish!: () => void
+    let released = false
+    const own = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const done = own
+    const fence = { scope, done }
+    const lease: PtsLease = {
+      scope,
+      done,
+      write: async (packet) => {
+        if (packet.audio) return
+        await previous?.done
+        if (released) throw new CameraError(-5, 'PTS lease retired')
+        if (this.error !== undefined) throw this.error
+        try {
+          const timestamp = new BigUint64Array(1),
+            text = storage(32),
+            length = new Uint32Array(1)
+          check(
+            n.zc_pts_clock_accept(
+              ptr(this.clock),
+              packet.sourceTimestampNs,
+              ptr(timestamp),
+            ),
+            'shared PTS clock',
+          )
+          check(
+            n.zc_format_pts(timestamp[0], ptr(text), text.length, ptr(length)),
+          )
+          await completeWrite(
+            (bytes) => this.sink.write(bytes),
+            text.subarray(0, length[0]),
+          )
+        } catch (error) {
+          this.error = failure(error)
+          throw this.error
+        }
+      },
+      release: (discard = false) => {
+        if (released) return
+        released = true
+        this.active--
+        // An unpublished replacement must leave the active predecessor's
+        // fence in place. It must not add a pending promise per cancellation.
+        if (discard && this.tail === fence) this.tail = previous
+        finish()
+      },
+    }
+    this.active++
+    this.tail = fence
+    return lease
+  }
+  close(): Promise<void> {
+    guardOutputHook()
+    if (this.closed) return this.closed
+    if (this.active) throw new CameraError(-4, 'PTS stream still leased')
+    this.closed = (async () => {
+      try {
+        await this.tail?.done
+        await call(() => this.sink.stop?.({ discard: !this.committed }))
+      } catch (error) {
+        this.error ??= failure(error)
+      } finally {
+        for (const resource of this.resources)
+          if (claims.get(resource) === this) claims.delete(resource)
+        this.resources = []
+      }
+      if (this.error !== undefined) throw this.error
+    })()
+    return this.closed
+  }
+  async [Symbol.asyncDispose]() {
+    await this.close()
+  }
+}
+/** Adds a shared source-clock PTS observer without changing segment-local PTS. */
+export class PtsOutput implements CustomOutput {
+  readonly format: 'packets' | 'mp4' | 'mkv'
+  private scope?: OutputScope
+  private lease?: PtsLease
+  constructor(
+    readonly output: CustomOutput,
+    readonly pts: PtsStream,
+  ) {
+    this.format = output.format ?? 'packets'
+  }
+  [outputScope](scope: OutputScope) {
+    this.scope = scope
+  }
+  resources() {
+    return [this.output, ...(this.output.resources?.() ?? [])]
+  }
+  descriptors() {
+    const fds = this.output.descriptors?.() ?? {}
+    if (fds.secondaryPts !== undefined && fds.secondaryPts >= 0)
+      throw new CameraError(-8, 'secondary PTS already assigned')
+    return { ...fds, secondaryPts: this.pts.descriptor() }
+  }
+  async start() {
+    await this.output.start?.()
+    this.lease = this.pts.lease(this.scope!)
+  }
+  async streams(info: OutputStreams) {
+    await this.output.streams?.(info)
+  }
+  async commit() {
+    await this.output.commit?.()
+    await this.pts.commit()
+  }
+  async outputframe(packet: OutputPacket) {
+    const { audio, sourceTimestampNs } = packet
+    await this.output.outputframe?.(packet)
+    await this.lease!.write({ audio, sourceTimestampNs })
+  }
+  write(bytes: Uint8Array) {
+    return this.output.write!(bytes)
+  }
+  patch(offset: bigint, bytes: Uint8Array) {
+    if (!this.output.patch) throw new CameraError(-8, 'output requires patch')
+    return this.output.patch(offset, bytes)
+  }
+  async stop(reason?: { discard: boolean }) {
+    try {
+      await this.output.stop?.(reason)
+    } finally {
+      this.lease?.release(reason?.discard)
+      this.lease = undefined
+    }
   }
 }

@@ -1,13 +1,19 @@
 import {
   OutputBridge,
+  PtsOutput,
+  PtsStream,
+  MuxedOutput,
   guardOutputHook,
   type CustomOutput,
   type OutputStreams,
+  type OutputScope,
 } from './outputs'
 export {
   FileOutput,
   FileSink,
   MuxedOutput,
+  PtsStream,
+  PtsOutput,
   type CustomOutput,
   type OutputPacket,
   type OutputStreams,
@@ -1118,7 +1124,7 @@ export class Recorder {
     bigint,
     { bridge: OutputBridge; generation: bigint }
   >()
-  private objectPreparations = new Map<bigint, BunJob<void>>()
+  private objectPreparations = new Map<bigint, object>()
   private objectJobs = new Set<{
     cancel: (reason?: unknown) => boolean
     operationDone: Promise<void>
@@ -1465,6 +1471,7 @@ export class Recorder {
     options: { nextIndex?: bigint; durationMs?: number; maxBytes?: number },
   ) {
     this.assertOpen()
+    this.checkOutputMutation(0n)
     if (this.objectOutputs.has(0n))
       throw new CameraError(-8, 'custom outputs rotate with split jobs')
     const name = cstring(pattern)
@@ -1496,6 +1503,7 @@ export class Recorder {
     } = {},
   ) {
     this.assertOpen()
+    this.checkOutputMutation(BigInt(id))
     if (this.objectOutputs.has(BigInt(id)))
       throw new CameraError(-8, 'custom outputs recover with output objects')
     const name = cstring(pattern)
@@ -1581,7 +1589,10 @@ export class Recorder {
         : undefined,
     }
   }
-  private newBridge(output: CustomOutput) {
+  private newBridge(
+    output: CustomOutput,
+    scope: OutputScope = { owner: this, id: Symbol() },
+  ) {
     if (this.options.io?.waitMs)
       throw new CameraError(-8, 'host outputs require fail-fast pressure')
     if (
@@ -1599,6 +1610,7 @@ export class Recorder {
               maxOperations: this.options.io.maxOperations,
             }
           : {}),
+      scope,
     )
   }
   private bindBridge(id: bigint, generation: bigint, bridge: OutputBridge) {
@@ -1663,18 +1675,23 @@ export class Recorder {
       if (n.zc_video_output_state(this.handle, 0n, ptr(state)) === 0)
         throw new CameraError(-4, 'primary already attached')
     }
-    return this.objectJob<T>(async (job) => {
+    const lifecycle = this.objectJob<T>(async (job) => {
       job.check()
       let bridge: OutputBridge | undefined
       let attached = false
       let id = 0n
       try {
-        bridge = this.newBridge(output)
+        bridge = this.newBridge(output, {
+          owner: this,
+          id: primary ? 0n : Symbol(),
+        })
         await bridge.start(this.streamInfo())
         job.check()
         this.assertOpen()
         if (primary) {
-          check(n.zc_video_open_callbacks(this.handle, ptr(bridge.callbacks)))
+          check(
+            n.zc_video_open_held_callbacks(this.handle, ptr(bridge.callbacks)),
+          )
         } else {
           const result = new BigUint64Array(1)
           check(
@@ -1687,11 +1704,27 @@ export class Recorder {
           id = result[0]
         }
         attached = true
-        check(n.zc_video_hold_output(this.handle, id, 1))
+        this.retiringOutputs.add(id)
+        bridge.scope.id = id
+        if (!primary) check(n.zc_video_hold_output(this.handle, id, 1))
         await bridge.enable()
         await bridge.drain()
-        job.check()
-        check(n.zc_video_hold_output(this.handle, id, 0))
+        if (primary) {
+          while (true) {
+            job.check()
+            const code = n.zc_video_step_held_output(this.handle)
+            if (code !== -3) check(code, 'pre-roll replay')
+            await bridge.drain()
+            job.check()
+            const publish = n.zc_video_publish_held_output(this.handle)
+            if (publish === 0) break
+            if (publish !== -3) check(publish, 'pre-roll publication')
+            await pause()
+          }
+        } else {
+          job.check()
+          check(n.zc_video_hold_output(this.handle, id, 0))
+        }
         this.bindBridge(id, 0n, bridge)
         this.objectOutputs.set(id, { bridge, generation: 0n })
         job.seal()
@@ -1699,7 +1732,8 @@ export class Recorder {
       } catch (error) {
         let secondary: unknown
         if (attached) {
-          n.zc_video_remove_output(this.handle, id)
+          if (primary) n.zc_video_discard_held_output(this.handle)
+          else n.zc_video_remove_output(this.handle, id)
           const state = storage(24)
           if (n.zc_video_output_state(this.handle, id, ptr(state)) === 0) {
             if (bridge)
@@ -1720,8 +1754,18 @@ export class Recorder {
         )
           throw secondary
         throw error
+      } finally {
+        if (attached) this.retiringOutputs.delete(id)
       }
     }, options)
+    if (primary) {
+      this.objectPreparations.set(0n, lifecycle)
+      void lifecycle.operationDone.then(() => {
+        if (this.objectPreparations.get(0n) === lifecycle)
+          this.objectPreparations.delete(0n)
+      })
+    }
+    return lifecycle
   }
   private prepareObject(
     output: string | CustomOutput,
@@ -1742,7 +1786,7 @@ export class Recorder {
       try {
         job.check()
         if (typeof output !== 'string') {
-          bridge = this.newBridge(output)
+          bridge = this.newBridge(output, { owner: this, id })
           await bridge.start(this.streamInfo())
           job.check()
         }
@@ -2106,5 +2150,70 @@ export class Recording {
       if (failure) throw failure
     })()
     return this.closeJob
+  }
+}
+
+export interface CircularOutput2Options extends RecorderOptions {
+  bufferDurationMs?: number
+  pts?: PtsStream
+}
+/** Delayed Home A/V output with a shared PTS observer across segment epochs. */
+export class CircularOutput2 extends Recorder {
+  private duration: number
+  private pts?: PtsStream
+  constructor(options: CircularOutput2Options) {
+    const duration =
+      options.bufferDurationMs ?? options.circular?.delayMs ?? 5000
+    nanos(duration)
+    super(null, {
+      ...options,
+      circular: {
+        maxFrames: options.circular?.maxFrames ?? 300,
+        maxBytes: options.circular?.maxBytes ?? 64 * 1024 * 1024,
+        durationMs: options.circular?.durationMs ?? Math.max(duration, 1),
+        delayMs: duration,
+      },
+    })
+    this.duration = duration
+    this.pts = options.pts
+  }
+  get bufferDurationMs() {
+    return this.duration
+  }
+  set bufferDurationMs(value: number) {
+    this.assertOpen()
+    check(n.zc_video_set_delay(this.handle, nanos(value)))
+    this.duration = value
+  }
+  private observed(output: CustomOutput | string) {
+    if (output instanceof PtsOutput) return output
+    if (typeof output === 'string' && !/\.(mp4|mkv)$/i.test(output))
+      throw new CameraError(-8, 'circular output container')
+    const sink =
+      typeof output === 'string'
+        ? new MuxedOutput(
+            output,
+            output.toLowerCase().endsWith('.mp4') ? 'mp4' : 'mkv',
+          )
+        : output
+    return this.pts ? new PtsOutput(sink, this.pts) : sink
+  }
+  override openOutput(
+    output: string | CustomOutput,
+    options: JobOptions<void> = {},
+  ) {
+    this.assertOpen()
+    return super.openOutput(this.observed(output), options)
+  }
+  closeOutput() {
+    return this.removeOutput(0n)
+  }
+  override split(output: string | CustomOutput, id: bigint | number = 0n) {
+    this.assertOpen()
+    return super.split(BigInt(id) === 0n ? this.observed(output) : output, id)
+  }
+  override recover(output: string | CustomOutput, id: bigint | number = 0n) {
+    this.assertOpen()
+    return super.recover(BigInt(id) === 0n ? this.observed(output) : output, id)
   }
 }

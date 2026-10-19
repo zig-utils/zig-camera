@@ -112,6 +112,14 @@ pub fn isMailbox(cb: c.zc_output_callbacks) bool {
     return cb.packet == Mailbox.packet and cb.write == Mailbox.write and cb.patch == Mailbox.patch;
 }
 
+// Packet offsets carry the unre-based recorder source clock, so a shared PTS
+// observer never has to infer an old segment's epoch from mutable output state.
+pub fn sendPacket(cb: c.zc_output_callbacks, packet: c.zc_output_packet, origin: u64) c_int {
+    const self: *Mailbox = @ptrCast(@alignCast(cb.context.?));
+    const source = std.math.add(u64, origin, packet.timestamp_ns) catch return c.ZC_INVALID;
+    return self.send(.{ .kind = 0, .codec = packet.codec, .flags = packet.flags, .timestamp = packet.timestamp_ns, .offset = source }, if (packet.length == 0) &.{} else packet.data[0..@intCast(packet.length)]);
+}
+
 test "mailbox owns bytes, sequence-checks acknowledgement and preserves completed prefixes" {
     var mailbox: ?*c.zc_output_mailbox = null;
     try std.testing.expectEqual(c.ZC_INVALID, zc_output_mailbox_open(0, 2, &mailbox));
