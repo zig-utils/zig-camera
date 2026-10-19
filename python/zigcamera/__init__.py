@@ -767,7 +767,7 @@ class Recorder:
     def _path_call(self,name,path):
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
         with self._lock:
-            self._open();self._check_retiring_path(path);_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
+            self._open();self._sync_split();self._check_retiring_path(path);_check(self._lib,getattr(self._lib,name)(self._handle,_path(path)))
     def set_delay(self,delay_ms):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
@@ -906,7 +906,7 @@ class Recorder:
         frozen=C.c_void_p();lib=self._lib
         try:
             with self._lock:
-                self._open();self._check_retiring_path(path);_check(lib,lib.zc_video_freeze_buffer(self._handle,_path(path),C.byref(frozen)))
+                self._open();self._sync_split();self._check_retiring_path(path);_check(lib,lib.zc_video_freeze_buffer(self._handle,_path(path),C.byref(frozen)))
         except Exception: self._snapshot_slots.release();raise
         def release():
             lib.zc_snapshot_close(frozen)
@@ -916,6 +916,7 @@ class Recorder:
         if wait is True or (wait is None and signal_function is None): job.result();return None
         return job
     def _check_bridge_distinct(self,bridge):
+        self._sync_split()
         for other in (self._bridge,self._next_bridge,*self._extra_bridges.values(),*(p[0] for p in self._extra_pending.values())):
             if other is not None: bridge.check_distinct(other)
         for _,_,other in self._retiring.values(): bridge.check_distinct(other,files=True)

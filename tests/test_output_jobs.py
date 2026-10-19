@@ -51,9 +51,16 @@ class OutputJobTests(unittest.TestCase):
             camera.start()
             with Recorder([Collector(),old],width=32,height=32,async_io={}) as recorder:
                 try:
-                    write(camera,recorder,0);recorder.split_output(1,Collector());write(camera,recorder,1)
+                    write(camera,recorder,0);recorder.split_output(1,Collector())
+                    # Complete native retirement without Python reconciliation;
+                    # alias validation must close that ownership gap itself.
+                    with camera.acquire() as frame,recorder._lock:
+                        recorder._checked(recorder._lib.zc_video_write(recorder._handle,C.byref(frame._native),40_000_000))
+                        recorder._checked(recorder._lib.zc_video_drain_output_io(recorder._handle,1))
+                    recorder.output_status(1);os.link(path,alias);before=path.read_bytes()
+                    with self.assertRaisesRegex(ValueError,'retiring'): recorder.add_output(MuxedOutput(alias,format='mkv'))
                     def retiring(): recorder._sync_split();return entered.is_set()
-                    until(retiring);os.link(path,alias);before=path.read_bytes()
+                    until(retiring)
                     with self.assertRaisesRegex(RuntimeError,'retiring'): recorder.remove_output(1,wait=False).result(5)
                     with self.assertRaisesRegex(ValueError,'retiring'): recorder.add_output(MuxedOutput(alias,format='mkv'))
                     with self.assertRaisesRegex(ValueError,'retiring'): recorder.split(alias)
