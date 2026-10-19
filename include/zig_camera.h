@@ -340,6 +340,23 @@ typedef struct zc_output_job zc_output_job;
 int zc_video_drain_output_async(zc_recorder *,uint64_t id,zc_output_job **);
 int zc_output_job_wait(zc_output_job *,uint32_t timeout_ms);
 void zc_output_job_close(zc_output_job *);
+/* Caller-serialized cooperative preparation state, no allocation. step returns
+ * 1 for an accepted transition, 0 for rejection, INVALID for malformed input.
+ * Cancellation after claim needs cleanup before CLEANED makes it terminal. */
+typedef struct {uint32_t phase,cancel_requested;} zc_preparation_state;
+enum {ZC_PREPARATION_QUEUED=0,ZC_PREPARATION_PREPARING=1,ZC_PREPARATION_READY=2,ZC_PREPARATION_PUBLISHED=3,ZC_PREPARATION_CANCELLED=4,ZC_PREPARATION_FAILED=5};
+enum {ZC_PREP_CLAIM=1,ZC_PREP_READY=2,ZC_PREP_PUBLISH=3,ZC_PREP_CANCEL=4,ZC_PREP_CLEANED=5,ZC_PREP_FAIL=6};
+void zc_default_preparation_state(zc_preparation_state *);
+int zc_preparation_step(zc_preparation_state *,uint32_t action);
+/* Begin/commit/close serialize with recorder calls. build owns immutable copied
+ * configuration and may run independently of recording. One preparation per
+ * output, eight total. Recorder close is BUSY until preparations are released.
+ * Callback contexts remain borrowed through prepared_output_close/commit. */
+typedef struct zc_prepared_output zc_prepared_output;
+int zc_video_prepare_split(zc_recorder *,uint64_t id,const char *path,const zc_output_callbacks *,zc_prepared_output **);
+int zc_prepared_output_build(zc_prepared_output *);
+int zc_video_commit_split(zc_recorder *,zc_prepared_output *);
+void zc_prepared_output_close(zc_prepared_output *);
 
 #ifdef __cplusplus
 }

@@ -170,6 +170,10 @@ class SplitIsolationTests(unittest.TestCase):
             recorder=Recorder([Reentry(),Collector()],width=32,height=32,fps=25,failure_policy='isolate')
             recording=Recording(camera,recorder,25)
             write(camera,recorder,0);jobs.append(recording.split_output(1,Collector()))
+            # Preparation is now asynchronous; hold manual frame delivery until
+            # the replacement is staged, then exercise callback cancellation at
+            # exactly the same native handoff as the original regression.
+            self.assertTrue(jobs[0].preparation_done.wait(5));self.assertTrue(jobs[0].staged)
             write(camera,recorder,1);recording._complete_splits()
             self.assertIsInstance(recorder.output_errors[0],RuntimeError)
             self.assertIn('re-entry',str(recorder.output_errors[0]));self.assertTrue(jobs[0].done());self.assertFalse(jobs[0].cancel())

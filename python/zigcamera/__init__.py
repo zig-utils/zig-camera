@@ -113,6 +113,12 @@ def _load(path=None):
         'zc_video_set_output_io':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint32,C.c_uint64],C.c_int),
         'zc_video_output_io_stats':([C.c_void_p,C.c_uint64,C.POINTER(_OutputIoStats)],C.c_int),
         'zc_video_drain_output_io':([C.c_void_p,C.c_uint64],C.c_int),
+        'zc_default_preparation_state':([C.c_void_p],None),
+        'zc_preparation_step':([C.c_void_p,C.c_uint32],C.c_int),
+        'zc_video_prepare_split':([C.c_void_p,C.c_uint64,C.c_char_p,C.POINTER(_OutputCallbacks),C.POINTER(C.c_void_p)],C.c_int),
+        'zc_prepared_output_build':([C.c_void_p],C.c_int),
+        'zc_video_commit_split':([C.c_void_p,C.c_void_p],C.c_int),
+        'zc_prepared_output_close':([C.c_void_p],None),
         'zc_video_drain_output_async':([C.c_void_p,C.c_uint64,C.POINTER(C.c_void_p)],C.c_int),
         'zc_output_job_wait':([C.c_void_p,C.c_uint32],C.c_int),
         'zc_output_job_close':([C.c_void_p],None),
@@ -196,6 +202,7 @@ class Camera:
         self._handle = C.c_void_p()
         self._recording = None
         self._stopping_recording = None
+        self._startup_job=None;self._startup_stop_job=None;self._closing=False
         self._preview=None;self._pump=None;self._af_job=None;self._async_lock=CallbackLock();self._control_info=None
         from collections import deque
         self._active_capture_job=None;self._capture_jobs=deque();self._job_slots=threading.BoundedSemaphore(32);self._stopping=False
@@ -350,44 +357,9 @@ class Camera:
         return self._capture(lambda frame:frame.metadata,wait,signal_function,timeout_ms)
     def capture_file(self,path,timeout_ms=5000,*,wait=None,signal_function=None):
         return self._capture(lambda frame:frame.save(path),wait,signal_function,timeout_ms)
-    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None,audio=None,failure_policy="fail_fast",async_io=None):
-        from .pipeline import Recording
-        self._open()
-        with self._async_lock:
-            if self._recording is not None: raise RuntimeError('Recording already active')
-            if self._stopping_recording is not None:
-                job=self._stopping_recording.recorder._close_job
-                if job is None or not job.done(): raise RuntimeError('Previous recording is still closing')
-                self._stopping_recording=None
-            if not self._started: self.start()
-            from .outputs import RotatingOutput
-            rotation=path if isinstance(path,RotatingOutput) else None
-            if rotation is not None:
-                if circular is not None: raise ValueError('Rotation requires a file output')
-                rotation._available()
-                path=rotation.path(0)
-            source=None;recorder=None;recording=None;encoding={}
-            try:
-                if audio is not None and audio is not False:
-                    options={} if audio is True else dict(audio)
-                    encoding={name:options.pop(name) for name in ('codec','bitrate') if name in options}
-                    options.setdefault('backend','alsa')
-                    synthetic=self.info['backend']=='synthetic'
-                    if synthetic != (options['backend']=='synthetic'): raise ValueError('Audio and camera must use the same clock source')
-                    source=AudioCapture(library=self._lib._name,**options)
-                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels,**encoding},exclusive=rotation is not None,failure_policy=failure_policy,async_io=async_io)
-                recording=Recording(self,recorder,fps,audio=source,rotation=rotation)
-                self._recording=recording
-                if rotation is not None: rotation._bind(recording)
-                recording._thread=self._ensure_pump().thread
-                return recording
-            except Exception:
-                self._recording=None
-                if recording is not None: recording.close()
-                else:
-                    if recorder is not None: recorder.close()
-                    if source is not None: source.close()
-                raise
+    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None,audio=None,failure_policy="fail_fast",async_io=None,wait=None,signal_function=None,_circular_output=None):
+        from .recording_jobs import startup
+        return startup(self,path,dict(fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,circular=circular,audio=audio,failure_policy=failure_policy,async_io=async_io),wait,signal_function,_circular_output)
     def split_recording(self,path,*,wait=None,signal_function=None):
         with self._async_lock:
             if self._recording is None: raise RuntimeError('Recording is not active')
@@ -412,6 +384,9 @@ class Camera:
     def stop_recording(self,*,wait=None,signal_function=None):
         from .output_objects import guard_callback
         guard_callback()
+        from .recording_jobs import stop_startup
+        handled,result=stop_startup(self,wait,signal_function)
+        if handled: return result
         with self._async_lock:
             recording=self._recording or self._stopping_recording
             self._recording=None;self._stopping_recording=recording;pump=self._pump
@@ -457,6 +432,7 @@ class Camera:
     def close(self):
         from .output_objects import guard_callback
         guard_callback()
+        with self._async_lock: self._closing=True
         if self._handle.value: self.stop()
         if self._handle.value:
             self._check(self._lib.zc_close(self._handle))
@@ -607,7 +583,7 @@ class Recorder:
             elif len(async_io)<=8 and all(isinstance(key,int) and 0<=key<=8 and isinstance(value,dict) for key,value in async_io.items()): self._initial_io={key:dict(value) for key,value in async_io.items()}
             else: raise ValueError('Invalid per-output async_io mapping')
         self._isolation=failure_policy=="isolate"
-        self._lifecycle_slots=threading.BoundedSemaphore(16);self._lifecycle_lock=threading.Lock();self._output_jobs=set();self._close_job=None;self._retiring={}
+        self._lifecycle_slots=threading.BoundedSemaphore(16);self._lifecycle_lock=threading.Lock();self._output_jobs=set();self._close_job=None;self._retiring={};self._split_preparations={}
         initial_outputs=list(path) if isinstance(path,(list,tuple)) else None
         if initial_outputs is not None and len(initial_outputs)>8: raise ValueError('At most 8 simultaneous outputs')
         direct_object=initial_outputs is not None or (path is not None and not is_path(path))
@@ -859,6 +835,7 @@ class Recorder:
         from .output_objects import OutputBridge,MuxedOutput,_path as is_path
         with self._lock:
             self._open();identity=self._output_id(current);self._sync_split()
+            if identity in self._split_preparations: raise RuntimeError('Split preparation is pending')
             if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             state=self._state(identity)
             if not self._isolation or not state['error_code']: raise RuntimeError('Recovery requires an isolated, quarantined output')
@@ -895,6 +872,7 @@ class Recorder:
     def _auto_recover(self):
         from .output_objects import output_hook
         for identity,factory in list(self._recovery_factories.items()):
+            if identity in self._split_preparations: continue
             due=C.c_uint32()
             _check(self._lib,self._lib.zc_video_output_retry_due(self._handle,identity,C.byref(due)))
             if not due.value: continue
@@ -927,8 +905,13 @@ class Recorder:
         for other in (self._bridge,self._next_bridge,*self._extra_bridges.values(),*(p[0] for p in self._extra_pending.values())):
             if other is not None: bridge.check_distinct(other)
         for _,_,other in self._retiring.values(): bridge.check_distinct(other,files=True)
+        for preparation in self._split_preparations.values():
+            other=preparation.bridge
+            if other is not None and other is not bridge: bridge.check_distinct(other,files=True)
     def _check_retiring_path(self,path):
         for _,_,bridge in self._retiring.values(): bridge.check_path(path)
+        for preparation in self._split_preparations.values():
+            if preparation.bridge is not None: preparation.bridge.check_path(path)
     @property
     def outputs(self):
         with self._lock:
@@ -977,6 +960,7 @@ class Recorder:
     def remove_output(self,output):
         with self._lock:
             self._open();self._sync_split();identity=self._output_id(output)
+            if identity in self._split_preparations: raise RuntimeError('Split preparation is pending')
             if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             if identity==0: self.close_output();return
             original=self._extra_bridges.get(identity)
@@ -1097,32 +1081,9 @@ class Recorder:
                 self._lifecycle_errors[identity]=failure
                 if first is None: first=failure
         if first is not None and not self._isolation: raise first
-    @output_operation
-    def split_output(self,current,output):
-        from .output_objects import OutputBridge,MuxedOutput,_path as is_path
-        with self._lock:
-            self._open();identity=self._output_id(current)
-            if identity==0: self.split(output);return
-            self._sync_split();state=self._state(identity)
-            if identity in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
-            if state['pending']: raise RuntimeError('Split already pending for this output')
-            if state['error_code']: raise RuntimeError('Output is quarantined; detach before reattaching')
-            self._split_results.pop(identity,None);self._lifecycle_errors.pop(identity,None)
-            bridge=None;accepted=False
-            try:
-                if is_path(output):
-                    self._checked(self._lib.zc_video_split_output(self._handle,identity,_path(output),None))
-                else:
-                    bridge=OutputBridge(self,output);bridge.start();self._check_bridge_distinct(bridge)
-                    self._checked_bridge(self._lib.zc_video_split_output(self._handle,identity,None,C.byref(bridge.cb)),bridge)
-                accepted=True;self._extra_pending[identity]=(bridge,output,state['generation'])
-                if bridge is not None: bridge.commit()
-            except BaseException:
-                try:
-                    if accepted: self.cancel_output_split(identity)
-                    elif bridge is not None: bridge.stop()
-                except Exception: pass
-                raise
+    def split_output(self,current,output,*,wait=None,signal_function=None):
+        from .split_preparation import submit
+        return submit(self,current,output,wait,signal_function)
     def cancel_output_split(self,output):
         with self._lock:
             self._open();identity=self._output_id(output)
@@ -1180,21 +1141,12 @@ class Recorder:
                 except Exception: pass
                 raise
             return
-    @output_operation
-    def split(self,output):
-        from .output_objects import _path
-        with self._lock:
-            self._open();self._sync_split()
-            if 0 in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
-            if self.buffer_stats['split_pending']: raise RuntimeError('Split already pending')
-            self._split_generation=self._state(0)['generation'];self._split_results.pop(0,None);self._lifecycle_errors.pop(0,None)
-            if _path(output) and (self._bridge is None or self._bridge.pts is None or self._bridge.pts.target is None):
-                self._path_call('zc_video_split',output);self._split_staged=True;self._next_output=output
-            else: self._attach_object(output,None,True)
+    def split(self,output,*,wait=None,signal_function=None): return self.split_output(0,output,wait=wait,signal_function=signal_function)
     @output_operation
     def close_output(self):
         with self._lock:
             self._open();self._sync_split()
+            if 0 in self._split_preparations: raise RuntimeError('Split preparation is pending')
             if 0 in self._retiring: raise RuntimeError('Output lifecycle is still retiring')
             status=self._lib.zc_video_close_output(self._handle)
             stats=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(stats)))
@@ -1241,13 +1193,18 @@ class Recorder:
         with self._lifecycle_lock: pending=list(self._output_jobs)
         for job in pending:
             if threading.current_thread() is not job.thread: job.event.wait()
+        with self._lock: preparations=list(self._split_preparations.values())
+        for preparation in preparations: preparation.done.wait()
         with self._lock:
             if self._handle.value:
                 for identity in ([0] if self._primary_output is not None else [])+list(self._extra_targets):
                     self._final_recovery[identity]=self.recovery_status(identity)
                 self._recovery_factories.clear();self._recovery_errors.clear();self._recovery_failures.clear()
                 results=(_OutputResult*8)();count=C.c_uint32()
-                status=self._lib.zc_video_close_outputs(self._handle,results,8,C.byref(count));self._handle=C.c_void_p()
+                status=self._lib.zc_video_close_outputs(self._handle,results,8,C.byref(count))
+                if status==-4 and count.value==0:
+                    self._close_job=None;self._checked(status)
+                self._handle=C.c_void_p()
                 for result in results[:count.value]:
                     state={name:getattr(result.state,name) for name,_ in result.state._fields_ if name!='reserved'}
                     self._final_states[result.id]=state

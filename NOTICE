@@ -134,3 +134,9 @@ Home FIFO completion (0.17):
   packages/async/src/completion_watermark.zig at df4b991ef.
   Source: https://github.com/home-lang/home/commit/df4b991ef
   The Home MIT license above applies.
+
+Home cooperative preparation (0.18):
+- src/home/preparation_gate.zig is verbatim from Home's
+  packages/async/src/preparation_gate.zig at 1ebb311b3.
+  Source: https://github.com/home-lang/home/commit/1ebb311b3
+  The Home MIT license above applies.

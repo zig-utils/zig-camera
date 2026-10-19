@@ -428,3 +428,30 @@ jobs and retains retiring callbacks/files through stop hooks. Tests cover prefix
 boundaries, survival after close, bounded admission, cancellation, thread-start
 failure, slow hooks, split exceptions, async stop/restart and callback reentry.
 No FFmpeg/Libav/PyAV dependency or hardware performance claim is introduced.
+
+
+## 0.18: cooperative preparation and publication
+
+Rechecked Home's atomic task states, completion gate/watermark, structured
+concurrency and future primitives. Immediate terminal task cancellation cannot
+represent an output hook that is still running and owns files; a FIFO watermark
+tracks completion prefixes, not publication of a newly built recording.
+
+[Home 1ebb311b3](https://github.com/home-lang/home/commit/1ebb311b3) adds an
+allocation-free `PreparationGate`. It separates claim, readiness and publication
+from cooperative cancellation and cleanup. Queued cancellation wins without
+acquisition; a claimed cancellation becomes terminal only after cleanup. Late
+cancellation cannot undo publication, repeated requests return false, and actual
+preparation failures remain failures. Three focused tests pass on Zig 0.15.2 and
+Home's development compiler, and targeted pickier passes. The async package
+exports the helper and its focused workflow tests Debug and ReleaseSafe.
+
+Zig-camera vendors it verbatim with MIT attribution and exposes its transitions
+through additive C functions. Python supplies bounded startup/split jobs; native
+split recipes copy immutable configuration and reserve descriptor identities,
+then build Home container/AAC/header/worker state outside capture locks. Native
+close is busy until recipes release ownership. Tests cover concurrency, borrowed
+lifetimes, cancellation, stop/close, callbacks, file aliases and startup group
+failures, alongside the existing independently decoded media regressions.
+Only origin/main is published as the configured human, without coauthors/PRs.
+No FFmpeg/Libav/PyAV dependency or hardware performance claim is introduced.

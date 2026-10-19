@@ -33,7 +33,7 @@ def run(camera,target,operation,num_frames,timeout_ms):
     with camera._operation_lock:
         old=camera._ready()
         with old._async_lock:
-            if old._recording is not None: raise RuntimeError('Stop recording before switching modes')
+            if old._recording is not None or (old._startup_job is not None and not old._startup_job.done()) or (old._startup_stop_job is not None and not old._startup_stop_job.done()): raise RuntimeError('Stop recording before switching modes')
             # Read the active transfer before inspecting leases: a finishing
             # request job marks its frame public before clearing this marker.
             active=old._active_capture_job

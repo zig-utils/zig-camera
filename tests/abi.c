@@ -5,6 +5,7 @@
 _Static_assert(sizeof(zc_output_delay)==40,"output delay ABI");
 _Static_assert(sizeof(zc_output_recovery_state)==24,"output recovery ABI");
 _Static_assert(sizeof(zc_output_io_stats)==88,"output I/O ABI");
+_Static_assert(sizeof(zc_preparation_state)==8,"preparation gate ABI");
 _Static_assert(sizeof(zc_output_packet)==32,"output packet ABI");
 _Static_assert(sizeof(zc_output_state)==24,"output state ABI");
 _Static_assert(sizeof(zc_output_result)==32,"output close result ABI");
@@ -43,6 +44,16 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
 int main(void) {
+    zc_preparation_state preparation;
+    zc_default_preparation_state(&preparation);
+    assert(preparation.phase==0 && !preparation.cancel_requested);
+    assert(zc_preparation_step(&preparation,ZC_PREP_CLAIM)==1);
+    assert(zc_preparation_step(&preparation,ZC_PREP_READY)==1);
+    assert(zc_preparation_step(&preparation,ZC_PREP_CANCEL)==1);
+    assert(zc_preparation_step(&preparation,ZC_PREP_PUBLISH)==0);
+    assert(zc_preparation_step(&preparation,ZC_PREP_CLEANED)==1 && preparation.phase==ZC_PREPARATION_CANCELLED);
+    assert(zc_preparation_step(&preparation,ZC_PREP_FAIL)==0);
+    assert(zc_preparation_step(&preparation,99)==ZC_INVALID);
     zc_audio_config audio_config;zc_default_audio_config(&audio_config);
     audio_config.backend=ZC_AUDIO_SYNTHETIC;audio_config.block_frames=48;
     zc_audio *audio=NULL;assert(zc_audio_open(&audio_config,"",&audio)==ZC_OK);
@@ -278,6 +289,30 @@ int main(void) {
         assert(zc_output_job_wait(drains[i],0)==ZC_OK);
     }
     assert(zc_video_drain_output_async(recorder,0,&output_overflow)==ZC_BUSY && output_overflow==NULL);
+    zc_prepared_output *prepared=NULL,*duplicate=NULL;
+    unsigned prepared_delivered=0;
+    zc_output_callbacks prepared_callbacks=callbacks;prepared_callbacks.context=&prepared_delivered;
+    assert(zc_video_prepare_split(recorder,0,NULL,&prepared_callbacks,&prepared)==ZC_OK);
+    assert(zc_video_prepare_split(recorder,0,NULL,&prepared_callbacks,&duplicate)==ZC_BUSY && !duplicate);
+    assert(zc_video_close(recorder)==ZC_BUSY); /* Does not consume recorder. */
+    assert(zc_video_remove_output(recorder,0)==ZC_BUSY);
+    assert(zc_video_set_output_io(recorder,0,32768,8,0)==ZC_BUSY);
+    assert(zc_prepared_output_build(prepared)==ZC_OK);
+    assert(zc_prepared_output_build(prepared)==ZC_STATE);
+    zc_recorder *other_recorder=NULL;
+    assert(zc_video_create(&video,&recording,0,&other_recorder)==ZC_OK);
+    assert(zc_video_commit_split(other_recorder,prepared)==ZC_STATE);
+    assert(zc_video_close(other_recorder)==ZC_OK);
+    assert(zc_video_commit_split(recorder,prepared)==ZC_OK);
+    assert(zc_video_commit_split(recorder,prepared)==ZC_STATE);
+    zc_prepared_output_close(prepared);
+    assert(zc_video_prepare_split(recorder,extra_id,"zig-out/abi-prepared.mkv",NULL,&prepared)==ZC_OK);
+    assert(zc_prepared_output_build(prepared)==ZC_OK);
+    zc_prepared_output_close(prepared); /* Cancels only the recipe. */
+    zc_frame prepared_frame;assert(zc_acquire(camera,0,&prepared_frame)==ZC_OK);
+    assert(zc_video_write(recorder,&prepared_frame,240000000)==ZC_OK);
+    assert(zc_release(camera,prepared_frame.token)==ZC_OK);
+    assert(zc_video_drain_output_io(recorder,0)==ZC_OK && prepared_delivered==1);
     assert(zc_video_close(recorder)==ZC_OK);
     for(unsigned i=0;i<32;i++) {
         assert(zc_output_job_wait(drains[i],0)==ZC_OK);

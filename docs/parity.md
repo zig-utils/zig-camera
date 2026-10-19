@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.17
+# Picamera2 coverage in 0.18
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -10,7 +10,7 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Configuration roles | Still/video/viewfinder roles; cached raw-mode discovery, exact sensor output size/bit depth; paired RGB/YUV420 lores | Per-mode measured FPS/exposure/crop catalog, arbitrary formats |
 | Preview | Blocking SDL loop or async display process with a bounded shared RGB slot, aspect-preserving resize, Escape/window close; shared capture worker with recording/AF | Qt/DRM zero-copy preview, overlays; full Picamera2 backend signatures |
 | Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, additional audio codecs, hardware encoders, general profile/preset selection |
-| Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs; owned async pre-roll jobs; bounded CircularOutput2-style delayed A/V with close-tail exclusion and stop flushing | Retention deletion, complete upstream sink signatures, repairing partially written containers after process/device crashes |
+| Recording control | Bounded awaitable startup and off-capture split preparation, background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs; owned async pre-roll jobs; bounded CircularOutput2-style delayed A/V with close-tail exclusion and stop flushing | Retention deletion, complete upstream sink signatures, repairing partially written containers after process/device crashes |
 | Audio and synchronized A/V | Explicit ALSA S16LE capture; bounded PCM queue; BOOTTIME/sample-count synchronization, MJPEG/AVC/HEVC + PCM Matroska; Home AAC-LC + AVC/HEVC fragmented MP4 with priming/tail metadata; sample-clipped splits; bounded circular PCM/video and synchronized MP4 pre-roll snapshots | Physical latency/drift calibration, adaptive resampling, other audio codecs/HE-AAC, other input platforms |
 | Reusable outputs and PTS | Eight simultaneous outputs with dynamic add/remove, independent async splits (cancellable before keyframe commit), per-output stats/state, independent bounded A/V delays, bounded async lifecycle/drain/close jobs, opt-in asynchronous sink I/O with per-output byte/operation limits and fail/timed-wait backpressure, and sink failure isolation/recovery with fresh targets and bounded retry/backoff; shared encoded video and independent sample-clipped audio/container state; Direct/circular/delayed packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; async object/path splits with bounded jobs, cancellation and lifecycle cleanup; exact per-segment PTS and shared CircularOutput2 sidecars | Per-sink encoding settings, socket-specific options, PyAV packet interoperability, every upstream constructor signature |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
@@ -142,3 +142,14 @@ cleanup and preserves late exceptions. Tests cover bounded admission, close
 races, queued cancellation, blocked hooks, file reservations and reentry.
 Serialized native preparation/finalization can still pause encoder input; this
 is not full Picamera2 compatibility or measured Pi performance.
+
+
+0.18 adds async recording startup and split preparation. Startup jobs own audio,
+encoders and group output hooks before atomic camera publication; circular binding
+is complete before success is visible. Split jobs reserve stable IDs and files,
+then build Home containers/AAC/headers and optional I/O workers independently of
+capture. They finish after keyframe handoff and old-output cleanup. Claimed
+cancellation prevents publication and finishes after owned cleanup; stop/close
+wait for it. Tests include blocked hooks/headers, eight native recipe slots,
+file aliases, group errors, queued/spawn failure, mode guards and reentry.
+This remains an incremental compatibility subset with no measured Pi speedup.

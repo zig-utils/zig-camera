@@ -146,9 +146,12 @@ class OperationJob:
         self.thread=None
     def done(self): return self.event.is_set()
     def cancelled(self): return self.done() and isinstance(self.error,CancelledError)
+    def _finish_state(self,error): pass
     def _finish(self,value=None,error=None):
         with self.lock:
             if self.state=='finished': return
+            self._finish_state(error)
+            self.operation=None
             self.value=value;self.error=error;self.state='finished';self.event.set()
         def notify():
             try:
@@ -191,6 +194,68 @@ class OperationJob:
             return self.result()
         except asyncio.CancelledError: self.cancel();raise
     def __await__(self): return self._await().__await__()
+
+class PreparationJob(OperationJob):
+    """Home cooperative gate: claimed cancellation completes after cleanup."""
+    class Native(C.Structure):
+        _fields_=[('phase',C.c_uint32),('cancel_requested',C.c_uint32)]
+    def __init__(self,lib,operation,signal_function,release_slot,cancel_function,*,deferred=False,after_prepare=None,unclaimed=None):
+        super().__init__(operation,signal_function,release_slot,cancel_function)
+        self.lib=lib;self.native=self.Native();lib.zc_default_preparation_state(C.byref(self.native))
+        self.preparation_done=threading.Event();self.deferred=deferred;self.after_prepare=after_prepare
+        self.staged=False;self.cleanup_error=None;self.abort_error=None
+        self.unclaimed=unclaimed
+    def step(self,action):
+        with self.lock: return self.lib.zc_preparation_step(C.byref(self.native),action)==1
+    @property
+    def cancel_requested(self):
+        with self.lock: return bool(self.native.cancel_requested or self.native.phase==4)
+    def request_cancel(self):
+        with self.lock:
+            accepted=self.lib.zc_preparation_step(C.byref(self.native),4)==1
+            queued=self.native.phase==4
+        if accepted and queued:
+            if self.unclaimed is not None: self.unclaimed()
+            self.preparation_done.set();self._finish(error=CancelledError('Preparation cancelled'))
+        return accepted
+    def _finish_state(self,error):
+        if isinstance(error,CancelledError): self.lib.zc_preparation_step(C.byref(self.native),5)
+        elif error is not None: self.lib.zc_preparation_step(C.byref(self.native),6)
+    def abort(self,error):
+        if self.staged or self.preparation_done.is_set(): self._finish(error=error);return
+        self.abort_error=error
+        with self.lock:
+            queued=self.native.phase==0
+            if queued: self.lib.zc_preparation_step(C.byref(self.native),6)
+        if queued:
+            if self.unclaimed is not None: self.unclaimed()
+            self.preparation_done.set();self._finish(error=error)
+        else: self.request_cancel()
+    def start(self,*,inline=False):
+        def run():
+            try:
+                with self.lock:
+                    if self.lib.zc_preparation_step(C.byref(self.native),1)!=1: return
+                    self.state='preparing'
+                try: value=self.operation(self)
+                except BaseException as error:
+                    if not isinstance(error,Exception):
+                        original=error;error=RuntimeError(f'Preparation aborted: {error}');error.__cause__=original
+                    self._finish(error=error)
+                else:
+                    if not self.deferred: self._finish(value)
+            finally:
+                self.preparation_done.set()
+                if self.after_prepare is not None: self.after_prepare(self)
+        if inline:
+            self.thread=threading.current_thread();run();return self
+        self.thread=threading.Thread(target=run,name=getattr(self,'thread_name','zig-camera-prepare'),daemon=True)
+        try: self.thread.start()
+        except Exception as error:
+            if self.unclaimed is not None: self.unclaimed()
+            self.preparation_done.set();self._finish(error=error)
+            if self.after_prepare is not None: self.after_prepare(self)
+        return self
 
 class SnapshotJob(OperationJob):
     """Independent owned snapshot; cancellation only wins before worker claim."""

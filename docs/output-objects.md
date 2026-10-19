@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.17)
+# Reusable outputs and PTS streams (0.18)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -650,8 +650,9 @@ Async addition snapshots owned stream metadata under the recorder lock, then
 runs `start` and `_add_stream` off that lock. Existing capture can continue while
 those hooks wait. Native acceptance checks the current recorder state again;
 failed or superseded preparation stops and releases only its attempted output.
-Other lifecycle operations serialize native preparation/finalization with encoder
-input, including header writes, commits and explicit detach drains. Their jobs
+Other attachment/recovery/removal lifecycle operations serialize native preparation/
+finalization with encoder input, including headers and explicit detach drains.
+Recording startup and split preparation have the separate 0.18 path below. Their jobs
 move that work off the submitting thread; they do not promise uninterrupted
 capture while native ownership is changing. The automatic retry factory retains
 its existing synchronous behavior.
@@ -698,3 +699,103 @@ run after recorder destruction. Serialize ticket release against its own wait.
 C callers still finalize outputs/recorders with the existing serialized close
 functions; Python supplies the bounded close/lifecycle jobs around them. Existing
 C struct sizes and ABI version remain unchanged.
+
+## Async recording startup and split preparation (0.18)
+
+```python
+import asyncio
+from zigcamera import Picamera2, H264Encoder, MuxedOutput
+
+async def record(camera):
+    starting = camera.start_recording(
+        H264Encoder(bitrate=16_000_000), MuxedOutput("first.mp4"),
+        audio={"device": "hw:1,0", "sample_rate": 48000},
+        async_io={"max_ops": 2048}, wait=False)
+    recording = await starting
+    # Capture/preview remain usable while the next target opens and writes headers.
+    replacement = MuxedOutput("next.mp4")
+    assert await recording.split(replacement) is replacement
+    await camera.stop_recording(wait=False)
+
+with Picamera2() as camera:
+    camera.configure(camera.create_video_configuration(main={"size": (1920, 1080)}))
+    asyncio.run(record(camera))
+```
+
+Both `Camera.start_recording` and `Picamera2.start_recording` accept `wait=None`
+and `signal_function=None`. The existing default initializes synchronously and
+returns `Recording`; `wait=False`, or a signal callback with unspecified wait,
+returns an awaitable preparation job whose result is that recording. Async
+startup owns audio-device opening, encoder construction, every initial output's
+start/metadata/header work, and optional sink workers. It publishes under the
+camera lock only after initialization succeeds. Circular/rotation binding is
+complete before success is observable. Only one startup can be pending per
+camera, and startup/split jobs share the existing 32 camera job/callback slots.
+
+Async startup leaves current preview and capture jobs usable while output hooks
+run. It starts a stopped camera on its worker. Group failure stops every output
+that acquired ownership, closes audio/native state, and preserves the original
+error. Retrying can reuse released objects. Created/partly initialized target
+files can remain: preparation is not a filesystem transaction. Synchronous
+startup retains caller execution and blocking behavior.
+
+`Recording.split`/`split_output` now return before target preparation runs.
+Output start and stream metadata hooks, Home container/AAC/header construction,
+and optional sink worker allocation happen on the preparation owner outside
+camera/recorder capture locks. Existing outputs keep receiving frames. A short
+serialized reservation opens/checks regular file descriptors, copies immutable
+configuration and protects target identities. At staging, the native code
+validates the current generation and installs the already built output; there
+are no target callbacks, container construction or worker allocations there.
+Filesystem reservation/open latency and the final keyframe request are still
+serialized. Output delivery after handoff follows the selected sync/async I/O
+policy; enable `async_io` for potentially blocking runtime sinks.
+
+One preparation or pending handoff is allowed per attachment, eight total.
+Targets, borrowed streams, callback trampolines and descriptor reservations stay
+owned until handoff or cleanup. File aliases and borrowed memory aliases are
+rejected before Home writes/truncates built-in targets. Current outputs remain
+active if preparation fails. A successful `Recording` split job still means the
+keyframe handoff **and** old-output cleanup completed, not just preparation.
+Use `preparation_done` only for low-level monitoring/tests; normal callers await
+the job. Native `output_status()['pending']` starts at staging, so a preparing
+job can be pending while that native field is still zero.
+
+Cancellation of queued work acquires no resources. Cancellation during startup
+or split preparation records a cooperative request and returns `True`; the job
+remains incomplete while hooks/build operations still own resources. The worker
+cleans up before publishing `CancelledError` and releasing its slot. Repeated
+requests return `False`. Blocking callbacks must eventually return; cancellation
+does not interrupt them. Startup cancellation loses after camera publication;
+split cancellation loses after keyframe commit. `result(timeout)` limits only
+the observer wait. Preparation failures retain their original Python exception;
+`cleanup_error` records a secondary cleanup error observed by that worker.
+Signal callback errors remain separate in `callback_error`.
+
+Stop cancels pending startup/preparation, retains their owners until cleanup,
+and prevents late publication. A reserved startup-stop waiter works even when
+normal job capacity is exhausted. `camera.close()` waits before freeing the
+camera handle. A mode switch during startup is rejected. Recorder close waits
+for its prepared recipes before consuming native state. Standalone
+`Recorder.split`/`split_output(..., wait=False)` use the same recipe and
+cooperative cancellation but return **staging** jobs (result `None`); manual
+frame feeding still supplies the eventual keyframe. Their synchronous default
+stages directly, preserving existing behavior.
+
+C callers can use `zc_video_prepare_split(recorder, id, path, callbacks, &recipe)`
+with exactly one of path/callbacks; `zc_prepared_output_build(recipe)` constructs
+it once independently of recorder calls. `zc_video_commit_split(recorder,
+recipe)` transfers a successfully built output at the serialized staging
+boundary. Always release the recipe with `zc_prepared_output_close`; an
+uncommitted recipe is discarded. Begin, commit and release serialize with
+recorder operations; build and release of the same recipe must not overlap.
+The parent remains alive: native recorder close, removal/recovery of the target,
+and I/O reconfiguration return `ZC_BUSY` while a recipe owns that target. Close
+with live recipes does **not** consume the recorder. At most eight recipes are
+reserved. Existing public struct layouts and ABI version stay unchanged.
+
+The allocation-free `zc_preparation_state` and `zc_preparation_step` expose
+Home's queued/preparing/ready/published/cancelled/failed gate. Callers serialize
+both state transitions and actual publication, retain result storage through
+cleanup, and release job slots after terminal completion. A gate supplies state
+invariants, not callback interruption, threads or automatic resource cleanup.

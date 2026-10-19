@@ -74,7 +74,7 @@ class CapturePump:
             recording=self.camera._recording
             if recording is not None:
                 recording.error=error
-                for job in list(recording._split_jobs.values()): job._finish(error=error)
+                recording._fail_splits(error)
             while not self.stop_event.is_set():
                 if self.camera._async_lock.acquire(timeout=.02):
                     try: pending=list(self.camera._capture_jobs);self.camera._capture_jobs.clear()
@@ -111,7 +111,7 @@ class Recording:
             self.recorder.write(frame,timestamp_ns=timestamp)
             if self._rotation is not None: self._rotate()
         except Exception as error:
-            for job in self._split_jobs.values(): job._finish(error=error)
+            self._fail_splits(error)
             raise
         self.frames+=1
         self._complete_splits()
@@ -187,16 +187,21 @@ class Recording:
         with self.camera._async_lock: return self.recorder.recovery_status(output)
     def recover_output(self,output,replacement,*,wait=None,signal_function=None):
         with self.camera._async_lock: return self.recorder.recover_output(output,replacement,wait=wait,signal_function=signal_function)
+    def _fail_splits(self,error):
+        for job in self._split_jobs.values():
+            if not job.done(): job.abort(error)
     def _complete_splits(self):
         for identity,job in list(self._split_jobs.items()):
-            if job.done(): continue
+            if job.done() or not job.staged or not job.preparation_done.is_set(): continue
             if identity in self.recorder._split_results:
                 failure=self.recorder._split_results[identity]
+                if failure is None: job.step(3)
                 job._finish(job.path if failure is None else None,error=failure)
     def split(self,path,signal_function=None):
         return self.split_output(0,path,signal_function)
     def split_output(self,current,output,signal_function=None):
-        from .jobs import OperationJob
+        from .jobs import PreparationJob
+        from .split_preparation import SplitPreparation
         with self.camera._async_lock:
             if self.closed or self.error is not None: raise RuntimeError('Recording is not writable')
             identity=self.recorder._output_id(current)
@@ -205,27 +210,36 @@ class Recording:
             previous=self._split_jobs.get(identity)
             if previous is not None and not previous.done(): raise RuntimeError('Split already pending for this output')
             if not self.camera._job_slots.acquire(False): raise RuntimeError('Job capacity exhausted')
-            try: self.recorder.split_output(identity,output)
+            try: preparation=SplitPreparation(self.recorder,identity,output)
             except Exception: self.camera._job_slots.release();raise
-            job=OperationJob(signal_function=signal_function,release_slot=self.camera._job_slots.release,cancel_function=self._cancel_split)
-            job.state='running';job.path=output;job.output_id=identity;job.generation=self.recorder._split_generation if identity==0 else self.recorder._extra_pending[identity][2];self._split_jobs[identity]=job
+            def after(job):
+                if not job.staged: preparation.abandon()
+                if self.camera._async_lock.acquire(False):
+                    try: self._complete_splits()
+                    finally: self.camera._async_lock.release()
+            job=PreparationJob(self.recorder._lib,lambda job:preparation.run(job,self),signal_function,self.camera._job_slots.release,self._cancel_split,deferred=True,after_prepare=after,unclaimed=preparation.abandon)
+            job.path=output;job.output_id=identity;job.generation=preparation.generation
+            job.thread_name='zig-camera-split-prepare';self._split_jobs[identity]=job
             if identity==0: self._split_job=job
-            return job
+            return job.start()
     def _cancel_split(self,job):
         from concurrent.futures import CancelledError
         from .output_objects import guard_callback
         guard_callback()
         with self.camera._async_lock:
             if job.done(): return False
+            if not job.staged: return job.request_cancel()
             try: self.recorder._sync_split();self._complete_splits()
             except Exception as error:
                 job._finish(error=error);raise
             if job.done(): return False
             baseline=job.generation
             if self.recorder._state(job.output_id)['generation']>baseline: return False
+            job.request_cancel()
             try: self.recorder.cancel_output_split(job.output_id)
             except Exception as error:
                 job._finish(error=error);raise
+            job.preparation_done.wait()
             job._finish(error=CancelledError('Recording split cancelled'))
             return True
     def save_buffer(self,path,*,wait=None,signal_function=None):
@@ -256,6 +270,9 @@ class Recording:
         operations=[]
         for job in self._split_jobs.values():
             if not job.done(): operations.append(lambda job=job:self._cancel_split(job))
+        def await_preparations():
+            for job in self._split_jobs.values(): job.preparation_done.wait()
+        operations.append(await_preparations)
         if self._audio is not None: operations.append(self._audio.close)
         operations.extend((self._discard_rotation,self.recorder.close))
         for operation in operations:

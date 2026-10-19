@@ -1,6 +1,37 @@
 //! Optional C system-library adapters, exported through the stable C interface.
 const c = @import("abi.zig").c;
 const options = @import("options");
+pub export fn zc_default_preparation_state(out: *c.zc_preparation_state) void {
+    out.* = .{ .phase = 0, .cancel_requested = 0 };
+}
+pub export fn zc_preparation_step(out: *c.zc_preparation_state, action: u32) c_int {
+    const gate = @import("home/preparation_gate.zig");
+    if (out.cancel_requested > 1) return c.ZC_INVALID;
+    var state: gate.Gate = .{ .phase = @import("std").meta.intToEnum(gate.Phase, out.phase) catch return c.ZC_INVALID, .cancel_requested = out.cancel_requested != 0 };
+    const accepted = switch (action) {
+        c.ZC_PREP_CLAIM => state.claim(),
+        c.ZC_PREP_READY => state.ready(),
+        c.ZC_PREP_PUBLISH => state.publish(),
+        c.ZC_PREP_CANCEL => state.cancel(),
+        c.ZC_PREP_CLEANED => state.cleaned(),
+        c.ZC_PREP_FAIL => state.fail(),
+        else => return c.ZC_INVALID,
+    };
+    out.* = .{ .phase = @intFromEnum(state.phase), .cancel_requested = @intFromBool(state.cancel_requested) };
+    return @intFromBool(accepted);
+}
+pub export fn zc_video_prepare_split(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, out: *?*c.zc_prepared_output) c_int {
+    return @import("video.zig").prepareSplit(p, id, path, cb, out);
+}
+pub export fn zc_prepared_output_build(p: *c.zc_prepared_output) c_int {
+    return @import("video.zig").buildPrepared(p);
+}
+pub export fn zc_video_commit_split(p: *c.zc_recorder, out: *c.zc_prepared_output) c_int {
+    return @import("video.zig").commitPrepared(p, out);
+}
+pub export fn zc_prepared_output_close(p: ?*c.zc_prepared_output) void {
+    @import("video.zig").closePrepared(p orelse return);
+}
 extern fn zcm_preview_open([*:0]const u8, u32, u32, *?*c.zc_preview) c_int;
 extern fn zcm_preview_show(*c.zc_preview, *const c.zc_frame) c_int;
 extern fn zcm_preview_close(*c.zc_preview) c_int;
