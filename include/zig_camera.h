@@ -203,8 +203,32 @@ int zc_video_close_output(zc_recorder *);
  * immediately. open_output attaches without pre-roll replay, close_output drops
  * the queued tail from that file, recorder close flushes the remaining queue.
  * Video/sample descriptors and bytes must cover the delay. Overflow fails.
- * Paths are supported; arbitrary Picamera2 output objects are not accepted. */
+ * Path outputs and the additive callback protocol below are supported. */
 int zc_video_set_delay(zc_recorder *,uint64_t delay_ns);
+/* Synchronous consumer-thread output protocol. Borrowed packet bytes expire
+ * at callback return; copy to retain. Never re-enter camera/recorder APIs from
+ * callbacks. Return ZC_OK only on complete acceptance; any failure poisons capture.
+ * PACKETS delivers Annex B AVC/HEVC (fresh headers on first key), JPEG or S16LE.
+ * Mux modes use Home containers and deliver video metadata (data=NULL) to packet.
+ * Timestamps are rebased ns; key=1, audio=2, AnnexB=4 flags. */
+enum { ZC_OUTPUT_PACKETS=0,ZC_OUTPUT_MP4=1,ZC_OUTPUT_MKV=2,ZC_PCM_S16LE=4 };
+typedef struct {const uint8_t *data;uint64_t length,timestamp_ns;uint32_t codec,flags;} zc_output_packet;
+typedef int (*zc_output_packet_fn)(void *,const zc_output_packet *);
+typedef int (*zc_output_write_fn)(void *,const uint8_t *,uint64_t);
+typedef int (*zc_output_patch_fn)(void *,uint64_t,const uint8_t *,uint64_t);
+typedef struct {
+    uint32_t struct_size,format;void *context;
+    zc_output_packet_fn packet;zc_output_write_fn write;zc_output_patch_fn patch;
+    int32_t file_fd,pts_fd,secondary_pts_fd;uint32_t reserved;
+} zc_output_callbacks;
+/* Descriptors are borrowed identity guards, -1 when absent. They must stay open
+ * through detach/close. Distinct media/PTS/snapshot files must never alias.
+ * AAC MP4 requires patch. No callback data/context is retained after close.
+ * Currently callbacks attach to a delayed circular recorder only. */
+int zc_video_open_callbacks(zc_recorder *,const zc_output_callbacks *);
+int zc_video_get_headers(zc_recorder *,uint8_t *,uint64_t capacity,uint64_t *length);
+/* Exact Picamera2-style milliseconds with 3 decimals/LF, from microsecond PTS. */
+int zc_format_pts(uint64_t timestamp_us,uint8_t *,uint32_t capacity,uint32_t *length);
 /* Prepare a fresh file, force a keyframe, move at the next encoded key. No input
  * duplication/loss across a successful split. stats.split_pending tracks commit. */
 int zc_video_split(zc_recorder *,const char *path);

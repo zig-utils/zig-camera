@@ -113,10 +113,10 @@ ten-second PCM capacity; a longer delay cannot preserve audio beyond that bound.
 `stats.frames/bytes` describe queued video; `stats.evicted` counts FIFO removals,
 including successfully forwarded entries, rather than lost packets.
 
-This is a documented CircularOutput2-style subset. It accepts paths, shares the
-camera's start/stop lifecycle, and supports Home codecs. Arbitrary output objects,
-`pts` streams, PyavOutput integration and upstream's complete signatures are not
-implemented. `CircularOutput` keeps immediate pre-roll replay behavior. A snapshot
+Version 0.11 adds [reusable output objects and PTS streams](output-objects.md),
+including Home muxing to file-like streams. This remains a documented
+CircularOutput2-style subset sharing camera start/stop; PyavOutput integration
+and upstream's complete signatures are not implemented. `CircularOutput` keeps immediate pre-roll replay behavior. A snapshot
 from `CircularOutput2` uses only its current unforwarded queue, beginning on a
 covered key if one exists. No background executor is added for live delayed file
 writes; those retain the existing serialized recording consumer semantics.

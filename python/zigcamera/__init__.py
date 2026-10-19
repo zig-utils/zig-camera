@@ -36,6 +36,13 @@ class _RecordingOptions(C.Structure):
     _fields_=[(n,C.c_uint32) for n in ('struct_size','sample_rate','channels','buffer_frames','max_blocks','exclusive')]
 class _RecordingStats(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('segments','output_bytes','output_frames','output_duration_ns','audio_frames','audio_written_frames','audio_queued_frames','audio_trimmed_frames')]+[(n,C.c_uint32) for n in ('rotation_due','audio_enabled')]
+class _OutputPacket(C.Structure):
+    _fields_=[('data',C.c_void_p),('length',C.c_uint64),('timestamp_ns',C.c_uint64),('codec',C.c_uint32),('flags',C.c_uint32)]
+_PacketCallback=C.CFUNCTYPE(C.c_int,C.c_void_p,C.POINTER(_OutputPacket))
+_WriteCallback=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_uint64)
+_PatchCallback=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_uint64,C.c_void_p,C.c_uint64)
+class _OutputCallbacks(C.Structure):
+    _fields_=[('struct_size',C.c_uint32),('format',C.c_uint32),('context',C.c_void_p),('packet',_PacketCallback),('write',_WriteCallback),('patch',_PatchCallback),('file_fd',C.c_int32),('pts_fd',C.c_int32),('secondary_pts_fd',C.c_int32),('reserved',C.c_uint32)]
 class _BufferConfig(C.Structure):
     _fields_=[('struct_size',C.c_uint32),('max_frames',C.c_uint32),('max_bytes',C.c_uint64),('duration_us',C.c_uint64)]
 class _AudioBufferStats(C.Structure):
@@ -91,6 +98,9 @@ def _load(path=None):
         'zc_snapshot_write':([C.c_void_p],C.c_int),
         'zc_snapshot_close':([C.c_void_p],None),
         'zc_video_set_delay':([C.c_void_p,C.c_uint64],C.c_int),
+        'zc_video_open_callbacks':([C.c_void_p,C.POINTER(_OutputCallbacks)],C.c_int),
+        'zc_video_get_headers':([C.c_void_p,C.c_void_p,C.c_uint64,C.POINTER(C.c_uint64)],C.c_int),
+        'zc_format_pts':([C.c_uint64,C.c_void_p,C.c_uint32,C.POINTER(C.c_uint32)],C.c_int),
         'zc_video_buffer_stats':([C.c_void_p,C.POINTER(_BufferStats)],C.c_int),
         **{name:([C.c_void_p,C.c_char_p],C.c_int) for name in ('zc_video_save_buffer','zc_video_open_output','zc_video_split')},
         **{name:([C.c_void_p],C.c_int) for name in ('zc_video_close_output','zc_video_cancel_split')},
@@ -199,12 +209,16 @@ class Camera:
     def _check(self, status):
         if status: raise CameraError(status, self._lib.zc_status_string(status).decode())
     def _open(self):
+        from .output_objects import guard_callback
+        guard_callback()
         if not self._handle.value: raise RuntimeError("Camera is closed")
     def start(self):
         self._open(); self._check(self._lib.zc_start(self._handle)); self._started=True;self._stopping=False
         if self._preview is not None: self._ensure_pump()
         return self
     def stop(self):
+        from .output_objects import guard_callback
+        guard_callback()
         self._open();failure=None
         with self._async_lock:
             self._stopping=True
@@ -339,6 +353,8 @@ class Camera:
             job=self._recording.split(path,signal_function)
         return job.result() if (wait is True or (wait is None and signal_function is None)) else job
     def stop_recording(self):
+        from .output_objects import guard_callback
+        guard_callback()
         with self._async_lock:
             recording=self._recording;self._recording=None;pump=self._pump
         self._maybe_stop_pump()
@@ -356,6 +372,8 @@ class Camera:
             if self._started: self._ensure_pump()
         return window
     def stop_preview(self):
+        from .output_objects import guard_callback
+        guard_callback()
         with self._async_lock:
             preview=self._preview;self._preview=None
         self._maybe_stop_pump()
@@ -374,6 +392,8 @@ class Camera:
         self._open(); s = _Stats(); self._check(self._lib.zc_get_stats(self._handle, C.byref(s)))
         return {name: getattr(s, name) for name, _ in s._fields_}
     def close(self):
+        from .output_objects import guard_callback
+        guard_callback()
         if self._handle.value: self.stop()
         if self._handle.value:
             self._check(self._lib.zc_close(self._handle))
@@ -512,12 +532,14 @@ class Preview:
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
     def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False):
-        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2); config=_VideoConfig()
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._callback_error=None;self._delay_enabled=False; config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
         config.codec=codecs[codec];config.bitrate=_u32(bitrate);config.gop=_u32(gop)
         config.width=_u32(width); config.height=_u32(height); config.fps_num=_u32(fps); config.quality=_u32(quality)
+        self._video_spec={'codec':codec,'width':config.width,'height':config.height,'fps_num':config.fps_num,'fps_den':config.fps_den}
+        self._audio_spec=None
         if circular is not None:
             if path is not None: raise ValueError('Circular recording starts without a file; use open_output')
             if set(circular)-{'max_frames','max_bytes','duration_ms','delay_ms'}: raise ValueError('Unknown circular buffer option')
@@ -561,22 +583,40 @@ class Recorder:
             if audio_bitrate:
                 _check(self._lib,self._lib.zc_video_open_aac(_path(path),C.byref(config),C.byref(opts),audio_bitrate,C.byref(self._handle)))
             else: _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
+        if audio is not None: self._audio_spec={'sample_rate':opts.sample_rate,'channels':opts.channels}
         if circular is not None and 'delay_ms' in circular:
             try: self.set_delay(circular['delay_ms'])
             except Exception: self.close();raise
     def _open(self):
+        from .output_objects import guard_callback
+        guard_callback()
         if not self._handle.value: raise RuntimeError('Recorder is closed')
+    def _checked(self,status):
+        if status and self._callback_error is not None:
+            error=self._callback_error;self._callback_error=None;raise error
+        _check(self._lib,status)
+    def _streams(self):
+        from .output_objects import StreamInfo
+        length=C.c_uint64();_check(self._lib,self._lib.zc_video_get_headers(self._handle,None,0,C.byref(length)))
+        data=(C.c_uint8*length.value)()
+        if length.value: _check(self._lib,self._lib.zc_video_get_headers(self._handle,data,length.value,C.byref(length)))
+        spec=self._video_spec
+        info=StreamInfo(0,spec['codec'],width=spec['width'],height=spec['height'],extradata=bytes(data))
+        result=[(info,dict(width=info.width,height=info.height,fps_num=spec['fps_num'],fps_den=spec['fps_den'],extradata=info.extradata))]
+        if self._audio_spec is not None:
+            info=StreamInfo(1,'pcm_s16le',**self._audio_spec);result.append((info,dict(self._audio_spec)))
+        return result
     def write(self,frame,*,timestamp_ns=None):
         with self._lock:
             self._open();frame._live()
             ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
             if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError('Invalid timestamp')
-            _check(self._lib,self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+            self._checked(self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
     def write_audio(self,data,*,timestamp_ns):
         if not isinstance(timestamp_ns,int) or not 0<=timestamp_ns<2**64: raise ValueError('Invalid audio timestamp')
         data=bytes(data);buf=(C.c_uint8*len(data)).from_buffer_copy(data)
         with self._lock:
-            self._open();_check(self._lib,self._lib.zc_video_write_audio(self._handle,buf,len(data),timestamp_ns))
+            self._open();self._checked(self._lib.zc_video_write_audio(self._handle,buf,len(data),timestamp_ns))
     def set_rotation(self,*,duration_ns=0,max_bytes=0):
         if any(not isinstance(v,int) or not 0<=v<2**64 for v in (duration_ns,max_bytes)): raise ValueError('Invalid rotation limit')
         with self._lock:
@@ -603,7 +643,7 @@ class Recorder:
     def set_delay(self,delay_ms):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
-            self._open();_check(self._lib,self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000))
+            self._open();_check(self._lib,self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000));self._delay_enabled=True
     def save_buffer(self,path,*,wait=None,signal_function=None):
         from .jobs import SnapshotJob
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
@@ -620,22 +660,55 @@ class Recorder:
         job=SnapshotJob(write,release,signal_function,self._snapshot_slots.release).start()
         if wait is True or (wait is None and signal_function is None): job.result();return None
         return job
-    def open_output(self,path): self._path_call('zc_video_open_output',path)
-    def split(self,path): self._path_call('zc_video_split',path)
+    def open_output(self,output,*,_pts=None):
+        from .output_objects import OutputBridge,MuxedOutput,_path
+        if _path(output) and _pts is None:
+            self._path_call('zc_video_open_output',output);return
+        with self._lock:
+            self._open()
+            if self._bridge is not None: raise RuntimeError('Output already open')
+            if not self._delay_enabled: raise RuntimeError('Output objects require CircularOutput2/delayed recording')
+            if _path(output): output=MuxedOutput(output)
+            bridge=OutputBridge(self,output,_pts)
+            try:
+                bridge.start();self._checked(self._lib.zc_video_open_callbacks(self._handle,C.byref(bridge.cb)))
+                self._bridge=bridge;bridge.commit()
+            except Exception:
+                if self._bridge is bridge:
+                    self.close_output()
+                else: bridge.stop()
+                raise
+    def split(self,path):
+        if self._bridge is not None: raise RuntimeError('Close the reusable output before attaching another output')
+        self._path_call('zc_video_split',path)
     def _call(self,name):
         with self._lock:
             self._open();_check(self._lib,getattr(self._lib,name)(self._handle))
-    def close_output(self): self._call('zc_video_close_output')
+    def close_output(self):
+        with self._lock:
+            self._open();status=self._lib.zc_video_close_output(self._handle)
+            stats=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(stats)))
+            try: self._checked(status)
+            finally:
+                if not stats.output_open and self._bridge is not None:
+                    bridge=self._bridge;self._bridge=None;bridge.stop()
     def cancel_split(self): self._call('zc_video_cancel_split')
     def close(self):
+        from .output_objects import guard_callback
+        guard_callback()
         with self._lock:
             if self._handle.value:
-                status=self._lib.zc_video_close(self._handle);self._handle=C.c_void_p();_check(self._lib,status)
+                status=self._lib.zc_video_close(self._handle);self._handle=C.c_void_p()
+                try: self._checked(status)
+                finally:
+                    if self._bridge is not None:
+                        bridge=self._bridge;self._bridge=None;bridge.stop()
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
 
 from .audio import AudioCapture
 from .outputs import CircularOutput, CircularOutput2, RotatingOutput
-__all__ += ["AudioCapture", "CircularOutput", "CircularOutput2", "RotatingOutput"]
+from .output_objects import Output, FileOutput, MuxedOutput, PacketInfo, StreamInfo
+__all__ += ["AudioCapture", "CircularOutput", "CircularOutput2", "RotatingOutput", "Output", "FileOutput", "MuxedOutput", "PacketInfo", "StreamInfo"]
 from .picamera2 import Picamera2, MJPEGEncoder, H264Encoder, HEVCEncoder
 __all__ += ["Picamera2", "MJPEGEncoder", "H264Encoder", "HEVCEncoder"]

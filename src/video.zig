@@ -11,6 +11,7 @@ const Ring = @import("home/packet_ring.zig").Ring;
 const av = @import("home/av_stream.zig");
 const pcm = @import("home/pcm_timeline.zig");
 const aac = @import("home/native_aac.zig");
+const packet_output = @import("home/packet_output.zig");
 const aac_enabled = if (@hasDecl(options, "aac")) options.aac else false;
 const Policy = @import("home/recording_policy.zig").Policy;
 const A = std.heap.c_allocator;
@@ -60,12 +61,16 @@ fn reserveFile(path: [*:0]const u8, exclusive: bool, avoid: [2]?*Output, reserva
     const file = try std.fs.cwd().createFile(std.mem.span(path), .{ .truncate = false, .exclusive = exclusive });
     errdefer file.close();
     const id = try Identity.of(file);
-    for (avoid) |existing| if (existing) |other| if (id.equal(try Identity.of(other.file))) return error.Invalid;
+    for (avoid) |existing| if (existing) |other| try other.checkIdentity(id);
     if (reservations) |r| try r.check(id);
     return file;
 }
 const Output = struct {
-    file: std.fs.File,
+    file: ?std.fs.File = null,
+    callbacks: ?c.zc_output_callbacks = null,
+    callback_headers: []u8 = &.{},
+    callback_buffer: std.ArrayList(u8) = .empty,
+    video_codec: u32 = 0,
     writer: ?mkv.Writer = null,
     mp4_writer: ?mp4.Writer = null,
     av_writer: ?av.Writer = null,
@@ -82,12 +87,16 @@ const Output = struct {
     fn sink(ctx: *anyopaque, bytes: []const u8) anyerror!void {
         const self: *Output = @ptrCast(@alignCast(ctx));
         const next = try std.math.add(u64, self.bytes, bytes.len);
-        try self.file.writeAll(bytes);
+        if (self.callbacks) |cb| {
+            if (cb.write.?(cb.context, bytes.ptr, bytes.len) != c.ZC_OK) return error.CallbackFailed;
+        } else try self.file.?.writeAll(bytes);
         self.bytes = next;
     }
     fn patch(ctx: *anyopaque, offset: u64, bytes: []const u8) anyerror!void {
         const self: *Output = @ptrCast(@alignCast(ctx));
-        try self.file.pwriteAll(bytes, offset);
+        if (self.callbacks) |cb| {
+            if (cb.patch.?(cb.context, offset, bytes.ptr, bytes.len) != c.ZC_OK) return error.CallbackFailed;
+        } else try self.file.?.pwriteAll(bytes, offset);
     }
     fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [2]?*Output, recording: *const c.zc_recording_options, audio_bitrate: u32, reservations: ?*Reservations) !*Output {
         try validate(std.mem.span(path), cfg, recording.sample_rate != 0);
@@ -107,7 +116,12 @@ const Output = struct {
         errdefer A.destroy(self);
         try file.setEndPos(0);
         self.* = .{ .file = file, .aac_encoder = audio_codec };
-        if (aac_enabled and audio_codec != null) {
+        try self.initWriters(cfg, headers, recording);
+        return self;
+    }
+    fn initWriters(self: *Output, cfg: *const c.zc_video_config, headers: []const u8, recording: *const c.zc_recording_options) !void {
+        self.video_codec = cfg.codec;
+        if (aac_enabled and self.aac_encoder != null) {
             const encoder = &self.aac_encoder.?;
             self.mp4_writer = try mp4.Writer.initAv(.{ .context = self, .write = sink, .patch = patch }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, .{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = encoder.config.bitrate, .delay = encoder.info.delay, .config = encoder.info.config[0..2].* });
         } else if (recording.sample_rate != 0) {
@@ -115,15 +129,40 @@ const Output = struct {
             const bytes = if (cfg.codec == c.ZC_MJPEG) &.{} else try mp4.codecPrivate(if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, &private);
             self.av_writer = try av.Writer.init(.{ .context = self, .write = sink }, .{ .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .codec = cfg.codec, .sample_rate = recording.sample_rate, .channels = recording.channels, .codec_private = bytes });
         } else if (cfg.codec == c.ZC_MJPEG) self.writer = try mkv.Writer.init(.{ .context = self, .write = sink }, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den) else self.mp4_writer = try mp4.Writer.init(.{ .context = self, .write = sink }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers);
+    }
+    fn initCallbacks(cb: c.zc_output_callbacks, cfg: *const c.zc_video_config, headers: []const u8, recording: *const c.zc_recording_options, bitrate: u32) !*Output {
+        const self = try A.create(Output);
+        self.* = .{ .callbacks = cb, .video_codec = cfg.codec };
+        errdefer self.deinit();
+        if (cb.format == c.ZC_OUTPUT_PACKETS) {
+            self.callback_headers = try A.dupe(u8, headers);
+        } else {
+            if (aac_enabled and cb.format == c.ZC_OUTPUT_MP4 and recording.sample_rate != 0) self.aac_encoder = try aac.Encoder.init(.{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = if (bitrate != 0) bitrate else 64000 * recording.channels });
+            try self.initWriters(cfg, headers, recording);
+        }
         return self;
     }
     fn deinit(self: *Output) void {
-        self.file.close();
+        if (self.file) |file| file.close();
+        A.free(self.callback_headers);
+        self.callback_buffer.deinit(A);
         if (aac_enabled) {
             if (self.aac_encoder) |*encoder| encoder.deinit();
         }
         self.pending.deinit(A);
         A.destroy(self);
+    }
+    fn checkIdentity(self: *const Output, id: Identity) !void {
+        if (self.file) |file| if (id.equal(try Identity.of(file))) return error.Invalid;
+        if (self.callbacks) |cb| for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }) |fd| {
+            if (fd >= 0 and id.equal(try Identity.of(.{ .handle = fd }))) return error.Invalid;
+        };
+    }
+    fn notify(self: *Output, data: []const u8, timestamp: u64, codec: u32, flags: u32) !void {
+        const cb = self.callbacks orelse return;
+        const callback = cb.packet orelse return;
+        const event = c.zc_output_packet{ .data = if (data.len == 0) null else data.ptr, .length = data.len, .timestamp_ns = timestamp, .codec = codec, .flags = flags };
+        if (callback(cb.context, &event) != c.ZC_OK) return error.CallbackFailed;
     }
     fn flushPending(self: *Output, duration: u32) !void {
         if (self.pending.items.len != 0) {
@@ -137,6 +176,22 @@ const Output = struct {
             self.first_ns = timestamp;
             self.waiting_key = false;
         }
+        if (self.callbacks != null and self.callbacks.?.format == c.ZC_OUTPUT_PACKETS) {
+            var payload = data;
+            var flags: u32 = @intFromBool(key);
+            if (self.video_codec != c.ZC_MJPEG) {
+                const prefix = if (self.frames == 0) self.callback_headers else &.{};
+                try self.callback_buffer.resize(A, try std.math.add(usize, prefix.len, data.len));
+                if (prefix.len != 0) _ = try packet_output.annexB(prefix, self.callback_buffer.items[0..prefix.len]);
+                _ = try packet_output.annexB(data, self.callback_buffer.items[prefix.len..]);
+                payload = self.callback_buffer.items;
+                flags |= 4;
+            }
+            try self.notify(payload, timestamp - self.first_ns, self.video_codec, flags);
+            self.frames += 1;
+            self.bytes += payload.len;
+            return;
+        }
         if (self.av_writer) |*writer| try writer.video(data, timestamp - self.first_ns, key) else if (self.writer) |*writer| try writer.frame(data, timestamp) else {
             if (self.pending.items.len != 0) {
                 if (timestamp <= self.pending_ns or (timestamp - self.pending_ns) / 1000 > std.math.maxInt(u32) or (timestamp - self.pending_ns) / 1000 == 0) return error.Invalid;
@@ -147,8 +202,14 @@ const Output = struct {
             self.pending_key = key;
         }
         self.frames += 1;
+        try self.notify(&.{}, timestamp - self.first_ns, self.video_codec, @intFromBool(key));
     }
     fn audioChunk(self: *Output, data: []const u8, timestamp: u64) !void {
+        if (self.callbacks != null and self.callbacks.?.format == c.ZC_OUTPUT_PACKETS) {
+            try self.notify(data, timestamp, c.ZC_PCM_S16LE, 2);
+            self.bytes += data.len;
+            return;
+        }
         if (aac_enabled) {
             if (self.aac_encoder) |*encoder| {
                 const first = self.audio_first_ns orelse timestamp;
@@ -577,6 +638,7 @@ test {
     _ = mp4;
     _ = rgb;
     _ = Ring;
+    _ = packet_output;
 }
 
 pub fn defaultRecordingOptions() c.zc_recording_options {
@@ -753,5 +815,47 @@ pub fn setDelay(p: *c.zc_recorder, delay: u64) c_int {
     if (self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.failed or (self.delay_ns == null and (self.frames != 0 or self.output != null))) return c.ZC_STATE;
     self.delay_ns = delay;
+    return c.ZC_OK;
+}
+
+pub fn getHeaders(p: *c.zc_recorder, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    const self = recorder(p);
+    length.* = self.headers.len;
+    if (capacity == 0) return c.ZC_OK;
+    if (data == null or capacity < self.headers.len or capacity > std.math.maxInt(usize)) return c.ZC_INVALID;
+    @memcpy(data.?[0..self.headers.len], self.headers);
+    return c.ZC_OK;
+}
+pub fn formatPts(timestamp: u64, data: [*]u8, capacity: u32, length: *u32) c_int {
+    length.* = 0;
+    const bytes = packet_output.formatPts(timestamp, data[0..capacity]) catch return c.ZC_INVALID;
+    length.* = @intCast(bytes.len);
+    return c.ZC_OK;
+}
+pub fn openCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    if (self.delay_ns == null) return c.ZC_UNSUPPORTED;
+    if (self.output != null or self.next != null) return c.ZC_BUSY;
+    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_MKV or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return c.ZC_INVALID;
+    if ((cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return c.ZC_INVALID;
+    if (cb.format == c.ZC_OUTPUT_MP4 and self.audio != null and cb.patch == null) return c.ZC_INVALID;
+    if (cb.format != c.ZC_OUTPUT_PACKETS) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &self.config, self.audio != null) catch |err| return status(err);
+    var identities: [3]?Identity = .{ null, null, null };
+    for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| {
+        if (fd < 0) continue;
+        const id = Identity.of(.{ .handle = fd }) catch return c.ZC_INVALID;
+        for (identities[0..i]) |other| if (other) |value| if (id.equal(value)) return c.ZC_INVALID;
+        if (self.reservations) |r| r.check(id) catch |err| return status(err);
+        identities[i] = id;
+    }
+    const out = Output.initCallbacks(cb.*, &self.config, self.headers, &self.recording, self.audio_bitrate) catch |err| return status(err);
+    self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    self.output = out;
+    self.audio_cursor = null;
+    self.segments += 1;
     return c.ZC_OK;
 }

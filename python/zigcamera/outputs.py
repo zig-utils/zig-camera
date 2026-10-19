@@ -22,12 +22,25 @@ class CircularOutput2(CircularOutput):
     """Bounded delayed A/V forwarding to path outputs.
 
     close_output drops that file's queued tail; stopping recording flushes it.
-    Arbitrary Picamera2 output objects/pts streams are not supported.
+    Supports reusable packet/container output objects and writable PTS streams.
     """
-    def __init__(self,*,buffer_duration_ms=5000,max_bytes=64*1024*1024,max_frames=300):
+    def __init__(self,pts=None,buffer_duration_ms=5000,*,max_bytes=64*1024*1024,max_frames=300):
+        from .output_objects import PtsStream
+        self._pts=PtsStream(pts)
         if not isinstance(buffer_duration_ms,int) or not 0<=buffer_duration_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         super().__init__(buffer_duration_ms=buffer_duration_ms,max_bytes=max_bytes,max_frames=max_frames)
         self.config['delay_ms']=buffer_duration_ms
+    @property
+    def ptsoutput(self): return self._pts.stream if self._pts.stream is not None else self._pts.target
+    @ptsoutput.setter
+    def ptsoutput(self,value):
+        from .output_objects import PtsStream
+        bridge=None if self._recording is None else self._recording.recorder._bridge
+        if self._pts.stream is not None or (bridge is not None and bridge.pts is self._pts): raise RuntimeError('Close output before changing its PTS stream')
+        self._pts=PtsStream(value)
+    def open_output(self,output):
+        recording=self._live()
+        with recording.camera._async_lock: recording.recorder.open_output(output,_pts=self._pts)
     @property
     def buffer_duration_ms(self): return self.config['delay_ms']
     @buffer_duration_ms.setter

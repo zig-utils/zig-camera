@@ -144,3 +144,13 @@ pub export fn zc_snapshot_close(p: *c.zc_snapshot) void {
 pub export fn zc_video_set_delay(p: *c.zc_recorder, delay_ns: u64) c_int {
     return @import("video.zig").setDelay(p, delay_ns);
 }
+
+pub export fn zc_video_open_callbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    return @import("video.zig").openCallbacks(p, cb);
+}
+pub export fn zc_video_get_headers(p: *c.zc_recorder, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    return @import("video.zig").getHeaders(p, data, capacity, length);
+}
+pub export fn zc_format_pts(timestamp: u64, data: [*]u8, capacity: u32, length: *u32) c_int {
+    return @import("video.zig").formatPts(timestamp, data, capacity, length);
+}

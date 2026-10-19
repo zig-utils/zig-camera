@@ -93,3 +93,9 @@ Home owned snapshots and delayed FIFO (0.10):
 - src/home/pcm_timeline.zig is verbatim Home packages/video/src/core/pcm_timeline.zig
   at 860a2ab5a (feat/pcm-av-streaming), with independent sample-window cloning.
   https://github.com/home-lang/home/pull/917
+
+Home packet/PTS output helpers (0.11):
+- src/home/packet_output.zig is verbatim Home packages/video/src/core/packet_output.zig
+  at 9b281486b (feat/packet-output-streams), with checked Annex B conversion,
+  exact integer PTS formatting and sink-backed timestamp output.
+  https://github.com/home-lang/home/pull/919

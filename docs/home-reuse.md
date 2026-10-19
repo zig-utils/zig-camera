@@ -244,3 +244,25 @@ independent worker lifetimes and a delayed shared-clock consumer. Picamera2's
 CircularOutput2 source informed keyframe/open/close/stop semantics; its PyAV output
 path is not imported. See [behavior and differences](async-delayed.md). Synthetic
 and independent decoder tests do not establish physical timing or Pi throughput.
+
+## 0.11: packet output conversion and exact PTS
+
+Audited Home's video sink vtables, decoded/encoded frame collections and codec
+bitstream/container helpers alongside Picamera2 Output/FileOutput/CircularOutput2.
+The broader sink graph accumulates packets and has dependencies outside the
+camera's focused streaming path. Existing Home AAC/MP4/Matroska sink callbacks
+already provide the needed muxing boundary; they now accept native caller sinks.
+
+[Home #919](https://github.com/home-lang/home/pull/919) adds standalone checked
+length-prefixed NAL to Annex B conversion, exact integer PTS formatting and a
+monotonic sink-backed PTS writer. It is vendored verbatim at 9b281486b. Three
+focused tests pass on Zig 0.15.2 and Home's development toolchain; targeted pickier
+passes. Rejected input is checked before destination mutation; sink failures
+poison the writer. The broader Home sink graph is not represented as validated.
+
+zig-camera uses these helpers for first-key parameter sets, elementary output and
+Python/C PTS. Home's existing streaming writers supply MP4/MKV to file-like
+streams. Zig keeps native ownership, identity guards and callback lifetimes;
+Python adds reusable object claims, borrowed stream ownership and failure cleanup.
+See [interfaces and limits](output-objects.md). No FFmpeg/Libav is introduced;
+independent decoder checks remain separate from unmeasured Pi/hardware timing.

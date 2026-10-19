@@ -1,6 +1,9 @@
 #include "zig_camera.h"
 #include <assert.h>
 #include <stddef.h>
+#include <string.h>
+_Static_assert(sizeof(zc_output_packet)==32,"output packet ABI");
+_Static_assert(sizeof(zc_output_callbacks)==56,"output callbacks ABI");
 _Static_assert(sizeof(zc_buffer_config)==24,"buffer config ABI");
 _Static_assert(sizeof(zc_buffer_stats)==64,"buffer stats ABI");
 _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
@@ -23,6 +26,13 @@ _Static_assert(sizeof(zc_audio_block)==24,"audio block ABI");
 _Static_assert(sizeof(zc_recording_options)==24,"recording options ABI");
 _Static_assert(sizeof(zc_recording_stats)==72,"recording stats ABI");
 _Static_assert(sizeof(zc_audio_buffer_stats)==40,"audio history ABI");
+static int packet_sink(void *context,const zc_output_packet *packet) {
+    unsigned *count=context;
+    assert(packet->codec==ZC_MJPEG && packet->flags==1 && packet->length>2);
+    assert(packet->data[0]==255 && packet->data[1]==216);
+    assert(packet->timestamp_ns==*count*40000000ULL);
+    (*count)++;return ZC_OK;
+}
 int main(void) {
     zc_audio_config audio_config;zc_default_audio_config(&audio_config);
     audio_config.backend=ZC_AUDIO_SYNTHETIC;audio_config.block_frames=48;
@@ -34,6 +44,9 @@ int main(void) {
     assert(block.timestamp_ns==1000000);
     assert(zc_audio_close(audio)==ZC_OK);
     assert(zc_abi_version() == ZC_ABI_VERSION);
+    uint8_t pts[32];uint32_t pts_length=0;
+    assert(zc_format_pts(41666,pts,sizeof(pts),&pts_length)==ZC_OK);
+    assert(pts_length==7 && memcmp(pts,"41.666\n",7)==0);
     zc_video_config aac_video;zc_default_video_config(&aac_video);
     zc_recording_options aac_options;zc_default_recording_options(&aac_options);
     zc_recorder *invalid_aac=NULL;
@@ -90,6 +103,21 @@ int main(void) {
     assert(audio_stats.frames==48 && audio_stats.bytes==96 && audio_stats.evicted_frames==144);
     assert(audio_stats.first_ns==3000000 && audio_stats.last_ns==4000000);
     assert(zc_video_close(recorder)==ZC_OK);
+    history.max_frames=8;
+    assert(zc_video_open_circular(&video,&history,&recorder)==ZC_OK);
+    assert(zc_video_set_delay(recorder,40000000)==ZC_OK);
+    unsigned delivered=0;
+    zc_output_callbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);
+    callbacks.format=ZC_OUTPUT_PACKETS;callbacks.context=&delivered;callbacks.packet=packet_sink;
+    callbacks.file_fd=callbacks.pts_fd=callbacks.secondary_pts_fd=-1;
+    assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+    for(uint64_t i=0;i<4;i++) {
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(zc_video_write(recorder,&frame,i*40000000)==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+    }
+    assert(delivered==3);
+    assert(zc_video_close(recorder)==ZC_OK && delivered==4);
     assert(zc_close(camera)==ZC_OK);
     return 0;
 }

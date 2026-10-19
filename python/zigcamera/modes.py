@@ -7,6 +7,8 @@ from .jobs import OperationJob
 def serialized(function):
     @wraps(function)
     def call(self,*args,**kwargs):
+        from .output_objects import guard_callback
+        guard_callback()
         with self._operation_lock: return function(self,*args,**kwargs)
     return call
 
