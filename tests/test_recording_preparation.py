@@ -27,6 +27,45 @@ class HeaderGate(MuxedOutput):
         super()._write(data)
 
 class PreparationTests(unittest.TestCase):
+    def test_standalone_cancellation_wins_between_readiness_and_publication(self):
+        from zigcamera.split_preparation import SplitPreparation
+        entered=threading.Event();resume=threading.Event();original=SplitPreparation.stage
+        def delayed(preparation,job):
+            entered.set()
+            if not resume.wait(5): raise RuntimeError('publication release timed out')
+            return original(preparation,job)
+        with Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            camera.start();first=Collector();replacement=Collector()
+            with Recorder(first,width=32,height=32) as recorder:
+                write(camera,recorder,0)
+                try:
+                    with patch.object(SplitPreparation,'stage',delayed):
+                        job=recorder.split(replacement,wait=False)
+                        self.assertTrue(entered.wait(5));self.assertTrue(job.cancel());resume.set()
+                        with self.assertRaises(CancelledError): job.result(5)
+                    self.assertFalse(recorder.buffer_stats['split_pending']);self.assertFalse(replacement.recording)
+                    self.assertFalse(recorder._split_preparations)
+                    write(camera,recorder,1);self.assertEqual(len(first.events),2)
+                    self.assertEqual(recorder.output_status()['generation'],0)
+                finally:
+                    resume.set()
+                    if recorder.buffer_stats['split_pending']: recorder.cancel_split()
+
+    def test_recorder_close_cancels_preparation_waiting_on_camera_publication_lock(self):
+        from zigcamera.pipeline import Recording
+        with Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            camera.start();recorder=Recorder(Collector(),width=32,height=32)
+            recording=Recording(camera,recorder,25)
+            with camera._async_lock:
+                job=recording.split(Collector())
+                def ready():
+                    with job.lock: return job.native.phase==2
+                until(ready)
+                closing=recorder.close(wait=False);closing.result(5)
+            with self.assertRaises(CancelledError): job.result(5)
+            self.assertFalse(recorder._handle.value);self.assertFalse(recorder._split_preparations)
+            recording.close()
+
     def test_queued_split_cancel_and_spawn_failure_release_reservations(self):
         with Camera(simulate=True,width=32,height=32) as camera:
             recording=camera.start_recording(Collector());wait_frames(recording,3);sink=Collector()

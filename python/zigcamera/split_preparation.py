@@ -33,6 +33,8 @@ class SplitPreparation:
             if job is not None:
                 if job.abort_error is not None: raise job.abort_error
                 if job.cancel_requested: raise CancelledError('Split preparation cancelled')
+            if r._close_job is not None and threading.current_thread() is not r._close_job.thread:
+                raise CancelledError('Recorder closed during split preparation')
         failure=None
         try:
             check()
@@ -74,6 +76,11 @@ class SplitPreparation:
     def stage(self,job):
         r=self.recorder
         with r._lock:
+            # Standalone cancel() uses this recorder lock. Recheck inside the
+            # same publication boundary, after any wait to acquire it.
+            if job is not None:
+                if job.abort_error is not None: raise job.abort_error
+                if job.cancel_requested: raise CancelledError('Split preparation cancelled')
             r._open()
             r._checked_bridge(r._lib.zc_video_commit_split(r._handle,self.native),self.bridge)
             self.transferred=True
