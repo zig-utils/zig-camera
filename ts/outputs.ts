@@ -1,0 +1,502 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { open, lstat, unlink, type FileHandle } from 'node:fs/promises'
+import {
+  native as n,
+  ptr,
+  view,
+  storage,
+  outPointer,
+  handle,
+  check,
+  CameraError,
+  type Pointer,
+} from './ffi'
+export interface OutputPacket {
+  data: Uint8Array
+  timestampNs: bigint
+  codec: number
+  keyframe: boolean
+  audio: boolean
+  annexB: boolean
+}
+export interface OutputStreams {
+  width: number
+  height: number
+  fps: number
+  codec: number
+  headers: Uint8Array
+  audio?: { sampleRate: number; channels: number }
+}
+export interface CustomOutput {
+  format?: 'packets' | 'mp4' | 'mkv'
+  start?: () => void | Promise<void>
+  streams?: (streams: OutputStreams) => void | Promise<void>
+  commit?: () => void | Promise<void>
+  outputframe?: (packet: OutputPacket) => void | Promise<void>
+  write?: (data: Uint8Array) => void | number | Promise<void | number>
+  patch?: (
+    offset: bigint,
+    data: Uint8Array,
+  ) => void | number | Promise<void | number>
+  stop?: (reason?: { discard: boolean }) => void | Promise<void>
+  resources?: () => readonly object[]
+  descriptors?: () => { file?: number; pts?: number; secondaryPts?: number }
+}
+export interface ByteSink {
+  write(data: Uint8Array): void | number | Promise<void | number>
+  patch?(
+    offset: bigint,
+    data: Uint8Array,
+  ): void | number | Promise<void | number>
+}
+const hooks = new AsyncLocalStorage<boolean>()
+const claims = new WeakMap<object, OutputBridge>()
+export function guardOutputHook() {
+  if (hooks.getStore())
+    throw new CameraError(-2, 'output hook cannot re-enter camera/recorder')
+}
+function failure(error: unknown) {
+  return error === undefined ? new Error('output hook threw undefined') : error
+}
+async function call<T>(operation: () => T | Promise<T>): Promise<T> {
+  return hooks.run(true, operation)
+}
+async function completeWrite(
+  write: (
+    data: Uint8Array,
+    offset: number,
+  ) => void | number | Promise<void | number>,
+  data: Uint8Array,
+) {
+  let offset = 0
+  while (offset < data.length) {
+    const result = await write(data.subarray(offset), offset)
+    if (result === undefined) return
+    if (
+      !Number.isInteger(result) ||
+      result <= 0 ||
+      result > data.length - offset
+    )
+      throw new CameraError(-6, 'invalid partial output progress')
+    offset += result
+  }
+}
+export class OutputBridge {
+  readonly callbacks = storage(56)
+  private handle: Pointer
+  private claimed: object[] = []
+  private timer?: ReturnType<typeof setTimeout>
+  private pumping?: Promise<void>
+  private enabled = false
+  private freed = false
+  private completed = 0n
+  private issued = 0n
+  private detached = false
+  private discarded = false
+  private retired?: Promise<void>
+  error: unknown
+  stopError: unknown
+  onError?: (error: unknown) => void
+  constructor(
+    readonly output: CustomOutput,
+    options: { maxBytes?: number; maxOperations?: number } = {},
+  ) {
+    const format = output.format ?? 'packets'
+    if (!['packets', 'mp4', 'mkv'].includes(format))
+      throw new RangeError('invalid output format')
+    if (format === 'packets' && typeof output.outputframe !== 'function')
+      throw new TypeError('packet output requires outputframe')
+    if (format !== 'packets' && typeof output.write !== 'function')
+      throw new TypeError('muxed output requires write')
+    const resources = [
+      output,
+      ...hooks.run(true, () => output.resources?.() ?? []),
+    ]
+    for (const resource of resources) {
+      if (
+        (typeof resource !== 'object' && typeof resource !== 'function') ||
+        resource === null
+      )
+        throw new TypeError('invalid output resource')
+      if (claims.has(resource))
+        throw new CameraError(-4, 'output resource already active')
+    }
+    const bytes = options.maxBytes ?? 16 * 1024 * 1024,
+      operations = options.maxOperations ?? 4096
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes <= 0 ||
+      bytes > 1024 ** 3 ||
+      !Number.isInteger(operations) ||
+      operations <= 0 ||
+      operations > 65536
+    )
+      throw new RangeError('invalid output mailbox bounds')
+    const out = outPointer()
+    check(n.zc_output_mailbox_open(BigInt(bytes), operations, ptr(out)))
+    this.handle = handle(out)
+    for (const resource of new Set(resources)) {
+      claims.set(resource, this)
+      this.claimed.push(resource)
+    }
+    check(
+      n.zc_output_mailbox_callbacks(
+        this.handle,
+        { packets: 0, mp4: 1, mkv: 2 }[format],
+        ptr(this.callbacks),
+      ),
+    )
+  }
+  async start(streams: OutputStreams) {
+    try {
+      await call(() => this.output.start?.())
+      await call(() =>
+        this.output.streams?.({
+          ...streams,
+          headers: streams.headers.slice(),
+          audio: streams.audio ? { ...streams.audio } : undefined,
+        }),
+      )
+      const fds = await call(() => this.output.descriptors?.() ?? {})
+      view(this.callbacks).setInt32(40, fds.file ?? -1, true)
+      view(this.callbacks).setInt32(44, fds.pts ?? -1, true)
+      view(this.callbacks).setInt32(48, fds.secondaryPts ?? -1, true)
+    } catch (error) {
+      this.fail(error)
+      throw this.error
+    }
+  }
+  async enable() {
+    try {
+      await call(() => this.output.commit?.())
+      this.enabled = true
+      this.schedule()
+    } catch (error) {
+      this.fail(error)
+      throw this.error
+    }
+  }
+  private schedule() {
+    if (
+      !this.timer &&
+      !this.detached &&
+      this.enabled &&
+      this.error === undefined
+    )
+      this.timer = setTimeout(() => {
+        this.timer = undefined
+        void this.pump()
+      }, 1)
+  }
+  private pump(): Promise<void> {
+    if (this.freed) return Promise.resolve()
+    if (this.pumping) return this.pumping
+    this.pumping = (async () => {
+      try {
+        for (
+          let count = 0;
+          count < 64 && !this.discarded && this.error === undefined;
+          count++
+        ) {
+          const event = storage(48),
+            code = n.zc_output_mailbox_peek(this.handle, ptr(event))
+          if (code === -3) break
+          check(code, 'output mailbox')
+          const d = view(event),
+            sequence = d.getBigUint64(0, true),
+            offset = d.getBigUint64(8, true),
+            timestampNs = d.getBigUint64(16, true),
+            size = Number(d.getBigUint64(24, true)),
+            kind = d.getUint32(32, true),
+            codec = d.getUint32(36, true),
+            flags = d.getUint32(40, true)
+          const data = storage(size)
+          if (size)
+            check(
+              n.zc_output_mailbox_copy(
+                this.handle,
+                sequence,
+                ptr(data),
+                BigInt(size),
+              ),
+            )
+          if (kind === 0) {
+            if (this.output.outputframe)
+              await call(() =>
+                this.output.outputframe!({
+                  data,
+                  timestampNs,
+                  codec,
+                  keyframe: !!(flags & 1),
+                  audio: !!(flags & 2),
+                  annexB: !!(flags & 4),
+                }),
+              )
+          } else if (kind === 1)
+            await call(() =>
+              completeWrite((bytes) => this.output.write!(bytes), data),
+            )
+          else {
+            if (!this.output.patch)
+              throw new CameraError(-8, 'output requires random-access patch')
+            await call(() =>
+              completeWrite(
+                (bytes, index) =>
+                  this.output.patch!(offset + BigInt(index), bytes),
+                data,
+              ),
+            )
+          }
+          if (!this.discarded && this.error === undefined) {
+            check(n.zc_output_mailbox_ack(this.handle, sequence))
+            this.completed = sequence
+          }
+        }
+      } catch (error) {
+        this.fail(error)
+      }
+    })().finally(() => {
+      this.pumping = undefined
+      this.schedule()
+    })
+    return this.pumping
+  }
+  fail(error: unknown) {
+    if (this.error !== undefined || this.discarded) return
+    this.error = failure(error)
+    if (!this.freed) n.zc_output_mailbox_fail(this.handle, -6)
+    this.onError?.(this.error)
+  }
+  prefix() {
+    if (this.freed) return this.issued
+    const value = new BigUint64Array(1)
+    check(n.zc_output_mailbox_prefix(this.handle, ptr(value)))
+    this.issued = value[0]
+    return value[0]
+  }
+  async drain(target = this.prefix()) {
+    while (true) {
+      if (target <= this.completed) return
+      if (this.freed) {
+        if (this.error !== undefined) throw this.error
+        throw new CameraError(-5, 'output retired before delivery')
+      }
+      const code = n.zc_output_mailbox_poll(this.handle, target)
+      if (code === 0) return
+      if (code !== -3) {
+        if (this.error !== undefined) throw this.error
+        check(code, 'output delivery')
+      }
+      await this.pump()
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+  }
+  retire(discard = false): Promise<void> {
+    if (this.retired) return this.retired
+    this.detached = true
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
+    if (discard) {
+      this.discarded = true
+      n.zc_output_mailbox_fail(this.handle, -5)
+    }
+    this.retired = (async () => {
+      try {
+        if (this.pumping) await this.pumping
+        if (!discard) await this.drain()
+      } catch (error) {
+        this.error ??= failure(error)
+      }
+      try {
+        await call(() => this.output.stop?.({ discard }))
+      } catch (error) {
+        this.stopError = failure(error)
+        this.error ??= this.stopError
+      } finally {
+        this.issued = this.prefix()
+        n.zc_output_mailbox_close(this.handle)
+        this.freed = true
+        for (const resource of this.claimed)
+          if (claims.get(resource) === this) claims.delete(resource)
+        this.claimed = []
+      }
+      if (this.error !== undefined) throw this.error
+    })()
+    return this.retired
+  }
+}
+export class FileSink implements ByteSink {
+  private file?: FileHandle
+  private position = 0
+  private created = false
+  constructor(
+    readonly path: string,
+    readonly exclusive = true,
+  ) {}
+  async start() {
+    if (this.file) throw new CameraError(-4, 'file sink active')
+    this.position = 0
+    this.created = false
+    if (this.exclusive) {
+      this.file = await open(this.path, 'wx+')
+      this.created = true
+    } else {
+      try {
+        this.file = await open(this.path, 'r+')
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'ENOENT') throw error
+        this.file = await open(this.path, 'wx+')
+        this.created = true
+      }
+    }
+  }
+  async commit() {
+    await this.file!.truncate(0)
+  }
+  get fd() {
+    return this.file?.fd ?? -1
+  }
+  async write(data: Uint8Array) {
+    const result = await this.file!.write(data, 0, data.length, this.position)
+    this.position += result.bytesWritten
+    return result.bytesWritten
+  }
+  async patch(offset: bigint, data: Uint8Array) {
+    if (offset > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new RangeError('file offset overflow')
+    return (await this.file!.write(data, 0, data.length, Number(offset)))
+      .bytesWritten
+  }
+  async stop(reason?: { discard: boolean }) {
+    const file = this.file
+    this.file = undefined
+    if (!file) return
+    let owned: { dev: bigint; ino: bigint } | undefined
+    let failure: unknown
+    if (reason?.discard && this.created) {
+      try {
+        const stat = await file.stat({ bigint: true })
+        owned = { dev: stat.dev, ino: stat.ino }
+      } catch (error) {
+        failure = error
+      }
+    }
+    try {
+      await file.close()
+    } catch (error) {
+      failure ??= error
+    }
+    if (owned) {
+      try {
+        const current = await lstat(this.path, { bigint: true })
+        if (current.dev === owned.dev && current.ino === owned.ino)
+          await unlink(this.path)
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'ENOENT') failure ??= error
+      }
+    }
+    if (failure !== undefined) throw failure
+  }
+}
+export class FileOutput implements CustomOutput {
+  readonly format = 'packets' as const
+  readonly sink: FileSink
+  readonly pts?: FileSink
+  constructor(
+    path: string,
+    options: { exclusive?: boolean; pts?: string } = {},
+  ) {
+    this.sink = new FileSink(path, options.exclusive ?? true)
+    if (options.pts)
+      this.pts = new FileSink(options.pts, options.exclusive ?? true)
+  }
+  resources() {
+    return [this.sink, ...(this.pts ? [this.pts] : [])]
+  }
+  descriptors() {
+    return { file: this.sink.fd, pts: this.pts?.fd }
+  }
+  async start() {
+    await this.sink.start()
+    await this.pts?.start()
+  }
+  async commit() {
+    await this.sink.commit()
+    await this.pts?.commit()
+  }
+  async outputframe(packet: OutputPacket) {
+    if (packet.audio) return
+    await completeWrite((data) => this.sink.write(data), packet.data)
+    if (this.pts) {
+      const text = storage(32),
+        length = new Uint32Array(1)
+      check(
+        n.zc_format_pts(packet.timestampNs / 1000n, ptr(text), 32, ptr(length)),
+      )
+      await completeWrite(
+        (data) => this.pts!.write(data),
+        text.subarray(0, length[0]),
+      )
+    }
+  }
+  async stop(reason?: { discard: boolean }) {
+    let failure: unknown
+    try {
+      await this.sink.stop(reason)
+    } catch (error) {
+      failure = error
+    }
+    try {
+      await this.pts?.stop(reason)
+    } catch (error) {
+      failure ??= error
+    }
+    if (failure !== undefined) throw failure
+  }
+}
+export class MuxedOutput implements CustomOutput {
+  readonly sink: ByteSink & Partial<CustomOutput>
+  constructor(
+    target: string | ByteSink,
+    readonly format: 'mp4' | 'mkv' = 'mp4',
+    options: { exclusive?: boolean } = {},
+  ) {
+    this.sink =
+      typeof target === 'string'
+        ? new FileSink(target, options.exclusive ?? true)
+        : target
+  }
+  resources() {
+    return [this.sink, ...(this.sink.resources?.() ?? [])]
+  }
+  descriptors() {
+    return this.sink instanceof FileSink
+      ? { file: this.sink.fd }
+      : (this.sink.descriptors?.() ?? {})
+  }
+  async start() {
+    await this.sink.start?.()
+  }
+  async streams(streams: OutputStreams) {
+    await this.sink.streams?.(streams)
+  }
+  async commit() {
+    await this.sink.commit?.()
+  }
+  async outputframe(packet: OutputPacket) {
+    await this.sink.outputframe?.(packet)
+  }
+  write(data: Uint8Array) {
+    return this.sink.write(data)
+  }
+  patch(offset: bigint, data: Uint8Array) {
+    if (!this.sink.patch)
+      throw new CameraError(-8, 'AAC MP4 requires a patchable sink')
+    return this.sink.patch(offset, data)
+  }
+  async stop(reason?: { discard: boolean }) {
+    await this.sink.stop?.(reason)
+  }
+}

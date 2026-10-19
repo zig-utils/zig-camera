@@ -344,3 +344,49 @@ test "retained split job observes late isolated retirement failure during record
     _ = v.closePreparation(job.?);
     try std.testing.expect(delivered > 0);
 }
+
+test "held preparation admits capture but cannot stage before host header acknowledgement" {
+    var old_count: usize = 0;
+    var new_count: usize = 0;
+    const rec = try recorder(&old_count);
+    defer _ = v.close(rec);
+    var callbacks = packets(&new_count);
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareHeld(rec, 0, null, &callbacks, 0, &job));
+    var timer = try std.time.Timer.start();
+    while (true) {
+        _ = v.pollPreparations(rec);
+        var state: c.zc_preparation_job_state = undefined;
+        _ = v.preparationState(job.?, &state);
+        if (state.phase == c.ZC_PREPARATION_READY) break;
+        if (timer.read() > 5_000_000_000) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+    for (0..5) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(@as(usize, 5), old_count);
+    try std.testing.expectEqual(@as(usize, 0), new_count);
+    try std.testing.expectEqual(c.ZC_OK, v.publishPreparation(job.?));
+    _ = v.pollPreparations(rec);
+    try frameWrite(rec, 5);
+    const state = try terminal(rec, job.?);
+    try std.testing.expectEqual(c.ZC_OK, state.error_code);
+    try std.testing.expectEqual(@as(usize, 1), new_count);
+    _ = v.closePreparation(job.?);
+}
+
+test "new output hold excludes media until initial host validation completes" {
+    var old_count: usize = 0;
+    var held_count: usize = 0;
+    const rec = try recorder(&old_count);
+    defer _ = v.close(rec);
+    var callbacks = packets(&held_count);
+    var id: u64 = 0;
+    _ = v.addCallbacks(rec, &callbacks, &id);
+    try std.testing.expectEqual(c.ZC_OK, v.holdOutput(rec, id, 1));
+    for (0..5) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(@as(usize, 5), old_count);
+    try std.testing.expectEqual(@as(usize, 0), held_count);
+    try std.testing.expectEqual(c.ZC_OK, v.holdOutput(rec, id, 0));
+    try frameWrite(rec, 5);
+    try std.testing.expectEqual(@as(usize, 1), held_count);
+}

@@ -44,18 +44,34 @@ staging is rejected. `job.close()` returns BUSY while pending. Completed handles
 retain their slot until released, bounding forgotten handles as well as workers.
 Status and close remain valid after the recorder has been closed.
 
+Custom Bun sinks use `zc_video_prepare_held`: READY remains unpublished until
+owned header writes are acknowledged and `zc_preparation_job_publish` releases
+publication. The Bun job seals cancellation at that serialized release, before
+capture can stage it independently. Native callbacks enqueue into Home's bounded
+acknowledged FIFO; JavaScript hooks run only on the Bun event loop. See
+[output objects](output-objects.md) for hook ownership and failure isolation.
+
 Recorder close cancels unstaged preparation, waits for owned workers, removes
 uncommitted split files and drains final media. It preserves files whose output
 generation committed, even if retirement was still pending. Deletion checks the
 created file's device/inode without following symlinks. A replacement path with
 a different identity is preserved. Arbitrary blocking callbacks must eventually
-return; teardown cannot safely interrupt a native callback.
+return; teardown cannot safely interrupt a native callback. Bun also uses the
+teardown-only `zc_preparation_job_abort_pending` to retire a staged, uncommitted
+object replacement when there will be no future keyframe. Ordinary job
+cancellation remains rejected after publication is released.
 
 Bun closes recorders on a worker and reserves this operation independently of
 its 16 drain/snapshot task slots. Native drain handles retain a fixed accepted
 I/O prefix, independent of recorder lifetime. Snapshots freeze bounded encoded
 video and PCM ownership before writing on a worker; at most two frozen windows
 exist per recorder. Close does not invalidate either type of independent handle.
+Host delivery drains capture the same fixed-prefix semantics and cache completion
+before mailbox destruction. Parent close waits for object jobs' `operationDone`
+ownership fence, then retires hooks; `cleanupDone` additionally includes the user
+signal callback. This permits a completed job's callback to close its owner
+without creating a dependency cycle. Admission slots remain bounded through that
+callback. Mode jobs follow the [same ownership rules](mode-recording.md).
 
 ## Automatic rotation and recovery
 
@@ -68,8 +84,10 @@ recorder.setRecovery(secondaryId, 'retry-{index:06}.mp4', {
 })
 ```
 
-The initial file is opened separately (use `exclusive: true`). Configure rotation
-with the next replacement index. The native CLI opens index zero itself. Patterns
+Automatic patterns apply to path outputs. Custom objects use explicit split and
+recovery jobs. The initial file is opened separately (use `exclusive: true`).
+Configure rotation with the next replacement index. The native CLI opens index
+zero itself. Patterns
 accept one `{index}` or `{index:06}` field, widths 1..128 and paths <=4096 bytes.
 Indices never wrap. Filenames are fresh, not retention slots.
 

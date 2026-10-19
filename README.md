@@ -6,11 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.19 adds native async recording rotation and recovery preparation.
-Exclusive file creation, Home container/AAC setup and output-worker allocation
-run on bounded Zig workers. Capture publishes prepared replacements at keyframe
-boundaries. Stable output IDs, lifetime retry budgets, isolated failures and
-identity-checked cancellation cleanup remain explicit.
+Version 0.20 adds Bun mode-switch jobs, temporary still captures and custom
+asynchronous output objects. Native workers own mode reconfiguration and Home
+container preparation. A bounded acknowledged mailbox delivers owned packets,
+MP4/MKV writes and patches on Bun's event loop. Header acceptance precedes
+publication; split/recovery jobs retain stable IDs and wait for old hooks to retire.
 
 The former Python facade has been removed. This is a feature-oriented alternative
 to Picamera2, not a drop-in package or a claim of full parity. The Bun facade
@@ -74,6 +74,18 @@ Bun polls native jobs without waiting on their I/O. Recorder close, fixed-prefix
 drains and owned snapshots execute on Bun workers. Encoding and bounded camera
 acquisition remain synchronous FFI calls; Bun is not a hard realtime scheduler.
 See [native jobs](docs/native-jobs.md) for cancellation and serialization rules.
+
+```ts
+const still = await camera.switchModeAndCaptureRGB(
+  { width: 4056, height: 3040, role: 'still' },
+  { dropFrames: 4, timeoutMs: 15_000 },
+)
+// The previous camera configuration is restored before this resolves.
+```
+
+Mode jobs require released leases and idle recording/autofocus/capture work.
+See [mode jobs](docs/mode-recording.md) and [custom output objects](docs/output-objects.md)
+for temporary JPEG/DNG capture, cancellation, async hooks and owned byte sinks.
 
 ## Develop without hardware
 

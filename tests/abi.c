@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+_Static_assert(sizeof(zc_output_event)==48,"output mailbox event ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
 _Static_assert(sizeof(zc_automatic_state)==16,"automatic state ABI");
 _Static_assert(sizeof(zc_output_delay)==40,"output delay ABI");

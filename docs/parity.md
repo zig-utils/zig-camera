@@ -1,4 +1,4 @@
-# Feature coverage in 0.19
+# Feature coverage in 0.20
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -15,18 +15,21 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Recorder; no hardware encoder or per-output codec settings |
 | Audio/A/V | ALSA or synthetic PCM, independent sample cursors, PCM MKV / AAC-LC MP4 with priming/tail edits | AudioCapture, manual writeAudio and shared recording pump; physical drift/latency calibration missing |
 | Circular and delayed output | Bounded GOP history, synchronized owned snapshots, global/per-output delays, tail rules | Circular recorder, async snapshots, setDelay; complete CircularOutput2 class/signatures not ported |
-| Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path attachment/removal, per-output state, splits and recovery; arbitrary JS packet/file-like output objects not yet ported |
-| Async recording preparation | Native bounded workers, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, Promise waits, per-output async splits and recovery; startup/attachment preparation remains synchronous |
+| Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, FileOutput/PTS, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |
+| Async recording preparation | Native bounded workers, held header acceptance, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, custom lifecycle coordination, per-output async splits/recovery; initial native attachment setup remains synchronous |
 | Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
-| Output I/O and lifecycle | Bounded owned queues, fail/timed-wait pressure, retired epochs, fixed-prefix drain jobs | Native-worker close/drain/snapshot; custom JS lifecycle hooks not yet ported |
-| Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Close/reopen explicitly; former temporary capture/mode-switch orchestration not yet ported |
+| Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drain jobs | Async start/streams/commit/stop, owned packet/write/patch delivery, isolated errors and drains; host queues use fail-fast pressure, automatic custom factories/host telemetry remain gaps |
+| Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Bounded FIFO BunJob, worker reopen/drop/temporary RGB/metadata/lores/JPEG/DNG, cancellation, rollback and preview recreation; recording/AF/lease coexistence and runtime-control restoration remain unsupported |
 | Multiple cameras | Independent camera indices | Independent Camera objects; no synchronized stereo or tracking/navigation |
 
 ## Validation
 
 Native Zig tests exercise bounded queues, ownership, media clocks, codecs and
 preparation races. C checks preserve the ABI v1 layouts. Bun tests cover leases,
-controls, capture jobs, preview, output jobs, circular snapshots and rotation.
+controls, capture jobs, mode rollback, preview recreation, async output hooks,
+publication cancellation, circular snapshots and rotation. Custom primary replay
+from an already populated circular ring and shared CircularOutput2 PTS observers
+are not yet exposed in Bun.
 Linux x86_64/aarch64 CI compiles/loads libcamera and independently decodes AVC/HEVC
 and AAC segments, validating frame order, keyframe boundaries, priming and sample
 counts. Libjpeg and LibRaw provide independent still-media checks. The suite uses

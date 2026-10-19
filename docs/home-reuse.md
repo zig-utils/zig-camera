@@ -22,12 +22,21 @@ Bun facade are the active implementation and test surfaces.
 | async completion_gate / completion_watermark | Terminal completion and retained fixed-prefix I/O drains |
 | async preparation_gate | Cooperative cancellation and serialized ready/publication boundary |
 | video recording_path (new in 0.19) | Allocation-free indexed filenames, bounded padding/storage and strict field validation |
+| video delivery_fifo (new in 0.20) | Sequence-checked host copy/ack, in-flight accounting and retained completion prefixes |
 
 The new recording_path module was contributed to Home before being vendored
 verbatim. Its tests cover index zero, the maximum u64, non-truncating padding,
 insufficient destination capacity, malformed/multiple fields, NUL bytes and width
 limits. Home's streaming A/V workflow includes it on x86_64/aarch64 with Zig 0.15.2
 and development Zig. Exact source commits for all vendored modules are in NOTICE.
+
+The 0.20 audit reused owned_fifo and preparation_gate rather than introducing a
+second queue implementation in TypeScript. Home's new delivery_fifo composes
+owned_fifo with monotonic delivery sequences, stale-ack rejection, sticky failure
+and fixed-prefix completion. In-flight bytes/metadata retain capacity until
+acknowledged. Its tests pass with both pinned Zig 0.15.2 and Home's development
+compiler. The helper and workflow coverage were contributed to Home main at
+51422a0c728730dae97f45b2e44ab0bff0253ee6 before verbatim camera reuse.
 
 Async recording does not import Home's unrelated general task graph. Instead,
 Zig workers build copied Home container/AAC recipes; caller-serialized publication

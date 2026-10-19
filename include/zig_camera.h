@@ -387,6 +387,34 @@ int zc_preparation_job_close(zc_preparation_job *);
 int zc_video_set_automatic(zc_recorder *,uint64_t id,const char *pattern,uint64_t next_index,uint32_t recovery,uint64_t duration_ns,uint64_t max_bytes);
 int zc_video_automatic_state(zc_recorder *,uint64_t id,zc_automatic_state *);
 
+/* Bounded owned producer-to-host mailbox. Native callbacks only enqueue. One
+ * host consumer copies/acknowledges in FIFO order; in-flight bytes stay charged.
+ * Prefix polls survive later admissions/failures. Destroy ONLY after all native
+ * callback contexts and host hooks have retired. No runtime callbacks on C threads. */
+typedef struct zc_output_mailbox zc_output_mailbox;
+typedef struct {uint64_t sequence,offset,timestamp_ns,length;uint32_t kind,codec,flags,reserved;} zc_output_event;
+int zc_output_mailbox_open(uint64_t max_bytes,uint32_t max_operations,zc_output_mailbox **);
+int zc_output_mailbox_callbacks(zc_output_mailbox *,uint32_t format,zc_output_callbacks *);
+int zc_output_mailbox_peek(zc_output_mailbox *,zc_output_event *);
+int zc_output_mailbox_copy(zc_output_mailbox *,uint64_t sequence,uint8_t *,uint64_t capacity);
+int zc_output_mailbox_ack(zc_output_mailbox *,uint64_t sequence);
+int zc_output_mailbox_fail(zc_output_mailbox *,int code);
+int zc_output_mailbox_prefix(zc_output_mailbox *,uint64_t *);
+int zc_output_mailbox_poll(zc_output_mailbox *,uint64_t target);
+void zc_output_mailbox_close(zc_output_mailbox *);
+/* Held preparation exposes READY but cannot stage until release. Host drains
+ * header delivery before publication. Cancellation/close still owns cleanup. */
+int zc_video_prepare_held(zc_recorder *,uint64_t id,const char *,const zc_output_callbacks *,uint32_t recovery,zc_preparation_job **);
+int zc_preparation_job_publish(zc_preparation_job *);
+/* Teardown only: cancel staged, uncommitted replacement; TIMEOUT means cleanup
+ * worker is not yet done. A committed generation returns STATE. No waiting. */
+int zc_preparation_job_abort_pending(zc_preparation_job *);
+/* Serialized host-consumer failure notification, normal isolation policy. */
+int zc_video_fail_output(zc_recorder *,uint64_t id,int code);
+/* Initial attachment only, before its first frame; held sinks receive no media
+ * and retain no PCM. Release requests a fresh keyframe. */
+int zc_video_hold_output(zc_recorder *,uint64_t id,uint32_t held);
+
 #ifdef __cplusplus
 }
 #endif

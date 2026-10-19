@@ -11,6 +11,10 @@ comptime {
     _ = audio;
 }
 pub const recording_path = @import("home/recording_path.zig");
+pub const output_mailbox = @import("output_mailbox.zig");
+comptime {
+    _ = output_mailbox;
+}
 pub const media = @import("media.zig");
 comptime {
     _ = media;
@@ -160,4 +164,5 @@ test {
     _ = raw;
     _ = dng;
     _ = @import("video.zig");
+    _ = output_mailbox;
 }

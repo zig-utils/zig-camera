@@ -288,3 +288,20 @@ pub export fn zc_video_set_automatic(p: *c.zc_recorder, id: u64, pattern: ?[*:0]
 pub export fn zc_video_automatic_state(p: *c.zc_recorder, id: u64, out: *c.zc_automatic_state) c_int {
     return @import("video.zig").automaticState(p, id, out);
 }
+
+pub export fn zc_video_prepare_held(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: u32, result: *?*c.zc_preparation_job) c_int {
+    return @import("video.zig").prepareHeld(p, id, path, cb, recovery, result);
+}
+pub export fn zc_preparation_job_publish(p: *c.zc_preparation_job) c_int {
+    return @import("video.zig").publishPreparation(p);
+}
+pub export fn zc_video_fail_output(p: *c.zc_recorder, id: u64, code: c_int) c_int {
+    return @import("video.zig").failOutput(p, id, code);
+}
+pub export fn zc_preparation_job_abort_pending(p: *c.zc_preparation_job) c_int {
+    return @import("video.zig").abortPendingPreparation(p);
+}
+
+pub export fn zc_video_hold_output(p: *c.zc_recorder, id: u64, held: u32) c_int {
+    return @import("video.zig").holdOutput(p, id, held);
+}

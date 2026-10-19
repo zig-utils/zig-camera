@@ -147,3 +147,11 @@ Home indexed recording paths (0.19):
   strictly validated indexed names for async rotation and recovery.
   The Home MIT license above applies. Source: aa968cc8dbdbd0c06ecca48f4a32823f60e0a869.
   https://github.com/home-lang/home/commit/aa968cc8dbdbd0c06ecca48f4a32823f60e0a869
+
+Home acknowledged host delivery (0.20):
+- src/home/delivery_fifo.zig is verbatim from Home's
+  packages/video/src/core/delivery_fifo.zig. It composes owned_fifo with
+  sequence-checked acknowledgement and retained fixed-prefix completion.
+  The Home MIT license above applies.
+  Source: 51422a0c728730dae97f45b2e44ab0bff0253ee6.
+  https://github.com/home-lang/home/commit/51422a0c728730dae97f45b2e44ab0bff0253ee6

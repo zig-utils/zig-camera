@@ -98,6 +98,7 @@ const Retry = @import("home/output_recovery.zig").Retry;
 const io = @import("output_io.zig");
 const Output = struct {
     io_config: ?io.Config = null,
+    host_hold: bool = false,
     worker: ?*io.Worker = null,
     retired: ?*Output = null,
     split_error: c_int = c.ZC_OK,
@@ -131,6 +132,7 @@ const Output = struct {
     frames: u64 = 0,
     waiting_key: bool = true,
     fn enableIo(self: *Output, config: io.Config, previous: ?*io.Worker) !void {
+        if (self.callbacks) |cb| if (@import("output_mailbox.zig").isMailbox(cb)) return error.Unsupported;
         self.worker = try io.Worker.create(config, self, applyIo, previous);
         self.io_config = config;
     }
@@ -571,7 +573,7 @@ const Recorder = struct {
     }
     fn enqueueOutput(self: *Recorder, id: u64, data: []const u8, timestamp: u64, key: bool) !void {
         var out = self.getOutput(id) orelse return;
-        if (out.failure != c.ZC_OK) return;
+        if (out.failure != c.ZC_OK or out.host_hold) return;
         if (out.queue == null) return self.deliver(id, data, timestamp, key);
         try self.forwardOutput(id, timestamp);
         out = self.getOutput(id).?;
@@ -1585,7 +1587,7 @@ fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb:
     const deferred_path = if (deferred and path != null) try A.dupeZ(u8, std.mem.span(path.?)) else null;
     errdefer if (deferred_path) |name| A.free(name);
     const job = try A.create(Prepared);
-    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = old.io_config, .predecessor = if (recovering) null else old.worker, .recovering = recovering, .deferred_path = deferred_path };
+    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = if (cb != null and @import("output_mailbox.zig").isMailbox(cb.?.*)) null else old.io_config, .predecessor = if (recovering) null else old.worker, .recovering = recovering, .deferred_path = deferred_path };
     self.preparing[slot] = job;
     result.* = @ptrCast(job);
 }
@@ -1685,6 +1687,7 @@ const Preparation = struct {
     cleanup_code: c_int = c.ZC_OK,
     released: bool = false,
     staged: bool = false,
+    held: bool = false,
     keep: bool = false,
     automatic: ?usize = null,
     fn run(self: *Preparation) void {
@@ -1777,6 +1780,7 @@ fn advancePreparation(self: *Recorder, job: *Preparation) void {
             _ = job.gate.fail();
         } else if (!job.gate.cancel_requested and !self.failed) {
             _ = job.gate.ready();
+            if (job.held) return;
             job.build_code = commitPrepared(@ptrCast(self), @ptrCast(job.recipe.?));
             if (job.build_code == c.ZC_OK) {
                 job.staged = true;
@@ -1975,4 +1979,54 @@ test "unresolved exclusive paths guard aliases without blocking other preparatio
     try std.testing.expectError(error.Busy, registry.check(identity));
     try std.testing.expectError(error.Busy, registry.reserve(identity));
     try std.testing.expectError(error.Busy, registry.reservePreparation(.{ identity, null, null }, false));
+}
+
+pub fn prepareHeld(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: u32, result: *?*c.zc_preparation_job) c_int {
+    const rc = prepareAsync(p, id, path, cb, recovery, result);
+    if (rc == c.ZC_OK) {
+        const job: *Preparation = @ptrCast(@alignCast(result.*.?));
+        job.held = true;
+    }
+    return rc;
+}
+pub fn publishPreparation(p: *c.zc_preparation_job) c_int {
+    const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.result != c.ZC_TIMEOUT or job.gate.phase != .ready or job.gate.cancel_requested or !job.held) return c.ZC_STATE;
+    job.held = false;
+    return c.ZC_OK;
+}
+pub fn failOutput(p: *c.zc_recorder, id: u64, code: c_int) c_int {
+    if (code >= 0) return c.ZC_INVALID;
+    const self = recorder(p);
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (out.failure == c.ZC_OK) out.failure = code;
+    if (out.worker) |worker| worker.abort(code);
+    if (!self.isolate) self.failed = true;
+    return c.ZC_OK;
+}
+
+// Owner teardown may cancel a staged replacement before its keyframe handoff.
+// Normal user cancellation remains rejected after staging. No waiting here.
+pub fn abortPendingPreparation(p: *c.zc_preparation_job) c_int {
+    const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.result != c.ZC_TIMEOUT or !job.staged) return c.ZC_STATE;
+    const owner = job.owner orelse return c.ZC_STATE;
+    const out = owner.getOutput(job.id) orelse return c.ZC_STATE;
+    if (out.generation != job.generation) return c.ZC_STATE;
+    if (!job.finished.isSet()) return c.ZC_TIMEOUT;
+    const rc = cancelOutputSplit(@ptrCast(owner), job.id);
+    if (rc != c.ZC_OK) return rc;
+    const cleanup = job.removeCreated();
+    job.result = if (cleanup == c.ZC_OK) c.ZC_STALE else cleanup;
+    return c.ZC_OK;
+}
+
+pub fn holdOutput(p: *c.zc_recorder, id: u64, held: u32) c_int {
+    if (held > 1) return c.ZC_INVALID;
+    const self = recorder(p);
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (self.failed or out.frames != 0 or self.preparingId(id)) return c.ZC_STATE;
+    if (held == 0) self.forceKey() catch |err| return status(err);
+    out.host_hold = held != 0;
+    return c.ZC_OK;
 }

@@ -1,4 +1,23 @@
 import {
+  OutputBridge,
+  guardOutputHook,
+  type CustomOutput,
+  type OutputStreams,
+} from './outputs'
+export {
+  FileOutput,
+  FileSink,
+  MuxedOutput,
+  type CustomOutput,
+  type OutputPacket,
+  type OutputStreams,
+  type ByteSink,
+} from './outputs'
+import { BunJob, type JobOptions } from './jobs'
+import { cameraConfiguration, copyConfiguration } from './config'
+import type { ModeRequest, ModeResponse } from './mode-worker'
+export { BunJob, JobCancelledError, type JobOptions } from './jobs'
+import {
   native as n,
   ptr,
   storage,
@@ -82,6 +101,47 @@ function state(data: Uint8Array) {
     pending: !!view(data).getUint32(16, true),
   }
 }
+function decodeMetadata(data: Uint8Array) {
+  const d = view(data)
+  return {
+    eventId: u64(data, 8),
+    sequence: u64(data, 16),
+    timestampNs: u64(data, 24),
+    controlRevision: u64(data, 32),
+    exposureUs: d.getUint32(40, true),
+    afState: d.getInt32(44, true),
+    analogueGain: d.getFloat32(56, true),
+    lensPosition: d.getFloat32(60, true),
+    frameDurationUs: u64(data, 72),
+  }
+}
+class ModeWorkerFault extends Error {}
+function runModeWorker(request: ModeRequest): Promise<ModeResponse> {
+  return new Promise((resolve, reject) => {
+    let worker: Worker
+    try {
+      worker = new Worker(new URL('./mode-worker.ts', import.meta.url).href)
+    } catch (error) {
+      reject(error)
+      return
+    }
+    worker.onmessage = (event) => {
+      resolve(event.data)
+      worker.terminate()
+    }
+    worker.onerror = (event) => {
+      reject(new ModeWorkerFault(event.message))
+      worker.terminate()
+    }
+    try {
+      worker.postMessage(request)
+    } catch (error) {
+      worker.terminate()
+      reject(error)
+    }
+  })
+}
+
 export interface CameraOptions {
   simulate?: boolean
   width?: number
@@ -90,6 +150,7 @@ export interface CameraOptions {
   cameraIndex?: number
   fifo?: boolean
   raw?: boolean
+  unpackedRaw?: boolean
   rawFormat?: string
   role?: 'still' | 'preview' | 'video'
   sensor?: { width: number; height: number; bitDepth: number }
@@ -204,41 +265,22 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private requests: CaptureRequest[] = []
   private focusJobs = 0
-  readonly options: CameraOptions
+  private configuration: CameraOptions
+  private modeActive = false
+  private modeJobs = new Set<{
+    cancel: (reason?: unknown) => boolean
+    done: boolean
+    cleanupDone: Promise<void>
+    operationDone: Promise<void>
+  }>()
+  private modeTail: Promise<void> = Promise.resolve()
+  private previewTitle?: string
+  get options() {
+    return copyConfiguration(this.configuration)
+  }
   constructor(options: CameraOptions = {}) {
-    this.options = { ...options }
-    const cfg = fields(72, n.zc_default_config, [
-      options.width,
-      options.height,
-      options.buffers,
-      options.cameraIndex,
-      options.fifo ? 0 : 1,
-    ])
-    if (options.raw) view(cfg).setUint32(36, 1, true)
-    if (options.rawFormat) {
-      const name = cstring(options.rawFormat)
-      if (name.length > 32) throw new RangeError('raw format too long')
-      cfg.set(name, 40)
-    }
-    // Backend is selected at build time; the explicit environment override used
-    // by the core is process-wide. Never silently substitute simulation.
-    const pipeline = fields(44, n.zc_default_pipeline_options, [
-      undefined,
-      undefined,
-      { still: 0, preview: 1, video: 2 }[options.role ?? 'still'],
-    ])
-    if (options.sensor) {
-      ;[
-        options.sensor.width,
-        options.sensor.height,
-        options.sensor.bitDepth,
-      ].forEach((x, i) => view(pipeline).setUint32(20 + i * 4, uint(x), true))
-    }
-    if (options.lores) {
-      view(pipeline).setUint32(32, uint(options.lores.width), true)
-      view(pipeline).setUint32(36, uint(options.lores.height), true)
-      view(pipeline).setUint32(40, options.lores.rgb ? 1 : 0, true)
-    }
+    this.configuration = copyConfiguration(options)
+    const { config: cfg, pipeline } = cameraConfiguration(options)
     const out = outPointer()
     check(n.zc_open_pipeline(ptr(cfg), ptr(pipeline), ptr(out)), 'open camera')
     this.handle = handle(out)
@@ -249,6 +291,8 @@ export class Camera {
     }
   }
   assertOpen() {
+    guardOutputHook()
+    if (this.modeActive) throw new CameraError(-4, 'mode change active')
     if (!this.handle || this.closing || this.stopJob)
       throw new CameraError(-2, 'camera unavailable')
   }
@@ -295,6 +339,7 @@ export class Camera {
   }
   start() {
     this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.started) {
       check(n.zc_start(this.handle))
       this.started = true
@@ -348,6 +393,7 @@ export class Camera {
     timeoutMs = 5000,
   }: { signal?: AbortSignal; timeoutMs?: number } = {}) {
     this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     this.start()
     const id = new BigUint64Array(1)
     check(n.zc_autofocus_start(this.handle, ptr(id)))
@@ -376,6 +422,7 @@ export class Camera {
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<T> {
     this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
     this.start()
     const result = new Promise<T>((resolve, reject) =>
@@ -398,19 +445,27 @@ export class Camera {
   }
   startPreview(title = 'zig-camera') {
     this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewHandle) throw new CameraError(-4, 'preview already active')
     const info = this.info(),
       name = cstring(title),
       out = outPointer()
     check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
     this.previewHandle = handle(out)
+    this.previewTitle = title
     this.start()
     this.ensurePump()
   }
   stopPreview() {
+    guardOutputHook()
+    if (this.modeActive) throw new CameraError(-4, 'mode change active')
+    this.stopPreviewOwned()
+  }
+  private stopPreviewOwned() {
     if (this.previewHandle) {
       check(n.zc_preview_close(this.previewHandle))
       this.previewHandle = 0 as Pointer
+      this.previewTitle = undefined
     }
   }
   startRecording(
@@ -418,6 +473,7 @@ export class Camera {
     options: { fps?: number; audio?: AudioCapture } = {},
   ) {
     this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.recording) throw new CameraError(-4, 'recording active')
     const info = this.info()
     if (info.width !== recorder.width || info.height !== recorder.height)
@@ -433,6 +489,267 @@ export class Camera {
     this.ensurePump()
     return recording
   }
+
+  switchMode(
+    options: CameraOptions,
+    jobOptions: JobOptions<ReturnType<Camera['info']>> & {
+      dropFrames?: number
+    } = {},
+  ) {
+    return this.submitMode(options, undefined, jobOptions) as BunJob<
+      ReturnType<Camera['info']>
+    >
+  }
+  switchModeAndDropFrames(
+    options: CameraOptions,
+    dropFrames: number,
+    jobOptions: JobOptions<ReturnType<Camera['info']>> = {},
+  ) {
+    return this.switchMode(options, { ...jobOptions, dropFrames })
+  }
+  switchModeAndCaptureRGB(
+    options: CameraOptions,
+    jobOptions: JobOptions<Uint8Array> & { dropFrames?: number } = {},
+  ) {
+    return this.submitMode(
+      options,
+      { kind: 'rgb' },
+      jobOptions,
+    ) as BunJob<Uint8Array>
+  }
+  switchModeAndCaptureMetadata(
+    options: CameraOptions,
+    jobOptions: JobOptions<ReturnType<Frame['metadata']>> & {
+      dropFrames?: number
+    } = {},
+  ) {
+    return this.submitMode(options, { kind: 'metadata' }, jobOptions) as BunJob<
+      ReturnType<Frame['metadata']>
+    >
+  }
+  switchModeAndCaptureBuffer(
+    options: CameraOptions,
+    stream: 'main' | 'raw' | 'lores' = 'main',
+    jobOptions: JobOptions<{
+      width: number
+      height: number
+      format: string
+      data: Uint8Array
+    }> & { dropFrames?: number } = {},
+  ) {
+    return this.submitMode(
+      options,
+      { kind: 'stream', stream: { main: 0, raw: 1, lores: 2 }[stream] },
+      jobOptions,
+    ) as BunJob<{
+      width: number
+      height: number
+      format: string
+      data: Uint8Array
+    }>
+  }
+  switchModeAndCaptureFile(
+    options: CameraOptions,
+    path: string,
+    jobOptions: JobOptions<ReturnType<Frame['metadata']>> & {
+      dropFrames?: number
+      quality?: number
+    } = {},
+  ) {
+    const dng = path.toLowerCase().endsWith('.dng')
+    if (!dng && !/\.jpe?g$/i.test(path))
+      throw new CameraError(-8, 'mode capture file format')
+    return this.submitMode(
+      dng ? { ...options, raw: true, unpackedRaw: true } : options,
+      {
+        kind: 'file',
+        path: cstring(path),
+        dng,
+        quality: uint(jobOptions.quality ?? 98),
+      },
+      jobOptions,
+    ) as BunJob<ReturnType<Frame['metadata']>>
+  }
+  private submitMode<T>(
+    options: CameraOptions,
+    capture: ModeRequest['capture'],
+    jobOptions: JobOptions<T> & { dropFrames?: number },
+  ) {
+    guardOutputHook()
+    if (!this.handle || this.closing || this.stopJob)
+      throw new CameraError(-2, 'camera unavailable')
+    if (this.modeJobs.size + this.requests.length >= 32)
+      throw new CameraError(-4, 'mode queue')
+    if (
+      this.recording ||
+      this.failedRecordings.size ||
+      this.focusJobs ||
+      this.requests.length
+    )
+      throw new CameraError(-4, 'camera jobs active')
+    const target = copyConfiguration({
+      ...options,
+      simulate: this.configuration.simulate,
+      cameraIndex: this.configuration.cameraIndex,
+    })
+    if (
+      (options.simulate !== undefined &&
+        options.simulate !== (this.configuration.simulate ?? false)) ||
+      (options.cameraIndex !== undefined &&
+        options.cameraIndex !== (this.configuration.cameraIndex ?? 0))
+    )
+      throw new CameraError(-1, 'mode must retain camera/backend')
+    const encoded = cameraConfiguration(target),
+      dropFrames = uint(jobOptions.dropFrames ?? 0)
+    const effective = { ...jobOptions, timeoutMs: jobOptions.timeoutMs ?? 5000 }
+    const deadline = Date.now() + effective.timeoutMs
+    const job = new BunJob<T>(
+      async (current) => {
+        current.check()
+        const stats = storage(40)
+        check(n.zc_get_stats(this.handle, ptr(stats)))
+        if (
+          view(stats).getUint32(36, true) ||
+          this.recording ||
+          this.focusJobs ||
+          this.requests.length
+        )
+          throw new CameraError(-4, 'mode requires unleased idle camera')
+        const previous = this.options,
+          old = cameraConfiguration(previous),
+          started = this.started,
+          title = this.previewTitle
+        this.modeActive = true
+        if (this.timer !== undefined) {
+          clearTimeout(this.timer)
+          this.timer = undefined
+        }
+        let response: ModeResponse | undefined
+        let value: unknown
+        let failure: unknown
+        const preview = () => {
+          if (!title || !this.handle || this.closing || this.stopJob) return
+          const info = storage(680)
+          check(n.zc_get_info(this.handle, ptr(info)))
+          const name = cstring(title),
+            out = outPointer()
+          check(
+            n.zc_preview_open(
+              ptr(name),
+              view(info).getUint32(8, true),
+              view(info).getUint32(12, true),
+              ptr(out),
+            ),
+          )
+          this.previewHandle = handle(out)
+          this.previewTitle = title
+        }
+        try {
+          this.stopPreviewOwned()
+          response = await runModeWorker({
+            handle: this.handle,
+            ...encoded,
+            previousConfig: old.config,
+            previousPipeline: old.pipeline,
+            previousStarted: started,
+            cancel: current.cancellation,
+            deadline,
+            capture,
+            dropFrames,
+          })
+          this.handle = response.handle
+          this.started = response.started
+          if (Date.now() >= deadline && !current.cancelRequested)
+            current.cancel(new CameraError(-3, 'mode deadline'))
+          if (response.restoreCode) {
+            const error = new CameraError(
+              response.code || response.restoreCode,
+              'mode restoration',
+            ) as CameraError & { restoreCode: number }
+            error.restoreCode = response.restoreCode
+            throw error
+          }
+          if (response.code === -5 && current.cancelRequested) current.check()
+          check(response.code, 'mode switch')
+          current.check()
+          this.configuration = response.target ? target : previous
+          if (capture) {
+            value = response.value
+            if (capture.kind === 'metadata' || capture.kind === 'file')
+              value = decodeMetadata(response.value!)
+            if (capture.kind === 'stream')
+              value = { ...response.stream!, data: response.value! }
+          }
+          preview()
+        } catch (error) {
+          failure = error
+          if (error instanceof ModeWorkerFault) {
+            this.handle = 0 as Pointer
+            this.started = false
+          }
+          if (response?.target && this.handle) {
+            try {
+              const restored = await runModeWorker({
+                handle: this.handle,
+                ...old,
+                previousConfig: encoded.config,
+                previousPipeline: encoded.pipeline,
+                previousStarted: true,
+                cancel: new SharedArrayBuffer(8),
+                deadline: Infinity,
+                dropFrames: 0,
+              })
+              this.handle = restored.handle
+              this.started = restored.started
+              this.configuration = restored.target ? previous : target
+              check(restored.restoreCode || restored.code, 'mode rollback')
+              if (!started && this.handle) {
+                check(n.zc_stop(this.handle))
+                this.started = false
+              }
+            } catch (restorationError) {
+              if (error && typeof error === 'object')
+                Object.assign(error, { restorationError })
+              else
+                failure = new AggregateError(
+                  [error, restorationError],
+                  'mode and restoration failed',
+                )
+            }
+          }
+          if (!this.previewHandle) {
+            try {
+              preview()
+            } catch (restorationError) {
+              if (error && typeof error === 'object')
+                Object.assign(error, { previewError: restorationError })
+            }
+          }
+        } finally {
+          this.modeActive = false
+          if (this.previewHandle) this.ensurePump()
+        }
+        if (failure !== undefined) throw failure
+        if (!capture) value = this.info()
+        current.seal()
+        return value as T
+      },
+      () => this.modeJobs.delete(job),
+      effective,
+    )
+    this.modeJobs.add(job)
+    this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
+    return job
+  }
+  private hasPendingModes() {
+    return [...this.modeJobs].some((job) => !job.done)
+  }
+  private async cancelModes() {
+    const jobs = [...this.modeJobs]
+    for (const job of jobs) job.cancel(new CameraError(-2, 'camera stopped'))
+    await Promise.all(jobs.map((job) => job.operationDone))
+  }
+
   detach(recording: Recording) {
     if (this.recording === recording) this.recording = undefined
     this.failedRecordings.delete(recording)
@@ -509,8 +826,10 @@ export class Camera {
       this.timer = setTimeout(() => this.pump(), 1)
   }
   stop(): Promise<void> {
+    guardOutputHook()
     if (this.stopJob) return this.stopJob
-    this.assertOpen()
+    if (!this.handle || this.closing)
+      throw new CameraError(-2, 'camera unavailable')
     return this.stopWork()
   }
   private stopWork(): Promise<void> {
@@ -527,6 +846,7 @@ export class Camera {
     this.requests = []
     this.stopJob = (async () => {
       let failure: unknown
+      await this.cancelModes()
       try {
         this.stopPreview()
       } catch (error) {
@@ -554,6 +874,7 @@ export class Camera {
     return this.stopJob
   }
   close(): Promise<void> {
+    guardOutputHook()
     if (this.closeJob) return this.closeJob
     if (!this.handle) return Promise.resolve()
     this.closing = true
@@ -617,6 +938,7 @@ export interface RecorderOptions {
     durationMs?: number
     delayMs?: number
   }
+  outputQueue?: { maxBytes: number; maxOperations: number }
   io?: { maxBytes: number; maxOperations: number; waitMs?: number }
 }
 export interface PreparationState {
@@ -631,10 +953,32 @@ export class PreparationJob implements PromiseLike<void> {
   private closed = false
   constructor(
     private recorder: Recorder,
-    private handle: Pointer,
+    private handle: Pointer | BunJob<void>,
+    private outputId = 0n,
+    private generation = 0n,
   ) {}
   get status(): PreparationState {
+    guardOutputHook()
     if (this.closed) throw new CameraError(-2, 'closed preparation job')
+    if (typeof this.handle !== 'number') {
+      const job = this.handle
+      return {
+        id: this.outputId,
+        generation: this.generation,
+        phase: job.phase,
+        staged: job.phase === 3,
+        done: job.done,
+        errorCode: job.done
+          ? job.error === undefined
+            ? 0
+            : job.error instanceof CameraError
+              ? job.error.code
+              : job.cancelRequested && job.error === job.cancellationReason
+                ? -5
+                : -6
+          : -3,
+      }
+    }
     if (this.recorder.closing) throw new CameraError(-4, 'recorder is closing')
     if (this.recorder.handle) this.recorder.poll()
     const data = storage(32)
@@ -650,6 +994,8 @@ export class PreparationJob implements PromiseLike<void> {
     }
   }
   cancel() {
+    guardOutputHook()
+    if (typeof this.handle !== 'number') return this.handle.cancel()
     if (this.closed || this.recorder.closing) return false
     return n.zc_preparation_job_cancel(this.handle) === 0
   }
@@ -657,6 +1003,32 @@ export class PreparationJob implements PromiseLike<void> {
     timeoutMs = 30_000,
     signal,
   }: { timeoutMs?: number; signal?: AbortSignal } = {}) {
+    if (typeof this.handle !== 'number') {
+      const job = this.handle
+      return await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup()
+          reject(new CameraError(-3, 'preparation wait'))
+        }, timeoutMs)
+        const abort = () => job.cancel(signal?.reason)
+        const cleanup = () => {
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', abort)
+        }
+        signal?.addEventListener('abort', abort, { once: true })
+        if (signal?.aborted) abort()
+        job.wait().then(
+          () => {
+            cleanup()
+            resolve()
+          },
+          (error) => {
+            cleanup()
+            reject(error)
+          },
+        )
+      })
+    }
     const deadline = performance.now() + timeoutMs
     while (true) {
       if (this.recorder.closing) {
@@ -687,8 +1059,15 @@ export class PreparationJob implements PromiseLike<void> {
     return this.wait().then(fulfilled, rejected)
   }
   close() {
+    guardOutputHook()
     if (this.closed) return
     if (this.recorder.closing) throw new CameraError(-4, 'recorder closing')
+    if (typeof this.handle !== 'number') {
+      if (!this.handle.done) throw new CameraError(-4, 'preparation pending')
+      this.closed = true
+      this.recorder.forget(this)
+      return
+    }
     check(n.zc_preparation_job_close(this.handle))
     this.closed = true
     this.recorder.forget(this)
@@ -733,8 +1112,19 @@ export class Recorder {
   readonly options: RecorderOptions
   closing = false
   closed?: Promise<void>
-  outputErrors = new Map<bigint, number>()
+  outputErrors = new Map<bigint, unknown>()
   private jobs = new Set<PreparationJob>()
+  private objectOutputs = new Map<
+    bigint,
+    { bridge: OutputBridge; generation: bigint }
+  >()
+  private objectPreparations = new Map<bigint, BunJob<void>>()
+  private objectJobs = new Set<{
+    cancel: (reason?: unknown) => boolean
+    operationDone: Promise<void>
+    cleanupDone: Promise<void>
+  }>()
+  private retiringOutputs = new Set<bigint>()
   private tasks = 0
   private finalStats?: RecordingStats
   constructor(path: string | null, options: RecorderOptions) {
@@ -830,6 +1220,7 @@ export class Recorder {
     }
   }
   assertOpen() {
+    guardOutputHook()
     if (!this.handle || this.closing)
       throw new CameraError(-2, 'closed recorder')
   }
@@ -837,6 +1228,7 @@ export class Recorder {
     this.assertOpen()
     if (!frame.token) throw new CameraError(-5, 'released frame')
     check(n.zc_video_write(this.handle, ptr(frame.descriptor), timestampNs))
+    this.reconcileOutputs()
   }
   writeAudio(data: Uint8Array, timestampNs: bigint) {
     this.assertOpen()
@@ -853,6 +1245,7 @@ export class Recorder {
   poll() {
     this.assertOpen()
     check(n.zc_video_poll_preparations(this.handle))
+    this.reconcileOutputs()
   }
   stats(): RecordingStats {
     if (!this.handle && this.finalStats) return this.finalStats
@@ -906,23 +1299,87 @@ export class Recorder {
       outputOpen: !!view(data).getUint32(60, true),
     }
   }
-  addOutput(path: string) {
+  static async open(output: string | CustomOutput, options: RecorderOptions) {
+    guardOutputHook()
+    if (typeof output === 'string') return new Recorder(output, options)
+    const recorder = new Recorder(null, options)
+    try {
+      await recorder.openOutput(output)
+      return recorder
+    } catch (error) {
+      try {
+        await recorder.close()
+      } catch {}
+      throw error
+    }
+  }
+  openOutput(output: CustomOutput, options: JobOptions<void> = {}) {
     this.assertOpen()
-    const name = cstring(path),
+    return this.attachObject(output, true, options) as BunJob<void>
+  }
+  addOutput(path: string): bigint
+  addOutput(output: CustomOutput, options?: JobOptions<bigint>): BunJob<bigint>
+  addOutput(
+    output: string | CustomOutput,
+    options: JobOptions<bigint> = {},
+  ): bigint | BunJob<bigint> {
+    this.assertOpen()
+    if (typeof output !== 'string')
+      return this.attachObject(output, false, options) as BunJob<bigint>
+    const name = cstring(output),
       id = new BigUint64Array(1)
     check(n.zc_video_add_output(this.handle, ptr(name), ptr(id)))
-    if (this.options.io) this.setIO(id[0], this.options.io)
+    try {
+      if (this.options.io) this.setIO(id[0], this.options.io)
+    } catch (error) {
+      n.zc_video_remove_output(this.handle, id[0])
+      throw error
+    }
     return id[0]
   }
-  removeOutput(id: bigint | number) {
+  removeOutput(id: bigint | number): void | BunJob<void> {
     this.assertOpen()
-    check(n.zc_video_remove_output(this.handle, BigInt(id)))
+    const key = BigInt(id)
+    this.checkOutputMutation(key)
+    const current = this.objectOutputs.get(key)
+    if (!current) {
+      check(n.zc_video_remove_output(this.handle, key))
+      return
+    }
+    return this.objectJob<void>(async (job) => {
+      job.check()
+      this.retiringOutputs.add(key)
+      let primary: unknown
+      const code = n.zc_video_remove_output(this.handle, key)
+      const present = storage(24)
+      if (n.zc_video_output_state(this.handle, key, ptr(present)) === 0) {
+        this.retiringOutputs.delete(key)
+        check(code, 'remove output')
+        throw new CameraError(-4, 'output not detached')
+      }
+      this.objectOutputs.delete(key)
+      try {
+        if (code !== 0)
+          primary =
+            current.bridge.error ?? new CameraError(code, 'remove output')
+        await current.bridge.retire()
+      } catch (error) {
+        primary ??= error
+      } finally {
+        this.retiringOutputs.delete(key)
+      }
+      if (primary !== undefined) {
+        this.outputErrors.set(key, primary)
+        throw primary
+      }
+    })
   }
   setIO(
     id: bigint | number,
     options: { maxBytes: number; maxOperations: number; waitMs?: number },
   ) {
     this.assertOpen()
+    this.checkOutputMutation(BigInt(id))
     check(
       n.zc_video_set_output_io(
         this.handle,
@@ -969,15 +1426,22 @@ export class Recorder {
       ),
     )
   }
-  split(path: string, id: bigint | number = 0n) {
-    return this.prepare(path, BigInt(id), false)
+  split(output: string | CustomOutput, id: bigint | number = 0n) {
+    return this.prepare(output, BigInt(id), false)
   }
-  recover(path: string, id: bigint | number = 0n) {
-    return this.prepare(path, BigInt(id), true)
+  recover(output: string | CustomOutput, id: bigint | number = 0n) {
+    return this.prepare(output, BigInt(id), true)
   }
-  private prepare(path: string, id: bigint, recovery: boolean) {
+  private prepare(
+    output: string | CustomOutput,
+    id: bigint,
+    recovery: boolean,
+  ): PreparationJob {
     this.assertOpen()
-    const name = cstring(path),
+    this.checkOutputMutation(id)
+    if (typeof output !== 'string' || this.objectOutputs.has(id))
+      return this.prepareObject(output, id, recovery)
+    const name = cstring(output),
       out = outPointer()
     check(
       n.zc_video_prepare_async(
@@ -1001,6 +1465,8 @@ export class Recorder {
     options: { nextIndex?: bigint; durationMs?: number; maxBytes?: number },
   ) {
     this.assertOpen()
+    if (this.objectOutputs.has(0n))
+      throw new CameraError(-8, 'custom outputs rotate with split jobs')
     const name = cstring(pattern)
     check(
       n.zc_video_set_automatic(
@@ -1030,6 +1496,8 @@ export class Recorder {
     } = {},
   ) {
     this.assertOpen()
+    if (this.objectOutputs.has(BigInt(id)))
+      throw new CameraError(-8, 'custom outputs recover with output objects')
     const name = cstring(pattern)
     check(
       n.zc_video_set_output_recovery(
@@ -1081,6 +1549,344 @@ export class Recorder {
       deadlineNs: u64(data, 16),
     }
   }
+
+  private checkOutputMutation(id: bigint) {
+    if (this.objectPreparations.has(id) || this.retiringOutputs.has(id))
+      throw new CameraError(-4, 'output lifecycle pending')
+  }
+  private streamInfo(): OutputStreams {
+    const length = new BigUint64Array(1)
+    check(n.zc_video_get_headers(this.handle, null, 0, ptr(length)))
+    const headers = storage(Number(length[0]))
+    if (headers.length)
+      check(
+        n.zc_video_get_headers(
+          this.handle,
+          ptr(headers),
+          BigInt(headers.length),
+          ptr(length),
+        ),
+      )
+    return {
+      width: this.width,
+      height: this.height,
+      fps: this.fps,
+      codec: Codec[this.options.codec ?? 'mjpeg'],
+      headers,
+      audio: this.options.audio
+        ? {
+            sampleRate: this.options.audio.sampleRate,
+            channels: this.options.audio.channels,
+          }
+        : undefined,
+    }
+  }
+  private newBridge(output: CustomOutput) {
+    if (this.options.io?.waitMs)
+      throw new CameraError(-8, 'host outputs require fail-fast pressure')
+    if (
+      (output.format ?? 'packets') === 'mp4' &&
+      this.options.audio &&
+      typeof output.patch !== 'function'
+    )
+      throw new CameraError(-8, 'AAC output requires patch')
+    return new OutputBridge(
+      output,
+      this.options.outputQueue ??
+        (this.options.io
+          ? {
+              maxBytes: this.options.io.maxBytes,
+              maxOperations: this.options.io.maxOperations,
+            }
+          : {}),
+    )
+  }
+  private bindBridge(id: bigint, generation: bigint, bridge: OutputBridge) {
+    bridge.onError = (error) => {
+      if (this.handle && !this.closing) {
+        const state = storage(24)
+        if (
+          n.zc_video_output_state(this.handle, id, ptr(state)) === 0 &&
+          u64(state) === generation
+        ) {
+          this.outputErrors.set(id, error)
+          n.zc_video_fail_output(this.handle, id, -6)
+        }
+      } else if (this.objectOutputs.get(id)?.bridge === bridge)
+        this.outputErrors.set(id, error)
+    }
+  }
+  private reconcileOutputs() {
+    for (const [id, current] of this.objectOutputs) {
+      const state = storage(24)
+      if (
+        n.zc_video_output_state(this.handle, id, ptr(state)) === 0 &&
+        u64(state) === current.generation
+      ) {
+        const code = view(state).getInt32(8, true)
+        if (code !== 0)
+          current.bridge.fail(new CameraError(code, 'native output'))
+      }
+    }
+  }
+  private objectJob<T>(
+    operation: (job: BunJob<T>) => Promise<T>,
+    options: JobOptions<T> = {},
+  ): BunJob<T> {
+    this.admit()
+    let job: BunJob<T>
+    try {
+      job = new BunJob<T>(
+        operation,
+        () => {
+          this.tasks--
+          this.objectJobs.delete(job)
+        },
+        options,
+      )
+    } catch (error) {
+      this.tasks--
+      throw error
+    }
+    this.objectJobs.add(job)
+    queueMicrotask(() => void job.start())
+    return job
+  }
+  private attachObject<T>(
+    output: CustomOutput,
+    primary: boolean,
+    options: JobOptions<T>,
+  ) {
+    if (primary) {
+      this.checkOutputMutation(0n)
+      const state = storage(24)
+      if (n.zc_video_output_state(this.handle, 0n, ptr(state)) === 0)
+        throw new CameraError(-4, 'primary already attached')
+    }
+    return this.objectJob<T>(async (job) => {
+      job.check()
+      let bridge: OutputBridge | undefined
+      let attached = false
+      let id = 0n
+      try {
+        bridge = this.newBridge(output)
+        await bridge.start(this.streamInfo())
+        job.check()
+        this.assertOpen()
+        if (primary) {
+          check(n.zc_video_open_callbacks(this.handle, ptr(bridge.callbacks)))
+        } else {
+          const result = new BigUint64Array(1)
+          check(
+            n.zc_video_add_callbacks(
+              this.handle,
+              ptr(bridge.callbacks),
+              ptr(result),
+            ),
+          )
+          id = result[0]
+        }
+        attached = true
+        check(n.zc_video_hold_output(this.handle, id, 1))
+        await bridge.enable()
+        await bridge.drain()
+        job.check()
+        check(n.zc_video_hold_output(this.handle, id, 0))
+        this.bindBridge(id, 0n, bridge)
+        this.objectOutputs.set(id, { bridge, generation: 0n })
+        job.seal()
+        return (primary ? undefined : id) as T
+      } catch (error) {
+        let secondary: unknown
+        if (attached) {
+          n.zc_video_remove_output(this.handle, id)
+          const state = storage(24)
+          if (n.zc_video_output_state(this.handle, id, ptr(state)) === 0) {
+            if (bridge)
+              this.objectOutputs.set(id, { bridge, generation: u64(state) })
+            throw error
+          }
+        }
+        if (bridge)
+          try {
+            await bridge.retire(true)
+          } catch (cleanup) {
+            secondary = cleanup
+          }
+        if (
+          job.cancelRequested &&
+          error === job.cancellationReason &&
+          secondary !== undefined
+        )
+          throw secondary
+        throw error
+      }
+    }, options)
+  }
+  private prepareObject(
+    output: string | CustomOutput,
+    id: bigint,
+    recovery: boolean,
+  ): PreparationJob {
+    const state = storage(24)
+    check(n.zc_video_output_state(this.handle, id, ptr(state)))
+    const generation = u64(state),
+      old = this.objectOutputs.get(id)
+    let wrapper: PreparationJob
+    const lifecycle = this.objectJob<void>(async (job) => {
+      let bridge: OutputBridge | undefined
+      let native: Pointer | undefined
+      let staged = false
+      let committed = false
+      let nativeDone = false
+      try {
+        job.check()
+        if (typeof output !== 'string') {
+          bridge = this.newBridge(output)
+          await bridge.start(this.streamInfo())
+          job.check()
+        }
+        this.assertOpen()
+        const out = outPointer(),
+          name = typeof output === 'string' ? cstring(output) : undefined
+        check(
+          (bridge ? n.zc_video_prepare_held : n.zc_video_prepare_async)(
+            this.handle,
+            id,
+            name ? ptr(name) : null,
+            bridge ? ptr(bridge.callbacks) : null,
+            recovery ? 1 : 0,
+            ptr(out),
+          ),
+        )
+        native = handle(out)
+        if (bridge) {
+          this.bindBridge(id, generation + 1n, bridge)
+          await bridge.enable()
+        }
+        while (true) {
+          n.zc_video_poll_preparations(this.handle)
+          const status = storage(32)
+          check(n.zc_preparation_job_state_get(native, ptr(status)))
+          const d = view(status)
+          if (this.closing && staged) n.zc_preparation_job_abort_pending(native)
+          if (job.cancelRequested && !staged)
+            n.zc_preparation_job_cancel(native)
+          if (bridge && d.getUint32(16, true) === 2 && !job.cancelRequested) {
+            await bridge.drain()
+            job.check()
+            check(n.zc_preparation_job_publish(native))
+            // Publication is released at this serialized boundary. Capture may
+            // stage it before this lifecycle loop runs again.
+            job.seal()
+          }
+          if (d.getUint32(20, true) && !staged) {
+            staged = true
+            job.seal()
+            this.retiringOutputs.add(id)
+          }
+          if (staged && !committed) {
+            const active = storage(24)
+            if (
+              n.zc_video_output_state(this.handle, id, ptr(active)) === 0 &&
+              u64(active) > generation
+            ) {
+              committed = true
+              if (bridge)
+                this.objectOutputs.set(id, {
+                  bridge,
+                  generation: generation + 1n,
+                })
+              else this.objectOutputs.delete(id)
+            }
+          }
+          if (d.getUint32(24, true)) {
+            nativeDone = true
+            const code = d.getInt32(28, true)
+            if (code === -5 && job.cancelRequested) job.check()
+            check(code, 'output split')
+            break
+          }
+          await pause()
+        }
+        if (old && committed) {
+          try {
+            await old.bridge.retire()
+          } catch (error) {
+            if (!recovery) throw error
+            if (old.bridge.stopError !== undefined) throw old.bridge.stopError
+          }
+        }
+      } catch (error) {
+        if (native && !nativeDone) {
+          n.zc_preparation_job_cancel(native)
+          while (true) {
+            if (this.closing && staged)
+              n.zc_preparation_job_abort_pending(native)
+            n.zc_video_poll_preparations(this.handle)
+            const status = storage(32)
+            n.zc_preparation_job_state_get(native, ptr(status))
+            const d = view(status)
+            if (d.getUint32(20, true) && !staged) {
+              staged = true
+            }
+            const active = storage(24)
+            if (
+              staged &&
+              n.zc_video_output_state(this.handle, id, ptr(active)) === 0 &&
+              u64(active) > generation
+            ) {
+              committed = true
+              if (bridge)
+                this.objectOutputs.set(id, {
+                  bridge,
+                  generation: generation + 1n,
+                })
+              else this.objectOutputs.delete(id)
+            }
+            if (d.getUint32(24, true)) {
+              nativeDone = true
+              break
+            }
+            await pause()
+          }
+        }
+        let cleanupError: unknown
+        if (bridge && !committed)
+          try {
+            await bridge.retire(true)
+          } catch (cleanup) {
+            cleanupError = cleanup
+          }
+        if (old && committed)
+          try {
+            await old.bridge.retire()
+          } catch (cleanup) {
+            if (!recovery) cleanupError ??= cleanup
+            else cleanupError ??= old.bridge.stopError
+          }
+        if (
+          job.cancelRequested &&
+          error === job.cancellationReason &&
+          cleanupError !== undefined
+        )
+          throw cleanupError
+        throw error
+      } finally {
+        if (native && nativeDone) n.zc_preparation_job_close(native)
+        this.retiringOutputs.delete(id)
+      }
+    })
+    this.objectPreparations.set(id, lifecycle)
+    void lifecycle.operationDone.then(() => {
+      if (this.objectPreparations.get(id) === lifecycle)
+        this.objectPreparations.delete(id)
+    })
+    wrapper = new PreparationJob(this, lifecycle, id, generation)
+    this.jobs.add(wrapper)
+    return wrapper
+  }
+
   private admit() {
     this.assertOpen()
     if (this.tasks >= 16) throw new CameraError(-4, 'lifecycle queue')
@@ -1089,10 +1895,13 @@ export class Recorder {
   async drain(id: bigint | number = 0n) {
     this.admit()
     const out = outPointer()
+    const bridge = this.objectOutputs.get(BigInt(id))?.bridge,
+      prefix = bridge?.prefix()
     try {
       check(n.zc_video_drain_output_async(this.handle, BigInt(id), ptr(out)))
       const result = await nativeTask('drain', handle(out))
       check(result.code, 'drain')
+      if (bridge) await bridge.drain(prefix)
     } finally {
       this.tasks--
     }
@@ -1110,11 +1919,16 @@ export class Recorder {
     }
   }
   close(): Promise<void> {
+    guardOutputHook()
     if (this.closed) return this.closed
     if (!this.handle) return Promise.resolve()
     this.finalStats = this.stats()
     this.closing = true
     this.closed = (async () => {
+      const objectJobs = [...this.objectJobs]
+      for (const job of objectJobs)
+        job.cancel(new CameraError(-2, 'recorder closed'))
+      await Promise.all(objectJobs.map((job) => job.operationDone))
       let result: Awaited<ReturnType<typeof nativeTask>>
       try {
         result = await nativeTask('close', this.handle)
@@ -1131,7 +1945,6 @@ export class Recorder {
         check(result.code, 'recorder close')
       }
       this.handle = 0 as Pointer
-      this.closing = false
       if (result.results) {
         for (let i = 0; i < result.count; i++) {
           const data = result.results.subarray(i * 32, (i + 1) * 32)
@@ -1139,7 +1952,20 @@ export class Recorder {
           if (code) this.outputErrors.set(u64(data), code)
         }
       }
+      let hookFailure: unknown
+      for (const [id, current] of this.objectOutputs) {
+        try {
+          await current.bridge.retire()
+        } catch (error) {
+          this.outputErrors.set(id, error)
+          if (current.bridge.stopError !== undefined || !this.options.isolate)
+            hookFailure ??= current.bridge.stopError ?? error
+        }
+      }
+      this.objectOutputs.clear()
+      this.closing = false
       check(result.code, 'recorder close')
+      if (hookFailure !== undefined) throw hookFailure
     })()
     return this.closed
   }
@@ -1257,10 +2083,11 @@ export class Recording {
     this.recorder.write(frame, timestamp)
     this.frames++
   }
-  split(path: string, id: bigint | number = 0n) {
-    return this.recorder.split(path, id)
+  split(output: string | CustomOutput, id: bigint | number = 0n) {
+    return this.recorder.split(output, id)
   }
   close() {
+    guardOutputHook()
     if (this.closeJob) return this.closeJob
     this.stopped = true
     this.camera.detach(this)
