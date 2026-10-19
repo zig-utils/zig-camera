@@ -44,6 +44,17 @@ async function feed(cam: Camera, rec: Recorder, index: number, fps = 25) {
   rec.write(frame, (BigInt(index) * 1_000_000_000n) / BigInt(fps))
   return frame.sequence
 }
+async function rotationReady(rec: Recorder) {
+  // Preparation is asynchronous: media time must not outrun its worker merely
+  // because a synthetic producer can emit all frames in a few milliseconds.
+  await until(() => {
+    rec.poll()
+    const automatic = rec.automaticState()
+    if (automatic.errorCode)
+      throw new CameraError(automatic.errorCode, 'rotation')
+    return !automatic.pending || rec.outputState().splitState === 1
+  })
+}
 function throwsCode(operation: () => unknown, code: number) {
   try {
     operation()
@@ -367,7 +378,7 @@ test('automatic rotation runs natively with bounded asynchronous sink I/O', asyn
     rec.setRotation(join(dir, '{index:03}.mkv'), { durationMs: 100 })
     for (let i = 0; i < 30; i++) {
       await feed(cam, rec, i)
-      await delay()
+      await rotationReady(rec)
     }
     await rec.close()
     const files = readdirSync(dir)
@@ -593,7 +604,7 @@ for (const codec of ['h264', 'hevc'] as const) {
           }
           rec.writeAudio(pcm, BigInt(i) * 40_000_000n)
           sequences.push(await feed(cam, rec, i))
-          await delay()
+          await rotationReady(rec)
         }
         await rec.close()
         let first = 0,
