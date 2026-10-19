@@ -10,6 +10,7 @@ pub const audio = @import("audio.zig");
 comptime {
     _ = audio;
 }
+pub const recording_path = @import("home/recording_path.zig");
 pub const media = @import("media.zig");
 comptime {
     _ = media;

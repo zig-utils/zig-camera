@@ -358,6 +358,35 @@ int zc_prepared_output_build(zc_prepared_output *);
 int zc_video_commit_split(zc_recorder *,zc_prepared_output *);
 void zc_prepared_output_close(zc_prepared_output *);
 
+/* Native bounded preparation workers. All recorder/job calls are serialized by
+ * the owner. File jobs exclusively create fresh paths on the worker, including
+ * open/header/AAC/I/O allocation. poll never waits for preparation I/O. It stages
+ * ready output and reports success only after keyframe commit and retirement.
+ * write polls automatically. Cancellation succeeds only before staging; STALE
+ * in a terminal job means cancellation. Keep callback contexts until terminal.
+ * At most 8 live job handles (including completed unreleased jobs). Close cancels
+ * preparation, joins workers and removes only files with the created identity.
+ * Job status/close remain valid after recorder close. No callback reentry. */
+typedef struct zc_preparation_job zc_preparation_job;
+typedef struct {uint64_t id,generation;uint32_t phase,staged,done;int32_t error_code;} zc_preparation_job_state;
+typedef struct {uint64_t next_index;int32_t error_code;uint32_t pending;} zc_automatic_state;
+int zc_video_prepare_recovery(zc_recorder *,uint64_t id,const char *,const zc_output_callbacks *,zc_prepared_output **);
+/* commit_split accepts either split or recovery recipes. Recovery retains the
+ * quarantined output until fresh publication, then frees it on recipe close. */
+int zc_video_prepare_async(zc_recorder *,uint64_t id,const char *,const zc_output_callbacks *,uint32_t recovery,zc_preparation_job **);
+int zc_video_poll_preparations(zc_recorder *);
+int zc_preparation_job_state_get(zc_preparation_job *,zc_preparation_job_state *);
+int zc_preparation_job_cancel(zc_preparation_job *);
+int zc_preparation_job_close(zc_preparation_job *);
+/* Exactly one automation per ID: recovery or primary rotation. pattern has one
+ * {index} or {index:06} field (width 1..128). next_index is the first replacement.
+ * NULL disables when idle. Rotation is soft, key aligned; construction failure
+ * latches an observable error and leaves current output live. Recovery uses the
+ * separately configured lifetime retry budget/media-clock backoff and advances
+ * the filename on EVERY attempt. No overwriting or retention deletion. */
+int zc_video_set_automatic(zc_recorder *,uint64_t id,const char *pattern,uint64_t next_index,uint32_t recovery,uint64_t duration_ns,uint64_t max_bytes);
+int zc_video_automatic_state(zc_recorder *,uint64_t id,zc_automatic_state *);
+
 #ifdef __cplusplus
 }
 #endif

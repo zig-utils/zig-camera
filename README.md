@@ -1,143 +1,97 @@
 # zig-camera
 
-A native Zig capture library and CLI for Raspberry Pi 5, backed by libcamera.
-Designed to reduce application CPU overhead and frame copies while retaining
-Raspberry Pi's ISP and camera tuning. Early development: hardware performance
-and image quality have **not yet been measured**. This is not a drop-in Picamera2
-replacement or a claim of feature parity.
+Native Zig capture and recording for Raspberry Pi 5 with a TypeScript/Bun API.
+libcamera supplies the camera/ISP pipeline; Home supplies image encoding,
+AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
+runtime, bindings, test scripts or build scripts are used by this project.
+Physical camera performance and image quality have **not been measured**.
 
-- Reusable libcamera requests and persistently mapped DMA-BUF planes.
-- Bounded FIFO/latest-ready queues with explicit, generation-checked frame leases.
-- DMA-BUF CPU read synchronization; stop preserves outstanding leased mappings.
-- Processed RGB, optional paired native raw stream, exposure/gain/focus controls.
-- Lossless PPM and native JPEG with 4:4:4 sampling; capture metadata sidecars.
-- Zig, C and Python interfaces; deterministic synthetic backend for development.
-- Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
+Version 0.19 adds native async recording rotation and recovery preparation.
+Exclusive file creation, Home container/AAC setup and output-worker allocation
+run on bounded Zig workers. Capture publishes prepared replacements at keyframe
+boundaries. Stable output IDs, lifetime retry budgets, isolated failures and
+identity-checked cancellation cleanup remain explicit.
 
-New in 0.18: async recording startup and split preparation with cooperative
-cancellation and owned cleanup. Home container/AAC headers and sink worker
-allocation run outside capture locks; a reserved native recipe protects each
-replacement until keyframe staging. Reuses Home's preparation publication gate.
-Existing bounded sink I/O, lifecycle/drain/close jobs and media codecs remain.
-No FFmpeg.
-[Output objects and PTS](docs/output-objects.md),
-[async snapshots and delayed A/V](docs/async-delayed.md), [coverage and gaps](docs/parity.md).
+The former Python facade has been removed. This is a feature-oriented alternative
+to Picamera2, not a drop-in package or a claim of full parity. The Bun facade
+covers a subset of the native ABI; see [coverage and gaps](docs/parity.md).
 
-## Build on Raspberry Pi OS (64-bit)
+## Build
 
-Install **Zig 0.15.2** and the system libraries matching your Raspberry Pi OS image:
+Use **Zig 0.15.2** and **Bun 1.4.3**. On 64-bit Raspberry Pi OS:
 
 ```sh
 sudo apt update
 sudo apt install build-essential libcamera-dev libsdl2-dev libx264-dev libx265-dev pkg-config
 zig build -Dpreview=true -Dcodecs=true -Doptimize=ReleaseSafe
+bun install --frozen-lockfile
 ./zig-out/bin/zig-camera info
-./zig-out/bin/zig-camera capture --output photo.jpg --warmup 60
-# Default size comes from libcamera's still configuration. Inspect `info` first.
-./zig-out/bin/zig-camera capture --raw --output photo.ppm
-./zig-out/bin/zig-camera capture --output photo.dng --warmup 60
+./zig-out/bin/zig-camera capture --output trail.jpg --warmup 60
+./zig-out/bin/zig-camera capture --output trail.dng --warmup 60
 ./zig-out/bin/zig-camera preview --width 1280 --height 720 --frames 0
-./zig-out/bin/zig-camera record --width 1280 --height 720 --fps 30 --frames 300 --output trail.mkv
-./zig-out/bin/zig-camera record --codec h264 --width 1920 --height 1080 --fps 30 --bitrate 12000000 --gop 60 --output trail.mp4
-./zig-out/bin/zig-camera record --codec hevc --width 1920 --height 1080 --fps 30 --quality 90 --gop 60 --output trail-hevc.mp4
+./zig-out/bin/zig-camera record --codec h264 --width 1920 --height 1080 --fps 30 --frames 300 --rotate-pattern 'trail-{index:03}.mp4' --rotate-ms 5000
 ```
 
-JPEG defaults to quality 98 and no chroma subsampling. PPM is lossless 8-bit
-processed RGB, not sensor raw. `--raw` writes paired native planes to
-`photo.ppm.raw.N` and records their negotiated layout in `photo.ppm.json`.
-Native raw plane dumps stay in their negotiated format. `.dng` output negotiates
-uncompressed Bayer and writes calibrated metadata with streamed sample conversion.
-When available, ISP noise reduction uses the HighQuality still-image policy;
-this can limit frame rate and is matched in the Picamera2 comparison.
-Manual exposure requires both `--exposure-us` and `--gain`. Autofocus runs
-continuously when available; `--lens` requests manual focus in dioptres.
-Configuration may be adjusted by libcamera; always inspect negotiated geometry.
+The rotation pattern defines index zero's initial file and subsequent files.
+Existing destinations fail; rotation does not overwrite or delete old recordings.
+Duration and byte limits are soft because preparation and keyframe delivery take
+time. Storage/construction failures are observable through automation state and
+leave the existing healthy sink recording. The CLI reports errors after cleanup.
 
-## Develop without a camera
+JPEG defaults to quality 98 with 4:4:4 sampling. DNG requires uncompressed Bayer;
+PiSP compressed raw is unsupported. Codec options enable direct x264/x265 links.
+Add `-Daac=true` with standalone FDK AAC installed for AAC MP4, `-Daudio=true`
+with ALSA for microphone capture. Hardware encoding remains unsupported.
+The libcamera bridge uses the system C++ toolchain and distribution STL ABI.
+
+## TypeScript / Bun
+
+```ts
+import { Camera, Recorder } from './ts'
+
+await using camera = new Camera({ width: 1920, height: 1080, role: 'video' })
+await using recorder = new Recorder('trail-000.mp4', {
+  width: 1920, height: 1080, fps: 30, codec: 'h264', gop: 60,
+  exclusive: true, isolate: true,
+  io: { maxBytes: 16 * 1024 * 1024, maxOperations: 4096 },
+})
+recorder.setRotation('trail-{index:03}.mp4', { durationMs: 5000 })
+const recording = camera.startRecording(recorder)
+const metadata = await camera.captureMetadata()
+console.log(metadata)
+await Bun.sleep(10_000)
+console.log(recorder.automaticState())
+await recording.close()
+```
+
+`ZIG_CAMERA_LIBRARY` selects an alternate shared-library path. Synthetic builds
+require `new Camera({ simulate: true, ... })`; no real camera is silently replaced.
+Frame descriptors are linear leases. Use `using frame = camera.acquire()` and
+release before leaving the camera scope. Copies returned by `copyRGB` and
+`copyStream` own their bytes. Do not pass a released descriptor to low-level FFI.
+
+Bun polls native jobs without waiting on their I/O. Recorder close, fixed-prefix
+drains and owned snapshots execute on Bun workers. Encoding and bounded camera
+acquisition remain synchronous FFI calls; Bun is not a hard realtime scheduler.
+See [native jobs](docs/native-jobs.md) for cancellation and serialization rules.
+
+## Develop without hardware
 
 ```sh
 zig build test -Dlibcamera=false -Djpeg=false
 zig build -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseSafe
-./zig-out/bin/zig-camera capture --simulate --width 640 --height 480 --output test.ppm
+bun install --frozen-lockfile
+bun run typecheck
+bun test tests/ts
 zig build bench -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseFast
-PYTHONPATH=python python3 -m unittest discover -s tests -v
 ```
 
-Synthetic output requires explicit `--simulate`; synthetic timing is not camera
-FPS. The Linux backend is selected by default on Linux, synthetic on macOS.
-Home native JPEG and MJPEG recording build without external codec dependencies.
-`-Djpeg=true` optionally selects system libjpeg for still-image acceleration.
-`-Dpreview=true` enables SDL2 windowed preview; `-Dvideo=false` disables recording.
-`-Dcodecs=true` enables Home’s AVC/HEVC adapter and links libx264/libx265 directly.
-Without it those codecs fail explicitly. MP4 is streamed as fragments; bitrate
-is bits/sec (0 selects CRF), and quality 1..100 maps to CRF 51..0 (AVC minimum 1). This currently
-supports 8-bit SDR 4:2:0 software encoding. Optional ALSA PCM A/V uses Matroska;
-Add `-Daac=true` for AAC MP4; Pi hardware encoding remains unsupported.
-The real backend builds natively using the system C++ compiler (`CXX` may select
-an alternate compatible compiler). Cross-compiling the synthetic core is supported;
-real libcamera builds require the target system's matching headers and runtime.
-
-## Ownership
-
-```zig
-const camera = @import("camera");
-var config = camera.defaultConfig();
-config.width = 1920;
-config.height = 1080;
-const cam = try camera.Camera.init(config);
-defer cam.deinit() catch unreachable;
-try cam.start();
-defer cam.stop() catch unreachable;
-var frame = try cam.acquire(5000);
-defer frame.release() catch unreachable;
-const rgb = try frame.rgb(); // borrowed RGB bytes, with row stride
-_ = rgb;
-```
-
-A frame lease keeps its camera buffers out of circulation. Release it exactly
-once, after every CPU/GPU/device user has finished. Views and borrowed file
-descriptors expire on release. Stop preserves leases; close and restart refuse
-outstanding leases. Holding every buffer stalls capture rather than allocating
-more memory. `latest` drops older *ready* frames at acquisition, never a leased
-frame; `--fifo` preserves ready order. Lifecycle calls/close require caller
-serialization; frame acquisition/release/stats may run on separate threads.
-
-## Python
-
-```python
-from zigcamera import Camera
-
-with Camera(width=1920, height=1080) as camera:
-    camera.start()
-    for _ in range(30):
-        with camera.acquire():
-            pass  # Let exposure, white balance and autofocus settle.
-    with camera.acquire() as frame:
-        frame.save_jpeg("trail.jpg", quality=98)
-        with frame.plane() as rgb_bytes:
-            print(rgb_bytes[0])  # Read-only borrowed view, includes row padding.
-        owned_rgb = frame.copy_rgb()  # Explicit tightly packed copy.
-```
-
-Install the Python wrapper with `python3 -m pip install .` after building the
-shared library, or set `PYTHONPATH=python`. Set `ZIG_CAMERA_LIBRARY` to the
-installed `libzigcamera.so` if it is outside the system library search path.
-NumPy is optional: `frame.numpy()` returns an owned array and
-`frame.mapped_array()` borrows one inside a context. Borrowed views must not
-escape the frame lease. Use `Camera(simulate=True)` with synthetic builds.
+Linux CI builds and loads the real backend on x86_64 and aarch64, retaining the
+no-camera smoke test. Independent OpenH264/libde265/FAAD2/libjpeg and LibRaw checks
+validate generated media without FFmpeg. Synthetic results do not establish Pi
+throughput, optical quality, microphone latency or physical A/V synchronization.
 
 See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
-[benchmarks](docs/performance.md), [Home reuse audit](docs/home-reuse.md), and
-[Pi 5 camera selection](docs/hardware.md).
-
-## Scope
-
-Implemented: single-camera still/continuous capture, paired processed/raw streams,
-frame leases, selected controls, metadata, JPEG/PPM/DNG, SDL preview, Home MJPEG/MKV,
-optional Home AVC/HEVC/MP4 recording, typed runtime controls, autofocus jobs,
-async preview, and a Picamera2-style Python subset.
-Remaining: AV1, additional audio codecs, hardware encoding, overlays/DRM/Qt preview, complete
-Picamera2 API signatures, stereo sync, HDR controls, and arbitrary vendor controls.
-Keep Picamera2 for those features until equivalent paths are implemented and
-validated. Sensor mode, lens, lighting and ISP tuning dominate image quality;
-removing Python does not add sensor detail or raise sensor frame-rate limits.
+[Home reuse](docs/home-reuse.md), [hardware](docs/hardware.md), and
+[performance acceptance](docs/performance.md). License: MIT; optional codec and
+system libraries retain their own licenses and notices.

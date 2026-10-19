@@ -32,16 +32,19 @@ const Reservations = struct {
     mutex: std.Thread.Mutex = .{},
     slots: [2]?Identity = .{ null, null },
     preparing: [8]?[3]?Identity = .{null} ** 8,
+    opening: [8]bool = @splat(false),
     refs: usize = 1,
     fn check(s: *Reservations, id: Identity) !void {
         s.mutex.lock();
         defer s.mutex.unlock();
+        for (s.opening) |pending| if (pending) return error.Busy;
         for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
         for (s.preparing) |slot| if (slot) |ids| for (ids) |other| if (other) |value| if (id.equal(value)) return error.Busy;
     }
     fn reserve(s: *Reservations, id: Identity) !usize {
         s.mutex.lock();
         defer s.mutex.unlock();
+        for (s.opening) |pending| if (pending) return error.Busy;
         for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
         for (s.preparing) |slot| if (slot) |ids| for (ids) |other| if (other) |value| if (id.equal(value)) return error.Busy;
         for (&s.slots, 0..) |*slot, i| if (slot.* == null) {
@@ -51,15 +54,17 @@ const Reservations = struct {
         };
         return error.Busy;
     }
-    fn reservePreparation(s: *Reservations, ids: [3]?Identity) !usize {
+    fn reservePreparation(s: *Reservations, ids: [3]?Identity, opening: bool) !usize {
         s.mutex.lock();
         defer s.mutex.unlock();
         for (ids) |maybe| if (maybe) |id| {
+            for (s.opening) |pending| if (pending) return error.Busy;
             for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
             for (s.preparing) |slot| if (slot) |others| for (others) |other| if (other) |value| if (id.equal(value)) return error.Busy;
         };
         for (&s.preparing, 0..) |*slot, i| if (slot.* == null) {
             slot.* = ids;
+            s.opening[i] = opening;
             s.refs += 1;
             return i;
         };
@@ -68,6 +73,7 @@ const Reservations = struct {
     fn releasePreparation(s: *Reservations, slot: usize) void {
         s.mutex.lock();
         s.preparing[slot] = null;
+        s.opening[slot] = false;
         s.mutex.unlock();
         s.release(null);
     }
@@ -362,6 +368,8 @@ const Output = struct {
 };
 const Recorder = struct {
     preparing: [8]?*Prepared = .{null} ** 8,
+    jobs: [8]?*Preparation = .{null} ** 8,
+    automatic: [8]?Automatic = .{null} ** 8,
     encoder: jpeg.Encoder,
     output: ?*Output = null,
     next: ?*Output = null,
@@ -389,6 +397,7 @@ const Recorder = struct {
     delay_cut: ?u64 = null,
     delay_scratch: []u8 = &.{},
     fn preparingId(self: *Recorder, id: u64) bool {
+        if (hasJob(self, id)) return true;
         for (self.preparing) |slot| if (slot) |job| if (job.id == id) return true;
         return false;
     }
@@ -406,6 +415,7 @@ const Recorder = struct {
         return @intCast(@as(u64, 1000000) * self.config.fps_den / self.config.fps_num);
     }
     fn deinit(self: *Recorder) void {
+        for (self.automatic) |entry| if (entry) |value| A.free(value.pattern);
         if (self.output) |out| out.deinit();
         if (self.next) |out| out.deinit();
         for (self.outputs.entries) |entry| if (entry.value) |out| out.deinit();
@@ -750,6 +760,7 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     const first = if (self.frames == 0) ts else self.first_ns;
     const pts = (ts - first) / 1000;
     if (self.config.codec != c.ZC_MJPEG and (pts > std.math.maxInt(i64) or (self.frames != 0 and (pts <= (self.last_ns - first) / 1000 or pts - (self.last_ns - first) / 1000 > std.math.maxInt(u32))))) return c.ZC_INVALID;
+    _ = pollPreparations(p);
     self.first_ns = first;
     self.pollIo() catch |err| {
         self.failed = true;
@@ -762,6 +773,7 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     self.first_ns = first;
     self.last_ns = ts;
     self.frames += 1;
+    scheduleAutomatic(self);
     return c.ZC_OK;
 }
 fn writeImpl(self: *Recorder, s: *const c.zc_stream, ns: u64, pts: u64) !void {
@@ -889,7 +901,20 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
     count.* = 0;
     if (results != null and capacity < 8) return c.ZC_INVALID;
     const self = recorder(p);
-    for (self.preparing) |slot| if (slot != null) return c.ZC_BUSY;
+    // External recipes remain caller-owned. Internal jobs are cancelled/joined
+    // before recorder storage is consumed. Never strand a worker on close.
+    for (self.preparing) |slot| if (slot) |recipe| {
+        var internal = false;
+        for (self.jobs) |job| if (job) |j| {
+            if (j.recipe == recipe) internal = true;
+        };
+        if (!internal) return c.ZC_BUSY;
+    };
+    var closing_jobs: [8]?*Preparation = @splat(null);
+    for (self.jobs, 0..) |maybe, i| if (maybe) |job| {
+        if (job.automatic == null) closing_jobs[i] = job;
+    };
+    const preparation_error = closePreparations(self);
     defer self.deinit();
     if (self.output) |out| if (out.worker) |worker| worker.finalize();
     for (self.outputs.entries) |entry| if (entry.value) |out| {
@@ -953,10 +978,17 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
         if (results) |buffer| buffer[count.*] = .{ .id = id, .state = stateOf(out, if (id == 0) self.next != null else out.next != null) };
         count.* += 1;
     };
-    return if (result != c.ZC_OK) result else if (pending) c.ZC_STATE else c.ZC_OK;
+    // Retained split handles include late retirement errors observed by close.
+    for (closing_jobs) |maybe| if (maybe) |job| {
+        if (job.staged and job.result == c.ZC_OK) if (self.getOutput(job.id)) |out| {
+            job.result = if (out.split_error != c.ZC_OK) out.split_error else out.failure;
+        };
+    };
+    return if (result != c.ZC_OK) result else if (preparation_error != c.ZC_OK) preparation_error else if (pending) c.ZC_STATE else c.ZC_OK;
 }
 
 test {
+    _ = @import("video_async_test.zig");
     if (aac_enabled) _ = @import("home/native_aac_test.zig");
     _ = jpeg;
     _ = mkv;
@@ -1406,6 +1438,7 @@ pub fn outputDelay(p: *c.zc_recorder, id: u64, state: *c.zc_output_delay) c_int 
 }
 pub fn setOutputRecovery(p: *c.zc_recorder, id: u64, limit: u32, initial: u64, maximum: u64) c_int {
     const self = recorder(p);
+    if (self.preparingId(id)) return c.ZC_BUSY;
     if (self.failed or !self.isolate) return c.ZC_STATE;
     const out = self.getOutput(id) orelse return c.ZC_STATE;
     out.retry = Retry.init(limit, initial, maximum) catch return c.ZC_INVALID;
@@ -1505,6 +1538,9 @@ const Prepared = struct {
     callbacks: ?c.zc_output_callbacks,
     file: ?std.fs.File,
     is_mp4: bool,
+    recovering: bool = false,
+    deferred_path: ?[:0]u8 = null,
+    created_identity: ?Identity = null,
     attempted: bool = false,
     built: bool = false,
     io_config: ?io.Config,
@@ -1518,10 +1554,10 @@ pub fn prepareSplit(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*cons
     const old = self.getOutput(id) orelse return c.ZC_STATE;
     if (self.failed or old.failure != c.ZC_OK or old.generation == std.math.maxInt(u64)) return c.ZC_STATE;
     if (self.preparingId(id) or old.retired != null or (if (id == 0) self.next != null else old.next != null)) return c.ZC_BUSY;
-    prepareImpl(self, old, id, path, cb, result) catch |err| return status(err);
+    prepareImpl(self, old, id, path, cb, false, false, result) catch |err| return status(err);
     return c.ZC_OK;
 }
-fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, result: *?*c.zc_prepared_output) !void {
+fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovering: bool, deferred: bool, result: *?*c.zc_prepared_output) !void {
     if (self.reservations == null) {
         self.reservations = try A.create(Reservations);
         self.reservations.?.* = .{};
@@ -1532,20 +1568,24 @@ fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb:
     var ids: [3]?Identity = .{ null, null, null };
     if (path) |name| {
         try validate(std.mem.span(name), &self.config, self.audio != null);
-        file = try reserveFile(name, self.recording.exclusive != 0, self.avoid(), registry);
-        ids[0] = try Identity.of(file.?);
+        if (!deferred) {
+            file = try reserveFile(name, self.recording.exclusive != 0, self.avoid(), registry);
+            ids[0] = try Identity.of(file.?);
+        }
     } else {
         try checkCallbacks(self, cb.?, id == 0);
         for ([_]i32{ cb.?.file_fd, cb.?.pts_fd, cb.?.secondary_pts_fd }, 0..) |fd, i| {
             if (fd >= 0) ids[i] = try Identity.of(.{ .handle = fd });
         }
     }
-    const slot = try registry.reservePreparation(ids);
+    const slot = try registry.reservePreparation(ids, deferred and path != null);
     errdefer registry.releasePreparation(slot);
     const headers = try A.dupe(u8, self.headers);
     errdefer A.free(headers);
+    const deferred_path = if (deferred and path != null) try A.dupeZ(u8, std.mem.span(path.?)) else null;
+    errdefer if (deferred_path) |name| A.free(name);
     const job = try A.create(Prepared);
-    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = old.io_config, .predecessor = old.worker };
+    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = old.io_config, .predecessor = if (recovering) null else old.worker, .recovering = recovering, .deferred_path = deferred_path };
     self.preparing[slot] = job;
     result.* = @ptrCast(job);
 }
@@ -1553,6 +1593,17 @@ pub fn buildPrepared(p: *c.zc_prepared_output) c_int {
     const job: *Prepared = @ptrCast(@alignCast(p));
     if (job.attempted) return c.ZC_STATE;
     job.attempted = true;
+    if (job.deferred_path) |name| {
+        // Opening slots reject alias-bearing lifecycle operations until their
+        // new identity is published. Never hold a registry mutex across open:
+        // another output must still admit preparation if filesystem I/O stalls.
+        job.file = std.fs.cwd().createFile(name, .{ .truncate = false, .exclusive = true }) catch |err| return status(err);
+        job.created_identity = Identity.of(job.file.?) catch |err| return status(err);
+        job.registry.mutex.lock();
+        job.registry.preparing[job.slot] = .{ job.created_identity, null, null };
+        job.registry.opening[job.slot] = false;
+        job.registry.mutex.unlock();
+    }
     job.output = if (job.callbacks) |cb| Output.initCallbacks(cb, &job.config, job.headers, &job.recording, job.bitrate) catch |err| return status(err) else Output.initFile(job.file.?, job.is_mp4, &job.config, job.headers, &job.recording, job.bitrate) catch |err| return status(err);
     job.file = null;
     // The registered recipe prevents removal/recovery/close of its predecessor.
@@ -1566,27 +1617,362 @@ pub fn commitPrepared(p: *c.zc_recorder, prepared: *c.zc_prepared_output) c_int 
     const job: *Prepared = @ptrCast(@alignCast(prepared));
     if (job.owner != self or !job.built or job.output == null or self.failed) return c.ZC_STATE;
     const old = self.getOutput(job.id) orelse return c.ZC_STATE;
-    if (old.failure != c.ZC_OK or old.generation != job.generation or old.retired != null or (if (job.id == 0) self.next != null else old.next != null)) return c.ZC_STATE;
+    if ((if (job.recovering) old.failure == c.ZC_OK or !self.isolate else old.failure != c.ZC_OK) or old.generation != job.generation or old.retired != null or (if (job.id == 0) self.next != null else old.next != null)) return c.ZC_STATE;
+    if (job.recovering and old.worker != null and !old.worker.?.ready()) return c.ZC_BUSY;
     const out = job.output.?;
     // No sink I/O or user hooks here: expensive writers/AAC/header operations
     // were completed on the preparation owner before this publication boundary.
     self.forceKey() catch |err| return status(err);
-    if (job.id == 0) self.next = out else old.next = out;
-    old.split_state = c.ZC_SPLIT_PENDING;
-    self.preparing[job.slot] = null;
-    job.registry.releasePreparation(job.slot);
-    job.owner = null;
-    job.output = null;
+    if (job.recovering) {
+        old.transfer(out, true);
+        out.generation = old.generation + 1;
+        if (job.id == 0) {
+            self.output = out;
+            self.segments += 1;
+        } else _ = self.outputs.replace(job.id, out) catch unreachable;
+        // Failed workers are complete; defer destruction to the recipe's worker.
+        job.output = old;
+    } else {
+        if (job.id == 0) self.next = out else old.next = out;
+        old.split_state = c.ZC_SPLIT_PENDING;
+        job.output = null;
+    }
+    detachPrepared(job);
     return c.ZC_OK;
+}
+fn detachPrepared(job: *Prepared) void {
+    if (job.owner) |owner| {
+        owner.preparing[job.slot] = null;
+        job.owner = null;
+    }
 }
 pub fn closePrepared(p: *c.zc_prepared_output) void {
     const job: *Prepared = @ptrCast(@alignCast(p));
-    if (job.owner) |owner| {
-        owner.preparing[job.slot] = null;
-        job.registry.releasePreparation(job.slot);
-    }
+    detachPrepared(job);
     if (job.output) |out| out.deinit();
     if (job.file) |file| file.close();
+    job.registry.releasePreparation(job.slot);
+    if (job.deferred_path) |name| A.free(name);
     A.free(job.headers);
     A.destroy(job);
+}
+
+const Gate = @import("home/preparation_gate.zig").Gate;
+const PathPattern = @import("home/recording_path.zig").Pattern;
+const Automatic = struct {
+    id: u64,
+    pattern: []u8,
+    next_index: u64,
+    recovery: bool,
+    exhausted_index: bool = false,
+    error_code: c_int = c.ZC_OK,
+};
+const Preparation = struct {
+    owner: ?*Recorder,
+    slot: usize,
+    id: u64,
+    generation: u64,
+    recipe: ?*Prepared,
+    path: ?[:0]u8,
+    identity: ?Identity = null,
+    thread: ?std.Thread = null,
+    ready: std.atomic.Value(bool) = .init(false),
+    release: std.Thread.ResetEvent = .{},
+    finished: std.Thread.ResetEvent = .{},
+    gate: Gate = .{},
+    build_code: c_int = c.ZC_OK,
+    result: c_int = c.ZC_TIMEOUT,
+    cleanup_code: c_int = c.ZC_OK,
+    released: bool = false,
+    staged: bool = false,
+    keep: bool = false,
+    automatic: ?usize = null,
+    fn run(self: *Preparation) void {
+        const recipe = self.recipe.?;
+        self.build_code = buildPrepared(@ptrCast(recipe));
+        self.identity = recipe.created_identity;
+        self.ready.store(true, .release);
+        self.release.wait();
+        // Recorder publication/detachment happens before release. No worker
+        // touches mutable recorder state, even when cancellation wins the race.
+        if (!self.keep) self.cleanup_code = self.removeCreated();
+        closePrepared(@ptrCast(recipe));
+        self.finished.set();
+    }
+    fn removeCreated(self: *Preparation) c_int {
+        const identity = self.identity orelse return c.ZC_OK;
+        const path = self.path orelse return c.ZC_OK;
+        const stat = std.posix.fstatat(std.posix.AT.FDCWD, path, std.posix.AT.SYMLINK_NOFOLLOW) catch |err| return if (err == error.FileNotFound) c.ZC_OK else c.ZC_IO;
+        if (stat.dev == identity.dev and stat.ino == identity.ino) std.fs.cwd().deleteFile(path) catch |err| return if (err == error.FileNotFound) c.ZC_OK else c.ZC_IO;
+        return c.ZC_OK;
+    }
+    fn destroy(self: *Preparation) void {
+        if (self.thread) |thread| thread.join();
+        if (self.path) |path| A.free(path);
+        A.destroy(self);
+    }
+};
+fn hasJob(self: *Recorder, id: u64) bool {
+    for (self.jobs) |job| if (job) |value| if (value.id == id and value.result == c.ZC_TIMEOUT) return true;
+    return false;
+}
+fn beginPreparation(self: *Recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: bool, automatic: ?usize, result: *?*c.zc_preparation_job) c_int {
+    result.* = null;
+    if ((path == null) == (cb == null)) return c.ZC_INVALID;
+    const old = self.getOutput(id) orelse return c.ZC_STATE;
+    if (self.failed or old.generation == std.math.maxInt(u64) or (if (recovery) !self.isolate or old.failure == c.ZC_OK else old.failure != c.ZC_OK)) return c.ZC_STATE;
+    if (self.preparingId(id) or hasJob(self, id) or old.retired != null or (if (id == 0) self.next != null else old.next != null)) return c.ZC_BUSY;
+    if (recovery and old.worker != null and !old.worker.?.ready()) return c.ZC_BUSY;
+    var slot: ?usize = null;
+    for (self.jobs, 0..) |job, i| if (job == null) {
+        slot = i;
+        break;
+    };
+    const index = slot orelse return c.ZC_BUSY;
+    const name = if (path) |value| A.dupeZ(u8, std.mem.span(value)) catch return c.ZC_NOMEM else null;
+    var prepared: ?*c.zc_prepared_output = null;
+    prepareImpl(self, old, id, path, cb, recovery, path != null, &prepared) catch |err| {
+        if (name) |value| A.free(value);
+        return status(err);
+    };
+    const job = A.create(Preparation) catch {
+        closePrepared(prepared.?);
+        if (name) |value| A.free(value);
+        return c.ZC_NOMEM;
+    };
+    job.* = .{ .owner = self, .slot = index, .id = id, .generation = old.generation, .recipe = @ptrCast(@alignCast(prepared.?)), .path = name, .automatic = automatic };
+    _ = job.gate.claim();
+    self.jobs[index] = job;
+    job.thread = std.Thread.spawn(.{}, Preparation.run, .{job}) catch {
+        self.jobs[index] = null;
+        closePrepared(prepared.?);
+        if (name) |value| A.free(value);
+        A.destroy(job);
+        return c.ZC_NOMEM;
+    };
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
+}
+pub fn prepareRecovery(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, result: *?*c.zc_prepared_output) c_int {
+    result.* = null;
+    if ((path == null) == (cb == null)) return c.ZC_INVALID;
+    const self = recorder(p);
+    const old = self.getOutput(id) orelse return c.ZC_STATE;
+    if (self.failed or !self.isolate or old.failure == c.ZC_OK or old.generation == std.math.maxInt(u64)) return c.ZC_STATE;
+    if (self.preparingId(id) or hasJob(self, id) or old.retired != null or (if (id == 0) self.next != null else old.next != null) or (old.worker != null and !old.worker.?.ready())) return c.ZC_BUSY;
+    prepareImpl(self, old, id, path, cb, true, false, result) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn prepareAsync(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: u32, result: *?*c.zc_preparation_job) c_int {
+    if (recovery > 1) {
+        result.* = null;
+        return c.ZC_INVALID;
+    }
+    return beginPreparation(recorder(p), id, path, cb, recovery != 0, null, result);
+}
+fn advancePreparation(self: *Recorder, job: *Preparation) void {
+    if (job.result != c.ZC_TIMEOUT) return;
+    if (!job.released and job.ready.load(.acquire)) {
+        if (job.build_code != c.ZC_OK) {
+            _ = job.gate.fail();
+        } else if (!job.gate.cancel_requested and !self.failed) {
+            _ = job.gate.ready();
+            job.build_code = commitPrepared(@ptrCast(self), @ptrCast(job.recipe.?));
+            if (job.build_code == c.ZC_OK) {
+                job.staged = true;
+                job.keep = true;
+                _ = job.gate.publish();
+            } else _ = job.gate.fail();
+        } else if (!job.gate.cancel_requested) {
+            job.build_code = c.ZC_STATE;
+            _ = job.gate.fail();
+        }
+        // Unregister on the serialized owner before the worker destroys owned
+        // headers/writers/files. Mutators remain blocked by the live job slot.
+        detachPrepared(job.recipe.?);
+        job.recipe = null;
+        job.released = true;
+        job.release.set();
+    }
+    if (!job.released or !job.finished.isSet()) return;
+    if (!job.staged) {
+        _ = job.gate.cleaned();
+        job.result = if (job.build_code != c.ZC_OK) job.build_code else if (job.cleanup_code != c.ZC_OK) job.cleanup_code else c.ZC_STALE;
+        return;
+    }
+    const out = self.getOutput(job.id) orelse {
+        job.result = c.ZC_STATE;
+        return;
+    };
+    out.sync();
+    if (out.generation > job.generation) {
+        if (out.retired != null) return;
+        job.result = if (out.split_error != c.ZC_OK) out.split_error else out.failure;
+    } else if (out.failure != c.ZC_OK or self.failed) {
+        _ = cancelOutputSplit(@ptrCast(self), job.id);
+        const cleanup = job.removeCreated();
+        job.result = if (out.failure != c.ZC_OK) out.failure else if (cleanup != c.ZC_OK) cleanup else c.ZC_IO;
+    }
+}
+pub fn pollPreparations(p: *c.zc_recorder) c_int {
+    const self = recorder(p);
+    for (&self.jobs) |*slot| if (slot.*) |job| {
+        advancePreparation(self, job);
+        if (job.automatic) |index| {
+            if (job.result != c.ZC_TIMEOUT) {
+                if (self.automatic[index]) |*automatic| {
+                    automatic.error_code = job.result;
+                    if (job.result == c.ZC_OK and !automatic.recovery) {
+                        automatic.next_index = std.math.add(u64, automatic.next_index, 1) catch blk: {
+                            automatic.error_code = c.ZC_INVALID;
+                            automatic.exhausted_index = true;
+                            break :blk automatic.next_index;
+                        };
+                    }
+                }
+                slot.* = null;
+                job.owner = null;
+                job.destroy();
+            }
+        }
+    };
+    return c.ZC_OK;
+}
+pub fn preparationState(p: *c.zc_preparation_job, state: *c.zc_preparation_job_state) c_int {
+    const job: *Preparation = @ptrCast(@alignCast(p));
+    state.* = .{ .id = job.id, .generation = job.generation, .phase = @intFromEnum(job.gate.phase), .staged = @intFromBool(job.staged), .done = @intFromBool(job.result != c.ZC_TIMEOUT), .error_code = job.result };
+    return c.ZC_OK;
+}
+pub fn cancelPreparation(p: *c.zc_preparation_job) c_int {
+    const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.result != c.ZC_TIMEOUT or job.staged) return c.ZC_STATE;
+    return if (job.gate.cancel()) c.ZC_OK else c.ZC_STATE;
+}
+pub fn closePreparation(p: *c.zc_preparation_job) c_int {
+    const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.result == c.ZC_TIMEOUT) return c.ZC_BUSY;
+    if (job.owner) |owner| owner.jobs[job.slot] = null;
+    job.destroy();
+    return c.ZC_OK;
+}
+fn closePreparations(self: *Recorder) c_int {
+    var failure: c_int = c.ZC_OK;
+    for (&self.jobs) |*slot| if (slot.*) |job| {
+        const pending_on_close = job.result == c.ZC_TIMEOUT;
+        if (pending_on_close) {
+            if (!job.staged) _ = job.gate.cancel();
+            // Explicit teardown can wait for uninterruptible user/native I/O.
+            while (!job.ready.load(.acquire)) std.Thread.sleep(100_000);
+            advancePreparation(self, job);
+            job.finished.wait();
+            advancePreparation(self, job);
+            if (job.result == c.ZC_TIMEOUT) {
+                const out = self.getOutput(job.id);
+                if (out != null and out.?.generation > job.generation) {
+                    job.result = c.ZC_OK; // recorder finalization drains retired I/O
+                } else {
+                    _ = cancelOutputSplit(@ptrCast(self), job.id);
+                    const cleanup = job.removeCreated();
+                    if (cleanup != c.ZC_OK and failure == c.ZC_OK) failure = cleanup;
+                    job.result = c.ZC_STALE;
+                }
+            }
+        }
+        if (pending_on_close and job.cleanup_code != c.ZC_OK and failure == c.ZC_OK) failure = job.cleanup_code;
+        job.owner = null;
+        slot.* = null;
+        if (job.automatic != null) job.destroy();
+    };
+    return failure;
+}
+pub fn setAutomatic(p: *c.zc_recorder, id: u64, pattern: ?[*:0]const u8, next: u64, recovery: u32, duration: u64, bytes: u64) c_int {
+    const self = recorder(p);
+    if (recovery > 1 or self.getOutput(id) == null or hasJob(self, id) or self.preparingId(id)) return c.ZC_STATE;
+    var slot: ?usize = null;
+    for (self.automatic, 0..) |entry, i| if (entry) |value| {
+        if (value.id == id) {
+            slot = i;
+            break;
+        }
+    };
+    if (pattern == null) {
+        if (slot) |i| {
+            A.free(self.automatic[i].?.pattern);
+            self.automatic[i] = null;
+        }
+        return c.ZC_OK;
+    }
+    if (recovery != 0 and !self.isolate) return c.ZC_STATE;
+    if (recovery == 0 and (id != 0 or (duration == 0 and bytes == 0))) return c.ZC_INVALID;
+    const text = std.mem.span(pattern.?);
+    const parsed = PathPattern.init(text) catch return c.ZC_INVALID;
+    var buffer: [4097]u8 = undefined;
+    const name = parsed.format(&buffer, next) catch return c.ZC_INVALID;
+    validate(name, &self.config, self.audio != null) catch |err| return status(err);
+    if (slot == null) for (self.automatic, 0..) |entry, i| if (entry == null) {
+        slot = i;
+        break;
+    };
+    const i = slot orelse return c.ZC_BUSY;
+    const owned = A.dupe(u8, text) catch return c.ZC_NOMEM;
+    if (self.automatic[i]) |value| A.free(value.pattern);
+    self.automatic[i] = .{ .id = id, .pattern = owned, .next_index = next, .recovery = recovery != 0 };
+    if (recovery == 0) self.rotation = .{ .duration_ns = duration, .max_bytes = bytes };
+    return c.ZC_OK;
+}
+pub fn automaticState(p: *c.zc_recorder, id: u64, state: *c.zc_automatic_state) c_int {
+    const self = recorder(p);
+    state.* = std.mem.zeroes(c.zc_automatic_state);
+    for (self.automatic) |entry| if (entry) |value| if (value.id == id) {
+        state.* = .{ .next_index = value.next_index, .error_code = value.error_code, .pending = @intFromBool(hasJob(self, id)) };
+        return c.ZC_OK;
+    };
+    return c.ZC_STATE;
+}
+fn scheduleAutomatic(self: *Recorder) void {
+    for (&self.automatic, 0..) |*entry, index| if (entry.*) |*automatic| {
+        if (automatic.exhausted_index or (!automatic.recovery and automatic.error_code != c.ZC_OK) or hasJob(self, automatic.id) or self.preparingId(automatic.id)) continue;
+        var free = false;
+        for (self.jobs) |slot| if (slot == null) {
+            free = true;
+            break;
+        };
+        if (!free) continue; // no retry claim when bounded admission is full
+        var due: u32 = 0;
+        if (automatic.recovery) {
+            if (outputRetryDue(@ptrCast(self), automatic.id, &due) != c.ZC_OK or due == 0) continue;
+        } else {
+            var stats: c.zc_recording_stats = undefined;
+            _ = recordingStats(@ptrCast(self), &stats);
+            if (stats.rotation_due == 0) continue;
+        }
+        var buffer: [4097]u8 = undefined;
+        const pattern = PathPattern.init(automatic.pattern) catch unreachable;
+        const name = pattern.format(&buffer, automatic.next_index) catch {
+            automatic.error_code = c.ZC_INVALID;
+            continue;
+        };
+        var job: ?*c.zc_preparation_job = null;
+        automatic.error_code = beginPreparation(self, automatic.id, name, null, automatic.recovery, index, &job);
+        // Every recovery construction uses a fresh name, including failures.
+        if (automatic.recovery) automatic.next_index = std.math.add(u64, automatic.next_index, 1) catch blk: {
+            automatic.error_code = c.ZC_INVALID;
+            automatic.exhausted_index = true;
+            break :blk automatic.next_index;
+        };
+    };
+}
+
+test "unresolved exclusive paths guard aliases without blocking other preparation slots" {
+    const registry = try A.create(Reservations);
+    registry.* = .{};
+    defer registry.release(null);
+    const first = try registry.reservePreparation(.{ null, null, null }, true);
+    defer registry.releasePreparation(first);
+    const second = try registry.reservePreparation(.{ null, null, null }, true);
+    defer registry.releasePreparation(second);
+    const identity: Identity = .{ .dev = 1, .ino = 2 };
+    try std.testing.expectError(error.Busy, registry.check(identity));
+    try std.testing.expectError(error.Busy, registry.reserve(identity));
+    try std.testing.expectError(error.Busy, registry.reservePreparation(.{ identity, null, null }, false));
 }

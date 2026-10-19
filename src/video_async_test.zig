@@ -1,0 +1,346 @@
+//! Ownership/concurrency regression tests use C callbacks, never a language VM.
+const std = @import("std");
+const v = @import("video.zig");
+const c = @import("abi.zig").c;
+const A = std.testing.allocator;
+const Gate = struct {
+    entered: std.Thread.ResetEvent = .{},
+    unblock: std.Thread.ResetEvent = .{},
+    failed: bool = false,
+    fn write(ctx: ?*anyopaque, _: [*c]const u8, _: u64) callconv(.c) c_int {
+        const self: *Gate = @ptrCast(@alignCast(ctx.?));
+        self.entered.set();
+        self.unblock.wait();
+        return if (self.failed) c.ZC_IO else c.ZC_OK;
+    }
+    fn callbacks(self: *Gate) c.zc_output_callbacks {
+        var cb = std.mem.zeroes(c.zc_output_callbacks);
+        cb.struct_size = @sizeOf(c.zc_output_callbacks);
+        cb.format = c.ZC_OUTPUT_MKV;
+        cb.context = self;
+        cb.write = write;
+        cb.file_fd = -1;
+        cb.pts_fd = -1;
+        cb.secondary_pts_fd = -1;
+        return cb;
+    }
+};
+fn count(ctx: ?*anyopaque, _: [*c]const c.zc_output_packet) callconv(.c) c_int {
+    const value: *usize = @ptrCast(@alignCast(ctx.?));
+    value.* += 1;
+    return c.ZC_OK;
+}
+fn fail(_: ?*anyopaque, _: [*c]const c.zc_output_packet) callconv(.c) c_int {
+    return c.ZC_IO;
+}
+fn packets(value: *usize) c.zc_output_callbacks {
+    return .{ .struct_size = @sizeOf(c.zc_output_callbacks), .format = c.ZC_OUTPUT_PACKETS, .context = value, .packet = count, .write = null, .patch = null, .file_fd = -1, .pts_fd = -1, .secondary_pts_fd = -1, .reserved = 0 };
+}
+fn recorder(value: *usize) !*c.zc_recorder {
+    const cfg = c.zc_video_config{ .width = 16, .height = 16, .fps_num = 25, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 80, .gop = 0 };
+    var opts = v.defaultRecordingOptions();
+    var out: ?*c.zc_recorder = null;
+    try std.testing.expectEqual(c.ZC_OK, v.create(&cfg, &opts, 0, &out));
+    var cb = packets(value);
+    try std.testing.expectEqual(c.ZC_OK, v.openCallbacks(out.?, &cb));
+    return out.?;
+}
+fn frameWrite(rec: *c.zc_recorder, index: u64) !void {
+    var pixels: [16 * 16 * 3]u8 = @splat(100);
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 1;
+    frame.main.width = 16;
+    frame.main.height = 16;
+    frame.main.stride = 48;
+    frame.main.plane_count = 1;
+    @memcpy(frame.main.format[0..6], "BGR888");
+    frame.main.planes[0].data = &pixels;
+    frame.main.planes[0].length = pixels.len;
+    frame.main.planes[0].bytes_used = pixels.len;
+    try std.testing.expectEqual(c.ZC_OK, v.write(rec, &frame, index * 40_000_000));
+}
+fn terminal(rec: *c.zc_recorder, job: *c.zc_preparation_job) !c.zc_preparation_job_state {
+    var timer = try std.time.Timer.start();
+    while (true) {
+        _ = v.pollPreparations(rec);
+        var state: c.zc_preparation_job_state = undefined;
+        _ = v.preparationState(job, &state);
+        if (state.done != 0) return state;
+        if (timer.read() > 5_000_000_000) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+}
+test "native preparation blocks neither capture nor healthy peers and cancellation waits for cleanup" {
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    var gate: Gate = .{};
+    defer gate.unblock.set();
+    var cb = gate.callbacks();
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, 0, null, &cb, 0, &job));
+    try gate.entered.timedWait(5_000_000_000);
+    for (0..6) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(@as(usize, 6), delivered);
+    try std.testing.expectEqual(c.ZC_BUSY, v.closePreparation(job.?));
+    try std.testing.expectEqual(c.ZC_BUSY, v.removeOutput(rec, 0));
+    try std.testing.expectEqual(c.ZC_OK, v.cancelPreparation(job.?));
+    try std.testing.expectEqual(c.ZC_STATE, v.cancelPreparation(job.?));
+    gate.unblock.set();
+    const state = try terminal(rec, job.?);
+    try std.testing.expectEqual(c.ZC_STALE, state.error_code);
+    try std.testing.expectEqual(@as(u32, c.ZC_PREPARATION_CANCELLED), state.phase);
+    try std.testing.expectEqual(c.ZC_OK, v.closePreparation(job.?));
+    try frameWrite(rec, 6);
+    try std.testing.expectEqual(@as(usize, 7), delivered);
+}
+test "claimed construction failure wins over cancellation" {
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    var gate: Gate = .{ .failed = true };
+    defer gate.unblock.set();
+    var cb = gate.callbacks();
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, 0, null, &cb, 0, &job));
+    try gate.entered.timedWait(5_000_000_000);
+    _ = v.cancelPreparation(job.?);
+    gate.unblock.set();
+    const state = try terminal(rec, job.?);
+    try std.testing.expectEqual(c.ZC_IO, state.error_code);
+    try std.testing.expectEqual(@as(u32, c.ZC_PREPARATION_FAILED), state.phase);
+    _ = v.closePreparation(job.?);
+    try frameWrite(rec, 0);
+}
+test "eight simultaneous preparation workers retain stable IDs and enforce admission" {
+    var counts: [8]usize = @splat(0);
+    var ids: [8]u64 = @splat(0);
+    const rec = try recorder(&counts[0]);
+    defer _ = v.close(rec);
+    for (1..8) |i| {
+        var cb = packets(&counts[i]);
+        try std.testing.expectEqual(c.ZC_OK, v.addCallbacks(rec, &cb, &ids[i]));
+    }
+    var gates: [8]Gate = .{Gate{}} ** 8;
+    defer for (&gates) |*gate| gate.unblock.set();
+    var jobs: [8]?*c.zc_preparation_job = @splat(null);
+    for (0..8) |i| {
+        var cb = gates[i].callbacks();
+        try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, ids[i], null, &cb, 0, &jobs[i]));
+        try gates[i].entered.timedWait(5_000_000_000);
+    }
+    var duplicate: ?*c.zc_preparation_job = null;
+    var cb = gates[0].callbacks();
+    try std.testing.expectEqual(c.ZC_BUSY, v.prepareAsync(rec, 0, null, &cb, 0, &duplicate));
+    for (0..4) |i| try frameWrite(rec, i);
+    for (counts) |value| try std.testing.expectEqual(@as(usize, 4), value);
+    for (0..8) |i| {
+        _ = v.cancelPreparation(jobs[i].?);
+        gates[i].unblock.set();
+        _ = try terminal(rec, jobs[i].?);
+        _ = v.closePreparation(jobs[i].?);
+    }
+}
+test "recovery headers build independently and fresh publication preserves quarantined generation" {
+    var delivered: usize = 0;
+    var unused: usize = 0;
+    const rec = try recorder(&unused);
+    defer _ = v.close(rec);
+    try std.testing.expectEqual(c.ZC_OK, v.setIsolation(rec, 1));
+    var broken = packets(&unused);
+    broken.packet = fail;
+    // Replace primary before any input, using the existing synchronous protocol.
+    try std.testing.expectEqual(c.ZC_OK, v.closeOutput(rec));
+    try std.testing.expectEqual(c.ZC_OK, v.openCallbacks(rec, &broken));
+    var healthy = packets(&delivered);
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, v.addCallbacks(rec, &healthy, &id));
+    try frameWrite(rec, 0);
+    var state: c.zc_output_state = undefined;
+    _ = v.outputState(rec, 0, &state);
+    try std.testing.expectEqual(c.ZC_IO, state.error_code);
+    const generation = state.generation;
+    var gate: Gate = .{};
+    defer gate.unblock.set();
+    var cb = gate.callbacks();
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, 0, null, &cb, 1, &job));
+    try gate.entered.timedWait(5_000_000_000);
+    for (1..5) |i| try frameWrite(rec, i);
+    _ = v.outputState(rec, 0, &state);
+    try std.testing.expectEqual(generation, state.generation);
+    try std.testing.expectEqual(@as(usize, 5), delivered);
+    gate.unblock.set();
+    const result = try terminal(rec, job.?);
+    try std.testing.expectEqual(c.ZC_OK, result.error_code);
+    _ = v.outputState(rec, 0, &state);
+    try std.testing.expectEqual(generation + 1, state.generation);
+    try std.testing.expectEqual(c.ZC_OK, state.error_code);
+    _ = v.closePreparation(job.?);
+    try frameWrite(rec, 5);
+}
+const Closer = struct {
+    rec: *c.zc_recorder,
+    result: c_int = c.ZC_TIMEOUT,
+    fn run(self: *Closer) void {
+        self.result = v.close(self.rec);
+    }
+};
+test "recorder close joins a blocked recipe and job ownership survives recorder destruction" {
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    var gate: Gate = .{};
+    defer gate.unblock.set();
+    var cb = gate.callbacks();
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, 0, null, &cb, 0, &job));
+    try gate.entered.timedWait(5_000_000_000);
+    var closer: Closer = .{ .rec = rec };
+    const thread = try std.Thread.spawn(.{}, Closer.run, .{&closer});
+    gate.unblock.set();
+    thread.join();
+    try std.testing.expectEqual(c.ZC_OK, closer.result);
+    var state: c.zc_preparation_job_state = undefined;
+    _ = v.preparationState(job.?, &state);
+    try std.testing.expectEqual(@as(u32, 1), state.done);
+    try std.testing.expectEqual(c.ZC_STALE, state.error_code);
+    try std.testing.expectEqual(c.ZC_OK, v.closePreparation(job.?));
+}
+
+test "automatic recovery consumes failed construction once and uses fresh indexed paths" {
+    var unused: usize = 0;
+    var delivered: usize = 0;
+    const rec = try recorder(&unused);
+    defer _ = v.close(rec);
+    _ = v.setIsolation(rec, 1);
+    _ = v.closeOutput(rec);
+    var broken = packets(&unused);
+    broken.packet = fail;
+    _ = v.openCallbacks(rec, &broken);
+    var healthy = packets(&delivered);
+    var id: u64 = 0;
+    _ = v.addCallbacks(rec, &healthy, &id);
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const absolute = try dir.dir.realpathAlloc(A, ".");
+    defer A.free(absolute);
+    const pattern = try std.fmt.allocPrintSentinel(A, "{s}/recovery-{{index}}.mkv", .{absolute}, 0);
+    defer A.free(pattern);
+    {
+        const existing = try dir.dir.createFile("recovery-1.mkv", .{});
+        defer existing.close();
+        try existing.writeAll("untouched");
+    }
+    try std.testing.expectEqual(c.ZC_OK, v.setOutputRecovery(rec, 0, 3, 0, 0));
+    try std.testing.expectEqual(c.ZC_OK, v.setAutomatic(rec, 0, pattern, 1, 1, 0, 0));
+    var generation: u64 = 0;
+    var automatic: c.zc_automatic_state = undefined;
+    for (0..200) |i| {
+        try frameWrite(rec, i);
+        std.Thread.sleep(1_000_000);
+        _ = v.pollPreparations(rec);
+        var state: c.zc_output_state = undefined;
+        _ = v.outputState(rec, 0, &state);
+        generation = state.generation;
+        _ = v.automaticState(rec, 0, &automatic);
+        if (generation == 1 and automatic.pending == 0) break;
+    }
+    try std.testing.expectEqual(@as(u64, 1), generation);
+    try std.testing.expectEqual(@as(u64, 3), automatic.next_index);
+    var recovery: c.zc_output_recovery_state = undefined;
+    _ = v.outputRecovery(rec, 0, &recovery);
+    try std.testing.expectEqual(@as(u32, 2), recovery.attempts);
+    const existing = try dir.dir.readFileAlloc(A, "recovery-1.mkv", 100);
+    defer A.free(existing);
+    try std.testing.expectEqualStrings("untouched", existing);
+    try std.testing.expect(delivered > 1);
+}
+
+test "automatic recovery exhaustion never resets or overwrites a collided target" {
+    var unused: usize = 0;
+    const rec = try recorder(&unused);
+    defer _ = v.close(rec);
+    _ = v.setIsolation(rec, 1);
+    _ = v.closeOutput(rec);
+    var broken = packets(&unused);
+    broken.packet = fail;
+    _ = v.openCallbacks(rec, &broken);
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const absolute = try dir.dir.realpathAlloc(A, ".");
+    defer A.free(absolute);
+    const pattern = try std.fmt.allocPrintSentinel(A, "{s}/{{index}}.mkv", .{absolute}, 0);
+    defer A.free(pattern);
+    for (1..4) |i| {
+        var name: [20]u8 = undefined;
+        const file = try dir.dir.createFile(try std.fmt.bufPrint(&name, "{d}.mkv", .{i}), .{});
+        file.close();
+    }
+    _ = v.setOutputRecovery(rec, 0, 3, 0, 0);
+    _ = v.setAutomatic(rec, 0, pattern, 1, 1, 0, 0);
+    for (0..50) |i| {
+        try frameWrite(rec, i);
+        std.Thread.sleep(1_000_000);
+    }
+    _ = v.pollPreparations(rec);
+    var retry: c.zc_output_recovery_state = undefined;
+    _ = v.outputRecovery(rec, 0, &retry);
+    try std.testing.expectEqual(@as(u32, 3), retry.attempts);
+    try std.testing.expectEqual(@as(u32, 1), retry.exhausted);
+    var automatic: c.zc_automatic_state = undefined;
+    _ = v.automaticState(rec, 0, &automatic);
+    try std.testing.expectEqual(@as(u64, 4), automatic.next_index);
+    try std.testing.expectEqual(@as(u32, 0), automatic.pending);
+    try std.testing.expect(automatic.error_code != c.ZC_OK);
+}
+
+const PacketGate = struct {
+    entered: std.Thread.ResetEvent = .{},
+    unblock: std.Thread.ResetEvent = .{},
+    fn packet(ctx: ?*anyopaque, _: [*c]const c.zc_output_packet) callconv(.c) c_int {
+        const self: *PacketGate = @ptrCast(@alignCast(ctx.?));
+        self.entered.set();
+        self.unblock.wait();
+        return c.ZC_IO;
+    }
+};
+test "retained split job observes late isolated retirement failure during recorder close" {
+    var unused: usize = 0;
+    var delivered: usize = 0;
+    const rec = try recorder(&unused);
+    var gate: PacketGate = .{};
+    defer gate.unblock.set();
+    _ = v.setIsolation(rec, 1);
+    _ = v.closeOutput(rec);
+    var broken = packets(&unused);
+    broken.packet = PacketGate.packet;
+    broken.context = &gate;
+    _ = v.openCallbacks(rec, &broken);
+    try std.testing.expectEqual(c.ZC_OK, v.setOutputIo(rec, 0, 1024 * 1024, 1000, 0));
+    try frameWrite(rec, 0);
+    try gate.entered.timedWait(5_000_000_000);
+    var healthy = packets(&delivered);
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, 0, null, &healthy, 0, &job));
+    var timer = try std.time.Timer.start();
+    while (true) {
+        _ = v.pollPreparations(rec);
+        var state: c.zc_preparation_job_state = undefined;
+        _ = v.preparationState(job.?, &state);
+        if (state.staged != 0) break;
+        if (timer.read() > 5_000_000_000) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+    try frameWrite(rec, 1);
+    var closer: Closer = .{ .rec = rec };
+    const thread = try std.Thread.spawn(.{}, Closer.run, .{&closer});
+    gate.unblock.set();
+    thread.join();
+    try std.testing.expectEqual(c.ZC_OK, closer.result);
+    var state: c.zc_preparation_job_state = undefined;
+    _ = v.preparationState(job.?, &state);
+    try std.testing.expectEqual(c.ZC_IO, state.error_code);
+    try std.testing.expectEqual(@as(u32, 1), state.done);
+    _ = v.closePreparation(job.?);
+    try std.testing.expect(delivered > 0);
+}

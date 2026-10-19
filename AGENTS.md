@@ -7,7 +7,7 @@
 - Recording must use Home codecs and containers; do not add an FFmpeg dependency.
 - Keep queue ownership and public ABI logic in Zig. Use the system C++ toolchain
   for the libcamera bridge so its STL ABI matches the installed libcamera.
-- Run `zig fmt --check build.zig src bench`, synthetic `zig build test`, and C/Python
+- Run `zig fmt --check build.zig src bench`, synthetic `zig build test`, and C/Bun
   ABI tests for ownership/API changes. Compile and load the real Linux backend
   on both x86_64 and aarch64 through CI. Preserve the no-camera smoke test.
 - Never recycle a leased buffer, ignore DMA coherency errors, or block a camera
@@ -18,3 +18,6 @@
   measurements. Preserve raw benchmark rows and negotiated configurations.
 - Do not claim preview, DNG, video encoding, tracking or Picamera2 API compatibility
   until those implementations and tests exist.
+
+- Implementation, bindings, tests and tooling use Zig or TypeScript/Bun. Do not
+  add or execute Python. System C/C++ bridges remain for libcamera and codecs.

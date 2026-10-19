@@ -1,0 +1,120 @@
+import { dlopen, FFIType as t, suffix, ptr, type Pointer } from 'bun:ffi'
+import { resolve } from 'node:path'
+export { ptr }
+export type { Pointer }
+const p = t.ptr,
+  u = t.u32,
+  n = t.u64,
+  i = t.i32,
+  v = t.void
+const library =
+  process.env.ZIG_CAMERA_LIBRARY ??
+  resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
+export const native = dlopen(library, {
+  zc_abi_version: { args: [], returns: u },
+  zc_default_config: { args: [p], returns: v },
+  zc_default_pipeline_options: { args: [p], returns: v },
+  zc_open_pipeline: { args: [p, p, p], returns: i },
+  zc_start: { args: [p], returns: i },
+  zc_stop: { args: [p], returns: i },
+  zc_close: { args: [p], returns: i },
+  zc_acquire: { args: [p, u, p], returns: i },
+  zc_release: { args: [p, n], returns: i },
+  zc_get_info: { args: [p, p], returns: i },
+  zc_get_stats: { args: [p, p], returns: i },
+  zc_get_pipeline_info: { args: [p, p], returns: i },
+  zc_get_sensor_modes: { args: [p, p, u, p], returns: i },
+  zc_get_stream: { args: [p, n, u, p], returns: i },
+  zc_copy_rgb: { args: [p, p, n], returns: i },
+  zc_copy_stream: { args: [p, p, n], returns: i },
+  zc_get_frame_metadata: { args: [p, n, p], returns: i },
+  zc_set_controls: { args: [p, p, u, p], returns: i },
+  zc_get_control_info: { args: [p, u, p], returns: i },
+  zc_wait_metadata: { args: [p, n, u, p], returns: i },
+  zc_autofocus_start: { args: [p, p], returns: i },
+  zc_autofocus_wait: { args: [p, n, u, p], returns: i },
+  zc_autofocus_cancel: { args: [p, n], returns: i },
+  zc_save_jpeg: { args: [p, n, p, u], returns: i },
+  zc_save_dng: { args: [p, n, p], returns: i },
+  zc_preview_open: { args: [p, u, u, p], returns: i },
+  zc_preview_show: { args: [p, p], returns: i },
+  zc_preview_close: { args: [p], returns: i },
+  zc_default_video_config: { args: [p], returns: v },
+  zc_default_recording_options: { args: [p], returns: v },
+  zc_default_buffer_config: { args: [p], returns: v },
+  zc_video_create: { args: [p, p, u, p], returns: i },
+  zc_video_open_ex: { args: [p, p, p, p], returns: i },
+  zc_video_open_aac: { args: [p, p, p, u, p], returns: i },
+  zc_video_open_circular: { args: [p, p, p], returns: i },
+  zc_video_open_circular_av: { args: [p, p, p, u, p], returns: i },
+  zc_video_open_output: { args: [p, p], returns: i },
+  zc_video_close_output: { args: [p], returns: i },
+  zc_video_write: { args: [p, p, n], returns: i },
+  zc_video_write_audio: { args: [p, p, n, n], returns: i },
+  zc_video_close: { args: [p], returns: i },
+  zc_video_close_outputs: { args: [p, p, u, p], returns: i },
+  zc_video_recording_stats: { args: [p, p], returns: i },
+  zc_video_buffer_stats: { args: [p, p], returns: i },
+  zc_video_audio_buffer_stats: { args: [p, p], returns: i },
+  zc_video_save_buffer: { args: [p, p], returns: i },
+  zc_video_freeze_buffer: { args: [p, p, p], returns: i },
+  zc_snapshot_write: { args: [p], returns: i },
+  zc_snapshot_close: { args: [p], returns: v },
+  zc_video_add_output: { args: [p, p, p], returns: i },
+  zc_video_remove_output: { args: [p, n], returns: i },
+  zc_video_output_stats: { args: [p, n, p], returns: i },
+  zc_video_output_state: { args: [p, n, p], returns: i },
+  zc_video_set_failure_isolation: { args: [p, u], returns: i },
+  zc_video_set_output_io: { args: [p, n, n, u, n], returns: i },
+  zc_video_output_io_stats: { args: [p, n, p], returns: i },
+  zc_video_set_delay: { args: [p, n], returns: i },
+  zc_video_set_output_delay: { args: [p, n, n, n, u], returns: i },
+  zc_video_set_output_recovery: { args: [p, n, u, n, n], returns: i },
+  zc_video_output_recovery: { args: [p, n, p], returns: i },
+  zc_video_prepare_async: { args: [p, n, p, p, u, p], returns: i },
+  zc_video_poll_preparations: { args: [p], returns: i },
+  zc_preparation_job_state_get: { args: [p, p], returns: i },
+  zc_preparation_job_cancel: { args: [p], returns: i },
+  zc_preparation_job_close: { args: [p], returns: i },
+  zc_video_set_automatic: { args: [p, n, p, n, u, n, n], returns: i },
+  zc_video_automatic_state: { args: [p, n, p], returns: i },
+  zc_video_drain_output_async: { args: [p, n, p], returns: i },
+  zc_output_job_wait: { args: [p, u], returns: i },
+  zc_output_job_close: { args: [p], returns: v },
+  zc_default_audio_config: { args: [p], returns: v },
+  zc_audio_open: { args: [p, p, p], returns: i },
+  zc_audio_read: { args: [p, p, n, u, p], returns: i },
+  zc_audio_close: { args: [p], returns: i },
+} as const).symbols
+export class CameraError extends Error {
+  constructor(
+    public code: number,
+    operation = 'native operation',
+  ) {
+    super(`${operation} failed (${code})`)
+    this.name = 'CameraError'
+  }
+}
+export function check(code: number, operation?: string) {
+  if (code !== 0) throw new CameraError(code, operation)
+}
+export function storage(size: number) {
+  return new Uint8Array(size)
+}
+export function view(data: Uint8Array) {
+  return new DataView(data.buffer, data.byteOffset, data.byteLength)
+}
+export function outPointer() {
+  return new BigUint64Array(1)
+}
+export function handle(data: BigUint64Array): Pointer {
+  const value = Number(data[0])
+  if (!Number.isSafeInteger(value) || value === 0)
+    throw new Error('invalid native handle')
+  return value as Pointer
+}
+export function cstring(text: string) {
+  if (text.includes('\0')) throw new TypeError('embedded NUL')
+  return new TextEncoder().encode(`${text}\0`)
+}
+if (native.zc_abi_version() !== 1) throw new Error('unsupported camera ABI')

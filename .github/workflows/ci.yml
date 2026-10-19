@@ -14,44 +14,37 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.15.2
+      - name: Install pinned Bun without Python tooling
+        shell: bash
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s 'bun-v1.4.3'
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
       - run: zig fmt --check build.zig src bench
+      - name: Verify Python entry points have been removed
+        run: test -z "$(git ls-files '*.py' '*requirements*.txt' pyproject.toml)"
       - name: Test synthetic backend with runtime safety
         run: zig build test -Dlibcamera=false -Djpeg=false
       - name: Build synthetic CLI and shared library
         run: zig build -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseSafe
-      - name: Verify C and Python ABI, lifecycle and CLI
+      - name: Verify C ABI, Bun lifecycle, native automation and CLI
         run: |
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
-          PYTHONPATH=python python3 -m unittest discover -s tests -v
+          bun test tests/ts
           ./zig-out/bin/zig-camera modes --simulate
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
-          python3 -c 'import json,pathlib; p=pathlib.Path("zig-out/lores.ppm"); m=json.loads(p.with_suffix(".ppm.json").read_text()); assert m["sensor_width"] == 640 and m["lores_width"] == 18; assert pathlib.Path(str(p)+".lores.i420").stat().st_size == 270'
+          bun tests/ts/check-media.ts zig-out --lores
           ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --warmup 2 --output zig-out/test.ppm
           ./zig-out/bin/zig-camera bench --simulate --width 640 --height 480 --frames 100 --warmup 2
-      - name: Linux dependencies
+          ./zig-out/bin/zig-camera record --simulate --width 32 --height 24 --frames 40 --warmup 0 --rotate-pattern 'zig-out/rotation-{index:03}.mkv' --rotate-ms 100
+          bun tests/ts/check-media.ts zig-out --rotation
+      - name: Linux dependencies and independent decoders
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config python3-pil
-      - name: Native Home media and SDL dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libsdl2-dev python3-tifffile libraw-bin mkvtoolnix
-      - name: Test Home media, Bayer DNG and SDL preview
-        if: runner.os == 'Linux'
-        env:
-          SDL_VIDEODRIVER: dummy
-          ZC_TEST_PREVIEW: '1'
         run: |
-          zig build -Dlibcamera=false -Djpeg=false -Dpreview=true -Doptimize=ReleaseSafe
-          PYTHONPATH=python python3 -m unittest discover -s tests -v
-          ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
-          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/home.jpg
-          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/test.dng
-          ./zig-out/bin/zig-camera record --simulate --width 128 --height 96 --frames 12 --fps 24 --warmup 0 --output zig-out/home.mkv
-          python3 tests/check_media_files.py zig-out
-          raw-identify zig-out/test.dng
-      - name: Home AVC/HEVC and independent decoder dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev
+          sudo apt-get update
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev
       - name: Build pinned standalone AAC codec
         if: runner.os == 'Linux'
         run: |
@@ -61,36 +54,35 @@ jobs:
           cmake --build "$RUNNER_TEMP/fdk-build" -j 2
           sudo cmake --install "$RUNNER_TEMP/fdk-build"
           sudo ldconfig
-      - name: Test Home codecs and fragmented MP4 without FFmpeg
+      - name: Test Home media, independent decoders and SDL without FFmpeg
         if: runner.os == 'Linux'
         env:
           SDL_VIDEODRIVER: dummy
           ZC_TEST_PREVIEW: '1'
           ZC_TEST_CODECS: '1'
-          ZC_TEST_AUDIO: '1'
           ZC_TEST_AAC: '1'
         run: |
-          zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true -Daac=true
+          zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Daudio=true -Daac=true -Doptimize=ReleaseSafe
           c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
           cc -std=c11 -Wall -Wextra -Werror tests/decode_aac.c -lfaad -o zig-out/decode-aac
-          ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" PYTHONPATH=python python3 -m unittest discover -s tests -v
+          cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
+          ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
+          ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
+          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/home.jpg
+          ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/test.dng
+          ./zig-out/bin/zig-camera record --simulate --width 128 --height 96 --frames 12 --fps 24 --warmup 0 --output zig-out/home.mkv
           ./zig-out/bin/zig-camera record --simulate --codec h264 --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-h264.mp4
           ./zig-out/bin/zig-camera record --simulate --codec hevc --width 128 --height 96 --frames 12 --fps 24 --gop 4 --quality 90 --warmup 0 --output zig-out/cli-hevc.mp4
-          PYTHONPATH=python python3 tests/test_codecs.py zig-out
-          for clip in zig-out/home-*.mp4 zig-out/cli-*.mp4; do
-            python3 tests/check_mp4.py "$clip" zig-out/decode-codecs
-            mkvmerge -J "$clip" > "$clip.identify.json"
-          done
-      - name: Test native JPEG encoding with synthetic frames
+          ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun tests/ts/check-media.ts zig-out
+          raw-identify zig-out/test.dng
+          mkvmerge -J zig-out/home.mkv
+      - name: Verify optional system JPEG and real libcamera backend
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
-          python3 tests/check_jpeg.py zig-out/test.jpg
-      - name: Compile real libcamera backend and test platform-independent code
-        if: runner.os == 'Linux'
-        run: |
+          ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
-          PYTHONPATH=python python3 tests/native_smoke.py
+          bun tests/ts/native-smoke.ts

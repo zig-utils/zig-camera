@@ -1,155 +1,39 @@
-# Picamera2 coverage in 0.18
+# Feature coverage in 0.19
 
-This is a native capture API plus an explicit Python compatibility subset, not
-a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
-The original C ABI v1 layouts remain unchanged; new functions/structures are additive.
+zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
+TypeScript/Bun. The Python facade and its scripts have been removed. Its API
+names and previous Python-only convenience behavior are not compatibility
+promises for the Bun API. Full Picamera2 parity remains ongoing work.
 
-| Capability | Current implementation | Remaining gap |
+| Capability | Native Zig/C implementation | Bun surface / remaining work |
 | --- | --- | --- |
-| Single-camera RGB capture | Zig/C/Python frame leases, owned buffers/NumPy arrays | Additional processed pixel formats |
-| Configuration roles | Still/video/viewfinder roles; cached raw-mode discovery, exact sensor output size/bit depth; paired RGB/YUV420 lores | Per-mode measured FPS/exposure/crop catalog, arbitrary formats |
-| Preview | Blocking SDL loop or async display process with a bounded shared RGB slot, aspect-preserving resize, Escape/window close; shared capture worker with recording/AF | Qt/DRM zero-copy preview, overlays; full Picamera2 backend signatures |
-| Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, additional audio codecs, hardware encoders, general profile/preset selection |
-| Recording control | Bounded awaitable startup and off-capture split preparation, background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs; owned async pre-roll jobs; bounded CircularOutput2-style delayed A/V with close-tail exclusion and stop flushing | Retention deletion, complete upstream sink signatures, repairing partially written containers after process/device crashes |
-| Audio and synchronized A/V | Explicit ALSA S16LE capture; bounded PCM queue; BOOTTIME/sample-count synchronization, MJPEG/AVC/HEVC + PCM Matroska; Home AAC-LC + AVC/HEVC fragmented MP4 with priming/tail metadata; sample-clipped splits; bounded circular PCM/video and synchronized MP4 pre-roll snapshots | Physical latency/drift calibration, adaptive resampling, other audio codecs/HE-AAC, other input platforms |
-| Reusable outputs and PTS | Eight simultaneous outputs with dynamic add/remove, independent async splits (cancellable before keyframe commit), per-output stats/state, independent bounded A/V delays, bounded async lifecycle/drain/close jobs, opt-in asynchronous sink I/O with per-output byte/operation limits and fail/timed-wait backpressure, and sink failure isolation/recovery with fresh targets and bounded retry/backoff; shared encoded video and independent sample-clipped audio/container state; Direct/circular/delayed packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; async object/path splits with bounded jobs, cancellation and lifecycle cleanup; exact per-segment PTS and shared CircularOutput2 sidecars | Per-sink encoding settings, socket-specific options, PyAV packet interoperability, every upstream constructor signature |
-| Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
-| DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
-| Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, request acquire/refcounts |
-| Async capture jobs | Bounded FIFO jobs for request/array/buffer/metadata/file; wait=False, callback, result/wait, asyncio await, queued cancel, frame deadline and stop cleanup | Event-loop integration, general signal classes |
-| Mode jobs | Async mode switch/drop-frames and temporary array/buffer/metadata/file capture, previous-mode restoration, preview recreation, lease/recording guards | Old-mode request leases across reconfiguration, switching during encoding, complete signatures |
-| Controls | Typed runtime set_controls, camera capabilities/ranges, atomic batches, 30-name catalog including focus windows and AE/AWB controls; per-frame metadata | Arbitrary vendor controls, HDR modes, full metadata catalog |
-| Autofocus jobs | Auto/Start then revision-filtered Scanning -> Focused/Failed/Idle; cancel/timeout/stop, awaitable results and callback | Optical validation |
-| Multiple cameras | Independent camera indices | Synchronization/stereo capture and tuning |
+| Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, linear leases | Camera/Frame, owned RGB/lores copies; bounded async capture queue |
+| Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
+| Controls and autofocus | Typed atomic control batches; metadata revisions; revision-filtered AF jobs | setControls, metadata, asynchronous autofocus; physical optics unvalidated |
+| Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
+| Still images | Home JPEG 4:4:4, PPM; Bayer DNG with metadata/calibration | JPEG/DNG capture; PiSP compressed raw and advanced DNG profiles missing |
+| Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Recorder; no hardware encoder or per-output codec settings |
+| Audio/A/V | ALSA or synthetic PCM, independent sample cursors, PCM MKV / AAC-LC MP4 with priming/tail edits | AudioCapture, manual writeAudio and shared recording pump; physical drift/latency calibration missing |
+| Circular and delayed output | Bounded GOP history, synchronized owned snapshots, global/per-output delays, tail rules | Circular recorder, async snapshots, setDelay; complete CircularOutput2 class/signatures not ported |
+| Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path attachment/removal, per-output state, splits and recovery; arbitrary JS packet/file-like output objects not yet ported |
+| Async recording preparation | Native bounded workers, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, Promise waits, per-output async splits and recovery; startup/attachment preparation remains synchronous |
+| Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
+| Output I/O and lifecycle | Bounded owned queues, fail/timed-wait pressure, retired epochs, fixed-prefix drain jobs | Native-worker close/drain/snapshot; custom JS lifecycle hooks not yet ported |
+| Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Close/reopen explicitly; former temporary capture/mode-switch orchestration not yet ported |
+| Multiple cameras | Independent camera indices | Independent Camera objects; no synchronized stereo or tracking/navigation |
 
-## Python subset example
+## Validation
 
-```python
-from zigcamera import Picamera2, H264Encoder
+Native Zig tests exercise bounded queues, ownership, media clocks, codecs and
+preparation races. C checks preserve the ABI v1 layouts. Bun tests cover leases,
+controls, capture jobs, preview, output jobs, circular snapshots and rotation.
+Linux x86_64/aarch64 CI compiles/loads libcamera and independently decodes AVC/HEVC
+and AAC segments, validating frame order, keyframe boundaries, priming and sample
+counts. Libjpeg and LibRaw provide independent still-media checks. The suite uses
+no Python or FFmpeg. Test counts from the retired Python suite are historical
+and must not be cited as coverage of this release.
 
-with Picamera2() as camera:
-    camera.configure(camera.create_still_configuration())
-    camera.start()
-    for _ in range(60):
-        with camera.captured_request():
-            pass
-    camera.capture_file("trail.jpg")
-    camera.capture_file("trail.dng", name="raw")
-    camera.stop()
-    camera.configure(camera.create_video_configuration(main={"size": (1280, 720)}))
-    camera.start_recording(H264Encoder(bitrate=12_000_000, iperiod=60), "trail.mp4", fps=30)
-    # Application work happens here. stop_recording joins the worker and releases leases.
-    camera.stop_recording()
-```
-
-`capture_array` requires NumPy and returns owned HxWx3 RGB or (H*3/2)xW I420 arrays. BGR888 is the
-libcamera format name for RGB byte order. The facade's raw stream requests
-uncompressed Bayer for DNG; a camera that cannot negotiate it reports an error.
-Its metadata dictionary exposes the implemented timestamp/exposure/gain/WB/sequence
-fields, not every libcamera metadata item. Active capture must be stopped before
-reconfiguration; outstanding leases prevent camera destruction.
-
-`camera.preview(frames=300)` remains a blocking UI-thread loop. `start_preview()`
-starts an async display process; it can run alongside recording and autofocus
-on one shared capture worker. Capture helpers also submit jobs to that worker;
-only low-level `Camera.acquire` competes directly for requests. See [runtime controls, focus jobs and preview](controls.md) for
-API semantics and process startup requirements. See [pipeline and capture jobs](pipeline.md)
-for sensor, lores and capture cancellation/ownership details.
-There is no object detector, tracking mount or autonomous navigation in this API.
-
-## Acceptance status
-
-Build with `-Dcodecs=true` and install libx264/libx265 for the example above.
-`HEVCEncoder` selects HEVC; `MJPEGEncoder` with `.mkv` remains dependency-free.
-These names are a subset of Picamera2 signatures, not drop-in encoder classes.
-
-Synthetic tests exercise ownership, role/options validation, native JPEG scan
-coding, DNG samples/tags, Matroska demux, frame decode, SDL dummy rendering and
-thread ownership, recording shutdown and API compatibility. LibRaw independently
-opens/develops generated DNG files. These do not establish physical camera
-behaviour, optical quality or Pi frame rates. Pi camera/display validation remains
-required. See [performance and hardware acceptance](performance.md).
-
-AVC/HEVC acceptance includes independent OpenH264/libde265 decoding on Linux,
-exact frame counts/order, regular and gapped capture timelines, GOP boundaries,
-container parsing, final-frame drain, invalid inputs, and background restart.
-Apple AVFoundation also decoded both MP4 fixtures locally. Pi sustained FPS,
-long-run reliability, motion quality and bitrate behaviour remain unmeasured.
-
-
-0.6 adds synthetic mode-change round trips, failure/deadline restoration,
-callback/lifecycle locking, circular byte/frame/time limits, snapshot continuation,
-file-identity checks, split cancellation and stop coverage. Optional codec CI
-independently decodes AVC/HEVC split segments and circular snapshots, checks
-frame order/counts, fresh keyframes, rebased timelines and capture gaps. See
-[mode and recording semantics](mode-recording.md) for remaining limits.
-
-0.7 adds [automatic rotation and PCM A/V](audio-rotation.md). Linux acceptance
-includes ALSA null-device capture, independent Matroska identification/WAV
-extraction and AVC/HEVC segment decoding. Physical A/V synchronization and
-sustained Pi performance remain unmeasured.
-
-0.8 adds [AAC-LC and synchronized MP4](aac-mp4.md), including fresh codec
-state per segment, explicit decoder pre-roll, priming/tail trimming and independent
-FAAD2/AVFoundation waveform/count validation.
-
-0.9 adds [circular A/V and synchronized snapshots](circular-av.md), including
-non-consuming PCM windows, key selection after audio eviction, independent AAC
-state, sample-exact replay and explicit incomplete-coverage/overrun handling.
-
-0.10 adds [async snapshots and delayed A/V](async-delayed.md). Frozen native
-ownership survives capture close; callbacks/cancellation/job slots are bounded.
-FIFO output preserves dependent packets, reports overflow and rebases audio/video
-at a mature key. This remains a path-output subset, not upstream class/API parity.
-
-0.11 adds [output objects and PTS streams](output-objects.md), with explicit
-lifecycle/ownership, source stream metadata, Annex B parameter sets, Home muxed
-byte sinks, alias protection and callback error propagation. Original ABI v1
-layouts remain unchanged; this is a tested subset of upstream output interfaces.
-
-0.12 adds direct output-object recording and async object/path splits, retaining
-both callback contexts through the native boundary and finalization. Borrowed
-stream/file aliases are rejected before preparation writes; cancellation releases
-the pending object. Tests cover startup/metadata/write/stop failures, job callbacks,
-shared CircularOutput2 PTS, fresh Annex B headers and independent decoding of
-AVC/HEVC + AAC MP4 segments. Home's PCM queue now carries fractional sample phase
-through block boundaries and frozen windows, fixing exact 44.1 kHz cuts.
-
-0.13 adds bounded simultaneous outputs and dynamic attachment/removal. The native
-recorder encodes video once; each sink owns its PCM cursor, container/AAC lifetime
-and PTS epoch. Group startup, stale IDs, aliases, all-consumer audio reclamation,
-independent finalization and continued parallel output during primary splits are
-covered. This does not claim every upstream encoder/output-list setter signature,
-independent per-sink delays or Raspberry Pi performance measurements.
-
-0.14 adds independent per-output async split jobs and opt-in failure isolation.
-Stable IDs survive keyframe commits; generation/state distinguish commit,
-cancellation and failure. Failed sinks are quarantined without pinning PCM;
-healthy sinks continue. Close reports per-output errors after finalization and
-releases all callback contexts. Shared encoder/capture/history failures remain
-fatal. Tests include eight simultaneous pending splits, cancellation, re-entry,
-old/new sink and hook failures, delayed AVC/HEVC + AAC MP4 segment decoding, final
-close reports and continued healthy audio/video. This remains an incremental
-compatibility implementation, with Pi throughput/physical synchronization unmeasured.
-
-
-0.17 adds optional awaitable output lifecycle jobs (start/stream metadata,
-attachment/recovery, split preparation, removal and close), a reserved recorder
-close job, and independent fixed-prefix native drain handles. Drains capture
-already admitted I/O and retain completion state after workers/recorders are
-freed. Retired async-output stop hooks run off capture; split completion includes
-cleanup and preserves late exceptions. Tests cover bounded admission, close
-races, queued cancellation, blocked hooks, file reservations and reentry.
-Serialized native preparation/finalization can still pause encoder input; this
-is not full Picamera2 compatibility or measured Pi performance.
-
-
-0.18 adds async recording startup and split preparation. Startup jobs own audio,
-encoders and group output hooks before atomic camera publication; circular binding
-is complete before success is visible. Split jobs reserve stable IDs and files,
-then build Home containers/AAC/headers and optional I/O workers independently of
-capture. They finish after keyframe handoff and old-output cleanup. Claimed
-cancellation prevents publication and finishes after owned cleanup; stop/close
-wait for it. Tests include blocked hooks/headers, eight native recipe slots,
-file aliases, group errors, queued/spawn failure, mode guards and reentry.
-This remains an incremental compatibility subset with no measured Pi speedup.
+No camera/microphone is attached to the development machine. Pi throughput,
+optical quality, long-run reliability and physical A/V sync remain unmeasured.
+See [native jobs](native-jobs.md), [C ABI](../include/zig_camera.h), and
+[hardware acceptance](performance.md).

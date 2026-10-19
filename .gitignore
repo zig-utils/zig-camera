@@ -1,7 +1,4 @@
 .zig-cache/
 zig-out/
-__pycache__/
-*.pyc
-*.egg-info/
-.venv/
+node_modules/
 bench/results/

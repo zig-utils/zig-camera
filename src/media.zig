@@ -263,3 +263,28 @@ pub export fn zc_output_job_close(job: ?*c.zc_output_job) void {
     const drain: *@import("output_io.zig").Drain = @ptrCast(@alignCast(job orelse return));
     drain.destroy();
 }
+
+pub export fn zc_video_prepare_recovery(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, out: *?*c.zc_prepared_output) c_int {
+    return @import("video.zig").prepareRecovery(p, id, path, cb, out);
+}
+pub export fn zc_video_prepare_async(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: u32, out: *?*c.zc_preparation_job) c_int {
+    return @import("video.zig").prepareAsync(p, id, path, cb, recovery, out);
+}
+pub export fn zc_video_poll_preparations(p: *c.zc_recorder) c_int {
+    return @import("video.zig").pollPreparations(p);
+}
+pub export fn zc_preparation_job_state_get(p: *c.zc_preparation_job, out: *c.zc_preparation_job_state) c_int {
+    return @import("video.zig").preparationState(p, out);
+}
+pub export fn zc_preparation_job_cancel(p: *c.zc_preparation_job) c_int {
+    return @import("video.zig").cancelPreparation(p);
+}
+pub export fn zc_preparation_job_close(p: *c.zc_preparation_job) c_int {
+    return @import("video.zig").closePreparation(p);
+}
+pub export fn zc_video_set_automatic(p: *c.zc_recorder, id: u64, pattern: ?[*:0]const u8, next: u64, recovery: u32, duration: u64, bytes: u64) c_int {
+    return @import("video.zig").setAutomatic(p, id, pattern, next, recovery, duration, bytes);
+}
+pub export fn zc_video_automatic_state(p: *c.zc_recorder, id: u64, out: *c.zc_automatic_state) c_int {
+    return @import("video.zig").automaticState(p, id, out);
+}

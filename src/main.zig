@@ -18,6 +18,8 @@ const help =
     \\  --fps N                  Preview/record frame rate (default 30)
     \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
     \\  --bitrate N --gop N       AVC/HEVC bits/sec (0 CRF) and keyframe interval
+    \\  --rotate-pattern PATH    Exclusive indexed outputs, e.g. trail-{index:03}.mp4
+    \\  --rotate-ms N --rotate-bytes N  Soft duration/size rotation limits
     \\  --preview                Also display while recording
     \\  --noise-reduction N      0 off, 1 fast, 2 high quality, 3 minimal
     \\  --quality N              Quality 1..100 (still 98, video 90); CRF AVC 51..1, HEVC 51..0
@@ -56,6 +58,9 @@ fn run() !void {
     var codec: u32 = camera.c.ZC_MJPEG;
     var bitrate: u32 = 0;
     var gop: u32 = 0;
+    var rotate_pattern: ?[:0]const u8 = null;
+    var rotate_ns: u64 = 0;
+    var rotate_bytes: u64 = 0;
     var show_preview = eq(command, "preview");
     var output: [:0]const u8 = if (eq(command, "record")) "capture.mkv" else "capture.ppm";
     var simulate = false;
@@ -95,6 +100,12 @@ fn run() !void {
             codec = if (eq(value, "h264")) camera.c.ZC_H264 else if (eq(value, "hevc")) camera.c.ZC_HEVC else if (eq(value, "mjpeg")) camera.c.ZC_MJPEG else return error.InvalidCodec;
         } else if (eq(key, "--output")) {
             output = value;
+        } else if (eq(key, "--rotate-pattern")) {
+            rotate_pattern = value;
+        } else if (eq(key, "--rotate-ms")) {
+            rotate_ns = try std.math.mul(u64, try std.fmt.parseInt(u64, value, 10), 1_000_000);
+        } else if (eq(key, "--rotate-bytes")) {
+            rotate_bytes = try std.fmt.parseInt(u64, value, 10);
         } else if (eq(key, "--raw-format")) {
             if (value.len >= cfg.raw_format.len) return error.InvalidRawFormat;
             @memcpy(cfg.raw_format[0..value.len], value);
@@ -146,6 +157,11 @@ fn run() !void {
             } else return error.UnknownOption;
         }
     }
+    var rotation_name: [4097]u8 = undefined;
+    if (rotate_pattern) |pattern| {
+        if (!eq(command, "record") or (rotate_ns == 0 and rotate_bytes == 0)) return error.InvalidRotation;
+        output = try (try @import("camera").recording_path.Pattern.init(pattern)).format(&rotation_name, 0);
+    } else if (rotate_ns != 0 or rotate_bytes != 0) return error.MissingRotationPattern;
     if ((frames == 0 and !eq(command, "preview")) or quality == 0 or quality > 100 or fps == 0 or fps > 1000) return error.InvalidArgument;
     if (std.mem.endsWith(u8, output, ".dng")) {
         cfg.raw = 1;
@@ -254,7 +270,18 @@ fn run() !void {
             video_cfg.codec = codec;
             video_cfg.bitrate = bitrate;
             video_cfg.gop = gop;
-            try camera.check(camera.media.zc_video_open(output, &video_cfg, &recorder));
+            var recording_opts: camera.c.zc_recording_options = undefined;
+            camera.media.zc_default_recording_options(&recording_opts);
+            recording_opts.exclusive = @intFromBool(rotate_pattern != null);
+            try camera.check(camera.media.zc_video_open_ex(output, &video_cfg, &recording_opts, &recorder));
+            if (rotate_pattern) |pattern| {
+                const code = camera.media.zc_video_set_automatic(recorder.?, 0, pattern, 1, 0, rotate_ns, rotate_bytes);
+                if (code != camera.c.ZC_OK) {
+                    _ = camera.media.zc_video_close(recorder.?);
+                    recorder = null;
+                    try camera.check(code);
+                }
+            }
         }
         errdefer if (recorder) |r| {
             _ = camera.media.zc_video_close(r);
@@ -274,8 +301,16 @@ fn run() !void {
             }
         }
         if (recorder) |r| {
+            var rotation_error: c_int = camera.c.ZC_OK;
+            if (rotate_pattern != null) {
+                _ = camera.media.zc_video_poll_preparations(r);
+                var state: camera.c.zc_automatic_state = undefined;
+                try camera.check(camera.media.zc_video_automatic_state(r, 0, &state));
+                rotation_error = state.error_code;
+            }
             recorder = null;
             try camera.check(camera.media.zc_video_close(r));
+            try camera.check(rotation_error);
         }
         std.debug.print("processed {d} frames\n", .{n});
         return;

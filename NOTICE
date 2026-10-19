@@ -140,3 +140,10 @@ Home cooperative preparation (0.18):
   packages/async/src/preparation_gate.zig at 1ebb311b3.
   Source: https://github.com/home-lang/home/commit/1ebb311b3
   The Home MIT license above applies.
+
+Home indexed recording paths (0.19):
+- src/home/recording_path.zig is verbatim from Home's
+  packages/video/src/core/recording_path.zig. It supplies allocation-free,
+  strictly validated indexed names for async rotation and recovery.
+  The Home MIT license above applies. Source: aa968cc8dbdbd0c06ecca48f4a32823f60e0a869.
+  https://github.com/home-lang/home/commit/aa968cc8dbdbd0c06ecca48f4a32823f60e0a869
