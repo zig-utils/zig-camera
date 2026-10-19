@@ -14,10 +14,11 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.15: independent bounded output delays and automatic fresh-target recovery
-with capped retry/backoff, preserving stable attachment IDs. Healthy sinks keep
-recording under `failure_policy="isolate"`. Eight simultaneous outputs share one
-video encoder and use Home's MP4/MKV, PCM timeline and recovery helpers. No FFmpeg.
+New in 0.16: opt-in async sink workers with bounded owned queues, per-output
+fail-on-full or timed-wait backpressure, queue statistics and explicit draining.
+Splits preserve worker/context ownership while healthy outputs advance. Home
+codecs, containers, sample clocks and fixed-capacity helpers remain the media
+implementation. No FFmpeg.
 [Output objects and PTS](docs/output-objects.md),
 [async snapshots and delayed A/V](docs/async-delayed.md), [coverage and gaps](docs/parity.md).
 

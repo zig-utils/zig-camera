@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.15)
+# Reusable outputs and PTS streams (0.16)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -475,8 +475,8 @@ starts a deadline; retry delay doubles for later attempts up to its cap. Zero de
 allows an immediate attempt. Time advances with media input, so paused capture
 also pauses retries. This is not a wall-clock reconnect service. Factories run on
 the serialized recording consumer, under the output callback re-entry guard;
-keep them short. Camera manager callbacks do not execute factories. Blocking sink
-I/O/factories still delay that consumer; asynchronous sink I/O is a remaining gap.
+keep them short. Camera manager callbacks do not execute factories. Factories and lifecycle hooks still run on that consumer. Enable the optional
+async I/O workers below to move runtime sink calls off it.
 
 The factory receives `(attempt, error)` with attempts starting at one and returns
 a fresh output object or container path. Sink creation, stream metadata, descriptor
@@ -508,3 +508,110 @@ The timing/flush behavior follows the upstream
 [CircularOutput2 source](https://github.com/raspberrypi/picamera2/blob/main/picamera2/outputs/circularoutput2.py),
 with explicit bounded storage and separate attachment timelines. This is a tested
 compatibility subset, not complete Picamera2 parity.
+
+## Async output I/O and per-output backpressure
+
+`Recorder`, `Camera.start_recording` and `Picamera2.start_recording` accept
+`async_io`. It defaults to `None` (synchronous). An options dictionary enables
+workers for every attached output and supplies defaults for later additions and
+circular opens. `{}` selects the worker defaults. A dictionary keyed by stable
+output IDs selects individual attachments:
+
+```python
+from zigcamera import Camera, MuxedOutput
+
+with Camera() as camera:
+    recording = camera.start_recording(
+        [MuxedOutput("live.mkv"), MuxedOutput("backup.mkv")], fps=30,
+        failure_policy="isolate",
+        async_io={1: {"max_bytes": 8 * 1024 * 1024, "max_ops": 1024,
+                      "backpressure": "fail"}})
+    # Only backup (ID 1) has a worker; live (ID 0) uses synchronous delivery.
+    print(recording.output_io_stats(1))
+    # Application captures frames here. Drain waits for admitted I/O, while
+    # stop also flushes encoder, delayed video, audio and container finalization.
+    recording.drain_output_io(1)
+    camera.stop_recording()
+```
+
+Call `set_output_io(id, max_bytes=8*1024*1024, max_ops=512,
+backpressure="fail", timeout_ms=100)` once to enable an existing synchronous
+attachment at a serialized call boundary. It also works after a synchronous
+prefix has already been delivered. An active/staged worker cannot be resized,
+disabled or reconfigured; detach and attach a fresh sink for different settings.
+`add_output(sink, async_io={...})` and `open_output(sink, async_io={...})` override
+recorder defaults when attaching. Splits and automatic recovery inherit the
+attachment's native worker configuration, with fresh per-segment counters.
+
+Each worker owns Home's fixed byte arena, a same-sized scratch arena, an entry
+array, and one thread. Enqueue explicitly copies bytes; it never retains a frame,
+PCM view or camera DMA lease. Queued **and in-flight** bytes/operations count
+against the same bounds. Empty metadata notifications consume entries too. A
+container frame may generate several writes, so `max_ops` counts I/O operations,
+not video frames. Limits are 1 GiB per arena and 65,536 operations; memory for
+entries, container/encoder state, existing delay queues and PCM history is
+additional. No per-operation queue allocation or background unbounded list is
+used. Eight attachments can each retain at most a current and a staged/retiring
+worker epoch.
+
+Runtime media writes, random-access MP4 patches, raw video/PCM packet callbacks
+and PTS notifications run in FIFO order on that sink's native worker. User calls
+are made outside the queue mutex. Home muxing/AAC encoding still run on the
+recording consumer. Target opening, headers/history replay before worker enable,
+`start`, stream metadata, commit and `stop` lifecycle hooks remain synchronous.
+This is asynchronous sink delivery, with no hardware throughput claim.
+
+Backpressure is selected independently:
+
+- `"fail"`: a full byte/operation queue immediately fails that attachment with
+  `ZC_BUSY`; an operation larger than the byte arena fails with `ZC_INVALID`.
+- `"wait"`: the producer waits for capacity up to `timeout_ms` **per operation**
+  (1–60,000 ms), then fails that attachment. Other producer work waits during
+  this opt-in bounded wait. Worker calls themselves have no imposed timeout.
+
+With `failure_policy="isolate"`, queue/worker failures quarantine only that sink
+and peers continue. The default fail-fast policy still stops recording on the
+next observed failure. Individual compressed packets/container fragments are
+never silently dropped to relieve pressure. Once a sink fails, pending work is
+abandoned after any in-flight call returns; the partial container may be
+incomplete. Existing fresh-target recovery can restart it on a new keyframe,
+and does not claim an attempt while its failed worker still owns an in-flight
+callback. Recovery preserves queue bounds and lifetime retry budgets.
+
+`output_io_stats(id)` reports queued bytes/operations (including in-flight),
+accepted/completed/rejected operations, high-water marks, configured limits,
+worker running state, I/O error and a separate `split_error`. Accepted counts
+mean admitted to the queue, not delivered to the OS. Completed counts mean sink
+calls returned successfully, not durable storage. A returned `write` can precede
+a later worker exception. `output_errors`, subsequent input, explicit drain and
+close surface those failures under the selected policy.
+
+At a split key, the new epoch may accept operations while the old one drains.
+A completion fence prevents its worker from delivering callbacks before the old
+worker ends, preserving shared CircularOutput2 PTS epoch order. The old context,
+file identity and object claim remain reserved until completion. Generation
+advances at keyframe commit, while state `pending` remains set until retirement;
+the async split job completes then. It cannot be cancelled after commit. A late
+old-worker failure fails that split job and records `split_error`, while the new
+sink can remain healthy under isolation. New splits/removals are busy until that
+retirement finishes. The capture pump checks completions even during frame
+starvation, and stop resolves committed jobs after draining; uncommitted jobs
+are cancelled as before.
+
+`drain_output_io(id)` waits for already admitted operations in current/retiring
+epochs and reports errors. It does not flush a pending encoder frame or release
+the separate configured A/V delay tail. Explicit detach and stop finish accepted
+I/O before releasing callbacks, owned files or claims. Stop uses draining
+backpressure for final writes/patches so normal finalization does not fail merely
+because the queue was temporarily full. These explicit operations can wait for
+a sink; arbitrary blocked callbacks cannot be forcefully cancelled safely. Use
+appropriate device/socket timeouts in custom sinks. Borrowed streams remain
+open, and storage `fsync`/durability is the application's responsibility.
+
+Callbacks may execute on native threads and must eventually return. Camera,
+recording and recorder API re-entry is rejected before acquiring producer locks,
+including during stop/drain. Keep application shared state synchronized. Queue
+statistics require a live recorder; final output errors remain queryable after
+close. Native C callers can enable/query/drain with `zc_video_set_output_io`,
+`zc_video_output_io_stats`, and `zc_video_drain_output_io`; old ABI layouts remain
+unchanged and the 88-byte I/O statistics structure is additive.

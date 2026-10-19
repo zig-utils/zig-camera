@@ -123,3 +123,8 @@ Home output recovery and queue reset (0.15):
   packages/video/src/core modules at 61391c260 (main), adding bounded retry
   claims and allocation-free packet queue resets. Supersedes packet_ring above.
   https://github.com/home-lang/home/commit/61391c260
+
+Home owned operation FIFO (0.16):
+- src/home/owned_fifo.zig is verbatim Home packages/video/src/core/owned_fifo.zig
+  at f3c64ed41 (main), with fixed byte/entry bounds and in-flight acknowledgement.
+  https://github.com/home-lang/home/commit/f3c64ed41

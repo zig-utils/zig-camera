@@ -372,3 +372,33 @@ backoff/exhaustion, alias guards and H.264/HEVC + AAC MP4 independent decoding.
 Only origin/main is published under the configured human identity, with no
 coauthor trailers or PRs. No FFmpeg/Libav dependency is added. Physical Pi camera
 performance and microphone synchronization are not measured by these tests.
+
+## 0.16: owned asynchronous sink operations
+
+Rechecked Home's `async/concurrent_queue`, queue package, packet ring, completion
+helpers and streaming writers. The MPMC queue allocates nodes per operation, and
+the general queue package includes networking/runtime dependencies. The packet
+ring deliberately enforces video timestamp/GOP rules and cannot represent
+metadata-only operations or arbitrary MP4 patches. Those interfaces do not supply
+the byte and in-flight accounting required for this sink boundary.
+
+[Home f3c64ed41](https://github.com/home-lang/home/commit/f3c64ed41) adds
+`owned_fifo.Queue(T)`: fixed arena/entries, copied payloads and value metadata,
+zero-length operations, atomic byte/entry rejection, wrapped reads and explicit
+acknowledgement. Keeping the front until callback completion charges in-flight
+work against capacity. Focused tests cover wrap, reset, metadata, bounds and
+allocation-failure cleanup on Zig 0.15.2 and Home's development compiler; targeted
+pickier passes. Its focused workflow now includes the module. Home Actions
+remains disabled; zig-camera integration CI also executes the vendored helper.
+
+The FIFO is vendored verbatim with MIT attribution. Zig-camera supplies mutexes,
+conditions, bounded per-output workers, fail/timed-wait pressure, completion
+fences and callback/file ownership. Home's existing codecs, AAC encoder and
+MP4/MKV writers remain unchanged. Native/C/Python checks cover slow peers,
+overflow, recovery, eight workers, split cancellation/retirement, no-frame job
+completion, stop, alias guards, shared PTS and owned PCM. Independent media
+checks validate H.264/HEVC + AAC MP4 with asynchronous patches and per-output
+delays, using FAAD2/AVFoundation and Linux OpenH264/libde265, with no FFmpeg.
+Only origin/main is published under the configured human identity, without
+coauthor trailers or PRs. Synthetic validation is not Pi performance or physical
+camera/microphone evidence.

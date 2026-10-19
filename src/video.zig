@@ -57,7 +57,7 @@ const Reservations = struct {
         if (destroy) A.destroy(s);
     }
 };
-fn reserveFile(path: [*:0]const u8, exclusive: bool, avoid: [18]?*Output, reservations: ?*Reservations) !std.fs.File {
+fn reserveFile(path: [*:0]const u8, exclusive: bool, avoid: [27]?*Output, reservations: ?*Reservations) !std.fs.File {
     const file = try std.fs.cwd().createFile(std.mem.span(path), .{ .truncate = false, .exclusive = exclusive });
     errdefer file.close();
     const id = try Identity.of(file);
@@ -66,7 +66,12 @@ fn reserveFile(path: [*:0]const u8, exclusive: bool, avoid: [18]?*Output, reserv
     return file;
 }
 const Retry = @import("home/output_recovery.zig").Retry;
+const io = @import("output_io.zig");
 const Output = struct {
+    io_config: ?io.Config = null,
+    worker: ?*io.Worker = null,
+    retired: ?*Output = null,
+    split_error: c_int = c.ZC_OK,
     queue: ?Ring = null,
     queue_scratch: []u8 = &.{},
     delay_ns: u64 = 0,
@@ -96,21 +101,72 @@ const Output = struct {
     first_ns: u64 = 0,
     frames: u64 = 0,
     waiting_key: bool = true,
+    fn enableIo(self: *Output, config: io.Config, previous: ?*io.Worker) !void {
+        self.worker = try io.Worker.create(config, self, applyIo, previous);
+        self.io_config = config;
+    }
+    fn applyIo(ctx: *anyopaque, event: io.Event, data: []const u8) c_int {
+        const self: *Output = @ptrCast(@alignCast(ctx));
+        if (self.callbacks) |cb| return switch (event.kind) {
+            .write => cb.write.?(cb.context, data.ptr, data.len),
+            .patch => cb.patch.?(cb.context, event.offset, data.ptr, data.len),
+            .packet => blk: {
+                const notification = c.zc_output_packet{ .data = if (data.len == 0) null else data.ptr, .length = data.len, .timestamp_ns = event.timestamp, .codec = event.codec, .flags = event.flags };
+                break :blk cb.packet.?(cb.context, &notification);
+            },
+        };
+        switch (event.kind) {
+            .write => self.file.?.writeAll(data) catch |err| return status(err),
+            .patch => self.file.?.pwriteAll(data, event.offset) catch |err| return status(err),
+            .packet => unreachable,
+        }
+        return c.ZC_OK;
+    }
+    fn sync(self: *Output) void {
+        if (self.worker) |worker| {
+            const code = worker.errorCode();
+            if (self.failure == c.ZC_OK and code != c.ZC_OK) {
+                self.failure = code;
+                if (self.split_state == c.ZC_SPLIT_PENDING) self.split_state = c.ZC_SPLIT_FAILED;
+            }
+        }
+        if (self.retired) |old| {
+            if (old.worker.?.ready()) {
+                old.sync();
+                self.split_error = old.failure;
+                self.split_state = if (old.failure == c.ZC_OK) c.ZC_SPLIT_COMMITTED else c.ZC_SPLIT_FAILED;
+                self.retired = null;
+                old.deinit();
+            }
+        }
+    }
+    fn waitIo(self: *Output) void {
+        if (self.worker) |worker| {
+            worker.close(true);
+            worker.done.event.wait();
+        }
+        if (self.retired) |old| old.worker.?.done.event.wait();
+        self.sync();
+    }
     fn sink(ctx: *anyopaque, bytes: []const u8) anyerror!void {
         const self: *Output = @ptrCast(@alignCast(ctx));
         const next = try std.math.add(u64, self.bytes, bytes.len);
-        if (self.callbacks) |cb| {
+        if (self.worker) |worker| {
+            try worker.send(.{ .kind = .write }, bytes);
+        } else if (self.callbacks) |cb| {
             if (cb.write.?(cb.context, bytes.ptr, bytes.len) != c.ZC_OK) return error.CallbackFailed;
         } else try self.file.?.writeAll(bytes);
         self.bytes = next;
     }
     fn patch(ctx: *anyopaque, offset: u64, bytes: []const u8) anyerror!void {
         const self: *Output = @ptrCast(@alignCast(ctx));
-        if (self.callbacks) |cb| {
+        if (self.worker) |worker| {
+            try worker.send(.{ .kind = .patch, .offset = offset }, bytes);
+        } else if (self.callbacks) |cb| {
             if (cb.patch.?(cb.context, offset, bytes.ptr, bytes.len) != c.ZC_OK) return error.CallbackFailed;
         } else try self.file.?.pwriteAll(bytes, offset);
     }
-    fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [18]?*Output, recording: *const c.zc_recording_options, audio_bitrate: u32, reservations: ?*Reservations) !*Output {
+    fn init(path: [*:0]const u8, cfg: *const c.zc_video_config, headers: []const u8, avoid: [27]?*Output, recording: *const c.zc_recording_options, audio_bitrate: u32, reservations: ?*Reservations) !*Output {
         try validate(std.mem.span(path), cfg, recording.sample_rate != 0);
         const file = try reserveFile(path, recording.exclusive != 0, avoid, reservations);
         errdefer file.close();
@@ -168,6 +224,8 @@ const Output = struct {
         }
     }
     fn deinit(self: *Output) void {
+        if (self.retired) |old| old.deinit();
+        if (self.worker) |worker| worker.destroy();
         if (self.queue) |*queue| queue.deinit();
         A.free(self.queue_scratch);
         if (self.next) |out| out.deinit();
@@ -189,6 +247,7 @@ const Output = struct {
     fn notify(self: *Output, data: []const u8, timestamp: u64, codec: u32, flags: u32) !void {
         const cb = self.callbacks orelse return;
         const callback = cb.packet orelse return;
+        if (self.worker) |worker| return worker.send(.{ .kind = .packet, .timestamp = timestamp, .codec = codec, .flags = flags }, data);
         const event = c.zc_output_packet{ .data = if (data.len == 0) null else data.ptr, .length = data.len, .timestamp_ns = timestamp, .codec = codec, .flags = flags };
         if (callback(cb.context, &event) != c.ZC_OK) return error.CallbackFailed;
     }
@@ -305,6 +364,16 @@ const Recorder = struct {
     delay_ns: ?u64 = null,
     delay_cut: ?u64 = null,
     delay_scratch: []u8 = &.{},
+    fn pollIo(self: *Recorder) !void {
+        if (self.output) |out| {
+            out.sync();
+            if (!self.isolate and (out.failure != c.ZC_OK or out.split_error != c.ZC_OK)) return error.AsyncOutputFailed;
+        }
+        for (self.outputs.entries) |entry| if (entry.value) |out| {
+            out.sync();
+            if (!self.isolate and (out.failure != c.ZC_OK or out.split_error != c.ZC_OK)) return error.AsyncOutputFailed;
+        };
+    }
     fn nominal(self: *const Recorder) u32 {
         return @intCast(@as(u64, 1000000) * self.config.fps_den / self.config.fps_num);
     }
@@ -369,17 +438,23 @@ const Recorder = struct {
         }
         return self.packetEnd();
     }
-    fn avoid(self: *const Recorder) [18]?*Output {
-        var result: [18]?*Output = @splat(null);
+    fn avoid(self: *const Recorder) [27]?*Output {
+        var result: [27]?*Output = @splat(null);
         result[0] = self.output;
         result[1] = self.next;
+        if (self.output) |out| result[2] = out.retired;
         for (self.outputs.entries, 0..) |entry, i| {
-            result[2 + i * 2] = entry.value;
-            if (entry.value) |out| result[3 + i * 2] = out.next;
+            result[3 + i * 3] = entry.value;
+            if (entry.value) |out| {
+                result[4 + i * 3] = out.next;
+                result[5 + i * 3] = out.retired;
+            }
         }
         return result;
     }
     fn sinkError(self: *Recorder, out: *Output, err: anyerror) !void {
+        if (out.worker) |worker| worker.abort(status(err));
+        out.sync();
         if (out.failure == c.ZC_OK) out.failure = status(err);
         if (out.split_state == c.ZC_SPLIT_PENDING) out.split_state = c.ZC_SPLIT_FAILED;
         if (!self.isolate) return err;
@@ -408,7 +483,9 @@ const Recorder = struct {
         }
     }
     fn getOutput(self: *const Recorder, id: u64) ?*Output {
-        return if (id == 0) self.output else self.outputs.get(id);
+        const out = (if (id == 0) self.output else self.outputs.get(id)) orelse return null;
+        out.sync();
+        return out;
     }
     fn deliver(self: *Recorder, id: u64, data: []const u8, timestamp: u64, key: bool) !void {
         var out = self.getOutput(id) orelse return;
@@ -426,7 +503,10 @@ const Recorder = struct {
                     old.next = null;
                     _ = self.outputs.replace(id, out) catch unreachable;
                 }
-                old.deinit();
+                if (old.worker) |worker| {
+                    worker.close(true);
+                    out.retired = old;
+                } else old.deinit();
             }
         }
         if (out.failure != c.ZC_OK) return;
@@ -614,7 +694,7 @@ fn recorder(p: *c.zc_recorder) *Recorder {
 pub fn open(path: [*:0]const u8, cfg: *const c.zc_video_config, out: *?*c.zc_recorder) c_int {
     out.* = null;
     const self = init(cfg) catch |err| return status(err);
-    self.output = Output.init(path, cfg, self.headers, .{null} ** 18, &self.recording, self.audio_bitrate, self.reservations) catch |err| {
+    self.output = Output.init(path, cfg, self.headers, .{null} ** 27, &self.recording, self.audio_bitrate, self.reservations) catch |err| {
         self.deinit();
         return status(err);
     };
@@ -643,6 +723,10 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     const pts = (ts - first) / 1000;
     if (self.config.codec != c.ZC_MJPEG and (pts > std.math.maxInt(i64) or (self.frames != 0 and (pts <= (self.last_ns - first) / 1000 or pts - (self.last_ns - first) / 1000 > std.math.maxInt(u32))))) return c.ZC_INVALID;
     self.first_ns = first;
+    self.pollIo() catch |err| {
+        self.failed = true;
+        return status(err);
+    };
     writeImpl(self, &s, ts - first, pts) catch |err| {
         self.failed = true;
         return status(err);
@@ -664,7 +748,8 @@ pub fn bufferStats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
     const self = recorder(p);
     out.* = std.mem.zeroes(c.zc_buffer_stats);
     out.segments = self.segments;
-    out.split_pending = @intFromBool(self.next != null);
+    _ = self.getOutput(0);
+    out.split_pending = @intFromBool(self.next != null or (self.output != null and self.output.?.retired != null));
     out.output_open = @intFromBool(self.output != null);
     if (self.ring) |*ring| {
         out.frames = ring.count;
@@ -721,7 +806,9 @@ pub fn closeOutput(p: *c.zc_recorder) c_int {
     const self = recorder(p);
     if (self.next != null) return c.ZC_BUSY;
     if (self.failed) return c.ZC_STATE;
-    const out = self.output orelse return c.ZC_STATE;
+    const out = self.getOutput(0) orelse return c.ZC_STATE;
+    if (out.retired != null) return c.ZC_BUSY;
+    if (out.worker) |worker| worker.finalize();
     const end = if (out.frames != 0) self.outputEnd(out) catch |err| return status(err) else null;
     if (out.failure == c.ZC_OK) if (end) |cut| self.drainOutput(out, cut) catch |err| {
         self.failed = true;
@@ -729,16 +816,23 @@ pub fn closeOutput(p: *c.zc_recorder) c_int {
     };
     self.output = null;
     defer out.deinit();
+    if (out.worker) |worker| worker.finalize();
     if (out.failure != c.ZC_OK and self.isolate) return c.ZC_OK;
     out.finish(self.nominal(), end) catch |err| return status(err);
-    return c.ZC_OK;
+    out.waitIo();
+    return out.failure;
 }
 pub fn split(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     const self = recorder(p);
+    if (self.getOutput(0)) |current| if (current.retired != null) return c.ZC_BUSY;
     if (self.failed) return c.ZC_STATE;
     if (self.next != null) return c.ZC_BUSY;
     if (self.output == null or self.output.?.failure != c.ZC_OK or self.output.?.generation == std.math.maxInt(u64)) return c.ZC_STATE;
     const out = Output.init(path, &self.config, self.headers, self.avoid(), &self.recording, self.audio_bitrate, self.reservations) catch |err| return status(err);
+    if (self.output.?.io_config) |config| out.enableIo(config, self.output.?.worker) catch |err| {
+        out.deinit();
+        return status(err);
+    };
     self.forceKey() catch |err| {
         out.deinit();
         return status(err);
@@ -766,6 +860,11 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
     if (results != null and capacity < 8) return c.ZC_INVALID;
     const self = recorder(p);
     defer self.deinit();
+    if (self.output) |out| if (out.worker) |worker| worker.finalize();
+    for (self.outputs.entries) |entry| if (entry.value) |out| {
+        if (out.worker) |worker| worker.finalize();
+    };
+    self.pollIo() catch {};
     var result: c_int = if (self.failed) c.ZC_IO else c.ZC_OK;
     if (result == c.ZC_OK and options.codecs) {
         if (self.codec) |*encoder| {
@@ -816,6 +915,9 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
             if (out.split_state == c.ZC_SPLIT_PENDING) out.split_state = c.ZC_SPLIT_FAILED;
             if (!self.isolate) result = out.failure;
         };
+        out.waitIo();
+        if (out.split_error != c.ZC_OK and !self.isolate) result = out.split_error;
+        if (out.failure != c.ZC_OK and !self.isolate) result = out.failure;
         if ((if (id == 0) self.next != null else out.next != null) and out.failure == c.ZC_OK) pending = true;
         if (results) |buffer| buffer[count.*] = .{ .id = id, .state = stateOf(out, if (id == 0) self.next != null else out.next != null) };
         count.* += 1;
@@ -855,7 +957,7 @@ fn openWithBitrate(path: [*:0]const u8, cfg: *const c.zc_video_config, opts: *co
         self.deinit();
         return status(err);
     };
-    self.output = Output.init(path, cfg, self.headers, .{null} ** 18, opts, bitrate, self.reservations) catch |err| {
+    self.output = Output.init(path, cfg, self.headers, .{null} ** 27, opts, bitrate, self.reservations) catch |err| {
         self.deinit();
         return status(err);
     };
@@ -867,6 +969,10 @@ pub fn writeAudio(p: *c.zc_recorder, data: [*]const u8, length: u64, timestamp: 
     const self = recorder(p);
     if (self.failed) return c.ZC_STATE;
     if (self.audio == null) return c.ZC_UNSUPPORTED;
+    self.pollIo() catch |err| {
+        self.failed = true;
+        return status(err);
+    };
     if (length > std.math.maxInt(usize)) return c.ZC_INVALID;
     if (self.ring != null) {
         self.audio.?.pushRolling(data[0..@intCast(length)], timestamp) catch |err| return status(err);
@@ -899,7 +1005,7 @@ pub fn recordingStats(p: *c.zc_recorder, out: *c.zc_recording_stats) c_int {
         out.output_frames = o.frames;
         const latest = if (o.queue != null) o.delivery_cut orelse 0 else if (self.delay_ns != null) self.delay_cut orelse 0 else self.last_ns - self.first_ns;
         if (self.frames != 0 and latest >= o.first_ns and o.frames != 0) out.output_duration_ns = latest - o.first_ns;
-        out.rotation_due = @intFromBool(o.failure == c.ZC_OK and self.rotation.due(o.frames, out.output_duration_ns, out.output_bytes, self.next != null));
+        out.rotation_due = @intFromBool(o.failure == c.ZC_OK and self.rotation.due(o.frames, out.output_duration_ns, out.output_bytes, self.next != null or o.retired != null));
     }
     return c.ZC_OK;
 }
@@ -1039,11 +1145,13 @@ fn callbackOutput(self: *Recorder, cb: *const c.zc_output_callbacks, splitting: 
             // identical secondary descriptor may be shared, never media/PTS.
             const shared = splitting and i == 2 and existing.callbacks != null and existing.callbacks.?.secondary_pts_fd == fd;
             if (!shared) try existing.checkIdentity(id);
+            if (existing.retired) |old| try old.checkIdentity(id);
         }
         if (self.next) |existing| try existing.checkIdentity(id);
         for (self.outputs.entries) |entry| if (entry.value) |existing| {
             try existing.checkIdentity(id);
             if (existing.next) |pending| try pending.checkIdentity(id);
+            if (existing.retired) |old| try old.checkIdentity(id);
         };
         if (self.reservations) |r| r.check(id) catch |err| return err;
         identities[i] = id;
@@ -1091,9 +1199,14 @@ pub fn openCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int 
 }
 pub fn splitCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
     const self = recorder(p);
+    if (self.getOutput(0)) |current| if (current.retired != null) return c.ZC_BUSY;
     if (self.failed or self.output == null or self.output.?.failure != c.ZC_OK or self.output.?.generation == std.math.maxInt(u64)) return c.ZC_STATE;
     if (self.next != null) return c.ZC_BUSY;
     const out = callbackOutput(self, cb, true) catch |err| return status(err);
+    if (self.output.?.io_config) |config| out.enableIo(config, self.output.?.worker) catch |err| {
+        out.deinit();
+        return status(err);
+    };
     self.forceKey() catch |err| {
         out.deinit();
         return status(err);
@@ -1140,17 +1253,18 @@ pub fn addOutput(p: *c.zc_recorder, path: [*:0]const u8, id: *u64) c_int {
 pub fn outputStats(p: *c.zc_recorder, id: u64, stats: *c.zc_output_stats) c_int {
     const self = recorder(p);
     stats.* = std.mem.zeroes(c.zc_output_stats);
-    const out = (if (id == 0) self.output else self.outputs.get(id)) orelse return c.ZC_STATE;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
     stats.* = .{ .id = id, .frames = out.frames, .bytes = out.bytes, .first_ns = out.first_ns, .audio_frames = out.delivered_audio_frames, .waiting_key = @intFromBool(out.waiting_key), .reserved = 0 };
     return c.ZC_OK;
 }
 pub fn removeOutput(p: *c.zc_recorder, id: u64) c_int {
     if (id == 0) return closeOutput(p);
     const self = recorder(p);
-    const out = self.outputs.get(id) orelse return c.ZC_STATE;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
     var result: c_int = c.ZC_OK;
+    if (out.retired != null or out.next != null) return c.ZC_BUSY;
+    if (out.worker) |worker| worker.finalize();
     const end = if (out.frames != 0) self.outputEnd(out) catch |err| return status(err) else null;
-    if (out.next != null) return c.ZC_BUSY;
     if (!self.failed and out.failure == c.ZC_OK) {
         if (end) |cut| self.drainOutput(out, cut) catch |err| {
             self.failed = true;
@@ -1159,20 +1273,23 @@ pub fn removeOutput(p: *c.zc_recorder, id: u64) c_int {
     }
     _ = self.outputs.remove(id);
     defer out.deinit();
+    if (out.worker) |worker| worker.finalize();
     if (out.failure != c.ZC_OK and self.isolate) return c.ZC_OK;
     out.finish(self.nominal(), end) catch |err| {
         return status(err);
     };
+    out.waitIo();
+    if (out.worker != null and out.failure != c.ZC_OK) return out.failure;
     return result;
 }
 
-fn stateOf(out: *const Output, pending: bool) c.zc_output_state {
-    return .{ .generation = out.generation, .error_code = out.failure, .split_state = out.split_state, .pending = @intFromBool(pending), .reserved = 0 };
+fn stateOf(out: *Output, pending: bool) c.zc_output_state {
+    return .{ .generation = out.generation, .error_code = out.failure, .split_state = out.split_state, .pending = @intFromBool(pending or out.retired != null), .reserved = 0 };
 }
 pub fn outputState(p: *c.zc_recorder, id: u64, state: *c.zc_output_state) c_int {
     const self = recorder(p);
     state.* = std.mem.zeroes(c.zc_output_state);
-    const out = (if (id == 0) self.output else self.outputs.get(id)) orelse return c.ZC_STATE;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
     state.* = stateOf(out, if (id == 0) self.next != null else out.next != null);
     return c.ZC_OK;
 }
@@ -1188,11 +1305,15 @@ pub fn splitOutput(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const
     if (id == 0) return if (path) |file| split(p, file) else splitCallbacks(p, cb.?);
     const self = recorder(p);
     if (self.failed) return c.ZC_STATE;
-    const old = self.outputs.get(id) orelse return c.ZC_STATE;
+    const old = self.getOutput(id) orelse return c.ZC_STATE;
     if (old.failure != c.ZC_OK or old.generation == std.math.maxInt(u64)) return c.ZC_STATE;
-    if (old.next != null) return c.ZC_BUSY;
+    if (old.next != null or old.retired != null) return c.ZC_BUSY;
     const out = if (path) |file| Output.init(file, &self.config, self.headers, self.avoid(), &self.recording, self.audio_bitrate, self.reservations) catch |err| return status(err) else callbackOutput(self, cb.?, false) catch |err| return status(err);
     self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    if (old.io_config) |config| out.enableIo(config, old.worker) catch |err| {
         out.deinit();
         return status(err);
     };
@@ -1258,6 +1379,7 @@ pub fn outputRetryDue(p: *c.zc_recorder, id: u64, due: *u32) c_int {
     const self = recorder(p);
     if (self.failed or !self.isolate) return c.ZC_STATE;
     const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (out.retired != null or (out.worker != null and out.failure != c.ZC_OK and !out.worker.?.ready())) return c.ZC_OK;
     due.* = @intFromBool(out.retry.poll(self.last_ns, out.failure != c.ZC_OK));
     return c.ZC_OK;
 }
@@ -1274,8 +1396,13 @@ pub fn recoverOutput(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*con
     const old = self.getOutput(id) orelse return c.ZC_STATE;
     if (old.failure == c.ZC_OK or old.generation == std.math.maxInt(u64)) return c.ZC_STATE;
     if ((if (id == 0) self.next else old.next) != null) return c.ZC_BUSY;
+    if (old.retired != null or (old.worker != null and !old.worker.?.ready())) return c.ZC_BUSY;
     const out = if (path) |file| Output.init(file, &self.config, self.headers, self.avoid(), &self.recording, self.audio_bitrate, self.reservations) catch |err| return status(err) else callbackOutput(self, cb.?, id == 0) catch |err| return status(err);
     self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    if (old.io_config) |config| out.enableIo(config, null) catch |err| {
         out.deinit();
         return status(err);
     };
@@ -1287,4 +1414,31 @@ pub fn recoverOutput(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*con
     } else _ = self.outputs.replace(id, out) catch unreachable;
     old.deinit();
     return c.ZC_OK;
+}
+
+pub fn setOutputIo(p: *c.zc_recorder, id: u64, bytes: u64, items: u32, wait: u64) c_int {
+    const self = recorder(p);
+    if (bytes == 0 or bytes > 1024 * 1024 * 1024 or items == 0 or items > 65536 or wait > 60_000_000_000) return c.ZC_INVALID;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (self.failed or out.failure != c.ZC_OK or out.worker != null or out.retired != null or (if (id == 0) self.next != null else out.next != null)) return c.ZC_STATE;
+    out.enableIo(.{ .bytes = @intCast(bytes), .items = items, .wait_ns = wait }, null) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn outputIoStats(p: *c.zc_recorder, id: u64, out: *c.zc_output_io_stats) c_int {
+    out.* = std.mem.zeroes(c.zc_output_io_stats);
+    const sink = recorder(p).getOutput(id) orelse return c.ZC_STATE;
+    if (sink.worker) |worker| worker.stats(out);
+    out.split_error = sink.split_error;
+    return c.ZC_OK;
+}
+pub fn drainOutputIo(p: *c.zc_recorder, id: u64) c_int {
+    const out = recorder(p).getOutput(id) orelse return c.ZC_STATE;
+    var previous: c_int = c.ZC_OK;
+    if (out.retired) |old| previous = old.worker.?.drain();
+    if (out.worker) |worker| {
+        const code = worker.drain();
+        out.sync();
+        return if (previous != c.ZC_OK) previous else code;
+    }
+    return out.failure;
 }

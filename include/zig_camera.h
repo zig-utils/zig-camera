@@ -322,6 +322,18 @@ int zc_video_output_retry_due(zc_recorder *,uint64_t id,uint32_t *due);
 int zc_video_output_recovery(zc_recorder *,uint64_t id,zc_output_recovery_state *);
 int zc_video_recover_output(zc_recorder *,uint64_t id,const char *path,const zc_output_callbacks *);
 
+/* Opt-in asynchronous sink I/O. Bounds include the in-flight operation. No
+ * encoded bytes are dropped: queue overflow quarantines the sink under isolate.
+ * wait_ns=0 fails immediately; otherwise producer waits at most that duration.
+ * Enable once per sink at a serialized call boundary, before staging its split.
+ * Callbacks run on a native worker and must not re-enter the recorder.
+ * Explicit drain/close wait for callbacks; callbacks must eventually return.
+ * Split commit can enqueue a new epoch while the old worker drains. */
+typedef struct {uint64_t queued_bytes,queued_ops,accepted_ops,completed_ops,rejected_ops,high_bytes,high_ops,max_bytes,wait_ns;uint32_t max_ops,running;int32_t error_code,split_error;} zc_output_io_stats;
+int zc_video_set_output_io(zc_recorder *,uint64_t id,uint64_t max_bytes,uint32_t max_ops,uint64_t wait_ns);
+int zc_video_output_io_stats(zc_recorder *,uint64_t id,zc_output_io_stats *);
+int zc_video_drain_output_io(zc_recorder *,uint64_t id);
+
 #ifdef __cplusplus
 }
 #endif

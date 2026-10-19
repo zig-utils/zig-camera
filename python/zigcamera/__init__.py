@@ -11,6 +11,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from .output_objects import CallbackLock
 from .controls import Control as _Control, ControlInfo as _ControlInfo, Metadata as _Metadata
 
 __all__ = ["Camera", "Frame", "CameraError", "Preview", "Recorder"]
@@ -36,6 +37,8 @@ class _RecordingOptions(C.Structure):
     _fields_=[(n,C.c_uint32) for n in ('struct_size','sample_rate','channels','buffer_frames','max_blocks','exclusive')]
 class _RecordingStats(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('segments','output_bytes','output_frames','output_duration_ns','audio_frames','audio_written_frames','audio_queued_frames','audio_trimmed_frames')]+[(n,C.c_uint32) for n in ('rotation_due','audio_enabled')]
+class _OutputIoStats(C.Structure):
+    _fields_=[(n,C.c_uint64) for n in ('queued_bytes','queued_ops','accepted_ops','completed_ops','rejected_ops','high_bytes','high_ops','max_bytes','wait_ns')]+[(n,C.c_uint32) for n in ('max_ops','running')]+[(n,C.c_int32) for n in ('error_code','split_error')]
 class _OutputDelay(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('delay_ns','queued_frames','queued_bytes')]+[(n,C.c_uint32) for n in ('max_frames','reserved')]+[('max_bytes',C.c_uint64)]
 class _OutputRecovery(C.Structure):
@@ -107,6 +110,9 @@ def _load(path=None):
         'zc_video_freeze_buffer':([C.c_void_p,C.c_char_p,C.POINTER(C.c_void_p)],C.c_int),
         'zc_snapshot_write':([C.c_void_p],C.c_int),
         'zc_snapshot_close':([C.c_void_p],None),
+        'zc_video_set_output_io':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint32,C.c_uint64],C.c_int),
+        'zc_video_output_io_stats':([C.c_void_p,C.c_uint64,C.POINTER(_OutputIoStats)],C.c_int),
+        'zc_video_drain_output_io':([C.c_void_p,C.c_uint64],C.c_int),
         'zc_video_set_output_delay':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint64,C.c_uint32],C.c_int),
         'zc_video_output_delay':([C.c_void_p,C.c_uint64,C.POINTER(_OutputDelay)],C.c_int),
         'zc_video_set_output_recovery':([C.c_void_p,C.c_uint64,C.c_uint32,C.c_uint64,C.c_uint64],C.c_int),
@@ -186,7 +192,7 @@ class Camera:
         self._lib = _load(library)
         self._handle = C.c_void_p()
         self._recording = None
-        self._preview=None;self._pump=None;self._af_job=None;self._async_lock=threading.RLock();self._control_info=None
+        self._preview=None;self._pump=None;self._af_job=None;self._async_lock=CallbackLock();self._control_info=None
         from collections import deque
         self._active_capture_job=None;self._capture_jobs=deque();self._job_slots=threading.BoundedSemaphore(32);self._stopping=False
         self._started = False
@@ -340,7 +346,7 @@ class Camera:
         return self._capture(lambda frame:frame.metadata,wait,signal_function,timeout_ms)
     def capture_file(self,path,timeout_ms=5000,*,wait=None,signal_function=None):
         return self._capture(lambda frame:frame.save(path),wait,signal_function,timeout_ms)
-    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None,audio=None,failure_policy="fail_fast"):
+    def start_recording(self,path,*,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,circular=None,audio=None,failure_policy="fail_fast",async_io=None):
         from .pipeline import Recording
         self._open()
         with self._async_lock:
@@ -361,7 +367,7 @@ class Camera:
                     synthetic=self.info['backend']=='synthetic'
                     if synthetic != (options['backend']=='synthetic'): raise ValueError('Audio and camera must use the same clock source')
                     source=AudioCapture(library=self._lib._name,**options)
-                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels,**encoding},exclusive=rotation is not None,failure_policy=failure_policy)
+                recorder=Recorder(path,width=self.info['main']['width'],height=self.info['main']['height'],fps=fps,quality=quality,codec=codec,bitrate=bitrate,gop=gop,library=self._lib._name,circular=circular,audio=None if source is None else {'sample_rate':source.sample_rate,'channels':source.channels,**encoding},exclusive=rotation is not None,failure_policy=failure_policy,async_io=async_io)
                 recording=Recording(self,recorder,fps,audio=source,rotation=rotation)
                 self._recording=recording
                 if rotation is not None: rotation._bind(recording)
@@ -574,15 +580,21 @@ class Preview:
 
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
-    def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False,failure_policy="fail_fast"):
+    def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False,failure_policy="fail_fast",async_io=None):
         from .output_objects import guard_callback,_path as is_path,MuxedOutput
         guard_callback()
         if failure_policy not in ("fail_fast","isolate"): raise ValueError("failure_policy must be fail_fast or isolate")
+        if async_io is not None and not isinstance(async_io,dict): raise TypeError('async_io requires an options dictionary or ID mapping')
+        self._default_io=None;self._initial_io={};self._io_ready=False
+        if async_io is not None:
+            if all(isinstance(key,str) for key in async_io): self._default_io=dict(async_io)
+            elif len(async_io)<=8 and all(isinstance(key,int) and 0<=key<=8 and isinstance(value,dict) for key,value in async_io.items()): self._initial_io={key:dict(value) for key,value in async_io.items()}
+            else: raise ValueError('Invalid per-output async_io mapping')
         self._isolation=failure_policy=="isolate"
         initial_outputs=list(path) if isinstance(path,(list,tuple)) else None
         if initial_outputs is not None and len(initial_outputs)>8: raise ValueError('At most 8 simultaneous outputs')
         direct_object=initial_outputs is not None or (path is not None and not is_path(path))
-        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._next_bridge=None;self._split_staged=False;self._callback_error=None;self._primary_output=None;self._next_output=None;self._extra_bridges={};self._extra_targets={};self._extra_pending={};self._split_results={};self._lifecycle_errors={};self._final_states={};self._final_output_errors={};self._split_generation=0;self._recovery_factories={};self._recovery_errors={};self._recovery_failures={};self._final_recovery={}; config=_VideoConfig()
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=CallbackLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._next_bridge=None;self._split_staged=False;self._callback_error=None;self._primary_output=None;self._next_output=None;self._extra_bridges={};self._extra_targets={};self._extra_pending={};self._split_results={};self._lifecycle_errors={};self._final_states={};self._final_output_errors={};self._split_generation=0;self._recovery_factories={};self._recovery_errors={};self._recovery_failures={};self._final_recovery={}; config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
@@ -653,6 +665,17 @@ class Recorder:
         if circular is not None and 'delay_ms' in circular:
             try: self.set_delay(circular['delay_ms'])
             except Exception: self.close();raise
+        try:
+            self._io_ready=True
+            for identity in ([0] if self._primary_output is not None else [])+list(self._extra_targets): self._configure_io(identity,None)
+        except BaseException:
+            try: self.close()
+            except Exception: pass
+            raise
+    def _configure_io(self,identity,options):
+        if not self._io_ready: return
+        options=self._initial_io.get(identity,self._default_io) if options is None else options
+        if options is not None: self.set_output_io(identity,**dict(options))
     def _open(self):
         from .output_objects import guard_callback
         guard_callback()
@@ -711,6 +734,30 @@ class Recorder:
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
             self._open();self._after_native(self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000))
+    def set_output_io(self,output=0,*,max_bytes=8*1024*1024,max_ops=512,backpressure='fail',timeout_ms=100):
+        if backpressure not in ('fail','wait'): raise ValueError('Backpressure must be fail or wait')
+        if not isinstance(max_bytes,int) or not 0<max_bytes<=1024**3: raise ValueError('Invalid I/O byte limit')
+        if not isinstance(max_ops,int) or not 0<max_ops<=65536: raise ValueError('Invalid I/O operation limit')
+        if not isinstance(timeout_ms,int) or not 0<timeout_ms<=60000: raise ValueError('Invalid I/O backpressure timeout')
+        with self._lock:
+            self._open()
+            _check(self._lib,self._lib.zc_video_set_output_io(self._handle,self._output_id(output),max_bytes,max_ops,timeout_ms*1_000_000 if backpressure=='wait' else 0))
+    def output_io_stats(self,output=0):
+        with self._lock:
+            self._open();state=_OutputIoStats()
+            _check(self._lib,self._lib.zc_video_output_io_stats(self._handle,self._output_id(output),C.byref(state)))
+            return {name:getattr(state,name) for name,_ in state._fields_}
+    def drain_output_io(self,output=0):
+        with self._lock:
+            self._open();identity=self._output_id(output)
+            bridge=self._bridge if identity==0 else self._extra_bridges.get(identity)
+            status=self._lib.zc_video_drain_output_io(self._handle,identity)
+            try: self._checked_bridge(status,bridge)
+            except BaseException:
+                try: self._sync_split()
+                except Exception: pass
+                raise
+            self._sync_split()
     def set_output_delay(self,output=0,*,delay_ms,max_bytes=8*1024*1024,max_frames=300):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         if not isinstance(max_bytes,int) or not 0<max_bytes<=1024**3: raise ValueError('Invalid output queue size')
@@ -833,7 +880,7 @@ class Recorder:
             self._open();stats=_OutputStats();identity=self._output_id(output)
             _check(self._lib,self._lib.zc_video_output_stats(self._handle,identity,C.byref(stats)))
             return {name:getattr(stats,name) for name,_ in stats._fields_ if name!='reserved'}
-    def add_output(self,output):
+    def add_output(self,output,*,async_io=None):
         from .output_objects import OutputBridge,MuxedOutput,_path as is_path
         with self._lock:
             self._open()
@@ -845,6 +892,7 @@ class Recorder:
                 self._checked_bridge(self._lib.zc_video_add_callbacks(self._handle,C.byref(bridge.cb),C.byref(identity)),bridge)
                 accepted=True;self._extra_bridges[identity.value]=bridge;self._extra_targets[identity.value]=output
                 bridge.commit()
+                self._configure_io(identity.value,async_io)
                 return identity.value
             except BaseException:
                 try:
@@ -854,7 +902,7 @@ class Recorder:
                 raise
     def remove_output(self,output):
         with self._lock:
-            self._open();identity=self._output_id(output)
+            self._open();self._sync_split();identity=self._output_id(output)
             if identity==0: self.close_output();return
             original=self._extra_bridges.get(identity)
             status=self._lib.zc_video_remove_output(self._handle,identity)
@@ -918,10 +966,14 @@ class Recorder:
             else: new,target,baseline=self._extra_pending[identity]
             failure=self._error_for(identity,state)
             if state['pending']:
+                if state['generation']>baseline: continue
                 if not state['error_code'] or not self._isolation: continue
                 # Quarantine makes this split terminal. Release the pending sink
                 # without touching callbacks still owned by the failed current sink.
                 self._checked(self._lib.zc_video_cancel_output_split(self._handle,identity))
+            split_error=self.output_io_stats(identity)['split_error']
+            if split_error and failure is None:
+                failure=old.error if old is not None and old.error is not None else CameraError(split_error,self._lib.zc_status_string(split_error).decode())
             committed=state['generation']>baseline
             if identity==0:
                 self._next_bridge=None;self._next_output=None;self._split_staged=False
@@ -1011,14 +1063,21 @@ class Recorder:
                 else: bridge.stop()
             except Exception: pass
             raise
-    def open_output(self,output,*,_pts=None):
+    def open_output(self,output,*,_pts=None,async_io=None):
         from .output_objects import _path
         with self._lock:
             self._open()
             if _path(output) and (_pts is None or _pts.target is None):
-                self._path_call('zc_video_open_output',output);self._primary_output=output;return
-            if self.buffer_stats['output_open']: raise RuntimeError('Output already open')
-            self._attach_object(output,_pts,False)
+                self._path_call('zc_video_open_output',output);self._primary_output=output
+            else:
+                if self.buffer_stats['output_open']: raise RuntimeError('Output already open')
+                self._attach_object(output,_pts,False)
+            try: self._configure_io(0,async_io)
+            except BaseException:
+                try: self.close_output()
+                except Exception: pass
+                raise
+            return
     def split(self,output):
         from .output_objects import _path
         with self._lock:
@@ -1030,7 +1089,7 @@ class Recorder:
             else: self._attach_object(output,None,True)
     def close_output(self):
         with self._lock:
-            self._open();status=self._lib.zc_video_close_output(self._handle)
+            self._open();self._sync_split();status=self._lib.zc_video_close_output(self._handle)
             stats=_BufferStats();_check(self._lib,self._lib.zc_video_buffer_stats(self._handle,C.byref(stats)))
             try: self._checked(status)
             finally:
@@ -1074,7 +1133,10 @@ class Recorder:
                     # Encoder drain can commit a prepared split during close.
                     current=self._bridge if result.id==0 else self._extra_bridges.get(result.id)
                     pending=(self._next_bridge,self._next_output,self._split_generation) if result.id==0 else self._extra_pending.get(result.id)
-                    if pending is not None and state['generation']>pending[2]: current=pending[0]
+                    if pending is not None and state['generation']>pending[2]:
+                        if state['split_state']==3:
+                            self._final_output_errors[result.id]=current.error if current is not None and current.error is not None else CameraError(-6,'Async split finalization failed')
+                        current=pending[0]
                     if state['error_code']:
                         self._final_output_errors[result.id]=current.error if current is not None and current.error is not None else CameraError(state['error_code'],self._lib.zc_status_string(state['error_code']).decode())
                 self._final_output_errors.update({i:e for i,e in self._lifecycle_errors.items() if i not in self._final_output_errors})

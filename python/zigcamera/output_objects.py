@@ -21,6 +21,16 @@ def output_hook(operation):
         raise RuntimeError(f'Output hook aborted: {error}') from error
     finally: _callback_state.active=previous
 
+class CallbackLock:
+    """Reject worker callback re-entry before waiting for the producer lock."""
+    def __init__(self): self.lock=threading.RLock()
+    def acquire(self,*args,**kwargs):
+        guard_callback()
+        return self.lock.acquire(*args,**kwargs)
+    def release(self): return self.lock.release()
+    def __enter__(self): self.acquire();return self
+    def __exit__(self,*args): self.release()
+
 def _path(value): return isinstance(value,(str,bytes,os.PathLike))
 
 def _fd(stream):

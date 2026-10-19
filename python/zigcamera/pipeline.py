@@ -11,6 +11,11 @@ class CapturePump:
         expired=[]
         if not self.camera._async_lock.acquire(False): return
         try:
+            # Retired output workers can finish even while camera buffers are
+            # leased elsewhere; finish their split jobs without another frame.
+            recording=self.camera._recording
+            if recording is not None and recording.error is None:
+                recording.recorder._sync_split();recording._complete_splits()
             for job in list(self.camera._capture_jobs):
                 if time.monotonic()>=job.deadline:
                     with job.lock: job.state='expired'
@@ -113,10 +118,10 @@ class Recording:
     @property
     def outputs(self):
         with self.camera._async_lock: return self.recorder.outputs
-    def add_output(self,output):
+    def add_output(self,output,*,async_io=None):
         with self.camera._async_lock:
             if self.closed or self.error is not None: raise RuntimeError('Recording is not writable')
-            return self.recorder.add_output(output)
+            return self.recorder.add_output(output,async_io=async_io)
     def remove_output(self,output):
         with self.camera._async_lock:
             if self.closed: raise RuntimeError('Recording is closed')
@@ -145,7 +150,8 @@ class Recording:
         import os
         if self._rotation_pending is None: return
         pending=self.recorder.buffer_stats['split_pending']
-        if not pending and self.recorder.output_status(0)['split_state']==2:
+        state=self.recorder.output_status(0)
+        if state['generation']>self.recorder._split_generation:
             self._rotation_index+=1;self.current_path=self._rotation.path(self._rotation_index);self._rotation_pending=None;return
         if pending: self.recorder.cancel_split()
         path,dev,ino=self._rotation_pending;self._rotation_pending=None
@@ -158,6 +164,14 @@ class Recording:
         with self.camera._async_lock: return self.recorder.output_errors
     def output_status(self,output=0):
         with self.camera._async_lock: return self.recorder.output_status(output)
+    def set_output_io(self,output=0,**options):
+        with self.camera._async_lock: return self.recorder.set_output_io(output,**options)
+    def output_io_stats(self,output=0):
+        with self.camera._async_lock: return self.recorder.output_io_stats(output)
+    def drain_output_io(self,output=0):
+        with self.camera._async_lock:
+            try: return self.recorder.drain_output_io(output)
+            finally: self._complete_splits()
     def set_output_delay(self,output=0,**options):
         with self.camera._async_lock: return self.recorder.set_output_delay(output,**options)
     def output_delay(self,output=0):
@@ -189,7 +203,7 @@ class Recording:
             try: self.recorder.split_output(identity,output)
             except Exception: self.camera._job_slots.release();raise
             job=OperationJob(signal_function=signal_function,release_slot=self.camera._job_slots.release,cancel_function=self._cancel_split)
-            job.state='running';job.path=output;job.output_id=identity;self._split_jobs[identity]=job
+            job.state='running';job.path=output;job.output_id=identity;job.generation=self.recorder._split_generation if identity==0 else self.recorder._extra_pending[identity][2];self._split_jobs[identity]=job
             if identity==0: self._split_job=job
             return job
     def _cancel_split(self,job):
@@ -202,6 +216,8 @@ class Recording:
             except Exception as error:
                 job._finish(error=error);raise
             if job.done(): return False
+            baseline=self.recorder._split_generation if job.output_id==0 else self.recorder._extra_pending[job.output_id][2]
+            if self.recorder._state(job.output_id)['generation']>baseline: return False
             try: self.recorder.cancel_output_split(job.output_id)
             except Exception as error:
                 job._finish(error=error);raise
@@ -211,14 +227,16 @@ class Recording:
         with self.camera._async_lock: job=self.recorder.save_buffer(path,wait=False,signal_function=signal_function)
         if wait is True or (wait is None and signal_function is None): job.result();return None
         return job
-    def open_output(self,path):
-        with self.camera._async_lock: self.recorder.open_output(path)
+    def open_output(self,path,*,async_io=None):
+        with self.camera._async_lock: self.recorder.open_output(path,async_io=async_io)
     def close_output(self):
         with self.camera._async_lock: self.recorder.close_output()
     @property
     def buffer_stats(self):
         with self.camera._async_lock: return self.recorder.buffer_stats
     def close(self):
+        from .output_objects import guard_callback
+        guard_callback()
         if self.closed: return
         if self.camera._recording is self:
             self.camera.stop_recording();return
@@ -233,4 +251,12 @@ class Recording:
             try: operation()
             except Exception as error:
                 if failure is None: failure=error
+        for identity,job in self._split_jobs.items():
+            if not job.done():
+                from concurrent.futures import CancelledError
+                state=self.recorder._final_states.get(identity)
+                error=self.recorder._final_output_errors.get(identity) or failure
+                if state is not None and state['generation']>job.generation:
+                    job._finish(job.path if error is None else None,error=error)
+                else: job._finish(error=error or CancelledError('Recording stopped before split completion'))
         if failure is not None: raise failure

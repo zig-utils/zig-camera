@@ -211,3 +211,13 @@ pub export fn zc_video_output_recovery(p: *c.zc_recorder, id: u64, state: *c.zc_
 pub export fn zc_video_recover_output(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks) c_int {
     return @import("video.zig").recoverOutput(p, id, path, cb);
 }
+
+pub export fn zc_video_set_output_io(p: *c.zc_recorder, id: u64, bytes: u64, items: u32, wait: u64) c_int {
+    return @import("video.zig").setOutputIo(p, id, bytes, items, wait);
+}
+pub export fn zc_video_output_io_stats(p: *c.zc_recorder, id: u64, out: *c.zc_output_io_stats) c_int {
+    return @import("video.zig").outputIoStats(p, id, out);
+}
+pub export fn zc_video_drain_output_io(p: *c.zc_recorder, id: u64) c_int {
+    return @import("video.zig").drainOutputIo(p, id);
+}

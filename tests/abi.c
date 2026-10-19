@@ -4,6 +4,7 @@
 #include <string.h>
 _Static_assert(sizeof(zc_output_delay)==40,"output delay ABI");
 _Static_assert(sizeof(zc_output_recovery_state)==24,"output recovery ABI");
+_Static_assert(sizeof(zc_output_io_stats)==88,"output I/O ABI");
 _Static_assert(sizeof(zc_output_packet)==32,"output packet ABI");
 _Static_assert(sizeof(zc_output_state)==24,"output state ABI");
 _Static_assert(sizeof(zc_output_result)==32,"output close result ABI");
@@ -243,6 +244,34 @@ int main(void) {
     assert(recovery_state.limit==2 && recovery_state.attempts==1 && !recovery_state.exhausted);
     assert(delivered==4 && second_delivered==4 && failed_calls==1);
     assert(zc_video_close(recorder)==ZC_OK && delivered==6);
+    assert(zc_video_create(&video,&recording,0,&recorder)==ZC_OK);
+    assert(zc_video_set_failure_isolation(recorder,1)==ZC_OK);
+    delivered=0;second_delivered=0;third_delivered=0;
+    assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+    extra=callbacks;extra.context=&second_delivered;
+    assert(zc_video_add_callbacks(recorder,&extra,&extra_id)==ZC_OK);
+    assert(zc_video_set_output_io(recorder,0,32768,8,0)==ZC_OK);
+    assert(zc_video_set_output_io(recorder,extra_id,0,8,0)==ZC_INVALID);
+    assert(zc_video_set_output_io(recorder,extra_id,32768,8,1000000000)==ZC_OK);
+    for(uint64_t i=0;i<6;i++) {
+        if(i==4) {
+            zc_output_callbacks replacement=callbacks;replacement.context=&third_delivered;
+            assert(zc_video_split_output(recorder,extra_id,NULL,&replacement)==ZC_OK);
+        }
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(zc_video_write(recorder,&frame,i*40000000)==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+    }
+    assert(zc_video_drain_output_io(recorder,0)==ZC_OK);
+    assert(zc_video_drain_output_io(recorder,extra_id)==ZC_OK);
+    assert(delivered==6 && second_delivered==4 && third_delivered==2);
+    zc_output_io_stats io_stats;
+    assert(zc_video_output_io_stats(recorder,extra_id,&io_stats)==ZC_OK);
+    assert(io_stats.max_bytes==32768 && io_stats.max_ops==8 && !io_stats.queued_ops);
+    assert(io_stats.accepted_ops==2 && io_stats.completed_ops==2 && !io_stats.rejected_ops);
+    assert(zc_video_output_state(recorder,extra_id,&state)==ZC_OK && state.generation==1 && !state.pending);
+    assert(zc_video_set_output_io(recorder,0,32768,8,0)==ZC_STATE);
+    assert(zc_video_close(recorder)==ZC_OK);
     assert(zc_close(camera)==ZC_OK);
     return 0;
 }
