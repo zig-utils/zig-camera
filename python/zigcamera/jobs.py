@@ -219,7 +219,9 @@ class PreparationJob(OperationJob):
             self.preparation_done.set();self._finish(error=CancelledError('Preparation cancelled'))
         return accepted
     def _finish_state(self,error):
-        if isinstance(error,CancelledError): self.lib.zc_preparation_step(C.byref(self.native),5)
+        if isinstance(error,CancelledError):
+            self.lib.zc_preparation_step(C.byref(self.native),4)
+            self.lib.zc_preparation_step(C.byref(self.native),5)
         elif error is not None: self.lib.zc_preparation_step(C.byref(self.native),6)
     def abort(self,error):
         if self.staged or self.preparation_done.is_set(): self._finish(error=error);return

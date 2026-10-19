@@ -144,10 +144,14 @@ class DirectOutputTests(unittest.TestCase):
             recording=camera.start_recording(Collector(),fps=25)
             wait_frames(recording,3);second=BadStop()
             with camera._async_lock:
-                job=recording.split(second)
                 camera._recording=None
                 pump=camera._pump;camera._pump=None;pump.stop_event.set()
             pump.close()
+            # This regression concerns cancellation of an already staged
+            # output. Stop frame delivery first, then await preparation so the
+            # keyframe cannot race cancellation of the throwing stop hook.
+            job=recording.split(second)
+            self.assertTrue(job.preparation_done.wait(5));self.assertTrue(job.staged)
             with self.assertRaisesRegex(ValueError,'pending stop'): recording.close()
             with self.assertRaisesRegex(ValueError,'pending stop'): job.result(1)
             self.assertFalse(second.recording);self.assertFalse(recording.recorder._handle.value)

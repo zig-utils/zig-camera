@@ -773,7 +773,9 @@ the observer wait. Preparation failures retain their original Python exception;
 Signal callback errors remain separate in `callback_error`.
 
 Stop cancels pending startup/preparation, retains their owners until cleanup,
-and prevents late publication. A reserved startup-stop waiter works even when
+and prevents late publication. It reports cleanup errors from preparation it
+cancels; earlier completed preparation failures remain on their jobs and do not
+poison the healthy current output. A reserved startup-stop waiter works even when
 normal job capacity is exhausted. `camera.close()` waits before freeing the
 camera handle. A mode switch during startup is rejected. Recorder close waits
 for its prepared recipes before consuming native state. Standalone

@@ -259,6 +259,7 @@ class Recording:
         asynchronous=wait is False or (wait is None and signal_function is not None)
         job=self.recorder._close_job
         if job is not None and threading.current_thread() is not job.thread:
+            if not asynchronous and job.done() and not self.recorder._handle.value: return None
             return job if asynchronous else job.result()
         if self.closed: return
         if self.camera._recording is self:
@@ -267,11 +268,16 @@ class Recording:
             return self.recorder._submit_lifecycle(lambda:self.close(),signal_function,closing=True)
         self.closed=True
         failure=self.error
+        pending_preparations={job for job in self._split_jobs.values() if not job.done()}
         operations=[]
         for job in self._split_jobs.values():
             if not job.done(): operations.append(lambda job=job:self._cancel_split(job))
         def await_preparations():
-            for job in self._split_jobs.values(): job.preparation_done.wait()
+            failure=None
+            for job in self._split_jobs.values():
+                job.preparation_done.wait()
+                if failure is None and job in pending_preparations: failure=job.cleanup_error
+            if failure is not None: raise failure
         operations.append(await_preparations)
         if self._audio is not None: operations.append(self._audio.close)
         operations.extend((self._discard_rotation,self.recorder.close))

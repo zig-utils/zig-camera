@@ -27,6 +27,26 @@ class HeaderGate(MuxedOutput):
         super()._write(data)
 
 class PreparationTests(unittest.TestCase):
+    def test_close_reports_cleanup_failure_of_cancelled_claimed_preparation(self):
+        failure=OSError('prepared cleanup failed')
+        class BadCleanup(HeaderGate):
+            def stop(self): super().stop();raise failure
+        with Camera(simulate=True,width=32,height=32) as camera:
+            recording=camera.start_recording(Collector());pending=BadCleanup()
+            split=recording.split(pending)
+            try:
+                self.assertTrue(pending.entered.wait(5));closing=camera.stop_recording(wait=False)
+                pending.resume.set()
+                with self.assertRaises(OSError) as caught: closing.result(5)
+                self.assertIs(caught.exception,failure)
+                with self.assertRaises(CancelledError): split.result(5)
+                self.assertEqual(split.native.phase,4)
+                self.assertIs(split.cleanup_error,failure);self.assertFalse(pending.recording)
+                self.assertFalse(recording.recorder._handle.value)
+                self.assertIs(camera.stop_recording(wait=False),closing)
+                camera.stop_recording()  # Completed cleanup is idempotent.
+            finally: pending.resume.set();camera.stop_recording()
+
     @unittest.skipUnless(os.environ.get('ZC_TEST_AAC')=='1','optional Home AVC/HEVC and AAC')
     def test_async_startup_and_split_mp4_segments_decode_with_exact_av_boundaries(self):
         from test_aac_mp4 import inspect
