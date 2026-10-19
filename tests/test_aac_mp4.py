@@ -16,7 +16,7 @@ ENABLED=os.environ.get('ZC_TEST_AAC')=='1'
 def waveform(frames,start=0,channels=1):
     return [((i%200)-100)*100*(1 if c==0 else -1) for i in range(start,start+frames) for c in range(channels)]
 
-def inspect(test,path,*,count,first=0,samples,start_sample=0,offset_us=0,rate=48000,channels=1):
+def inspect(test,path,*,count,first=0,samples,start_sample=0,offset_us=0,rate=48000,channels=1,sequences=None):
     tracks=parse(path);video,audio=tracks[1],tracks[2]
     test.assertEqual(len(video['samples']),count);test.assertEqual(video['times'][0],0);test.assertTrue(video['keys'][0])
     test.assertEqual(audio['rate'],rate);test.assertEqual(audio['channels'],channels)
@@ -25,7 +25,11 @@ def inspect(test,path,*,count,first=0,samples,start_sample=0,offset_us=0,rate=48
     test.assertGreater(audio['delay'],0);test.assertLessEqual(len(audio['samples'])*1024-audio['delay']-samples,1023)
     decoder=os.environ.get('ZC_INDEPENDENT_DECODER')
     if decoder:
-        codec,aus=video_units(path,video);subprocess.run([decoder,codec,str(aus),str(count),str(first)],check=True)
+        codec,aus=video_units(path,video);command=[decoder,codec,str(aus),str(count),str(first)]
+        if sequences is not None:
+            test.assertEqual(len(sequences),count)
+            expected=path.with_suffix('.sequences');expected.write_text(''.join(f'{index}\n' for index in sequences));command.append(str(expected))
+        subprocess.run(command,check=True)
     decoder=os.environ.get('ZC_AAC_DECODER')
     if decoder:
         pcm=path.with_suffix('.pcm');subprocess.run([decoder,str(audio_units(path,audio)),str(pcm)],check=True)

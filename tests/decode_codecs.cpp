@@ -10,18 +10,30 @@
 #include <cmath>
 static void require(bool ok,const char *why) { if(!ok){std::fprintf(stderr,"%s\n",why);std::exit(1);} }
 static int first_index=0;
+static std::vector<uint64_t> expected_indices;
 static void picture(const uint8_t *y,int stride,int width,int height,int &count) {
     require(width==128 && height==96,"decoded dimensions differ");
-    const int blue=((first_index+count)%4)*37;
+    require(expected_indices.empty() || (size_t)count<expected_indices.size(),"unexpected decoded frame");
+    const uint64_t index=expected_indices.empty() ? (uint64_t)first_index+count : expected_indices[count];
+    const int blue=(int)(index%4)*37;
     const int expected=((66*60+129*25+25*blue+128)>>8)+16;
     require(std::abs((int)y[25*stride+60]-expected)<=4,"decoded pixel/order differs");
     count++;
 }
 int main(int argc,char **argv) {
-    require(argc>=3 && argc<=5,"usage: decode-codecs h264|hevc file.aus [frames [first_index]]");
+    require(argc>=3 && argc<=6,"usage: decode-codecs h264|hevc file.aus [frames [first_index [sequence_file]]]");
     const int expected_count=argc>=4 ? std::atoi(argv[3]) : 12;
     first_index=argc>=5 ? std::atoi(argv[4]) : 0;
     require(expected_count>0 && first_index>=0,"invalid expected frame range");
+    if(argc==6) {
+        std::ifstream sequences(argv[5]);require(sequences.good(),"open expected sequences");
+        uint64_t index;
+        while(sequences>>index) {
+            require(expected_indices.size()<(size_t)expected_count,"too many expected sequences");
+            expected_indices.push_back(index);
+        }
+        require(sequences.eof() && expected_indices.size()==(size_t)expected_count,"invalid expected sequences");
+    }
     std::ifstream f(argv[2],std::ios::binary);require(f.good(),"open AUs");
     ISVCDecoder *avc=nullptr;de265_decoder_context *hevc=nullptr;
     if(!std::strcmp(argv[1],"h264")) {

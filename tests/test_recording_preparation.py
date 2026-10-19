@@ -27,6 +27,37 @@ class HeaderGate(MuxedOutput):
         super()._write(data)
 
 class PreparationTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('ZC_TEST_AAC')=='1','optional Home AVC/HEVC and AAC')
+    def test_async_startup_and_split_mp4_segments_decode_with_exact_av_boundaries(self):
+        from test_aac_mp4 import inspect
+        from check_aac_mp4 import parse
+        from zigcamera.pipeline import Recording
+        original=Recording.write
+        for codec in ('h264','hevc'):
+            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=128,height=96,policy='fifo') as camera:
+                root=Path(directory);first=root/'first.mp4';second=root/'second.mp4'
+                accepted=[]
+                def trace(recording,frame):
+                    result=original(recording,frame);accepted.append(int(frame._native.sequence));return result
+                # Capture can discard a frame before encoder input while a
+                # public lock is busy. Validate decoded pixels against accepted
+                # input sequences rather than assuming the camera never skips.
+                with patch.object(Recording,'write',trace):
+                    starting=camera.start_recording(MuxedOutput(first),codec=codec,fps=25,gop=4,
+                        audio={'backend':'synthetic','sample_rate':48000,'channels':2,'codec':'aac'},
+                        async_io={'max_ops':65536,'max_bytes':16*1024*1024},wait=False)
+                    recording=starting.result(10)
+                    wait_frames(recording,8);replacement=MuxedOutput(second)
+                    self.assertIs(recording.split(replacement).result(10),replacement)
+                    wait_frames(recording,recording.frames+6);camera.stop_recording(wait=False).result(10)
+                old_count=len(parse(first)[1]['samples']);new_count=len(parse(second)[1]['samples'])
+                self.assertGreater(old_count,0);self.assertGreater(new_count,0)
+                self.assertEqual(old_count+new_count,recording.frames)
+                self.assertEqual(len(accepted),recording.frames)
+                inspect(self,first,count=old_count,samples=old_count*1920,rate=48000,channels=2,sequences=accepted[:old_count])
+                inspect(self,second,count=new_count,first=old_count,samples=new_count*1920,
+                    start_sample=old_count*1920,rate=48000,channels=2,sequences=accepted[old_count:])
+
     def test_standalone_cancellation_wins_between_readiness_and_publication(self):
         from zigcamera.split_preparation import SplitPreparation
         entered=threading.Event();resume=threading.Event();original=SplitPreparation.stage
