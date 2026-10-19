@@ -345,3 +345,30 @@ Home's PCM windows keep healthy consumers independent of failed sinks; AAC/MP4
 and PCM/MKV writers remain the encoding/muxing implementation. Independent
 FAAD2/AVFoundation and Linux OpenH264/libde265 checks validate segments without
 FFmpeg. Synthetic validation does not establish Pi speedups or physical A/V timing.
+
+## 0.15: bounded recovery policy and reusable delay queues
+
+Rechecked Home's packet FIFO, attachment registry, non-consuming PCM windows,
+streaming MP4/MKV writers and native H.264/HEVC/AAC interfaces. The codecs and
+containers already provide fresh independently initialized encoder/muxer state;
+recovery replaces a poisoned sink instead of reusing its writer.
+
+[Home 61391c260](https://github.com/home-lang/home/commit/61391c260) adds
+`output_recovery.Retry` with allocation-free capped exponential retry claims,
+lifetime attempt budgets, clock saturation and explicit disable/reset behavior.
+It also adds `Ring.reset()` to retain allocated capacity while discarding stale
+packet dependencies and clock state. Two retry and six ring tests pass with
+Zig 0.15.2 and Home's development compiler; targeted pickier passes. Both modules
+are vendored verbatim with MIT attribution. The focused Home workflow now covers
+the retry helper too. Home Actions dispatch remains disabled for the repository;
+local tests and zig-camera's integration CI provide the available evidence.
+
+Zig-camera owns per-attachment FIFO/scratch arenas and transfers them across
+splits. Recovery clears only the failed queue, preserves stable IDs and retries
+fresh objects from a Python factory. Independent PCM cursors retain audio through
+each delayed boundary, including the first queued key and stop flushing. C ABI
+and Python tests cover dynamic delays, overflow isolation, pending split jobs,
+backoff/exhaustion, alias guards and H.264/HEVC + AAC MP4 independent decoding.
+Only origin/main is published under the configured human identity, with no
+coauthor trailers or PRs. No FFmpeg/Libav dependency is added. Physical Pi camera
+performance and microphone synchronization are not measured by these tests.

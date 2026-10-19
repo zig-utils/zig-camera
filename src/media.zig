@@ -192,3 +192,22 @@ pub export fn zc_video_cancel_output_split(p: *c.zc_recorder, id: u64) c_int {
 pub export fn zc_video_close_outputs(p: *c.zc_recorder, results: [*]c.zc_output_result, capacity: u32, count: *u32) c_int {
     return @import("video.zig").closeReport(p, results, capacity, count);
 }
+
+pub export fn zc_video_set_output_delay(p: *c.zc_recorder, id: u64, delay: u64, bytes: u64, frames: u32) c_int {
+    return @import("video.zig").setOutputDelay(p, id, delay, bytes, frames);
+}
+pub export fn zc_video_output_delay(p: *c.zc_recorder, id: u64, state: *c.zc_output_delay) c_int {
+    return @import("video.zig").outputDelay(p, id, state);
+}
+pub export fn zc_video_set_output_recovery(p: *c.zc_recorder, id: u64, limit: u32, initial: u64, maximum: u64) c_int {
+    return @import("video.zig").setOutputRecovery(p, id, limit, initial, maximum);
+}
+pub export fn zc_video_output_retry_due(p: *c.zc_recorder, id: u64, due: *u32) c_int {
+    return @import("video.zig").outputRetryDue(p, id, due);
+}
+pub export fn zc_video_output_recovery(p: *c.zc_recorder, id: u64, state: *c.zc_output_recovery_state) c_int {
+    return @import("video.zig").outputRecovery(p, id, state);
+}
+pub export fn zc_video_recover_output(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks) c_int {
+    return @import("video.zig").recoverOutput(p, id, path, cb);
+}

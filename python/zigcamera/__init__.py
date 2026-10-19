@@ -36,6 +36,10 @@ class _RecordingOptions(C.Structure):
     _fields_=[(n,C.c_uint32) for n in ('struct_size','sample_rate','channels','buffer_frames','max_blocks','exclusive')]
 class _RecordingStats(C.Structure):
     _fields_=[(n,C.c_uint64) for n in ('segments','output_bytes','output_frames','output_duration_ns','audio_frames','audio_written_frames','audio_queued_frames','audio_trimmed_frames')]+[(n,C.c_uint32) for n in ('rotation_due','audio_enabled')]
+class _OutputDelay(C.Structure):
+    _fields_=[(n,C.c_uint64) for n in ('delay_ns','queued_frames','queued_bytes')]+[(n,C.c_uint32) for n in ('max_frames','reserved')]+[('max_bytes',C.c_uint64)]
+class _OutputRecovery(C.Structure):
+    _fields_=[(n,C.c_uint32) for n in ('limit','attempts','exhausted','pending')]+[('deadline_ns',C.c_uint64)]
 class _OutputState(C.Structure):
     _fields_=[('generation',C.c_uint64),('error_code',C.c_int32)]+[(n,C.c_uint32) for n in ('split_state','pending','reserved')]
 class _OutputResult(C.Structure):
@@ -103,6 +107,12 @@ def _load(path=None):
         'zc_video_freeze_buffer':([C.c_void_p,C.c_char_p,C.POINTER(C.c_void_p)],C.c_int),
         'zc_snapshot_write':([C.c_void_p],C.c_int),
         'zc_snapshot_close':([C.c_void_p],None),
+        'zc_video_set_output_delay':([C.c_void_p,C.c_uint64,C.c_uint64,C.c_uint64,C.c_uint32],C.c_int),
+        'zc_video_output_delay':([C.c_void_p,C.c_uint64,C.POINTER(_OutputDelay)],C.c_int),
+        'zc_video_set_output_recovery':([C.c_void_p,C.c_uint64,C.c_uint32,C.c_uint64,C.c_uint64],C.c_int),
+        'zc_video_output_retry_due':([C.c_void_p,C.c_uint64,C.POINTER(C.c_uint32)],C.c_int),
+        'zc_video_output_recovery':([C.c_void_p,C.c_uint64,C.POINTER(_OutputRecovery)],C.c_int),
+        'zc_video_recover_output':([C.c_void_p,C.c_uint64,C.c_char_p,C.POINTER(_OutputCallbacks)],C.c_int),
         'zc_video_set_delay':([C.c_void_p,C.c_uint64],C.c_int),
         'zc_video_set_failure_isolation':([C.c_void_p,C.c_uint32],C.c_int),
         'zc_video_output_state':([C.c_void_p,C.c_uint64,C.POINTER(_OutputState)],C.c_int),
@@ -572,7 +582,7 @@ class Recorder:
         initial_outputs=list(path) if isinstance(path,(list,tuple)) else None
         if initial_outputs is not None and len(initial_outputs)>8: raise ValueError('At most 8 simultaneous outputs')
         direct_object=initial_outputs is not None or (path is not None and not is_path(path))
-        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._next_bridge=None;self._split_staged=False;self._callback_error=None;self._primary_output=None;self._next_output=None;self._extra_bridges={};self._extra_targets={};self._extra_pending={};self._split_results={};self._lifecycle_errors={};self._final_states={};self._final_output_errors={};self._split_generation=0; config=_VideoConfig()
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._next_bridge=None;self._split_staged=False;self._callback_error=None;self._primary_output=None;self._next_output=None;self._extra_bridges={};self._extra_targets={};self._extra_pending={};self._split_results={};self._lifecycle_errors={};self._final_states={};self._final_output_errors={};self._split_generation=0;self._recovery_factories={};self._recovery_errors={};self._recovery_failures={};self._final_recovery={}; config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
@@ -668,6 +678,7 @@ class Recorder:
             ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
             if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError('Invalid timestamp')
             self._after_native(self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+            self._auto_recover()
     def write_audio(self,data,*,timestamp_ns):
         if not isinstance(timestamp_ns,int) or not 0<=timestamp_ns<2**64: raise ValueError('Invalid audio timestamp')
         data=bytes(data);buf=(C.c_uint8*len(data)).from_buffer_copy(data)
@@ -700,6 +711,89 @@ class Recorder:
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
             self._open();self._after_native(self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000))
+    def set_output_delay(self,output=0,*,delay_ms,max_bytes=8*1024*1024,max_frames=300):
+        if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
+        if not isinstance(max_bytes,int) or not 0<max_bytes<=1024**3: raise ValueError('Invalid output queue size')
+        with self._lock:
+            self._open();identity=self._output_id(output)
+            _check(self._lib,self._lib.zc_video_set_output_delay(self._handle,identity,delay_ms*1_000_000,max_bytes,_u32(max_frames)))
+    def output_delay(self,output=0):
+        with self._lock:
+            self._open();state=_OutputDelay()
+            _check(self._lib,self._lib.zc_video_output_delay(self._handle,self._output_id(output),C.byref(state)))
+            return {name:getattr(state,name) for name,_ in state._fields_ if name!='reserved'}
+    def set_output_recovery(self,output,factory,*,max_attempts=3,retry_delay_ms=100,max_delay_ms=5000):
+        if factory is not None and not callable(factory): raise TypeError('Recovery requires a factory or None')
+        if factory is not None and (not isinstance(max_attempts,int) or not 0<max_attempts<2**32): raise ValueError('Invalid recovery attempt limit')
+        if any(not isinstance(v,int) or not 0<=v<2**64//1_000_000 for v in (retry_delay_ms,max_delay_ms)) or max_delay_ms<retry_delay_ms: raise ValueError('Invalid recovery backoff')
+        with self._lock:
+            self._open();identity=self._output_id(output)
+            _check(self._lib,self._lib.zc_video_set_output_recovery(self._handle,identity,max_attempts if factory is not None else 0,retry_delay_ms*1_000_000,max_delay_ms*1_000_000))
+            self._recovery_errors.pop(identity,None)
+            if factory is None: self._recovery_factories.pop(identity,None)
+            else: self._recovery_factories[identity]=factory
+    def recovery_status(self,output=0):
+        from .output_objects import guard_callback
+        guard_callback()
+        with self._lock:
+            identity=self._output_id(output)
+            if not self._handle.value: return dict(self._final_recovery[identity])
+            state=_OutputRecovery()
+            _check(self._lib,self._lib.zc_video_output_recovery(self._handle,identity,C.byref(state)))
+            result={name:getattr(state,name) for name,_ in state._fields_}
+            result['last_error']=self._recovery_errors.get(identity)
+            result['last_failure']=self._recovery_failures.get(identity)
+            return result
+    def recover_output(self,current,replacement):
+        from .output_objects import OutputBridge,MuxedOutput,_path as is_path
+        with self._lock:
+            self._open();identity=self._output_id(current);self._sync_split()
+            state=self._state(identity)
+            if not self._isolation or not state['error_code']: raise RuntimeError('Recovery requires an isolated, quarantined output')
+            self._recovery_failures[identity]=self._error_for(identity,state)
+            old=self._bridge if identity==0 else self._extra_bridges.get(identity)
+            pts=old.pts if identity==0 and old is not None else None
+            bridge=OutputBridge(self,MuxedOutput(replacement) if is_path(replacement) else replacement,pts)
+            if pts is not None: bridge.owns_pts=False
+            accepted=False
+            try:
+                bridge.start();self._check_bridge_distinct(bridge)
+                self._checked_bridge(self._lib.zc_video_recover_output(self._handle,identity,None,C.byref(bridge.cb)),bridge)
+                accepted=True
+                if pts is not None: old.owns_pts=False;bridge.owns_pts=True
+                if identity==0: self._bridge=bridge;self._primary_output=replacement
+                else: self._extra_bridges[identity]=bridge;self._extra_targets[identity]=replacement
+                self._lifecycle_errors.pop(identity,None)
+                self._recovery_errors.pop(identity,None)
+                try: bridge.commit()
+                except Exception as error:
+                    # Native owns the bridge now; the first callback reports this
+                    # setup failure and quarantines it without releasing context.
+                    bridge.error=error
+                    self._lifecycle_errors[identity]=error
+                    raise
+            finally:
+                if accepted:
+                    if old is not None:
+                        try: old.stop()
+                        except Exception as error: self._lifecycle_errors[identity]=error
+                else:
+                    try: bridge.stop()
+                    except Exception: pass
+    def _auto_recover(self):
+        from .output_objects import output_hook
+        for identity,factory in list(self._recovery_factories.items()):
+            due=C.c_uint32()
+            _check(self._lib,self._lib.zc_video_output_retry_due(self._handle,identity,C.byref(due)))
+            if not due.value: continue
+            attempt=self.recovery_status(identity)['attempts']
+            failure=self._error_for(identity,self._state(identity))
+            self._recovery_failures[identity]=failure
+            error=self._recovery_errors.get(identity) or failure
+            try:
+                replacement=output_hook(lambda:factory(attempt,error))
+                self.recover_output(identity,replacement)
+            except Exception as failure: self._recovery_errors[identity]=failure
     def save_buffer(self,path,*,wait=None,signal_function=None):
         from .jobs import SnapshotJob
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
@@ -770,6 +864,7 @@ class Recorder:
                 self._extra_targets.pop(identity,None);bridge=self._extra_bridges.pop(identity,None)
             if not attached:
                 self._lifecycle_errors.pop(identity,None);self._split_results.pop(identity,None)
+                self._recovery_factories.pop(identity,None);self._recovery_errors.pop(identity,None);self._recovery_failures.pop(identity,None)
             try: self._checked_bridge(status,original)
             except BaseException:
                 if bridge is not None:
@@ -941,6 +1036,7 @@ class Recorder:
             finally:
                 if not stats.output_open:
                     self._lifecycle_errors.pop(0,None);self._split_results.pop(0,None)
+                    self._recovery_factories.pop(0,None);self._recovery_errors.pop(0,None);self._recovery_failures.pop(0,None)
                     self._primary_output=None
                     if self._bridge is not None:
                         bridge=self._bridge;self._bridge=None;bridge.stop()
@@ -967,6 +1063,9 @@ class Recorder:
         guard_callback()
         with self._lock:
             if self._handle.value:
+                for identity in ([0] if self._primary_output is not None else [])+list(self._extra_targets):
+                    self._final_recovery[identity]=self.recovery_status(identity)
+                self._recovery_factories.clear();self._recovery_errors.clear();self._recovery_failures.clear()
                 results=(_OutputResult*8)();count=C.c_uint32()
                 status=self._lib.zc_video_close_outputs(self._handle,results,8,C.byref(count));self._handle=C.c_void_p()
                 for result in results[:count.value]:

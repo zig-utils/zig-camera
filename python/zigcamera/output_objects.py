@@ -13,6 +13,14 @@ _claims={}
 def guard_callback():
     if getattr(_callback_state,'active',False): raise RuntimeError('Camera/recorder re-entry from an output callback is not supported')
 
+def output_hook(operation):
+    previous=getattr(_callback_state,'active',False);_callback_state.active=True
+    try: return operation()
+    except BaseException as error:
+        if isinstance(error,Exception): raise
+        raise RuntimeError(f'Output hook aborted: {error}') from error
+    finally: _callback_state.active=previous
+
 def _path(value): return isinstance(value,(str,bytes,os.PathLike))
 
 def _fd(stream):
@@ -219,13 +227,9 @@ class OutputBridge:
         self.cb.format=1 if isinstance(output,MuxedOutput) and output.format=='mp4' else 2 if isinstance(output,MuxedOutput) else 0
         if isinstance(output,MuxedOutput): self.cb.write=self.write_callback
     def _hook(self,operation):
-        previous=getattr(_callback_state,'active',False);_callback_state.active=True
-        try: return operation()
-        except BaseException as error:
-            if isinstance(error,Exception): raise
-            raise RuntimeError(f'Output hook aborted: {error}') from error
-        finally: _callback_state.active=previous
+        return output_hook(operation)
     def _invoke(self,operation):
+        if self.error is not None: return -6
         try: self._hook(operation);return 0
         except BaseException as error:
             if not isinstance(error,Exception):

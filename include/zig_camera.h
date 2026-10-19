@@ -302,6 +302,26 @@ int zc_video_write_audio(zc_recorder *,const uint8_t *s16le,uint64_t length,uint
  * PCM timestamps and frame timestamps must share one nanosecond epoch. */
 int zc_video_set_rotation(zc_recorder *,uint64_t duration_ns,uint64_t max_bytes);
 int zc_video_recording_stats(zc_recorder *,zc_recording_stats *);
+/* Independent additive delay after any recorder-wide CircularOutput2 delay.
+ * Fixed queue bounds; overflow is a sink failure. Stop flushes queued tails;
+ * detach discards them. Delay changes take effect on the next encoded packet.
+ * Resizing a nonempty queue is busy. All attachment settings survive splits. */
+typedef struct {uint64_t delay_ns,queued_frames,queued_bytes;uint32_t max_frames,reserved;uint64_t max_bytes;} zc_output_delay;
+int zc_video_set_output_delay(zc_recorder *,uint64_t id,uint64_t delay_ns,uint64_t max_bytes,uint32_t max_frames);
+int zc_video_output_delay(zc_recorder *,uint64_t id,zc_output_delay *);
+/* Retry claims use the last accepted video timestamp. Polling consumes one
+ * attempt only when due, with capped exponential backoff and a lifetime budget.
+ * Requires failure isolation. Configure resets the budget; limit=0 disables.
+ * Recovery replaces a quarantined sink with a FRESH target, preserves its ID,
+ * increments generation, drops its stale queue, and requests a new keyframe.
+ * Caller retains old callbacks until successful replacement. No failed sink
+ * is retried in place. Supply exactly one of path/callbacks. */
+typedef struct {uint32_t limit,attempts,exhausted,pending;uint64_t deadline_ns;} zc_output_recovery_state;
+int zc_video_set_output_recovery(zc_recorder *,uint64_t id,uint32_t limit,uint64_t initial_ns,uint64_t maximum_ns);
+int zc_video_output_retry_due(zc_recorder *,uint64_t id,uint32_t *due);
+int zc_video_output_recovery(zc_recorder *,uint64_t id,zc_output_recovery_state *);
+int zc_video_recover_output(zc_recorder *,uint64_t id,const char *path,const zc_output_callbacks *);
+
 #ifdef __cplusplus
 }
 #endif

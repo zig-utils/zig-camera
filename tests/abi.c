@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+_Static_assert(sizeof(zc_output_delay)==40,"output delay ABI");
+_Static_assert(sizeof(zc_output_recovery_state)==24,"output recovery ABI");
 _Static_assert(sizeof(zc_output_packet)==32,"output packet ABI");
 _Static_assert(sizeof(zc_output_state)==24,"output state ABI");
 _Static_assert(sizeof(zc_output_result)==32,"output close result ABI");
@@ -210,6 +212,37 @@ int main(void) {
     assert(zc_video_close_outputs(recorder,results,8,&result_count)==ZC_OK && result_count==2);
     assert(results[0].id==0 && results[0].state.error_code==ZC_IO);
     assert(results[1].id==extra_id && results[1].state.error_code==ZC_OK);
+    assert(zc_video_create(&video,&recording,0,&recorder)==ZC_OK);
+    assert(zc_video_set_failure_isolation(recorder,1)==ZC_OK);
+    delivered=0;second_delivered=0;failed_calls=0;
+    assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+    assert(zc_video_add_callbacks(recorder,&failing,&extra_id)==ZC_OK);
+    assert(zc_video_set_output_delay(recorder,0,80000000,32768,8)==ZC_OK);
+    assert(zc_video_set_output_recovery(recorder,extra_id,2,40000000,80000000)==ZC_OK);
+    for(uint64_t i=0;i<6;i++) {
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(zc_video_write(recorder,&frame,i*40000000)==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        uint32_t due=0;
+        assert(zc_video_output_retry_due(recorder,extra_id,&due)==ZC_OK);
+        if(i==0) assert(!due);
+        if(i==1) {
+            assert(due);
+            zc_output_callbacks fresh=callbacks;fresh.context=&second_delivered;
+            assert(zc_video_recover_output(recorder,extra_id,NULL,&fresh)==ZC_OK);
+            assert(zc_video_recover_output(recorder,extra_id,NULL,&fresh)==ZC_STATE);
+        }
+    }
+    zc_output_delay delay_state;
+    assert(zc_video_output_delay(recorder,0,&delay_state)==ZC_OK);
+    assert(delay_state.delay_ns==80000000 && delay_state.queued_frames==2 && delay_state.queued_bytes>0);
+    assert(zc_video_set_output_delay(recorder,0,0,65536,8)==ZC_BUSY);
+    assert(zc_video_output_state(recorder,extra_id,&state)==ZC_OK && state.generation==1 && !state.error_code);
+    zc_output_recovery_state recovery_state;
+    assert(zc_video_output_recovery(recorder,extra_id,&recovery_state)==ZC_OK);
+    assert(recovery_state.limit==2 && recovery_state.attempts==1 && !recovery_state.exhausted);
+    assert(delivered==4 && second_delivered==4 && failed_calls==1);
+    assert(zc_video_close(recorder)==ZC_OK && delivered==6);
     assert(zc_close(camera)==ZC_OK);
     return 0;
 }

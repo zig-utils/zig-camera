@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.14)
+# Reusable outputs and PTS streams (0.15)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -417,3 +417,94 @@ coverage includes identical packets, shared encoder behavior, bounded capacity,
 stale IDs, joins/removals, primary splits with continuous parallel A/V, descriptor
 collisions, snapshot reservations, failure cleanup and zero-consumer PCM release. FAAD2/AVFoundation independently check stream-backed AAC MP4 audio;
 Linux CI additionally decodes elementary and muxed video with OpenH264/libde265.
+
+## Independent delays and automatic recovery
+
+`Recorder` and the background `Recording` handle expose the same APIs. Delays
+and recovery policies belong to an attachment ID, survive its splits, and do not
+re-encode video. Primary ID is `0`; use the ID returned by `add_output` for additions.
+
+```python
+from zigcamera import Camera, MuxedOutput
+
+with Camera() as camera:
+    backup = MuxedOutput("backup.mkv")
+    recording = camera.start_recording(["live.mkv", backup], fps=30,
+                                       failure_policy="isolate")
+    recording.set_output_delay(1, delay_ms=1000,
+                               max_bytes=16 * 1024 * 1024, max_frames=120)
+    recording.set_output_recovery(
+        1, lambda attempt, error: MuxedOutput(f"backup-recovery-{attempt}.mkv"),
+        max_attempts=3, retry_delay_ms=100, max_delay_ms=2000)
+    # Application runs capture. Inspect while active:
+    print(recording.output_delay(1))
+    print(recording.recovery_status(1))
+    camera.stop_recording()
+```
+
+`set_output_delay(output=0, delay_ms=..., max_bytes=..., max_frames=...)` creates a
+native FIFO plus scratch arena, each bounded by `max_bytes`, and a fixed entry
+array. Defaults are 8 MiB per arena and 300 entries. There is no per-frame queue
+allocation; explicit compressed packet copies release the camera lease normally.
+The frame and byte bounds must cover the chosen delay and bitrate, including
+large keyframes. Overflow fails that attachment under isolation; fail-fast remains
+the default. Unconfigured outputs have no extra queue. Recorder-wide
+`CircularOutput2` delay is additive: the per-output clock advances when that
+shared timeline forwards packets.
+
+Delay may change dynamically with unchanged bounds; it takes effect on the next
+encoded packet and decreasing it can forward a burst in order. Resizing a nonempty
+queue fails without mutation. Delay zero drains on the next packet. `output_delay`
+reports nanoseconds, queued frames/bytes and capacities. `remove_output` excludes
+that sink's pending tail; recorder stop flushes every healthy tail. A split commits
+on a keyframe in its own forwarded timeline, so a queued key captured before the
+split request can form the boundary. Packet timestamps and PTS restart at zero
+for each new segment. Audio uses the same boundary and remains sample-clipped.
+
+Size the shared audio `buffer_frames`/`max_blocks` to cover the longest total
+delay plus encoder latency and input-block headroom (the PCM limit is ten seconds).
+Insufficient source/audio-history capacity remains an explicit shared input
+error. For example, a one-second delay at 48 kHz needs more than 48,000 retained
+samples, plus headroom; do not rely on the default two-second audio buffer for a
+longer delay. Circular snapshots continue to use the recorder's shared history.
+
+`set_output_recovery(output, factory, max_attempts=3, retry_delay_ms=100,
+max_delay_ms=5000)` requires isolation. After accepted video writes, Home's retry
+policy polls the last video timestamp in nanoseconds. The first observed failure
+starts a deadline; retry delay doubles for later attempts up to its cap. Zero delay
+allows an immediate attempt. Time advances with media input, so paused capture
+also pauses retries. This is not a wall-clock reconnect service. Factories run on
+the serialized recording consumer, under the output callback re-entry guard;
+keep them short. Camera manager callbacks do not execute factories. Blocking sink
+I/O/factories still delay that consumer; asynchronous sink I/O is a remaining gap.
+
+The factory receives `(attempt, error)` with attempts starting at one and returns
+a fresh output object or container path. Sink creation, stream metadata, descriptor
+and snapshot reservation checks run before releasing the quarantined target.
+Aliases to any active/pending/quarantined media or PTS file are rejected. Choose a
+new path for each recovery. The native replacement preserves the attachment ID,
+increments its generation, discards its stale queue, requests a new keyframe and
+starts fresh container/AAC/PTS state. A primary CircularOutput2 observer sidecar
+keeps its descriptor across recovery and records the new zero-based epoch. It does not repair or append to a partially
+written file. Healthy attachments continue their own timelines. A failed split
+job keeps its original failure even if automatic recovery succeeds immediately.
+
+Failed factory/setup attempts consume the budget. Successful recovery preserves
+the lifetime attempt count, so a flapping sink cannot retry indefinitely.
+`recovery_status` reports limit, attempts, exhaustion, pending deadline and the
+last factory/setup error; `last_failure` retains the original sink error after a
+successful replacement. `output_errors` describes current failures. Creation
+failures keep the old target quarantined and retry on later input. Final recovery
+status remains queryable by numeric ID after close. Stop/detach releases factories
+and borrowed contexts; close does not start recovery attempts.
+
+Use `set_output_recovery(id, None)` to disable, or configure again to explicitly
+reset its budget. `recover_output(id, replacement)` manually replaces a quarantined
+sink using the same ownership and keyframe rules, including after exhaustion.
+Encoder/source failures remain outside sink recovery. Optical quality, physical
+A/V synchronization and Pi throughput still require hardware validation.
+
+The timing/flush behavior follows the upstream
+[CircularOutput2 source](https://github.com/raspberrypi/picamera2/blob/main/picamera2/outputs/circularoutput2.py),
+with explicit bounded storage and separate attachment timelines. This is a tested
+compatibility subset, not complete Picamera2 parity.

@@ -158,6 +158,16 @@ class Recording:
         with self.camera._async_lock: return self.recorder.output_errors
     def output_status(self,output=0):
         with self.camera._async_lock: return self.recorder.output_status(output)
+    def set_output_delay(self,output=0,**options):
+        with self.camera._async_lock: return self.recorder.set_output_delay(output,**options)
+    def output_delay(self,output=0):
+        with self.camera._async_lock: return self.recorder.output_delay(output)
+    def set_output_recovery(self,output,factory,**options):
+        with self.camera._async_lock: return self.recorder.set_output_recovery(output,factory,**options)
+    def recovery_status(self,output=0):
+        with self.camera._async_lock: return self.recorder.recovery_status(output)
+    def recover_output(self,output,replacement):
+        with self.camera._async_lock: return self.recorder.recover_output(output,replacement)
     def _complete_splits(self):
         for identity,job in list(self._split_jobs.items()):
             if job.done(): continue
