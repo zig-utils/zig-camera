@@ -158,7 +158,8 @@ microsecond timestamps into caller-owned storage. Original ABI v1 layouts remain
 unchanged. Callbacks must not re-enter native recorder/camera APIs.
 
 Output objects currently attach through CircularOutput2 or a low-level delayed
-Recorder. Plain path recording, snapshots and path-only splits remain available.
+Recorder. Plain path recording without PTS preserves its direct native route and path
+splits. Snapshots remain available.
 Manual splitting while a reusable object is attached is rejected; close/reopen
 it instead. This covers the reusable protocol and PTS subset, not every upstream
 FileOutput/socket/datagram option, PyavOutput, arbitrary AV packets or all

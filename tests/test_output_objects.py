@@ -171,6 +171,19 @@ class OutputTests(unittest.TestCase):
                 self.assertFalse(output.recording);self.assertEqual(recorder.buffer_stats['output_open'],0)
             recorder.open_output(Output());recorder.close_output()
 
+    def test_plain_delayed_paths_keep_native_route_and_path_splits(self):
+        from test_modes_recording import wait_frames
+        with tempfile.TemporaryDirectory() as directory,Picamera2(simulate=True) as camera:
+            root=Path(directory);camera.configure(camera.create_video_configuration(main={'size':(32,32)}))
+            delayed=CircularOutput2(buffer_duration_ms=80,max_frames=16)
+            recording=camera.start_recording(MJPEGEncoder(),delayed,fps=25)
+            delayed.open_output(root/'first.mkv');self.assertIsNone(recording.recorder._bridge)
+            with self.assertRaisesRegex(RuntimeError,'Close output'): delayed.ptsoutput=io.StringIO()
+            wait_frames(recording,8)
+            job=recording.split(root/'next.mkv');job.result(5)
+            wait_frames(recording,recording.frames+4);camera.stop_recording()
+            self.assertTrue((root/'first.mkv').exists());self.assertTrue((root/'next.mkv').exists())
+
     def test_single_attachment_and_pts_only_video_exact_format(self):
         data=io.BytesIO();pts=io.StringIO();output=FileOutput(data,pts)
         with Camera(simulate=True,width=32,height=32,policy='fifo') as camera:

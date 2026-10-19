@@ -35,8 +35,8 @@ class CircularOutput2(CircularOutput):
     @ptsoutput.setter
     def ptsoutput(self,value):
         from .output_objects import PtsStream
-        bridge=None if self._recording is None else self._recording.recorder._bridge
-        if self._pts.stream is not None or (bridge is not None and bridge.pts is self._pts): raise RuntimeError('Close output before changing its PTS stream')
+        active=self._recording is not None and not self._recording.closed and self._recording.recorder.buffer_stats['output_open']
+        if self._pts.stream is not None or active: raise RuntimeError('Close output before changing its PTS stream')
         self._pts=PtsStream(value)
     def open_output(self,output):
         recording=self._live()

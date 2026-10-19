@@ -662,7 +662,7 @@ class Recorder:
         return job
     def open_output(self,output,*,_pts=None):
         from .output_objects import OutputBridge,MuxedOutput,_path
-        if _path(output) and _pts is None:
+        if _path(output) and (_pts is None or _pts.target is None):
             self._path_call('zc_video_open_output',output);return
         with self._lock:
             self._open()
