@@ -99,3 +99,9 @@ Home packet/PTS output helpers (0.11):
   at 9b281486b (feat/packet-output-streams), with checked Annex B conversion,
   exact integer PTS formatting and sink-backed timestamp output.
   https://github.com/home-lang/home/pull/919
+
+Home fractional PCM clock correction (0.12):
+- src/home/pcm_timeline.zig is now verbatim Home packages/video/src/core/pcm_timeline.zig
+  at 3a63fce82 (main), carrying sample phase across blocks, wraps and frozen windows.
+  Supersedes the earlier PCM timeline versions listed above.
+  https://github.com/home-lang/home/commit/3a63fce82

@@ -67,7 +67,9 @@ class CapturePump:
         except Exception as error:
             self.error=error
             recording=self.camera._recording
-            if recording is not None: recording.error=error
+            if recording is not None:
+                recording.error=error
+                if recording._split_job is not None: recording._split_job._finish(error=error)
             while not self.stop_event.is_set():
                 if self.camera._async_lock.acquire(timeout=.02):
                     try: pending=list(self.camera._capture_jobs);self.camera._capture_jobs.clear()
@@ -145,7 +147,11 @@ class Recording:
         from concurrent.futures import CancelledError
         with self.camera._async_lock:
             if job.done(): return False
-            self.recorder.cancel_split()
+            if not self.recorder.buffer_stats['split_pending']:
+                job._finish(job.path);return False
+            try: self.recorder.cancel_split()
+            except Exception as error:
+                job._finish(error=error);raise
             job._finish(error=CancelledError('Recording split cancelled'))
             return True
     def save_buffer(self,path,*,wait=None,signal_function=None):
@@ -164,11 +170,13 @@ class Recording:
         if self.camera._recording is self:
             self.camera.stop_recording();return
         self.closed=True
-        if self._split_job is not None and not self._split_job.done(): self._cancel_split(self._split_job)
-        try:
-            if self._audio is not None: self._audio.close()
-            self._discard_rotation()
-        finally:
-            try: self.recorder.close()
-            finally:
-                if self.error is not None: raise self.error
+        failure=self.error
+        operations=[]
+        if self._split_job is not None and not self._split_job.done(): operations.append(lambda:self._cancel_split(self._split_job))
+        if self._audio is not None: operations.append(self._audio.close)
+        operations.extend((self._discard_rotation,self.recorder.close))
+        for operation in operations:
+            try: operation()
+            except Exception as error:
+                if failure is None: failure=error
+        if failure is not None: raise failure

@@ -154,3 +154,12 @@ pub export fn zc_video_get_headers(p: *c.zc_recorder, data: ?[*]u8, capacity: u6
 pub export fn zc_format_pts(timestamp: u64, data: [*]u8, capacity: u32, length: *u32) c_int {
     return @import("video.zig").formatPts(timestamp, data, capacity, length);
 }
+
+pub export fn zc_video_create(cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    return @import("video.zig").create(cfg, opts, bitrate, out);
+}
+pub export fn zc_video_split_callbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    return @import("video.zig").splitCallbacks(p, cb);
+}

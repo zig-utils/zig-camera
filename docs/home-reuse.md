@@ -266,3 +266,31 @@ streams. Zig keeps native ownership, identity guards and callback lifetimes;
 Python adds reusable object claims, borrowed stream ownership and failure cleanup.
 See [interfaces and limits](output-objects.md). No FFmpeg/Libav is introduced;
 independent decoder checks remain separate from unmeasured Pi/hardware timing.
+
+## 0.12: direct output ownership, splits and fractional PCM clocks
+
+Rechecked Home's packet/PTS, streaming MP4/MKV, PCM timeline, packet ring and
+revision-aware completion helpers. Reused the focused streaming modules rather
+than the broader accumulating sink graph. All ten preceding Home contributions
+([#910](https://github.com/home-lang/home/pull/910) through
+[#919](https://github.com/home-lang/home/pull/919)) are now merged into `main`;
+streaming/codec/helper workflows track `main` with scoped path filters. Focused
+Home modules pass both Zig 0.15.2 and Home's development compiler; native codec
+boundary checks also pass locally. This does not validate the whole Home graph.
+
+A new 44.1 kHz split regression exposed block-local nanosecond rounding: losing
+the fractional phase can send one extra PCM sample before an exact cut.
+[Home 3a63fce82](https://github.com/home-lang/home/commit/3a63fce82) fixes the shared
+queue by carrying fractional sample-clock numerators through contiguous blocks,
+rolling windows, arena wrap and minimally frozen partial windows. Timestamp gaps
+start a new phase origin. Nine timeline tests pass on both compilers, including
+seven rates, exact cut counts, frozen partial blocks and allocation-failure cleanup.
+The module is vendored verbatim, preserving MIT attribution.
+
+Zig-camera adds output-less direct construction and staged callback outputs to
+its native ownership layer. Python retains both contexts until native commit or
+cancellation, transfers shared CircularOutput2 sidecars, rejects borrowed stream
+aliases and completes existing bounded split jobs. Home remains responsible for
+encoding/muxing. Independent FAAD2/AVFoundation audio checks and Linux
+OpenH264/libde265 video decoding validate segments without FFmpeg. Synthetic
+validation does not establish physical A/V timing or Raspberry Pi performance.

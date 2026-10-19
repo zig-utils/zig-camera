@@ -1,7 +1,7 @@
-# Reusable outputs and PTS streams (0.11)
+# Reusable outputs and PTS streams (0.12)
 
-`CircularOutput2.open_output` now accepts reusable output objects as well as
-paths. Packet output and Home container output share the existing delayed
+`Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
+`open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
 keyframe/audio timeline. No FFmpeg, Libav or PyAV dependency is used.
 
 ```python
@@ -31,6 +31,61 @@ For synthetic development select `Picamera2(simulate=True)` and
 `audio={"backend":"synthetic"}`. See [AAC setup](aac-mp4.md) for standalone
 FDK dependencies and supported rates. Physical camera/microphone synchronization
 and Pi throughput remain unmeasured.
+
+## Direct recording and async splits
+
+```python
+import time
+from zigcamera import Picamera2, H264Encoder, MuxedOutput
+
+with Picamera2() as camera:
+    camera.configure(camera.create_video_configuration(main={"size": (1920, 1080)}))
+    first = MuxedOutput("first.mp4", pts="first.pts")
+    second = MuxedOutput("second.mp4", pts="second.pts")
+    camera.start_recording(H264Encoder(bitrate=16_000_000, iperiod=30), first,
+                           audio={"device": "hw:1,0", "sample_rate": 48000})
+    time.sleep(3)
+    job = camera.split_recording(second, wait=False)
+    assert job.result(5) is second
+    time.sleep(3)
+    camera.stop_recording()
+```
+
+Direct objects do not allocate circular video history. `Recorder(output, ...)`
+provides the same interface for manually supplied frames and PCM. Its
+`split(output_or_path)` stages a split; `buffer_stats['split_pending']` tracks
+completion as the caller feeds frames. At camera level, `split_recording` and
+`Recording.split` return bounded jobs when `wait=False` or a signal callback is
+provided. Jobs are awaitable and return the target object/path unchanged. A
+result timeout limits the wait and leaves the split pending. Job cancellation
+wins only before the native keyframe commit; stopping a camera recording cancels
+an unresolved split before draining the active recording. Callbacks run after
+old output finalization and `stop`, with callback exceptions in `callback_error`.
+
+The new object is claimed, started and given source metadata during preparation.
+A muxed sink can receive initialization headers immediately, and accepted owned
+media/PTS targets reset during preparation. Cancellation can therefore leave an
+empty elementary file or an unfinished container header; it does not restore old
+target contents. The pending object receives no packets before commit. At the
+next encoded key after at least one old frame, native code finishes old media
+and clips PCM at that timestamp, then switches to fresh container/AAC state.
+No packet is duplicated or dropped at a successful split. A pending split before
+the first input gives the first key to the old output and requests another key.
+The new clip's key and PTS start at zero, with fresh AVC/HEVC parameter sets.
+The old object's Python `stop` runs after the native call returns; its context
+remains alive through native finalization. Sink errors are visible and require
+closing the failed recording. A stop error still releases both native ownership
+and object claims during recording close.
+
+Paths and objects can be mixed in successive splits. Paths retain their native
+route unless a CircularOutput2 sidecar needs callback observation. Each output's
+own sidecar ends with that output. CircularOutput2's separate sidecar stays open
+across splits and appends the timestamps of each segment, including its new zero;
+it is transferred to the new attachment without reopening/truncation. Cancellation
+leaves that sidecar with the old output. Split outputs must use distinct media
+and per-output PTS storage, including borrowed in-memory streams. CircularOutput2's
+shared sidecar is the single explicit exception. No automatic retention deletion
+or background sink thread is added.
 
 ## Output types and ownership
 
@@ -147,8 +202,13 @@ exception is raised to the recording owner. No exception unwinds through C.
 
 ## Native API and limits
 
-`zc_video_open_callbacks` attaches a 56-byte callback descriptor to a delayed
-circular recorder. PACKETS delivers borrowed Annex B/JPEG/PCM through a 32-byte
+`zc_video_create` creates an output-less direct recorder with optional PCM
+configuration and no history. `zc_video_open_callbacks` attaches a 56-byte
+callback descriptor to direct, circular or delayed recording.
+`zc_video_split_callbacks` stages the same descriptor for a keyframe handoff.
+Retain both callback contexts until split commit, cancellation or recorder close.
+`zc_video_buffer_stats` exposes pending state and segment count; no callback
+data/context is retained after detach/close. PACKETS delivers borrowed Annex B/JPEG/PCM through a 32-byte
 `zc_output_packet`. MP4/MKV invoke synchronous byte writes and optional absolute
 patches; packet callbacks in mux modes carry video metadata only (NULL data).
 Provide real file descriptors when available, or -1 for non-file storage, and
@@ -157,17 +217,15 @@ keep them open through close. Media/PTS/snapshot descriptors must be distinct.
 microsecond timestamps into caller-owned storage. Original ABI v1 layouts remain
 unchanged. Callbacks must not re-enter native recorder/camera APIs.
 
-Output objects currently attach through CircularOutput2 or a low-level delayed
-Recorder. Plain path recording without PTS preserves its direct native route and path
-splits. Snapshots remain available.
-Manual splitting while a reusable object is attached is rejected; close/reopen
-it instead. This covers the reusable protocol and PTS subset, not every upstream
+This covers the reusable protocol and PTS subset, not every upstream
 FileOutput/socket/datagram option, PyavOutput, arbitrary AV packets or all
 Picamera2 constructor signatures. The existing [delay/close/stop rules](async-delayed.md)
-remain, including zero meaning immediate forwarding here.
+remain, including zero meaning immediate forwarding here. Non-delayed circular
+attachments replay retained history; delayed attachments wait for a mature key.
 
 Validation covers sequential reuse across recorders, owned/borrowed streams,
 exact PTS, capture gaps, PCM offsets, fresh AVC/HEVC parameter sets, file identity
 collisions, partial writes, lifecycle/metadata/PTS failures, callback re-entry and
-C/Python ABI. FAAD2/AVFoundation independently check stream-backed AAC MP4 audio;
+C/Python ABI, direct object startup, async object/path splits, cancellation,
+per-segment headers/PTS and fractional 44.1 kHz sample boundaries. FAAD2/AVFoundation independently check stream-backed AAC MP4 audio;
 Linux CI additionally decodes elementary and muxed video with OpenH264/libde265.

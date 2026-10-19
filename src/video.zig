@@ -557,7 +557,6 @@ pub fn saveBuffer(p: *c.zc_recorder, path: [*:0]const u8) c_int {
 }
 pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     const self = recorder(p);
-    if (self.audio != null and self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.failed) return c.ZC_STATE;
     if (self.output != null or self.next != null) return c.ZC_BUSY;
     if (self.delay_ns == null and self.ring != null and self.ring.?.count != 0) _ = self.replayStart() catch |err| return status(err);
@@ -582,7 +581,6 @@ pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
 }
 pub fn closeOutput(p: *c.zc_recorder) c_int {
     const self = recorder(p);
-    if (self.audio != null and self.ring == null) return c.ZC_UNSUPPORTED;
     if (self.next != null) return c.ZC_BUSY;
     if (self.failed) return c.ZC_STATE;
     const out = self.output orelse return c.ZC_STATE;
@@ -832,30 +830,76 @@ pub fn formatPts(timestamp: u64, data: [*]u8, capacity: u32, length: *u32) c_int
     length.* = @intCast(bytes.len);
     return c.ZC_OK;
 }
-pub fn openCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
-    const self = recorder(p);
-    if (self.failed) return c.ZC_STATE;
-    if (self.delay_ns == null) return c.ZC_UNSUPPORTED;
-    if (self.output != null or self.next != null) return c.ZC_BUSY;
-    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_MKV or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return c.ZC_INVALID;
-    if ((cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return c.ZC_INVALID;
-    if (cb.format == c.ZC_OUTPUT_MP4 and self.audio != null and cb.patch == null) return c.ZC_INVALID;
-    if (cb.format != c.ZC_OUTPUT_PACKETS) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &self.config, self.audio != null) catch |err| return status(err);
+fn callbackOutput(self: *Recorder, cb: *const c.zc_output_callbacks, splitting: bool) !*Output {
+    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_MKV or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return error.Invalid;
+    if ((cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return error.Invalid;
+    if (cb.format == c.ZC_OUTPUT_MP4 and self.audio != null and cb.patch == null) return error.Invalid;
+    if (cb.format != c.ZC_OUTPUT_PACKETS) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &self.config, self.audio != null) catch |err| return err;
     var identities: [3]?Identity = .{ null, null, null };
     for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| {
         if (fd < 0) continue;
-        const id = Identity.of(.{ .handle = fd }) catch return c.ZC_INVALID;
-        for (identities[0..i]) |other| if (other) |value| if (id.equal(value)) return c.ZC_INVALID;
-        if (self.reservations) |r| r.check(id) catch |err| return status(err);
+        const id = Identity.of(.{ .handle = fd }) catch return error.Invalid;
+        for (identities[0..i]) |other| if (other) |value| if (id.equal(value)) return error.Invalid;
+        if (self.output) |existing| {
+            // A circular observer sidecar can span segment epochs. Only the
+            // identical secondary descriptor may be shared, never media/PTS.
+            const shared = splitting and i == 2 and existing.callbacks != null and existing.callbacks.?.secondary_pts_fd == fd;
+            if (!shared) try existing.checkIdentity(id);
+        }
+        if (self.next) |existing| try existing.checkIdentity(id);
+        if (self.reservations) |r| r.check(id) catch |err| return err;
         identities[i] = id;
     }
-    const out = Output.initCallbacks(cb.*, &self.config, self.headers, &self.recording, self.audio_bitrate) catch |err| return status(err);
+    return Output.initCallbacks(cb.*, &self.config, self.headers, &self.recording, self.audio_bitrate);
+}
+// Create an output-less direct recorder; attachment can run user lifecycle hooks
+// only after source metadata and the owned encoder are available.
+pub fn create(cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, out: *?*c.zc_recorder) c_int {
+    out.* = null;
+    if (opts.struct_size != @sizeOf(c.zc_recording_options) or opts.exclusive > 1 or (bitrate != 0 and (opts.sample_rate == 0 or bitrate < 16000 or bitrate > 320000))) return c.ZC_INVALID;
+    const self = init(cfg) catch |err| return status(err);
+    self.recording = opts.*;
+    self.audio_bitrate = bitrate;
+    if (opts.sample_rate != 0) self.audio = pcm.Queue.init(A, opts.sample_rate, opts.channels, opts.buffer_frames, opts.max_blocks) catch |err| {
+        self.deinit();
+        return status(err);
+    };
+    out.* = @ptrCast(self);
+    return c.ZC_OK;
+}
+pub fn openCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    if (self.output != null or self.next != null) return c.ZC_BUSY;
+    if (self.delay_ns == null and self.ring != null and self.ring.?.count != 0) _ = self.replayStart() catch |err| return status(err);
+    const out = callbackOutput(self, cb, false) catch |err| return status(err);
+    if (self.delay_ns == null and self.ring != null and self.ring.?.count != 0) self.replay(out) catch |err| {
+        out.deinit();
+        return status(err);
+    };
     self.forceKey() catch |err| {
         out.deinit();
         return status(err);
     };
+    const replayed: Recorder.AudioReplay = if (!out.waiting_key) self.replayAudio(out, self.last_packet_ns.?) catch |err| {
+        out.deinit();
+        return status(err);
+    } else .{};
     self.output = out;
-    self.audio_cursor = null;
+    self.audio_cursor = replayed.end;
+    self.audio_written += replayed.frames;
     self.segments += 1;
+    return c.ZC_OK;
+}
+pub fn splitCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    const self = recorder(p);
+    if (self.failed or self.output == null) return c.ZC_STATE;
+    if (self.next != null) return c.ZC_BUSY;
+    const out = callbackOutput(self, cb, true) catch |err| return status(err);
+    self.forceKey() catch |err| {
+        out.deinit();
+        return status(err);
+    };
+    self.next = out;
     return c.ZC_OK;
 }

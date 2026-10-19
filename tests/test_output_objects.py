@@ -45,7 +45,9 @@ class OutputTests(unittest.TestCase):
             output=FileOutput(root/'frames.mjpg',root/'frames.pts')
             for n in range(2):
                 recording=camera.start_recording(MJPEGEncoder(),history,fps=25)
-                history.open_output(output);wait_frames(recording,8);camera.stop_recording()
+                with camera._camera._async_lock:
+                    history.open_output(output);begin=recording.frames
+                wait_frames(recording,begin+8);camera.stop_recording()
                 self.assertFalse(output.recording);self.assertFalse(circular_pts.closed)
                 lines=(root/'frames.pts').read_text().splitlines();self.assertGreaterEqual(len(lines),6);self.assertEqual(lines[0],'0.000')
                 # Concatenated elementary JPEG frames carry no container headers.

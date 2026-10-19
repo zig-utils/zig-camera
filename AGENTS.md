@@ -2,6 +2,7 @@
 
 - Use the repository's configured human Git author/committer identity.
 - Use conventional commits. Do not add coauthor trailers.
+- Publish only to origin/main; do not create PRs unless the user requests them.
 - Pin Zig 0.15.2 unless updating the toolchain and validating every target together.
 - Recording must use Home codecs and containers; do not add an FFmpeg dependency.
 - Keep queue ownership and public ABI logic in Zig. Use the system C++ toolchain

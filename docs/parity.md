@@ -1,4 +1,4 @@
-# Picamera2 coverage in 0.11
+# Picamera2 coverage in 0.12
 
 This is a native capture API plus an explicit Python compatibility subset, not
 a replacement `picamera2` package. Unsupported formats/controls fail explicitly.
@@ -12,7 +12,7 @@ The original C ABI v1 layouts remain unchanged; new functions/structures are add
 | Video encoding | Home MJPEG/4:4:4 in Matroska; optional header-checked x264 H.264 / x265 HEVC in Home fragmented MP4, ABR/CRF and GOP controls | AV1, additional audio codecs, hardware encoders, general profile/preset selection |
 | Recording control | Background start/stop, encoded circular history/snapshots/pre-roll and keyframe-aligned async splits; duration/byte rotation with exclusive indexed outputs; owned async pre-roll jobs; bounded CircularOutput2-style delayed A/V with close-tail exclusion and stop flushing | Retention deletion, complete upstream sink signatures, crash recovery |
 | Audio and synchronized A/V | Explicit ALSA S16LE capture; bounded PCM queue; BOOTTIME/sample-count synchronization, MJPEG/AVC/HEVC + PCM Matroska; Home AAC-LC + AVC/HEVC fragmented MP4 with priming/tail metadata; sample-clipped splits; bounded circular PCM/video and synchronized MP4 pre-roll snapshots | Physical latency/drift calibration, adaptive resampling, other audio codecs/HE-AAC, other input platforms |
-| Reusable outputs and PTS | CircularOutput2 packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; exact video PTS to owned or borrowed text/binary streams | Direct non-delayed object attachment, object splits, socket-specific options, PyAV packet interoperability |
+| Reusable outputs and PTS | Direct/circular/delayed packet protocol; FileOutput elementary video; Home MuxedOutput paths/file-like sinks; async object/path splits with bounded jobs, cancellation and lifecycle cleanup; exact per-segment PTS and shared CircularOutput2 sidecars | Socket-specific options, PyAV packet interoperability, every upstream constructor signature |
 | Native raw | Paired raw planes, layout/metadata access | Raw processing arrays in compatibility facade |
 | DNG | Uncompressed 16-bit TIFF storage; Bayer 8/10/12/14/16 input, CSI-2 10/12/14 unpacking; per-frame black levels, WB, CCM-derived colour matrix, EXIF exposure | PiSP compressed-raw decompression, dual-illuminant/lab profiles, lens correction/opcodes, thumbnail |
 | Familiar Python capture | create_preview/still/video_configuration, configure, start/stop, capture_request/captured_request, capture_array/buffer/metadata/file | Picamera2's complete signatures, request acquire/refcounts |
@@ -106,3 +106,11 @@ at a mature key. This remains a path-output subset, not upstream class/API parit
 lifecycle/ownership, source stream metadata, Annex B parameter sets, Home muxed
 byte sinks, alias protection and callback error propagation. Original ABI v1
 layouts remain unchanged; this is a tested subset of upstream output interfaces.
+
+0.12 adds direct output-object recording and async object/path splits, retaining
+both callback contexts through the native boundary and finalization. Borrowed
+stream/file aliases are rejected before preparation writes; cancellation releases
+the pending object. Tests cover startup/metadata/write/stop failures, job callbacks,
+shared CircularOutput2 PTS, fresh Annex B headers and independent decoding of
+AVC/HEVC + AAC MP4 segments. Home's PCM queue now carries fractional sample phase
+through block boundaries and frozen windows, fixing exact 44.1 kHz cuts.

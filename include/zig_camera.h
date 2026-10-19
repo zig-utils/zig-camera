@@ -223,9 +223,14 @@ typedef struct {
 } zc_output_callbacks;
 /* Descriptors are borrowed identity guards, -1 when absent. They must stay open
  * through detach/close. Distinct media/PTS/snapshot files must never alias.
+ * A split may share the identical secondary_pts_fd for a circular observer.
  * AAC MP4 requires patch. No callback data/context is retained after close.
- * Currently callbacks attach to a delayed circular recorder only. */
+ * Direct, circular and delayed recorders support callbacks. */
 int zc_video_open_callbacks(zc_recorder *,const zc_output_callbacks *);
+/* Prepare borrowed callbacks, switch after old output finalization at next key.
+ * Retain BOTH contexts until stats.split_pending clears, cancellation or close.
+ * A pending split accepts no packets until commit; initialization can write headers. */
+int zc_video_split_callbacks(zc_recorder *,const zc_output_callbacks *);
 int zc_video_get_headers(zc_recorder *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact Picamera2-style milliseconds with 3 decimals/LF, from microsecond PTS. */
 int zc_format_pts(uint64_t timestamp_us,uint8_t *,uint32_t capacity,uint32_t *length);
@@ -248,6 +253,9 @@ int zc_audio_close(zc_audio *);
 typedef struct {uint32_t struct_size,sample_rate,channels,buffer_frames,max_blocks,exclusive;} zc_recording_options;
 typedef struct {uint64_t segments,output_bytes,output_frames,output_duration_ns,audio_frames,audio_written_frames,audio_queued_frames,audio_trimmed_frames;uint32_t rotation_due,audio_enabled;} zc_recording_stats;
 void zc_default_recording_options(zc_recording_options *);
+/* Output-less direct recorder. Attach callbacks or a path to record.
+ * bitrate=0 uses the selected output's default; no circular history allocated. */
+int zc_video_create(const zc_video_config *,const zc_recording_options *,uint32_t bitrate,zc_recorder **);
 int zc_video_open_ex(const char *,const zc_video_config *,const zc_recording_options *,zc_recorder **);
 /* AAC-LC bitrate in bits/s; requires -Daac=true, audio sample_rate and .mp4. */
 int zc_video_open_aac(const char *,const zc_video_config *,const zc_recording_options *,uint32_t bitrate,zc_recorder **);

@@ -208,7 +208,7 @@ class MuxedOutput(FileOutput):
 
 class OutputBridge:
     def __init__(self,recorder,output,pts=None):
-        self.recorder=recorder;self.output=output;self.pts=pts;self.started=False;self.claimed=False
+        self.recorder=recorder;self.output=output;self.pts=pts;self.started=False;self.claimed=False;self.owns_pts=True
         from . import _OutputCallbacks,_PacketCallback,_WriteCallback,_PatchCallback
         self.cb=_OutputCallbacks();self.cb.struct_size=C.sizeof(self.cb)
         self.cb.file_fd=self.cb.pts_fd=self.cb.secondary_pts_fd=-1
@@ -221,6 +221,9 @@ class OutputBridge:
     def _hook(self,operation):
         previous=getattr(_callback_state,'active',False);_callback_state.active=True
         try: return operation()
+        except BaseException as error:
+            if isinstance(error,Exception): raise
+            raise RuntimeError(f'Output hook aborted: {error}') from error
         finally: _callback_state.active=previous
     def _invoke(self,operation):
         try: self._hook(operation);return 0
@@ -253,7 +256,7 @@ class OutputBridge:
             add_stream=getattr(self.output,'_add_stream',None)
             if add_stream is not None:
                 for info,params in self.recorder._streams(): self._hook(lambda:add_stream(info,info.codec,**params))
-            if self.pts is not None: self.pts.start(self.recorder._lib)
+            if self.pts is not None and self.owns_pts: self.pts.start(self.recorder._lib)
             if isinstance(self.output,FileOutput): self.cb.file_fd=_fd(self.output._stream)
             if isinstance(self.output,Output): self.cb.pts_fd=_fd(self.output._pts.stream)
             if self.pts is not None: self.cb.secondary_pts_fd=_fd(self.pts.stream)
@@ -268,6 +271,18 @@ class OutputBridge:
                 if self.output._pts.target is None and (self.pts is None or self.pts.target is None): self.cb.packet=type(self.packet_callback)()
         except Exception:
             self.stop();raise
+    def check_distinct(self,other):
+        # Native fstat guards files, including hardlinks. Borrowed memory streams
+        # have no descriptor, so compare their live object identities here.
+        def streams(bridge):
+            result=[]
+            if isinstance(bridge.output,FileOutput): result.append(bridge.output._stream)
+            if isinstance(bridge.output,Output): result.append(bridge.output._pts.stream)
+            if bridge.pts is not None: result.append(bridge.pts.stream)
+            return [stream for stream in result if stream is not None]
+        shared=self.pts.stream if self.pts is not None and self.pts is other.pts else None
+        if any(a is b and a is not shared for a in streams(self) for b in streams(other)):
+            raise ValueError('Pending and active output streams must be distinct')
     def commit(self):
         self._hook(self._commit)
     def _commit(self):
@@ -282,7 +297,7 @@ class OutputBridge:
                 self.started=False;self._hook(self.output.stop)
         finally:
             try:
-                if self.pts is not None: self._hook(self.pts.stop)
+                if self.pts is not None and self.owns_pts: self._hook(self.pts.stop)
             finally:
                 if self.claimed:
                     with _claim_lock: _claims.pop(id(self.output),None);self.claimed=False

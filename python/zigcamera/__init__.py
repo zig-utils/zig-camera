@@ -98,6 +98,8 @@ def _load(path=None):
         'zc_snapshot_write':([C.c_void_p],C.c_int),
         'zc_snapshot_close':([C.c_void_p],None),
         'zc_video_set_delay':([C.c_void_p,C.c_uint64],C.c_int),
+        'zc_video_create':([C.POINTER(_VideoConfig),C.POINTER(_RecordingOptions),C.c_uint32,C.POINTER(C.c_void_p)],C.c_int),
+        'zc_video_split_callbacks':([C.c_void_p,C.POINTER(_OutputCallbacks)],C.c_int),
         'zc_video_open_callbacks':([C.c_void_p,C.POINTER(_OutputCallbacks)],C.c_int),
         'zc_video_get_headers':([C.c_void_p,C.c_void_p,C.c_uint64,C.POINTER(C.c_uint64)],C.c_int),
         'zc_format_pts':([C.c_uint64,C.c_void_p,C.c_uint32,C.POINTER(C.c_uint32)],C.c_int),
@@ -532,7 +534,10 @@ class Preview:
 class Recorder:
     """Home MJPEG/MKV or optional AVC/HEVC/MP4. Serialize calls per instance."""
     def __init__(self,path=None,*,width,height,fps=30,quality=90,codec="mjpeg",bitrate=0,gop=0,library=None,circular=None,audio=None,exclusive=False):
-        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._callback_error=None;self._delay_enabled=False; config=_VideoConfig()
+        from .output_objects import guard_callback,_path as is_path,MuxedOutput
+        guard_callback()
+        direct_object=path is not None and not is_path(path)
+        self._lib=_load(library); self._handle=C.c_void_p();self._lock=threading.RLock();self._snapshot_slots=threading.BoundedSemaphore(2);self._bridge=None;self._next_bridge=None;self._split_staged=False;self._callback_error=None; config=_VideoConfig()
         self._lib.zc_default_video_config(C.byref(config))
         codecs={"mjpeg":3,"h264":1,"hevc":2}
         if codec not in codecs: raise ValueError("codec must be mjpeg, h264 or hevc")
@@ -571,19 +576,28 @@ class Recorder:
             audio_bitrate=0
             if audio is not None:
                 audio=dict(audio)
-                audio_codec=audio.pop('codec', 'aac' if Path(path).suffix=='.mp4' else 'pcm')
+                target_format=path.format if isinstance(path,MuxedOutput) else Path(path).suffix.lstrip('.') if not direct_object else None
+                audio_codec=audio.pop('codec', 'aac' if target_format=='mp4' else 'pcm')
                 audio_bitrate=_u32(audio.pop('bitrate',0))
                 if audio_codec not in ('pcm','aac'): raise ValueError('Audio codec must be pcm or aac')
-                if (audio_codec=='aac') != (Path(path).suffix=='.mp4'): raise ValueError('AAC requires .mp4; PCM requires .mkv')
+                if target_format is not None and (audio_codec=='aac') != (target_format=='mp4'): raise ValueError('AAC requires MP4; PCM requires MKV')
                 if audio_bitrate and audio_codec!='aac': raise ValueError('PCM does not use a bitrate')
                 if set(audio)-{'sample_rate','channels','buffer_frames','max_blocks'}: raise ValueError('Unknown audio recording option')
                 for name,value in audio.items(): setattr(opts,name,_u32(value))
                 if not opts.sample_rate: raise ValueError('Audio sample rate is required')
                 if 'buffer_frames' not in audio: opts.buffer_frames=opts.sample_rate*2
-            if audio_bitrate:
+            if direct_object:
+                _check(self._lib,self._lib.zc_video_create(C.byref(config),C.byref(opts),audio_bitrate,C.byref(self._handle)))
+            elif audio_bitrate:
                 _check(self._lib,self._lib.zc_video_open_aac(_path(path),C.byref(config),C.byref(opts),audio_bitrate,C.byref(self._handle)))
             else: _check(self._lib,self._lib.zc_video_open_ex(_path(path),C.byref(config),C.byref(opts),C.byref(self._handle)))
         if audio is not None: self._audio_spec={'sample_rate':opts.sample_rate,'channels':opts.channels}
+        if direct_object:
+            try: self.open_output(path)
+            except BaseException:
+                try: self.close()
+                except Exception: pass
+                raise
         if circular is not None and 'delay_ms' in circular:
             try: self.set_delay(circular['delay_ms'])
             except Exception: self.close();raise
@@ -611,7 +625,7 @@ class Recorder:
             self._open();frame._live()
             ts=frame._native.timestamp_ns if timestamp_ns is None else timestamp_ns
             if not isinstance(ts,int) or not 0<=ts<2**64: raise ValueError('Invalid timestamp')
-            self._checked(self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
+            self._after_native(self._lib.zc_video_write(self._handle,C.byref(frame._native),ts))
     def write_audio(self,data,*,timestamp_ns):
         if not isinstance(timestamp_ns,int) or not 0<=timestamp_ns<2**64: raise ValueError('Invalid audio timestamp')
         data=bytes(data);buf=(C.c_uint8*len(data)).from_buffer_copy(data)
@@ -643,7 +657,7 @@ class Recorder:
     def set_delay(self,delay_ms):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         with self._lock:
-            self._open();_check(self._lib,self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000));self._delay_enabled=True
+            self._open();self._after_native(self._lib.zc_video_set_delay(self._handle,delay_ms*1_000_000))
     def save_buffer(self,path,*,wait=None,signal_function=None):
         from .jobs import SnapshotJob
         if hasattr(self,'_audio_container') and Path(path).suffix!=self._audio_container: raise ValueError(f'Circular audio requires {self._audio_container}')
@@ -660,30 +674,62 @@ class Recorder:
         job=SnapshotJob(write,release,signal_function,self._snapshot_slots.release).start()
         if wait is True or (wait is None and signal_function is None): job.result();return None
         return job
-    def open_output(self,output,*,_pts=None):
+    def _sync_split(self):
+        if self._split_staged and not self.buffer_stats['split_pending']:
+            old=self._bridge;self._bridge=self._next_bridge;self._next_bridge=None;self._split_staged=False
+            if old is not None:
+                if self._bridge is not None and self._bridge.pts is not None and self._bridge.pts is old.pts:
+                    old.owns_pts=False;self._bridge.owns_pts=True
+                old.stop()
+    def _after_native(self,status):
+        # A packet callback can fail after native ownership switched. Reconcile
+        # even then, preserving the original failure and the active callbacks.
+        try: self._checked(status)
+        except BaseException:
+            try: self._sync_split()
+            except Exception: pass
+            raise
+        self._sync_split()
+    def _attach_object(self,output,pts,split):
         from .output_objects import OutputBridge,MuxedOutput,_path
-        if _path(output) and (_pts is None or _pts.target is None):
-            self._path_call('zc_video_open_output',output);return
+        if _path(output): output=MuxedOutput(output)
+        if split and self._bridge is not None: pts=self._bridge.pts
+        bridge=OutputBridge(self,output,pts)
+        if split and pts is not None: bridge.owns_pts=False
+        accepted=False
+        try:
+            bridge.start()
+            if self._bridge is not None: bridge.check_distinct(self._bridge)
+            name='zc_video_split_callbacks' if split else 'zc_video_open_callbacks'
+            self._checked(getattr(self._lib,name)(self._handle,C.byref(bridge.cb)))
+            accepted=True
+            if split: self._next_bridge=bridge;self._split_staged=True
+            else: self._bridge=bridge
+            bridge.commit()
+        except BaseException:
+            try:
+                if accepted:
+                    if split: self.cancel_split()
+                    else: self.close_output()
+                else: bridge.stop()
+            except Exception: pass
+            raise
+    def open_output(self,output,*,_pts=None):
+        from .output_objects import _path
         with self._lock:
             self._open()
-            if self._bridge is not None: raise RuntimeError('Output already open')
-            if not self._delay_enabled: raise RuntimeError('Output objects require CircularOutput2/delayed recording')
-            if _path(output): output=MuxedOutput(output)
-            bridge=OutputBridge(self,output,_pts)
-            try:
-                bridge.start();self._checked(self._lib.zc_video_open_callbacks(self._handle,C.byref(bridge.cb)))
-                self._bridge=bridge;bridge.commit()
-            except Exception:
-                if self._bridge is bridge:
-                    self.close_output()
-                else: bridge.stop()
-                raise
-    def split(self,path):
-        if self._bridge is not None: raise RuntimeError('Close the reusable output before attaching another output')
-        self._path_call('zc_video_split',path)
-    def _call(self,name):
+            if _path(output) and (_pts is None or _pts.target is None):
+                self._path_call('zc_video_open_output',output);return
+            if self.buffer_stats['output_open']: raise RuntimeError('Output already open')
+            self._attach_object(output,_pts,False)
+    def split(self,output):
+        from .output_objects import _path
         with self._lock:
-            self._open();_check(self._lib,getattr(self._lib,name)(self._handle))
+            self._open();self._sync_split()
+            if self.buffer_stats['split_pending']: raise RuntimeError('Split already pending')
+            if _path(output) and (self._bridge is None or self._bridge.pts is None or self._bridge.pts.target is None):
+                self._path_call('zc_video_split',output);self._split_staged=True
+            else: self._attach_object(output,None,True)
     def close_output(self):
         with self._lock:
             self._open();status=self._lib.zc_video_close_output(self._handle)
@@ -692,7 +738,21 @@ class Recorder:
             finally:
                 if not stats.output_open and self._bridge is not None:
                     bridge=self._bridge;self._bridge=None;bridge.stop()
-    def cancel_split(self): self._call('zc_video_cancel_split')
+    def cancel_split(self):
+        with self._lock:
+            self._open()
+            self._checked(self._lib.zc_video_cancel_split(self._handle))
+            bridge=self._next_bridge;self._next_bridge=None;self._split_staged=False
+            if bridge is not None: bridge.stop()
+    def _stop_bridges(self):
+        bridges=(self._bridge,self._next_bridge);self._bridge=self._next_bridge=None;self._split_staged=False
+        failure=None
+        for bridge in bridges:
+            if bridge is not None:
+                try: bridge.stop()
+                except BaseException as error:
+                    if failure is None: failure=error
+        if failure is not None: raise failure
     def close(self):
         from .output_objects import guard_callback
         guard_callback()
@@ -700,9 +760,11 @@ class Recorder:
             if self._handle.value:
                 status=self._lib.zc_video_close(self._handle);self._handle=C.c_void_p()
                 try: self._checked(status)
-                finally:
-                    if self._bridge is not None:
-                        bridge=self._bridge;self._bridge=None;bridge.stop()
+                except BaseException:
+                    try: self._stop_bridges()
+                    except Exception: pass
+                    raise
+                self._stop_bridges()
     def __enter__(self): return self
     def __exit__(self,*exc): self.close()
 

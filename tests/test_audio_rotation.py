@@ -89,8 +89,10 @@ class AudioTests(unittest.TestCase):
                     with self.assertRaises(CameraError) as failure: recorder.write_audio(data,timestamp_ns=ts)
                     self.assertEqual(failure.exception.status,status)
                 self.assertEqual(recorder.stats['audio_frames'],4)
-                for op in (lambda:recorder.save_buffer(root/'b.mkv'),recorder.close_output):
-                    with self.assertRaises(CameraError): op()
+                with self.assertRaises(CameraError): recorder.save_buffer(root/'b.mkv')
+                recorder.close_output()
+                self.assertFalse(recorder.buffer_stats['output_open'])
+                recorder.open_output(root/'b.mkv')
     def test_circular_pcm_snapshots_and_live_output_do_not_consume_history(self):
         with tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera,AudioCapture(backend='synthetic') as source:
             root=Path(directory);camera.start();feed=AudioFeed(source)
