@@ -286,9 +286,9 @@ class OutputRecoveryTests(unittest.TestCase):
     @unittest.skipUnless(AAC,'AAC build required')
     def test_independent_delays_preserve_complete_aac_mp4_sample_clocks(self):
         for codec in ('h264','hevc'):
-            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=128,height=96,policy='fifo') as camera:
                 camera.start();paths=[Path(directory)/f'{i}.mp4' for i in range(3)]
-                with Recorder(paths,width=32,height=32,fps=25,codec=codec,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
+                with Recorder(paths,width=128,height=96,fps=25,codec=codec,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
                     recorder.set_output_delay(1,delay_ms=80,max_bytes=131072,max_frames=20)
                     recorder.set_output_delay(2,delay_ms=160,max_bytes=131072,max_frames=20)
                     for i in range(20):
@@ -306,9 +306,9 @@ class OutputRecoveryTests(unittest.TestCase):
                 if self.armed: raise OSError('media disconnected')
                 return super()._write(data)
         for codec in ('h264','hevc'):
-            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=128,height=96,policy='fifo') as camera:
                 camera.start();root=Path(directory);good=root/'good.mp4';recovered=root/'recovered.mp4';broken=Disconnect(root/'broken.mp4')
-                with Recorder([good,broken],width=32,height=32,fps=25,codec=codec,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
+                with Recorder([good,broken],width=128,height=96,fps=25,codec=codec,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
                     recorder.set_output_delay(1,delay_ms=80,max_bytes=131072,max_frames=20)
                     recorder.set_output_recovery(1,lambda attempt,error:recovered,retry_delay_ms=0)
                     for i in range(20):
@@ -323,9 +323,9 @@ class OutputRecoveryTests(unittest.TestCase):
     @unittest.skipUnless(AAC,'AAC build required')
     def test_delayed_aac_split_and_detach_clip_each_audio_boundary(self):
         for codec in ('h264','hevc'):
-            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            with self.subTest(codec=codec),tempfile.TemporaryDirectory() as directory,Camera(simulate=True,width=128,height=96,policy='fifo') as camera:
                 camera.start();root=Path(directory);paths=[root/name for name in ('live.mp4','first.mp4','second.mp4')]
-                with Recorder(paths[:2],width=32,height=32,fps=25,codec=codec,gop=4,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
+                with Recorder(paths[:2],width=128,height=96,fps=25,codec=codec,gop=4,audio={'sample_rate':44100,'channels':2,'buffer_frames':44100},failure_policy='isolate') as recorder:
                     recorder.set_output_delay(1,delay_ms=160,max_bytes=131072,max_frames=20)
                     for i in range(20):
                         if i==10: recorder.split_output(1,paths[2])
