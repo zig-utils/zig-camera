@@ -39,6 +39,24 @@ class TwoPackets(Collector):
         super().outputframe(*args,**kwargs)
 
 class OutputJobTests(unittest.TestCase):
+    def test_drain_preserves_first_io_failure_when_retired_stop_also_fails(self):
+        first=OSError('write failed');second=OSError('stop failed')
+        class Failing(Slow):
+            def outputframe(self,*args,**kwargs):
+                super().outputframe(*args,**kwargs);raise first
+            def stop(self): super().stop();raise second
+        old=Failing()
+        with Camera(simulate=True,width=32,height=32,policy='fifo') as camera:
+            camera.start()
+            with Recorder([Collector(),old],width=32,height=32,async_io={1:{}},failure_policy='isolate') as recorder:
+                try:
+                    write(camera,recorder,0);self.assertTrue(old.entered.wait(5))
+                    recorder.split_output(1,Collector());write(camera,recorder,1);old.resume.set()
+                    with self.assertRaises(OSError) as caught: recorder.drain_output_io(1)
+                    self.assertIs(caught.exception,first);self.assertIs(recorder._split_results[1],first)
+                    self.assertEqual(old.lifecycle.count('stop'),1)
+                finally: old.resume.set()
+
     def test_retiring_stop_reserves_files_and_busy_id_until_hook_finishes(self):
         entered=threading.Event();resume=threading.Event()
         class SlowFile(FileOutput):

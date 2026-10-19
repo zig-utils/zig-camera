@@ -805,15 +805,22 @@ class Recorder:
         job=SnapshotJob(drain,lambda:lib.zc_output_job_close(native),signal_function,self._lifecycle_slots.release)
         job.thread_name='zig-camera-output-drain';job.start()
         if wait is False or (wait is None and signal_function is not None): return job
-        try: return job.result()
-        finally:
-            with self._lock:
+        failure=None
+        try: job.result()
+        except BaseException as error: failure=error
+        with self._lock:
+            try:
                 if self._handle.value and self._close_job is None: self._sync_split()
-                retiring=self._retiring.get(identity)
-            if retiring is not None:
-                retiring[0].result()
-                with self._lock:
+            except Exception as error: failure=failure or error
+            retiring=self._retiring.get(identity)
+        if retiring is not None:
+            try: retiring[0].result()
+            except Exception as error: failure=failure or error
+            with self._lock:
+                try:
                     if self._handle.value and self._close_job is None: self._sync_split()
+                except Exception as error: failure=failure or error
+        if failure is not None: raise failure
     def set_output_delay(self,output=0,*,delay_ms,max_bytes=8*1024*1024,max_frames=300):
         if not isinstance(delay_ms,int) or not 0<=delay_ms<2**64//1_000_000: raise ValueError('Invalid output delay')
         if not isinstance(max_bytes,int) or not 0<max_bytes<=1024**3: raise ValueError('Invalid output queue size')
