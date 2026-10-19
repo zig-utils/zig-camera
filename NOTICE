@@ -111,3 +111,9 @@ Home bounded output attachment helpers (0.13):
   at 4e886d52b (main), including fixed-capacity stable attachment IDs.
   Supersedes the earlier packet_output version listed above.
   https://github.com/home-lang/home/commit/4e886d52b
+
+Home stable output replacement (0.14):
+- src/home/packet_output.zig is now verbatim Home packages/video/src/core/packet_output.zig
+  at 1511771dd (main), adding stable replacement with stale-ID protection.
+  Supersedes the earlier packet_output versions listed above.
+  https://github.com/home-lang/home/commit/1511771dd

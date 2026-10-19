@@ -208,7 +208,7 @@ class MuxedOutput(FileOutput):
 
 class OutputBridge:
     def __init__(self,recorder,output,pts=None):
-        self.recorder=recorder;self.output=output;self.pts=pts;self.started=False;self.claimed=False;self.owns_pts=True
+        self.recorder=recorder;self.output=output;self.pts=pts;self.started=False;self.claimed=False;self.owns_pts=True;self.error=None
         from . import _OutputCallbacks,_PacketCallback,_WriteCallback,_PatchCallback
         self.cb=_OutputCallbacks();self.cb.struct_size=C.sizeof(self.cb)
         self.cb.file_fd=self.cb.pts_fd=self.cb.secondary_pts_fd=-1
@@ -230,7 +230,8 @@ class OutputBridge:
         except BaseException as error:
             if not isinstance(error,Exception):
                 original=error;error=RuntimeError(f'Output callback aborted: {error}');error.__cause__=original
-            if self.recorder._callback_error is None: self.recorder._callback_error=error
+            if self.error is None: self.error=error
+            if not self.recorder._isolation and self.recorder._callback_error is None: self.recorder._callback_error=error
             return -6
     def _write(self,context,data,length): return self._invoke(lambda:self.output._write(C.string_at(data,length)))
     def _patch(self,context,offset,data,length): return self._invoke(lambda:self.output._patch(offset,C.string_at(data,length)))

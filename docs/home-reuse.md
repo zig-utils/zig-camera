@@ -321,3 +321,27 @@ simultaneous outputs, dynamic joins, primary splits and failure cleanup. Home's
 repository currently rejects Actions dispatches as disabled; local focused tests
 and zig-camera's cross-platform integration CI provide the reported evidence.
 No FFmpeg/Libav or physical camera timing claim is introduced.
+
+## 0.14: stable replacements and independent sink state
+
+Rechecked Home's bounded attachment registry, revision-aware completion gate,
+streaming container error handling and non-consuming PCM windows. Existing Home
+writers already keep sink failures local to their writer; zig-camera now routes
+those errors to the affected attachment under an explicit isolation policy,
+while preserving recorder-wide source errors and the fail-fast default.
+
+[Home 1511771dd](https://github.com/home-lang/home/commit/1511771dd) adds
+`Slots.replace(id, payload)`, preserving identity/count while returning ownership
+of the old payload. Stale/zero IDs fail before mutation. Five focused registry,
+packet and PTS tests pass on Zig 0.15.2 and Home's development compiler; targeted
+pickier passes. The module is vendored verbatim with MIT attribution. Both changes
+are published only to `origin/main` under the configured human identity, without
+coauthor trailers or new PRs. Home Actions remains disabled for this repository.
+
+The camera's native layer owns staged replacements, keyframe commits, per-output
+status and quarantined descriptors. Python retains old/pending callbacks and
+original exceptions, and shares the existing bounded job/callback mechanism.
+Home's PCM windows keep healthy consumers independent of failed sinks; AAC/MP4
+and PCM/MKV writers remain the encoding/muxing implementation. Independent
+FAAD2/AVFoundation and Linux OpenH264/libde265 checks validate segments without
+FFmpeg. Synthetic validation does not establish Pi speedups or physical A/V timing.

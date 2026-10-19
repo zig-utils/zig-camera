@@ -207,7 +207,7 @@ int zc_video_close_output(zc_recorder *);
 int zc_video_set_delay(zc_recorder *,uint64_t delay_ns);
 /* Synchronous consumer-thread output protocol. Borrowed packet bytes expire
  * at callback return; copy to retain. Never re-enter camera/recorder APIs from
- * callbacks. Return ZC_OK only on complete acceptance; any failure poisons capture.
+ * callbacks. Return ZC_OK only on complete acceptance; errors follow the selected policy.
  * PACKETS delivers Annex B AVC/HEVC (fresh headers on first key), JPEG or S16LE.
  * Mux modes use Home containers and deliver video metadata (data=NULL) to packet.
  * Timestamps are rebased ns; key=1, audio=2, AnnexB=4 flags. */
@@ -235,13 +235,30 @@ int zc_video_split_callbacks(zc_recorder *,const zc_output_callbacks *);
  * the next forwarded key (no history replay), each with its own PCM cursor and
  * container/AAC state. Stable IDs >0 identify additions; 0 is the primary.
  * Removal finishes that output through the emitted timeline; delayed tail is
- * excluded. Failed writes poison recording; close still finalizes all sinks.
+ * excluded. Fail-fast is default; opt-in isolation quarantines failed sinks.
  * Keep callbacks alive until removal consumes the ID or recorder close. */
 typedef struct {uint64_t id,frames,bytes,first_ns,audio_frames;uint32_t waiting_key,reserved;} zc_output_stats;
 int zc_video_add_callbacks(zc_recorder *,const zc_output_callbacks *,uint64_t *id);
 int zc_video_add_output(zc_recorder *,const char *path,uint64_t *id);
 int zc_video_remove_output(zc_recorder *,uint64_t id);
 int zc_video_output_stats(zc_recorder *,uint64_t id,zc_output_stats *);
+/* Additive state for stable attachment IDs. Failure isolation is opt-in and must
+ * be selected before the first input. Quarantined sinks receive no more writes
+ * and do not pin PCM; their descriptors/contexts remain borrowed until detach.
+ * Shared encoder, input and history allocation failures remain recorder-fatal. */
+enum { ZC_SPLIT_IDLE=0,ZC_SPLIT_PENDING=1,ZC_SPLIT_COMMITTED=2,ZC_SPLIT_FAILED=3,ZC_SPLIT_CANCELLED=4 };
+typedef struct {uint64_t generation;int32_t error_code;uint32_t split_state,pending,reserved;} zc_output_state;
+typedef struct {uint64_t id;zc_output_state state;} zc_output_result;
+int zc_video_set_failure_isolation(zc_recorder *,uint32_t enabled);
+int zc_video_output_state(zc_recorder *,uint64_t id,zc_output_state *);
+/* Supply exactly one of path or callbacks. One pending split per attachment;
+ * IDs survive commit, generation increments, and other outputs are unaffected. */
+int zc_video_split_output(zc_recorder *,uint64_t id,const char *path,const zc_output_callbacks *);
+int zc_video_cancel_output_split(zc_recorder *,uint64_t id);
+/* capacity>=8; invalid capacity leaves the recorder live. Otherwise consumes it
+ * exactly like close, but returns all per-output states after finalization. */
+int zc_video_close_outputs(zc_recorder *,zc_output_result *,uint32_t capacity,uint32_t *count);
+
 
 int zc_video_get_headers(zc_recorder *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact Picamera2-style milliseconds with 3 decimals/LF, from microsecond PTS. */

@@ -1,4 +1,4 @@
-# Reusable outputs and PTS streams (0.13)
+# Reusable outputs and PTS streams (0.14)
 
 `Recorder`, `Camera.start_recording`, `Picamera2.start_recording` and circular
 `open_output` accept reusable output objects as well as paths. Packet output and Home container output share the existing delayed
@@ -99,16 +99,111 @@ primary. With an empty initial list, use the returned IDs for additions;
 Attachment/removal runs under the same recording lock as frame delivery. It
 finishes native ownership before Python `stop` and keeps all callback contexts
 alive through finalization. Failed preparation releases only the attempted new
-attachment. A packet/write failure poisons the whole recording and is surfaced to
-the owner; close is required. Close attempts to finalize every sink and calls every
-stop hook even when another sink fails. A removed sink's finish/stop error is
-reported after detachment; remaining healthy sinks can continue. There is no
-independent error-recovery policy or per-added-output async split API yet.
+attachment. With the default `failure_policy="fail_fast"`, a packet/write failure
+poisons the whole recording and is surfaced to the owner; close is required. Close
+attempts to finalize every sink and calls every stop hook even when another sink
+fails. A removed sink's finish/stop error is reported after detachment; remaining
+healthy sinks can continue. Per-output splitting and opt-in failure isolation are
+described below.
 `output_stats` reports each attachment's frames, bytes, relative recorder start,
 PCM frames delivered and whether it is still waiting for a key. Legacy recorder
 stats remain primary-specific for media bytes/frames and rotation; the audio
 written counter sums sample deliveries across all sinks. Source audio frames
 remain a single input count.
+
+## Per-output async splits and failure isolation
+
+```python
+import time
+from zigcamera import Picamera2, H264Encoder, MuxedOutput
+
+with Picamera2() as camera:
+    camera.configure(camera.create_video_configuration(main={"size": (1920, 1080)}))
+    main = MuxedOutput("main.mp4", pts="main.pts")
+    alternate = MuxedOutput("alternate.mp4", pts="alternate.pts")
+    recording = camera.start_recording(H264Encoder(bitrate=16_000_000, iperiod=30),
+                                       [main, alternate], fps=30,
+                                       audio={"device": "hw:1,0", "sample_rate": 48000},
+                                       failure_policy="isolate")
+    time.sleep(3)
+    next_main = MuxedOutput("main-next.mp4", pts="main-next.pts")
+    next_alternate = MuxedOutput("alternate-next.mp4", pts="alternate-next.pts")
+    job_a = recording.split_output(0, next_main)
+    job_b = camera.split_recording_output(1, next_alternate, wait=False)
+    assert job_a.result(5) is next_main
+    assert job_b.result(5) is next_alternate
+    # Other outputs continue while either attachment splits or fails.
+    print(recording.output_status(1), recording.output_errors)
+    time.sleep(3)
+    camera.stop_recording()
+    print(recording.output_errors)  # Includes errors discovered during close.
+```
+
+`Recording.split_output(current, replacement, signal_function=None)` returns an
+awaitable job. `Camera`/`Picamera2.split_recording_output(current, replacement,
+wait=None, signal_function=None)` provide the same default wait/callback behavior
+as `split_recording`. Identify `current` by attachment ID, object or original path.
+The ID survives a successful split; `output_status(id)['generation']` increments.
+The replacement becomes that ID's target in `outputs`, removal and stats. Only
+one split may be pending per attachment, so up to eight can progress independently.
+The primary's existing split/rotation API continues to use ID zero. Rotation
+manages primary splits; other IDs can split manually during rotation.
+
+`Recorder.split_output(current, replacement)` stages the native split for manual
+frame feeding. Its `cancel_output_split(current)` and `output_status(current)`
+provide low-level control. A keyframe request is shared, but each old sink clips
+its own PCM and finishes its own container before its replacement receives the
+key. The new sink starts at zero PTS with fresh AVC/HEVC headers and AAC state.
+A split before an attachment's first frame preserves one old frame before moving.
+Delayed FIFO recording uses the same rules at the forwarded key. Neither a
+successful split nor a cancelled split interrupts another attachment's timeline.
+
+Cancellation wins before native commit. A job wait timeout leaves the split
+pending; it does not cancel. Camera recording stop cancels all unresolved split
+jobs before draining. Removing an attachment with a pending split is rejected;
+cancel or finish the job first. Preparation can write headers/reset owned targets,
+so cancellation may leave empty elementary media or unfinished container headers.
+All active and pending media/PTS/snapshot identities participate in alias checks.
+Old and pending callback contexts stay alive until their native ownership ends.
+User job callbacks run on the existing bounded callback mechanism after lifecycle
+cleanup; callback errors are reported in `callback_error`.
+
+Select `failure_policy="isolate"` at Recorder/Camera/Picamera2 recording startup to
+quarantine sink packet/write, audio conversion/encoding and finalization failures.
+The default remains `"fail_fast"` for compatibility. Quarantined outputs receive
+no more packet or byte callbacks, including no repeated finish attempts. They
+stay attached and keep their descriptor/object claims until remove/close, so the
+error can be inspected and their storage cannot be overwritten through an alias.
+They no longer pin PCM; healthy outputs continue with their complete timelines.
+`output_errors` maps attachment IDs to original Python exceptions, or native
+`CameraError` objects for native path errors. `output_status` reports `error_code`,
+`generation`, `pending` and numeric split state: idle 0, pending 1, committed 2,
+failed 3, cancelled 4. Counts remain available through `output_stats`.
+
+If the old sink fails while finalizing a split, that attachment is quarantined,
+its pending replacement is cancelled and stopped, and only its job fails. If the
+new sink fails after commit, its generation has advanced but its job reports that
+failure and it is quarantined. A Python old-output stop-hook failure fails that
+job and is recorded for the ID, while the committed new native sink stays healthy;
+its native `error_code` remains zero. Later splits replace the prior operation's
+lifecycle error. Preparation failures are raised synchronously and do not damage
+the old sink. Detach a quarantined sink and re-add an output to restart it with a
+fresh ID, epoch and codec state; there is no automatic retry.
+
+Native close attempts every healthy sink, reports per-output finalization errors,
+and consumes all native ownership even if a sibling fails. Python calls every
+stop hook, preserves final errors in `output_errors`, and permits final
+`output_status(id)` queries by numeric ID. These error records are bounded by the
+active attachments; removal discards an ID's record, so save/log it before detach.
+In isolation mode, a sink or stop-hook error does not make whole-recording close
+raise; shared recorder/capture failures still do. A direct low-level recorder
+closed with an unresolved healthy split retains its existing `ZC_STATE` behavior.
+
+Shared video encoder/input errors, delayed FIFO overflow and shared storage
+allocation failures remain recorder-fatal and fail every outstanding job. Sink
+callbacks still execute serially and can apply backpressure; isolation does not
+add worker threads or deadlines for blocking callbacks. Per-output delay, encoding
+settings and automatic recovery remain outside this interface.
 
 ## Direct recording and async splits
 
@@ -285,6 +380,13 @@ and return stable IDs; `zc_video_remove_output` finishes/detaches an ID, and
 `zc_video_output_stats` fills an additive 48-byte structure. ID zero denotes the
 primary. For a removal error, query stats: `ZC_STATE` means the ID was consumed;
 otherwise retain its callbacks until detach or recorder close.
+`zc_video_split_output` accepts an attachment ID and exactly one path/callback
+descriptor. `zc_video_cancel_output_split` cancels that ID's pending replacement.
+`zc_video_set_failure_isolation` selects the policy before first video input.
+`zc_video_output_state` returns an additive 24-byte state; `zc_video_close_outputs`
+consumes the recorder and returns up to eight 32-byte ID/state results after
+encoder/FIFO drain and finalization. Capacity below eight is rejected without
+consuming the handle. Preserve callback contexts through the close call.
 `zc_video_create` creates an output-less direct recorder with optional PCM
 configuration and no history. `zc_video_open_callbacks` attaches a 56-byte
 callback descriptor to direct, circular or delayed recording.

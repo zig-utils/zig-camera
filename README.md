@@ -14,11 +14,11 @@ replacement or a claim of feature parity.
 - Zig, C and Python interfaces; deterministic synthetic backend for development.
 - Stride-aware portable SIMD luma adapted from Home, with MIT attribution.
 
-New in 0.13: up to eight simultaneous recording outputs from one video encoder,
-with dynamic attachment/removal, per-output PTS and independent Home MP4/MKV audio
-state. Start with a list of outputs, then use `recording.add_output` and
-`recording.remove_output` while capture continues. Async splits, delayed A/V,
-controls, autofocus, preview and DNG remain available. No FFmpeg dependency.
+New in 0.14: independent async splits for every output, stable attachment IDs
+across keyframe handoffs, and opt-in `failure_policy="isolate"` so a broken sink
+can be quarantined while healthy outputs continue. Per-output errors and terminal
+close states remain observable. Eight simultaneous outputs share one video
+encoder and use Home's MP4/MKV and sample-correct audio helpers. No FFmpeg.
 [Output objects and PTS](docs/output-objects.md),
 [async snapshots and delayed A/V](docs/async-delayed.md), [coverage and gaps](docs/parity.md).
 

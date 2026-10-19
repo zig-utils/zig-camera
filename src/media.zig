@@ -176,3 +176,19 @@ pub export fn zc_video_remove_output(p: *c.zc_recorder, id: u64) c_int {
 pub export fn zc_video_output_stats(p: *c.zc_recorder, id: u64, stats: *c.zc_output_stats) c_int {
     return @import("video.zig").outputStats(p, id, stats);
 }
+
+pub export fn zc_video_set_failure_isolation(p: *c.zc_recorder, enabled: u32) c_int {
+    return @import("video.zig").setIsolation(p, enabled);
+}
+pub export fn zc_video_output_state(p: *c.zc_recorder, id: u64, state: *c.zc_output_state) c_int {
+    return @import("video.zig").outputState(p, id, state);
+}
+pub export fn zc_video_split_output(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks) c_int {
+    return @import("video.zig").splitOutput(p, id, path, cb);
+}
+pub export fn zc_video_cancel_output_split(p: *c.zc_recorder, id: u64) c_int {
+    return @import("video.zig").cancelOutputSplit(p, id);
+}
+pub export fn zc_video_close_outputs(p: *c.zc_recorder, results: [*]c.zc_output_result, capacity: u32, count: *u32) c_int {
+    return @import("video.zig").closeReport(p, results, capacity, count);
+}
