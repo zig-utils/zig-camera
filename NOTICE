@@ -219,3 +219,11 @@ Home immutable session settings (0.28):
   Allocation-free video/PCM queue/AAC bitrate validation precedes encoder and
   output preparation. The Home MIT license above applies.
   https://github.com/home-lang/home/commit/5d03fefdbc4728ec9479809d6058f3751ceab4e0
+
+Home negotiated session geometry (0.29):
+- src/home/session_config.zig is verbatim from Home's
+  packages/video/src/core/session_config.zig at 79484d1a12ae9ab0b325474faebd2ad2a0cc3d3e.
+  withGeometry resolves omitted capture dimensions and validates exact dimensions
+  and codec shapes without changing the proposal. Supersedes session_config above.
+  The Home MIT license applies.
+  https://github.com/home-lang/home/commit/79484d1a12ae9ab0b325474faebd2ad2a0cc3d3e

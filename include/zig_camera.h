@@ -491,6 +491,9 @@ int zc_producer_job_drain_outputs(zc_producer_job *);
 /* Session phases: 0=open, 1=flushing, 2=flushed, 3=failed. */
 typedef struct {uint64_t session;uint32_t phase;int32_t error_code;} zc_session_state;
 int zc_video_session_state(zc_recorder *,zc_session_state *);
+/* Resolve copied media settings against negotiated capture geometry. exact bits
+ * 0/1 require the proposed width/height. Invalid settings preserve *config. */
+int zc_video_resolve_session_config(zc_video_config *,const zc_recording_options *,uint32_t audio_bitrate,uint32_t width,uint32_t height,uint32_t exact);
 int zc_video_session_config(zc_recorder *,zc_video_config *,zc_recording_options *,uint32_t *audio_bitrate);
 /* Restart kinds: 0=unattached, 1=fresh exclusive path, 2=callbacks bound later.
  * Requires terminal flush and released producer/preparation/snapshot handles.

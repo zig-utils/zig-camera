@@ -388,3 +388,9 @@ any previous recipe unchanged. Omit the call to retain the current settings.
 Then start, bind/acknowledge candidate output and publish as usual. Query the
 installed settings with zc_video_session_config outside worker ownership (BUSY
 while active). Neither query nor reconfiguration changes the existing ABI structs.
+
+For a running camera pump, use Recording.switchModeAsync or
+Camera.switchRecordingModeAsync to combine flush, camera negotiation, preview
+recreation, recorder preparation and pump restart under one reserved job. See
+[coordinated switching](mode-recording.md#coordinated-camera-and-recorder-switching)
+for cancellation, audio ownership and irreversible flush boundaries.

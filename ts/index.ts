@@ -43,6 +43,13 @@ import {
   type Pointer,
 } from './ffi'
 export { CameraError } from './ffi'
+const recordingOwner = Symbol('recordingOwner')
+const coordinateRecorder = Symbol('coordinateRecorder')
+const coordinatedFlush = Symbol('coordinatedFlush')
+export interface RecordingModeOptions extends JobOptions<Recording> {
+  dropFrames?: number
+  audio?: AudioCapture
+}
 export const Codec = { h264: 1, hevc: 2, mjpeg: 3 } as const
 export const Control = {
   aeEnable: 1,
@@ -281,6 +288,8 @@ export class Camera {
   private focusJobs = 0
   private configuration: CameraOptions
   private modeActive = false
+  private coordinatedRecorder?: Recorder
+  private coordinatedInitial?: Recording
   private modeJobs = new Set<{
     cancel: (reason?: unknown) => boolean
     done: boolean
@@ -306,12 +315,17 @@ export class Camera {
   }
   assertOpen() {
     guardOutputHook()
+    if (this.coordinatedRecorder)
+      throw new CameraError(-4, 'coordinated recording mode pending')
     if (this.modeActive) throw new CameraError(-4, 'mode change active')
     if (!this.handle || this.closing || this.stopJob)
       throw new CameraError(-2, 'camera unavailable')
   }
   info() {
     this.assertOpen()
+    return this.readInfo()
+  }
+  private readInfo() {
     const d = storage(680)
     check(n.zc_get_info(this.handle, ptr(d)))
     const v = view(d)
@@ -505,7 +519,13 @@ export class Camera {
           'audio capture format differs from recorder session',
         )
     }
-    this.start()
+    recorder[recordingOwner](this)
+    try {
+      this.start()
+    } catch (error) {
+      recorder[recordingOwner](this, true)
+      throw error
+    }
     const recording = new Recording(
       this,
       recorder,
@@ -515,6 +535,307 @@ export class Camera {
     this.recording = recording
     this.ensurePump()
     return recording
+  }
+
+  /** Flush, negotiate camera geometry, prepare a new media session and resume
+   * recording as one reserved job. Pre-publication failure restores the camera. */
+  switchRecordingModeAsync(
+    recorder: Recorder,
+    options: CameraOptions,
+    settings: RecorderSessionOptions = {},
+    output: string | CustomOutput | null = null,
+    jobOptions: RecordingModeOptions = {},
+  ): BunJob<Recording> {
+    this.assertOpen()
+    if (
+      this.hasPendingModes() ||
+      this.requests.length ||
+      this.focusJobs ||
+      this.failedRecordings.size
+    )
+      throw new CameraError(-4, 'camera jobs active')
+    if (this.modeJobs.size + this.requests.length >= 32)
+      throw new CameraError(-4, 'mode queue')
+    if (this.recording && this.recording.recorder !== recorder)
+      throw new CameraError(-4, 'camera records a different recorder')
+    if (
+      (options.simulate !== undefined &&
+        options.simulate !== (this.configuration.simulate ?? false)) ||
+      (options.cameraIndex !== undefined &&
+        options.cameraIndex !== (this.configuration.cameraIndex ?? 0))
+    )
+      throw new CameraError(-1, 'mode must retain camera/backend')
+    const target = copyConfiguration({
+      ...options,
+      simulate: this.configuration.simulate,
+      cameraIndex: this.configuration.cameraIndex,
+    })
+    const encoded = cameraConfiguration(target),
+      dropFrames = uint(jobOptions.dropFrames ?? 0)
+    if (typeof output === 'string') guardHostPath(output)
+    const exact =
+      (settings.width !== undefined ? 1 : 0) |
+      (settings.height !== undefined ? 2 : 0)
+    const proposed = mergeSessionOptions(recorder.options, settings)
+    const candidate = resolvedSession(
+      proposed,
+      target.width ?? proposed.width,
+      target.height ?? proposed.height,
+      exact,
+    )
+    const audio = jobOptions.audio
+    if (
+      audio &&
+      (!audio.handle ||
+        !candidate.audio ||
+        audio.sampleRate !== candidate.audio.sampleRate ||
+        audio.channels !== candidate.audio.channels)
+    )
+      throw new RangeError('audio capture format differs from recorder session')
+    const effective = {
+      ...jobOptions,
+      timeoutMs: jobOptions.timeoutMs ?? 10000,
+    }
+    const deadline = Date.now() + effective.timeoutMs
+    const initialRecording = this.recording
+    let reservation: ReturnType<Recorder[typeof coordinateRecorder]> | undefined
+    let claimed = false
+    const release = () => {
+      reservation?.release()
+      if (this.coordinatedRecorder === recorder) {
+        this.coordinatedRecorder = undefined
+        this.coordinatedInitial = undefined
+      }
+      if (
+        !this.closing &&
+        !this.stopJob &&
+        (this.previewHandle || this.recording)
+      )
+        this.ensurePump()
+    }
+    const job = new BunJob<Recording>(
+      async (current) => {
+        claimed = true
+        const previous = this.options,
+          old = cameraConfiguration(previous)
+        const started = this.started,
+          title = this.previewTitle
+        let response: ModeResponse | undefined,
+          published = false,
+          resumed: Recording | undefined
+        let failure: unknown
+        const preview = () => {
+          if (!title || !this.handle || this.closing || this.stopJob) return
+          const info = this.readInfo(),
+            name = cstring(title),
+            out = outPointer()
+          check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
+          this.previewHandle = handle(out)
+          this.previewTitle = title
+        }
+        const attach = () => {
+          if (resumed) return
+          if (this.closing || this.stopJob || recorder.closing)
+            throw new CameraError(
+              -2,
+              'capture stopped after session publication',
+            )
+          if (audio && !audio.handle)
+            throw new CameraError(-2, 'audio closed after session publication')
+          // Camera and media are published together; no user work can enter until
+          // the reservation is released. Audio ownership transfers only here.
+          recorder[recordingOwner](this, false, true)
+          resumed = new Recording(this, recorder, audio, recorder.fps)
+          this.recording = resumed
+        }
+        try {
+          current.check()
+          const stats = storage(40)
+          check(n.zc_get_stats(this.handle, ptr(stats)))
+          if (
+            view(stats).getUint32(36, true) ||
+            this.recording !== initialRecording
+          )
+            throw new CameraError(
+              -4,
+              'mode requires unleased camera and stable recording',
+            )
+          this.modeActive = true
+          if (this.timer !== undefined) {
+            clearTimeout(this.timer)
+            this.timer = undefined
+          }
+          const flush = initialRecording
+            ? initialRecording[coordinatedFlush](reservation!.flush)
+            : reservation!.flush()
+          await flush
+          current.check()
+          this.stopPreviewOwned()
+          response = await runModeWorker({
+            handle: this.handle,
+            ...encoded,
+            previousConfig: old.config,
+            previousPipeline: old.pipeline,
+            previousStarted: started,
+            cancel: current.cancellation,
+            deadline,
+            dropFrames,
+          })
+          this.handle = response.handle
+          this.started = response.started
+          if (Date.now() >= deadline && !current.cancelRequested)
+            current.cancel(new CameraError(-3, 'mode deadline'))
+          if (response.restoreCode)
+            throw Object.assign(
+              new CameraError(
+                response.code || response.restoreCode,
+                'mode restoration',
+              ),
+              { restoreCode: response.restoreCode },
+            )
+          if (response.code === -5 && current.cancelRequested) current.check()
+          check(response.code, 'recording camera mode')
+          current.check()
+          const info = this.readInfo()
+          const media = resolvedSession(
+            candidate,
+            info.width,
+            info.height,
+            exact,
+          )
+          preview()
+          current.check()
+          const replacement = reservation!.restart(
+            media,
+            output,
+            () => {
+              published = true
+              current.seal()
+            },
+            () => {
+              current.check()
+              if (this.closing || this.stopJob || recorder.closing)
+                throw new CameraError(
+                  -2,
+                  'capture stopped before session publication',
+                )
+              if (audio && !audio.handle)
+                throw new CameraError(
+                  -2,
+                  'audio closed before session publication',
+                )
+            },
+            () => {
+              this.configuration = target
+            },
+          )
+          current.setCancellationGuard(() => replacement.cancel())
+          try {
+            await replacement
+          } catch (error) {
+            if (
+              replacement.cancelRequested &&
+              error === replacement.cancellationReason
+            )
+              current.check()
+            throw error
+          }
+          attach()
+          return resumed!
+        } catch (error) {
+          failure = error
+          if (error instanceof ModeWorkerFault) {
+            this.handle = 0 as Pointer
+            this.started = false
+          }
+          if (!published && response?.target && this.handle) {
+            try {
+              this.stopPreviewOwned()
+              const restored = await runModeWorker({
+                handle: this.handle,
+                ...old,
+                previousConfig: encoded.config,
+                previousPipeline: encoded.pipeline,
+                previousStarted: true,
+                cancel: new SharedArrayBuffer(8),
+                deadline: Infinity,
+                dropFrames: 0,
+              })
+              this.handle = restored.handle
+              this.started = restored.started
+              this.configuration = restored.target ? previous : target
+              check(
+                restored.restoreCode || restored.code,
+                'recording mode rollback',
+              )
+              if (!started && this.handle) {
+                check(n.zc_stop(this.handle))
+                this.started = false
+              }
+            } catch (restorationError) {
+              if (restorationError instanceof ModeWorkerFault) {
+                this.handle = 0 as Pointer
+                this.started = false
+              }
+              if (failure && typeof failure === 'object')
+                Object.assign(failure, { restorationError })
+              else
+                failure = new AggregateError(
+                  [failure, restorationError],
+                  'recording mode restoration failed',
+                )
+            }
+          }
+          if (!published && !this.previewHandle) {
+            try {
+              preview()
+            } catch (previewError) {
+              if (failure && typeof failure === 'object')
+                Object.assign(failure, { previewError })
+              else
+                failure = new AggregateError(
+                  [failure, previewError],
+                  'recording preview restoration failed',
+                )
+            }
+          }
+          if (
+            published &&
+            !this.closing &&
+            !this.stopJob &&
+            !recorder.closing
+          ) {
+            attach()
+            if (failure && typeof failure === 'object')
+              Object.assign(failure, { recording: resumed })
+          }
+          throw failure
+        } finally {
+          current.setCancellationGuard(undefined)
+          this.modeActive = false
+          release()
+        }
+      },
+      () => {
+        this.modeJobs.delete(job)
+        if (!claimed) release()
+      },
+      effective,
+    )
+    try {
+      reservation = recorder[coordinateRecorder](job, this)
+    } catch (error) {
+      job.cancel(error)
+      throw error
+    }
+    this.coordinatedRecorder = recorder
+    this.coordinatedInitial = initialRecording
+    void job.operationDone.then(() => {
+      if (!claimed) release()
+    })
+    this.modeJobs.add(job)
+    this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
+    return job
   }
 
   switchMode(
@@ -608,6 +929,7 @@ export class Camera {
     if (this.modeJobs.size + this.requests.length >= 32)
       throw new CameraError(-4, 'mode queue')
     if (
+      this.coordinatedRecorder ||
       this.recording ||
       this.failedRecordings.size ||
       this.focusJobs ||
@@ -735,6 +1057,10 @@ export class Camera {
                 this.started = false
               }
             } catch (restorationError) {
+              if (restorationError instanceof ModeWorkerFault) {
+                this.handle = 0 as Pointer
+                this.started = false
+              }
               if (error && typeof error === 'object')
                 Object.assign(error, { restorationError })
               else
@@ -778,8 +1104,11 @@ export class Camera {
   }
 
   detach(recording: Recording) {
-    if (this.recording === recording) this.recording = undefined
-    this.failedRecordings.delete(recording)
+    const detached = this.recording === recording
+    if (detached) this.recording = undefined
+    const failed = this.failedRecordings.delete(recording)
+    if ((detached || failed) && this.recording?.recorder !== recording.recorder)
+      recording.recorder[recordingOwner](this, true)
   }
   private ensurePump() {
     if (this.timer === undefined && !this.pumping)
@@ -790,7 +1119,7 @@ export class Camera {
     this.pumping = true
     try {
       this.timer = undefined
-      if (!this.handle || this.closing) return
+      if (!this.handle || this.closing || this.coordinatedRecorder) return
       const now = performance.now()
       this.requests = this.requests.filter((job) => {
         if (job.signal?.aborted || now >= job.deadline) {
@@ -891,7 +1220,9 @@ export class Camera {
   }
   private stopWork(): Promise<void> {
     if (this.stopJob) return this.stopJob
+    const coordinated = this.coordinatedRecorder
     const recordings = [...this.failedRecordings]
+    if (this.coordinatedInitial) recordings.push(this.coordinatedInitial)
     if (this.recording) recordings.push(this.recording)
     this.recording = undefined
     if (this.timer !== undefined) {
@@ -912,6 +1243,13 @@ export class Camera {
       for (const recording of recordings) {
         try {
           await recording.close()
+        } catch (error) {
+          failure ??= error
+        }
+      }
+      if (coordinated && recordings.some((r) => r.recorder === coordinated)) {
+        try {
+          await coordinated.close()
         } catch (error) {
           failure ??= error
         }
@@ -943,7 +1281,7 @@ export class Camera {
         failure = error
       }
       try {
-        check(n.zc_close(this.handle))
+        if (this.handle) check(n.zc_close(this.handle))
         this.handle = 0 as Pointer
       } catch (error) {
         failure ??= error
@@ -1019,6 +1357,53 @@ function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
       options.producerQueue && Object.freeze({ ...options.producerQueue }),
     io: options.io && Object.freeze({ ...options.io }),
   })
+}
+function mergeSessionOptions(
+  current: RecorderOptions,
+  settings?: RecorderSessionOptions,
+): RecorderOptions {
+  if (!settings) return current
+  const merged = { ...current }
+  if (
+    settings.codec !== undefined &&
+    settings.codec !== (current.codec ?? 'mjpeg')
+  ) {
+    merged.bitrate = undefined
+    merged.gop = undefined
+  }
+  for (const key of [
+    'width',
+    'height',
+    'fps',
+    'codec',
+    'bitrate',
+    'quality',
+    'gop',
+  ] as const)
+    if (settings[key] !== undefined)
+      Object.assign(merged, { [key]: settings[key] })
+  if (settings.audio !== undefined) merged.audio = settings.audio ?? undefined
+  return snapshotRecorderOptions(merged)
+}
+function resolvedSession(
+  options: RecorderOptions,
+  width: number,
+  height: number,
+  exact: number,
+) {
+  const config = sessionFields(options)
+  check(
+    n.zc_video_resolve_session_config(
+      ptr(config.video),
+      ptr(config.audio),
+      config.bitrate,
+      width,
+      height,
+      exact,
+    ),
+    'camera/recorder configuration',
+  )
+  return snapshotRecorderOptions({ ...options, width, height })
 }
 function sessionFields(options: RecorderOptions) {
   if (
@@ -1323,6 +1708,7 @@ export class Recorder {
     cancel: (reason?: unknown) => boolean
     operationDone: Promise<void>
     cleanupDone: Promise<void>
+    done: boolean
   }>()
   private retiringOutputs = new Set<bigint>()
   private factories = new Map<bigint, FactoryEntry>()
@@ -1331,6 +1717,10 @@ export class Recorder {
   private schedulingFactories = false
   private tasks = 0
   private producerTail: Promise<void> = Promise.resolve()
+  private capturingCamera?: Camera
+  private coordinator?: BunJob<Recording>
+  private coordinatorEntry = false
+  private producerJobs = new Set<object>()
   private restartPending = false
   private sessionEpoch = 0n
   private deliveryBridges = new Set<OutputBridge>()
@@ -1434,6 +1824,11 @@ export class Recorder {
     }
   }
   assertOpen(allowProducer = false) {
+    if (this.coordinator && !this.coordinatorEntry)
+      throw new CameraError(-4, 'coordinated mode owns recorder')
+    this.assertOwned(allowProducer)
+  }
+  private assertOwned(allowProducer = false) {
     guardOutputHook()
     if (!this.handle || this.closing)
       throw new CameraError(-2, 'closed recorder')
@@ -1584,7 +1979,7 @@ export class Recorder {
           // lifecycle continuations finish their synchronous ABI work first.
           await pause()
           job.check()
-          this.assertOpen(true)
+          this.assertOwned(true)
           let unlock!: () => void
           this.producerTurn = new Promise<void>((resolve) => {
             unlock = resolve
@@ -2240,6 +2635,7 @@ export class Recorder {
         () => {
           this.tasks--
           this.objectJobs.delete(job)
+          this.producerJobs.delete(job)
         },
         options,
       )
@@ -2248,6 +2644,7 @@ export class Recorder {
       throw error
     }
     this.objectJobs.add(job)
+    if (kind === 'producer') this.producerJobs.add(job)
     if (kind === 'producer') {
       const previous = this.producerTail
       this.producerTail = previous.then(() => job.operationDone)
@@ -2637,6 +3034,7 @@ export class Recorder {
   }
   private scheduleFactories() {
     if (
+      this.coordinator ||
       this.schedulingFactories ||
       !this.handle ||
       this.closing ||
@@ -2893,6 +3291,61 @@ export class Recorder {
       errorCode: view(data).getInt32(12, true),
     }
   }
+  /** @internal Reserve admission while existing copied producers finish. */
+  [recordingOwner](camera: Camera, release = false, coordinated = false) {
+    if (release) {
+      if (this.capturingCamera === camera) this.capturingCamera = undefined
+      return
+    }
+    if (coordinated) this.assertOwned(true)
+    else this.assertOpen(true)
+    if (this.capturingCamera)
+      throw new CameraError(-4, 'recorder already attached to camera')
+    this.capturingCamera = camera
+  }
+  [coordinateRecorder](job: BunJob<Recording>, camera: Camera) {
+    this.assertOpen(true)
+    if (
+      (this.capturingCamera && this.capturingCamera !== camera) ||
+      this.restartPending ||
+      this.jobs.size ||
+      this.factories.size ||
+      [...this.objectJobs].some((j) => !j.done && !this.producerJobs.has(j))
+    )
+      throw new CameraError(-4, 'recorder lifecycle jobs active')
+    this.coordinator = job
+    const enter = <T>(operation: () => T): T => {
+      this.coordinatorEntry = true
+      try {
+        return operation()
+      } finally {
+        this.coordinatorEntry = false
+      }
+    }
+    return {
+      flush: () => enter(() => this.flushAsync()),
+      restart: (
+        settings: RecorderOptions,
+        output: string | CustomOutput | null,
+        onPublished: () => void,
+        beforePublish: () => void,
+        onInstalled: () => void,
+      ) =>
+        enter(() =>
+          this.restartSession(
+            { ...settings, audio: settings.audio ?? null },
+            output,
+            {},
+            onPublished,
+            beforePublish,
+            onInstalled,
+          ),
+        ),
+      release: () => {
+        if (this.coordinator === job) this.coordinator = undefined
+      },
+    }
+  }
   /** Prepare and publish a fresh session after flush, retaining media settings. */
   restartAsync(
     output: string | CustomOutput | null = null,
@@ -2913,36 +3366,14 @@ export class Recorder {
     settings: RecorderSessionOptions | undefined,
     output: string | CustomOutput | null,
     options: JobOptions<void>,
+    onPublished?: () => void,
+    beforePublish?: () => void,
+    onInstalled?: () => void,
   ): BunJob<void> {
     this.assertOpen(true)
     if (this.restartPending)
       throw new CameraError(-4, 'restart already pending')
-    let candidate = this.options
-    if (settings) {
-      const merged = { ...this.options }
-      if (
-        settings.codec !== undefined &&
-        settings.codec !== (this.options.codec ?? 'mjpeg')
-      ) {
-        merged.bitrate = undefined
-        merged.gop = undefined
-      }
-      for (const key of [
-        'width',
-        'height',
-        'fps',
-        'codec',
-        'bitrate',
-        'quality',
-        'gop',
-      ] as const) {
-        if (settings[key] !== undefined)
-          Object.assign(merged, { [key]: settings[key] })
-      }
-      if (settings.audio !== undefined)
-        merged.audio = settings.audio ?? undefined
-      candidate = snapshotRecorderOptions(merged)
-    }
+    const candidate = mergeSessionOptions(this.options, settings)
     const config = settings ? sessionFields(candidate) : undefined
     if (typeof output === 'string') guardHostPath(output)
     const name = typeof output === 'string' ? cstring(output) : undefined
@@ -2991,7 +3422,7 @@ export class Recorder {
         async (job) => {
           await pause()
           job.check()
-          this.assertOpen(true)
+          this.assertOwned(true)
           const streams = describeStreams(candidate, new Uint8Array())
           let unlock!: () => void
           this.producerTurn = new Promise<void>((resolve) => {
@@ -3059,16 +3490,19 @@ export class Recorder {
                 if (bridge) await bridge.drain()
                 job.check()
                 if (bridge?.error !== undefined) throw bridge.error
+                beforePublish?.()
                 check(
                   n.zc_producer_job_restart_publish(native),
                   'restart publication',
                 )
                 published = true
                 job.seal()
+                onPublished?.()
               }
               await pause()
             }
             this.currentOptions = candidate
+            onInstalled?.()
             this.sessionEpoch = this.readSessionState().id
             const old = [...this.deliveryBridges]
             this.objectOutputs.clear()
@@ -3240,6 +3674,11 @@ export class Recorder {
     if (!this.handle) return Promise.resolve()
     this.closing = true
     this.closed = (async () => {
+      const coordinator = this.coordinator
+      if (coordinator) {
+        coordinator.cancel(new CameraError(-2, 'recorder closed'))
+        await coordinator.operationDone
+      }
       const objectJobs = [...this.objectJobs]
       for (const job of objectJobs)
         job.cancel(new CameraError(-2, 'recorder closed'))
@@ -3422,8 +3861,31 @@ export class Recording {
   split(output: string | CustomOutput, id: bigint | number = 0n) {
     return this.recorder.split(output, id)
   }
+  switchModeAsync(
+    camera: CameraOptions,
+    settings: RecorderSessionOptions = {},
+    output: string | CustomOutput | null = null,
+    options: RecordingModeOptions = {},
+  ): BunJob<Recording> {
+    if (this.stopped || this.closeJob)
+      throw new CameraError(-2, 'recording stopped')
+    return this.camera.switchRecordingModeAsync(
+      this.recorder,
+      camera,
+      settings,
+      output,
+      options,
+    )
+  }
+  [coordinatedFlush](flush: () => BunJob<void>): BunJob<void> {
+    return this.flushOwned(flush)
+  }
   /** Stop this camera/audio pump and flush, leaving the recorder reusable. */
   flushAsync(options: JobOptions<void> = {}): BunJob<void> {
+    this.recorder.assertOpen(true)
+    return this.flushOwned(() => this.recorder.flushAsync(options))
+  }
+  private flushOwned(flush: () => BunJob<void>): BunJob<void> {
     guardOutputHook()
     if (this.closeJob) throw new CameraError(-2, 'recording closed')
     if (
@@ -3431,12 +3893,14 @@ export class Recording {
       (!this.flushJob.done || this.flushJob.error === undefined)
     )
       return this.flushJob
+    const job = flush()
+    this.flushJob = job
     this.stopped = true
     this.retainedRecorder = true
     this.camera.detach(this)
     this.audio?.close()
     this.pendingAudio = undefined
-    return (this.flushJob = this.recorder.flushAsync(options))
+    return job
   }
   close() {
     guardOutputHook()

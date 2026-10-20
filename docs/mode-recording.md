@@ -29,8 +29,9 @@ capture accepts JPEG or DNG, returns frame metadata and uses Home image writers.
 DNG requests unpacked Bayer automatically; unsupported raw modes still fail.
 These methods use this project's typed options, not arbitrary Picamera2 configs.
 
-Jobs are FIFO, with at most 32 admitted mode/capture operations. Recording,
-autofocus, pending captures and outstanding frame leases prevent a mode change.
+Ordinary mode jobs are FIFO, with at most 32 admitted mode/capture operations.
+Recording, autofocus, pending captures and outstanding frame leases prevent an
+ordinary mode change. Use the coordinated recording API below for recording.
 Checks run again when a queued job claims the camera. Release leases first;
 never carry a frame descriptor across reconfiguration. Other camera operations
 are rejected while a mode transaction owns its native handle. Start, preview,
@@ -64,3 +65,79 @@ Preparing replacements uses bounded native jobs. See [native jobs](native-jobs.m
 for splits/rotation/recovery. No frame is leased beyond encoding.
 
 See [coverage](parity.md) and the [C ABI contract](../include/zig_camera.h).
+
+## Coordinated camera and recorder switching
+
+`Recording.switchModeAsync(cameraOptions, sessionSettings?, output?, jobOptions?)`
+returns a BunJob<Recording> for the replacement recording. It automatically drains
+and flushes the current pump, switches the camera and resumes the same recorder
+with a fresh media session. The underlying
+`Camera.switchRecordingModeAsync(recorder, cameraOptions, sessionSettings?, output?, jobOptions?)`
+also works with an idle camera and a live or flushed recorder. A camera already
+recording a different recorder rejects, as does a recorder attached elsewhere.
+
+```ts
+const previous = recording
+recording = await previous.switchModeAsync(
+  { width: 1920, height: 1080, role: 'video', fifo: true },
+  { codec: 'hevc', fps: 30, bitrate: 8_000_000, gop: 30,
+    audio: { sampleRate: 48000, channels: 2, bitrate: 128000 } },
+  new MuxedOutput('trail-high.mp4'),
+  { dropFrames: 4, timeoutMs: 15_000,
+    audio: new AudioCapture({ sampleRate: 48000, channels: 2 }) },
+)
+await previous.close() // Its flushed recorder is now owned by the next session.
+```
+
+One admitted job reserves both Bun objects; new capture, focus, mode, producer and
+output mutations fail fast until ownership settles. Already copied producers
+finish before the flush on the same bounded worker FIFO. Release frame leases
+first. Recorder preparation jobs, snapshots and automatic factories must settle;
+stop factories before coordinated admission. The existing 32 camera-job and 16
+recorder lifecycle limits still apply. A second coordinated switch rejects BUSY.
+This surface coordinates the Bun facade; direct C callers must still serialize
+their own native ownership.
+
+Session settings follow reconfigureAsync: codec, FPS, bitrate, quality, GOP and
+audio are copied at admission, omitted fields retain their values, codec changes
+reset omitted bitrate/GOP, and audio:null disables audio. Omitted recorder width
+and height adapt independently to the negotiated camera geometry. Explicit
+recorder dimensions must match negotiation; mismatch rolls back before media
+publication. Camera options are copied, including sensor and lores selection,
+while backend and camera index remain fixed. Home session_config validates the
+resulting codec geometry and preserves the proposed settings on failure.
+
+The old recording is detached and its AudioCapture closed before flushing. Supply
+a **new** matching AudioCapture through jobOptions.audio for the next pump. It
+remains caller-owned until successful attachment; setup failure/cancellation does
+not close it. Closing that source during preparation rejects before publication.
+When omitted, the new pump has no audio input. The output can be a fresh exclusive
+path, custom output or null for an unattached/circular session. Candidate hooks
+receive the new negotiated metadata and headers. Preview is recreated on Bun's
+UI thread before recorder publication; the camera pump remains paused throughout.
+
+The publication boundary is the prepared recorder's native publish operation.
+Before it, cancellation, worker/setup failure, unsupported media or preview
+failure discards the candidate, joins its hooks and restores the old camera mode,
+running/stopped state and preview. Queued cancellation and lease/preflight
+rejection leave the live pump intact. Once flush has entered, the old recording
+remains terminal even if later preparation fails: its file cannot be unflushed,
+and the coordinator does not silently restart or append to it. The old session
+ID/settings stay available; retry the camera API with a fresh output to resume.
+Restoration failures are attached as restorationError/previewError. A worker
+fault invalidates the camera handle rather than guessing ownership.
+
+After publication, cancellation returns false and the matching camera mode stays
+installed. Old output retirement errors still reject; the error.recording field
+exposes the attached replacement pump for inspection or close. Camera/recorder
+close joins publication and cleanup, then closes the relevant owner instead of
+rolling back a published camera. An old Recording.close does not close the reused
+recorder. Media clocks/history reset and new files start with fresh headers/IDRs;
+reattach secondary outputs and automatic policies. Switching introduces a capture
+gap and provides no continuous frame/audio guarantee.
+
+Job deadlines default to ten seconds, including draining/setup time. Cancellation
+and deadlines cannot interrupt an entered flush, native call or user hook; cleanup
+can extend past the deadline. operationDone fences both owners before callbacks
+run; cleanupDone also includes signalFunction and admission release. Existing
+runtime-control restoration and physical Pi A/V validation remain outstanding.

@@ -465,6 +465,9 @@ pub export fn zc_video_session_config(p: *c.zc_recorder, cfg: *c.zc_video_config
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
     return @import("video.zig").sessionConfig(p, cfg, opts, bitrate);
 }
+pub export fn zc_video_resolve_session_config(cfg: *c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, width: u32, height: u32, exact: u32) c_int {
+    return @import("video.zig").resolveSession(cfg, opts, bitrate, width, height, exact);
+}
 pub export fn zc_producer_job_restart_configure(p: *c.zc_producer_job, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32) c_int {
     return @import("video.zig").restartConfigure(@ptrCast(@alignCast(p)), cfg, opts, bitrate);
 }

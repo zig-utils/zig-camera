@@ -144,3 +144,15 @@ PCM instances. Candidate-specific callback validation checks the new media forma
 while descriptor identity checks still protect the previous session's outputs.
 Bun snapshots media settings at admission and installs them only after native
 publication; queue budgets and lifetime policies remain with the recorder.
+
+The 0.29 audit extends session_config with withGeometry at Home main commit
+79484d1a12ae9ab0b325474faebd2ad2a0cc3d3e and copies it verbatim. It resolves omitted
+media dimensions from actual camera negotiation, checks explicit width/height
+independently, validates the final codec shape, and preserves the proposal on
+failure. Pinned and development Zig tests cover adaptive geometry, exact masks,
+codec alignment and untouched rate-control/GOP fields. The camera exposes this
+through an additive scalar C ABI; Bun reserves admission, joins the existing Home
+finalization/producer worker, negotiates via the existing camera worker, prepares
+fresh Home codecs/containers and publishes only after preview/output readiness.
+The helper owns no native resources or locks. Existing Home queue, ownership,
+codec, container and finalization implementations remain in use.

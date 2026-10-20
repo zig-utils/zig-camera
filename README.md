@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.28 adds reconfigureAsync for per-session codec, geometry, FPS, rate
-control and audio settings. Fresh codecs, PCM/history and output containers are
-prepared before publication; cancellation and setup failures preserve the old
-session and settings. restartAsync retains the current media settings.
+Version 0.29 adds coordinated async camera/recorder mode switching. One job
+drains the previous recording, negotiates camera geometry, recreates preview and
+prepares codecs/output before publishing a matching session and resuming capture.
+Failure before publication restores the camera and retains the flushed recorder.
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

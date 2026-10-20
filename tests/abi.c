@@ -141,6 +141,12 @@ int main(void) {
     assert(zc_start(camera)==ZC_OK);
     zc_video_config video;
     zc_default_video_config(&video);video.width=16;video.height=16;
+    zc_video_config negotiated=video;
+    zc_recording_options negotiated_audio;zc_default_recording_options(&negotiated_audio);
+    assert(zc_video_resolve_session_config(&negotiated,&negotiated_audio,0,32,24,1)==ZC_INVALID);
+    assert(negotiated.width==16 && negotiated.height==16);
+    assert(zc_video_resolve_session_config(&negotiated,&negotiated_audio,0,32,24,0)==ZC_OK);
+    assert(negotiated.width==32 && negotiated.height==24 && negotiated.quality==video.quality);
     zc_buffer_config history;
     zc_default_buffer_config(&history);history.max_frames=2;history.max_bytes=100000;
     zc_recorder *recorder=NULL;

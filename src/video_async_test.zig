@@ -879,3 +879,20 @@ test "session reconfiguration copies settings, preserves rollback and publishes 
     try std.testing.expectEqual(c.ZC_INVALID, v.write(rec, &frame, 0));
     try std.testing.expectEqual(@as(usize, 1), delivered);
 }
+
+test "C session resolution preserves settings on geometry or audio failure" {
+    const m = @import("media.zig");
+    var cfg = c.zc_video_config{ .width = 32, .height = 24, .fps_num = 25, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 80, .gop = 0 };
+    var opts = v.defaultRecordingOptions();
+    try std.testing.expectEqual(c.ZC_INVALID, m.zc_video_resolve_session_config(&cfg, &opts, 0, 64, 48, 1));
+    try std.testing.expectEqual(@as(u32, 32), cfg.width);
+    opts.sample_rate = 48000;
+    opts.channels = 3;
+    try std.testing.expectEqual(c.ZC_INVALID, m.zc_video_resolve_session_config(&cfg, &opts, 0, 64, 48, 0));
+    try std.testing.expectEqual(@as(u32, 32), cfg.width);
+    opts.channels = 1;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_resolve_session_config(&cfg, &opts, 64000, 64, 48, 0));
+    try std.testing.expectEqual(@as(u32, 64), cfg.width);
+    try std.testing.expectEqual(@as(u32, 48), cfg.height);
+    try std.testing.expectEqual(@as(u32, 80), cfg.quality);
+}

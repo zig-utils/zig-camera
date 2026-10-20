@@ -215,3 +215,11 @@ session only after output setup/acknowledgement. See
 [session settings](async-producers.md#async-recorder-reconfiguration-and-session-settings).
 The C ABI adds zc_producer_job_restart_configure before start and
 zc_video_session_config outside worker ownership.
+
+Coordinated Bun recording mode jobs reserve camera and recorder admission and
+compose the existing mode worker and native flush/restart jobs. The additive
+zc_video_resolve_session_config helper validates copied codec/audio settings
+against negotiated capture dimensions before hooks/publication; its exact mask
+requires proposed width (bit 0) and height (bit 1) independently. Failure leaves
+the input configuration unchanged. Direct C callers retain responsibility for
+serializing camera/recorder ownership and joining worker/output cleanup.

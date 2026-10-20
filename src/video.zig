@@ -2612,6 +2612,16 @@ pub fn producerRestart(p: *c.zc_recorder, kind: u32, path: ?[*:0]const u8, resul
     result.* = @ptrCast(job);
     return c.ZC_OK;
 }
+/// Resolve a session against negotiated camera geometry, committing scalars only
+/// after all validation succeeds. exact bit 0/1 requires explicit width/height.
+pub fn resolveSession(cfg: *c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32, width: u32, height: u32, exact: u32) c_int {
+    if (opts.struct_size != @sizeOf(c.zc_recording_options) or opts.exclusive > 1) return c.ZC_INVALID;
+    const next = @import("home/session_config.zig").withGeometry(cfg.*, width, height, exact) catch |err| return status(err);
+    @import("home/session_config.zig").validateAudio(opts.sample_rate, opts.channels, opts.buffer_frames, opts.max_blocks, bitrate) catch |err| return status(err);
+    if (next.codec != c.ZC_MJPEG and !options.codecs) return c.ZC_UNSUPPORTED;
+    cfg.* = next;
+    return c.ZC_OK;
+}
 /// Copied scalar settings; caller may release/mutate its buffers after return.
 pub fn restartConfigure(job: *@import("producer.zig").Job, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32) c_int {
     job.owner.mutex.lock();
