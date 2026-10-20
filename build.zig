@@ -49,6 +49,8 @@ pub fn build(b: *std.Build) void {
         const bridge = b.addSystemCommand(&.{ "sh", "-c", "exec \"${CXX:-c++}\" -std=c++17 -O2 -fPIC -shared -Wall -Wextra -Werror -I\"$1\" \"$2\" -Wl,-soname,libzigcamera_driver.so -o \"$3\" $(pkg-config --cflags --libs libcamera)", "--" });
         bridge.addDirectoryArg(b.path("include"));
         bridge.addFileArg(b.path("native/libcamera.cpp"));
+        bridge.addFileInput(b.path("include/zig_camera.h"));
+        bridge.addFileInput(b.path("include/zig_camera_catalog_bridge.h"));
         const driver_lib = bridge.addOutputFileArg("libzigcamera_driver.so");
         mod.addObjectFile(driver_lib);
         mod.addRPath(driver_lib.dirname());

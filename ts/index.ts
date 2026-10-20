@@ -1,3 +1,13 @@
+import { readCatalog, cameraDescriptors } from './catalog'
+export type {
+  TypedCatalog,
+  CatalogRecord,
+  CatalogValue,
+  CatalogKind,
+  ValueKind,
+  CatalogScalar,
+  CameraDescriptor,
+} from './catalog'
 import { decodeMetadata } from './metadata'
 import {
   OutputBridge,
@@ -273,6 +283,12 @@ export class Frame {
     check(n.zc_frame_references(this.camera.handle, this.token, ptr(count)))
     return count[0]
   }
+  metadataCatalog() {
+    this.open()
+    return readCatalog((out) =>
+      n.zc_frame_metadata_catalog(this.camera.handle, this.token, out),
+    )
+  }
   metadata() {
     this.open()
     const data = storage(96)
@@ -317,6 +333,24 @@ type CaptureRequest = {
   signal?: AbortSignal
 }
 export class Camera {
+  static discover(options: { simulate?: boolean } = {}) {
+    guardOutputHook()
+    if (options.simulate !== undefined && typeof options.simulate !== 'boolean')
+      throw new RangeError('invalid discovery backend')
+    const simulate = options.simulate ?? false
+    return cameraDescriptors(
+      readCatalog((out) => n.zc_discover(simulate ? 0 : 1, out)),
+      simulate,
+    )
+  }
+  properties() {
+    this.assertOpen()
+    return readCatalog((out) => n.zc_camera_properties(this.handle, out))
+  }
+  controls() {
+    this.assertOpen()
+    return readCatalog((out) => n.zc_camera_controls(this.handle, out))
+  }
   handle: Pointer
   private started = false
   private closing = false

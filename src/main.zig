@@ -1,7 +1,7 @@
 const std = @import("std");
 const camera = @import("camera");
 const help =
-    \\zig-camera info|modes|capture|preview|record|bench [options]
+    \\zig-camera list|info|modes|capture|preview|record|bench [options]
     \\  --width N --height N      Processed size; omit both for default still size
     \\  --buffers N              Preallocated request count, 2..32 (default 4)
     \\  --camera N               libcamera camera index (default 0)
@@ -44,6 +44,29 @@ fn run() !void {
         return;
     }
     const command = args[1];
+    if (eq(command, "list")) {
+        var simulate = false;
+        for (args[2..]) |arg| {
+            if (eq(arg, "--simulate")) simulate = true else return error.UnknownOption;
+        }
+        var snapshot = try camera.discover(if (simulate) camera.c.ZC_SYNTHETIC else camera.c.ZC_LIBCAMERA);
+        defer snapshot.deinit();
+        const bytes = try snapshot.copy(a);
+        defer a.free(bytes);
+        const catalog = try camera.catalog_format.Reader.init(bytes);
+        var records = catalog.records();
+        while (try records.next()) |record| {
+            if (record.info.id != 0 or !eq(record.info.name, "CameraId")) continue;
+            var values = record.values();
+            const id = (try values.next()) orelse return error.InvalidCatalog;
+            if (id.kind != .string) return error.InvalidCatalog;
+            const line = try std.fmt.allocPrint(a, "{d}\t{s}\n", .{ record.info.group, id.data });
+            defer a.free(line);
+            try std.fs.File.stdout().writeAll(line);
+        }
+        return;
+    }
+
     if (!eq(command, "modes") and !eq(command, "info") and !eq(command, "capture") and !eq(command, "bench") and !eq(command, "preview") and !eq(command, "record")) return error.InvalidCommand;
     var cfg = camera.defaultConfig();
     var capture_opts: camera.c.zc_capture_options = undefined;

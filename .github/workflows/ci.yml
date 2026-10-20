@@ -33,6 +33,7 @@ jobs:
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
           bun test tests/ts
+          ./zig-out/bin/zig-camera list --simulate
           ./zig-out/bin/zig-camera modes --simulate
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
           bun tests/ts/check-media.ts zig-out --lores
@@ -85,4 +86,5 @@ jobs:
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
+          ./zig-out/bin/zig-camera list
           bun tests/ts/native-smoke.ts

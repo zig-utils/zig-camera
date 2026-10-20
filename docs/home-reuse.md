@@ -210,3 +210,16 @@ Focus-locked Bun requests transfer the pump's primary owner without an extra
 reference allocation; that owner remains private until CAF restoration succeeds,
 and cancellation/failure releases it. AF acknowledgement continues to use Home
 CompletionGate; codecs/containers and bounded media queues remain Home-based.
+
+The 0.35 audit checks Home JSON/serialization helpers and contributes
+video/core/typed_catalog.zig at f313dc5a6b0472b7f6837fd314f7ef5575c546b9, copied
+verbatim. The bounded wire format preserves original primitive widths, exact i64,
+arrays, geometry, symbolic labels and opaque native payloads without passing them
+through floating-point JSON numbers. Header/native type numbering are separate.
+Pinned/development Zig Debug/ReleaseSafe tests cover allocation failures, atomic
+capacity rejection, typed/opaque data, every truncation and corrupted fields.
+Camera Zig owns immutable snapshots, consumer-side serialization and handle
+cleanup; the system C++ bridge only traverses libcamera values and borrows them to
+Zig callbacks. Bun validates lengths/counts and decodes bigint/arrays/geometry with
+owned raw bytes. Home packet-output CI includes the helper. Existing Home lease,
+queue, codec, container and completion helpers continue to supply capture/media.

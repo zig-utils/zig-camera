@@ -6,12 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.34 adds focus-locked request handoff for asynchronous processing and
-paired main/raw/lores focus-locked captures. CAF restoration completes before
-publication; cancellation or failure retires unpublished requests. Home supplies
-reserved-capacity retained leases and revision-aware AF acknowledgement.
-See [continuous autofocus](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
-[request ownership](docs/requests.md) and the [parity worklist](docs/parity-plan.md).
+Version 0.35 adds camera discovery, typed property/control catalogs and full
+request metadata snapshots. Exact integers, arrays and opaque vendor payloads
+remain owned after frame/camera release. Open cameras share one libcamera manager.
+See [discovery and catalogs](docs/catalogs.md), [request ownership](docs/requests.md)
+and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

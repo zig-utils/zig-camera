@@ -12,6 +12,7 @@ pub const Handle = struct {
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     info: c.zc_info,
     raw_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
+    catalog_metadata: [c.ZC_MAX_BUFFERS]c.zc_metadata = @splat(std.mem.zeroes(c.zc_metadata)),
     sequence: u64 = 0,
     revision: u64 = 0,
     applied_revision: u64 = 0,
@@ -280,6 +281,7 @@ pub fn queue(h: *Handle, index: u32) c_int {
             if (h.af_pause_state == 1) h.af_pause_state = 2;
         }
     }
+    h.catalog_metadata[index] = meta;
     h.callback(h.context, index, &f, &meta, c.ZC_OK);
     return c.ZC_OK;
 }
@@ -443,4 +445,15 @@ pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
         out.planes[i].fd = -1;
     }
     return c.ZC_OK;
+}
+
+pub const discover = @import("synthetic_catalog.zig").discover;
+pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.zig").Sink) c_int {
+    const implementation = @import("synthetic_catalog.zig");
+    return switch (kind) {
+        2 => implementation.properties(sink, 0),
+        3 => implementation.controls(h, sink),
+        4 => if (index < h.info.buffer_count) implementation.metadata(sink, h.catalog_metadata[index]) else c.ZC_INVALID,
+        else => c.ZC_INVALID,
+    };
 }

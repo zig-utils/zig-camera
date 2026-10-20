@@ -2,6 +2,7 @@
 // persistent read-only plane mappings and mandatory DMA-BUF CPU synchronization.
 // Ownership, ready queues, leases and consumer policy live in Zig.
 #include "zig_camera.h"
+#include "zig_camera_catalog_bridge.h"
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
@@ -18,6 +19,9 @@
 #include <limits>
 #include <new>
 #include <cmath>
+#include <mutex>
+#include <type_traits>
+#include <utility>
 
 using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
@@ -82,8 +86,135 @@ bool numbers(const ControlValue &v,double *out) {
     default:return false;
     }
 }
+// Typed introspection is pulled by consumers. Completion callbacks only publish
+// the request, never allocate/serialize catalogs or run consumer callbacks.
+template<class T, class = void> struct HasCatalogInfo : std::false_type {};
+template<class T> struct HasCatalogInfo<T, std::void_t<decltype(std::declval<T>().vendor()), decltype(std::declval<T>().isInput()), decltype(std::declval<T>().isArray()), decltype(std::declval<T>().size())>> : std::true_type {};
+template<class T, class = void> struct HasEnumerators : std::false_type {};
+template<class T> struct HasEnumerators<T, std::void_t<decltype(std::declval<T>().enumerators())>> : std::true_type {};
+template<class T> bool typeIs(ControlType type) {
+    if constexpr (std::is_constructible_v<ControlValue, T>) return ControlValue(T{}).type() == type;
+    return false;
+}
+uint32_t portableType(ControlType type) {
+    switch (type) {
+    case ControlTypeNone: return 0; case ControlTypeBool: return 1;
+    case ControlTypeByte: return 2; case ControlTypeInteger32: return 3;
+    case ControlTypeInteger64: return 4; case ControlTypeFloat: return 5;
+    case ControlTypeString: return 6; case ControlTypeRectangle: return 7;
+    case ControlTypeSize: return 8; default: break;
+    }
+    if(typeIs<uint16_t>(type))return 9;
+    if(typeIs<uint32_t>(type))return 10;
+    if(typeIs<Point>(type))return 11;
+    return 255;
+}
+uint32_t appControl(const std::string &name) {
+    for(size_t i=1;i<sizeof(controlNames)/sizeof(*controlNames);i++)if(name==controlNames[i])return i;
+    return 0;
+}
+template<class T> int beginCatalog(const zcd_catalog_sink &s, const T *id, uint32_t group, uint32_t fallback, ControlType type) {
+    const std::string name=id ? id->name() : "#"+std::to_string(fallback);
+    zcd_catalog_record r{};r.group=group;r.id=id ? id->id() : fallback;
+    r.app_id=appControl(name);r.native_type=type;r.kind=portableType(type);
+    r.name=name.data();r.name_length=name.size();
+    if constexpr (HasCatalogInfo<T>::value) {
+        if(id) {
+            r.flags=8|16|32|(id->isInput()?1:0)|(id->isOutput()?2:0)|(id->isArray()?4:0);
+            r.extent=id->size()>UINT32_MAX ? UINT32_MAX : id->size();
+            r.vendor=id->vendor().data();r.vendor_length=id->vendor().size();
+        }
+    }
+    if constexpr (HasEnumerators<T>::value) if(id)r.flags|=64;
+    return s.begin(s.context,&r);
+}
+template<class T> void component(std::vector<uint8_t> &data, T field) {
+    const auto *p=reinterpret_cast<const uint8_t *>(&field);
+    data.insert(data.end(),p,p+sizeof(T));
+}
+template<class T> void geometryValues(const ControlValue &v, std::vector<uint8_t> &data) {
+    auto append=[&](const T &g) {
+        if constexpr (std::is_same_v<T,Rectangle>) {component(data,int32_t(g.x));component(data,int32_t(g.y));component(data,uint32_t(g.width));component(data,uint32_t(g.height));}
+        else if constexpr(std::is_same_v<T,Size>) {component(data,uint32_t(g.width));component(data,uint32_t(g.height));}
+        else {component(data,int32_t(g.x));component(data,int32_t(g.y));}
+    };
+    if constexpr (std::is_constructible_v<ControlValue,T>) {
+        if(v.isArray())for(const auto &g:v.get<Span<const T>>())append(g);
+        else append(v.get<T>());
+    }
+}
+int catalogValue(const zcd_catalog_sink &s, uint32_t role, const ControlValue &v, const std::string &label="") {
+    if(v.numElements()>UINT32_MAX || v.data().size()>4*1024*1024)return ZC_BUSY;
+    const uint16_t endian=1;
+    zcd_catalog_value out{};out.role=role;out.kind=portableType(v.type());out.native_type=v.type();
+    out.flags=(v.isArray()?1:0)|(*reinterpret_cast<const uint8_t *>(&endian)?2:0);
+    out.count=v.numElements();out.data=v.data().data();out.length=v.data().size();out.label=label.data();out.label_length=label.size();
+    std::vector<uint8_t> packed;
+    if(out.kind==7 || out.kind==8 || out.kind==11) {
+        const size_t width=out.kind==7 ? 16 : 8;
+        if(out.count>(4*1024*1024)/width)return ZC_BUSY;
+        packed.reserve(size_t(out.count)*width);
+        if(out.kind==7)geometryValues<Rectangle>(v,packed);
+        else if(out.kind==8)geometryValues<Size>(v,packed);
+        else geometryValues<Point>(v,packed);
+        out.data=packed.data();out.length=packed.size();
+    }
+    return s.value(s.context,&out);
+}
+template<class T> int enumCatalog(const zcd_catalog_sink &s, const T *id) {
+    if constexpr (HasEnumerators<T>::value) {
+        for(const auto &entry:id->enumerators()) {
+            const int rc=catalogValue(s,5,ControlValue(entry.first),entry.second);
+            if(rc)return rc;
+        }
+    }
+    return ZC_OK;
+}
+int catalogList(const zcd_catalog_sink &s, const ControlList &list, uint32_t group=0) {
+    const auto *ids=list.idMap();
+    for(const auto &entry:list) {
+        const ControlId *id=nullptr;
+        if(ids){const auto found=ids->find(entry.first);if(found!=ids->end())id=found->second;}
+        int rc=beginCatalog(s,id,group,entry.first,entry.second.type());if(rc)return rc;
+        rc=catalogValue(s,0,entry.second);if(rc)return rc;
+        rc=s.end(s.context);if(rc)return rc;
+    }
+    return ZC_OK;
+}
+// libcamera permits only one CameraManager object in a process. Serialize
+// startup/shutdown and hold a lease through every Device and discovery snapshot.
+struct ManagerHost {
+    std::mutex mutex;
+    std::unique_ptr<CameraManager> manager;
+    size_t users=0;
+    int acquire() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(users==0) {
+            // Older libcamera does not reset its initialization latch on stop.
+            // Construct a fresh manager after the previous one is destroyed.
+            auto next=std::make_unique<CameraManager>();
+            if(next->start()<0)return ZC_DEVICE;
+            manager=std::move(next);
+        }
+        ++users;return ZC_OK;
+    }
+    void release() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(--users==0)manager.reset();
+    }
+};
+ManagerHost &managerHost(){static ManagerHost host;return host;}
+struct ManagerLease {
+    bool held=false;
+    int acquire(){const int rc=managerHost().acquire();held=rc==ZC_OK;return rc;}
+    ~ManagerLease(){if(held)managerHost().release();}
+    ManagerLease()=default;
+    ManagerLease(const ManagerLease &)=delete;
+    ManagerLease &operator=(const ManagerLease &)=delete;
+};
+
 struct Device {
-    CameraManager manager;
+    ManagerLease manager_lease;
     std::shared_ptr<Camera> camera;
     std::unique_ptr<CameraConfiguration> config;
     std::unique_ptr<FrameBufferAllocator> allocator;
@@ -160,7 +291,7 @@ struct Device {
         }
         pending=std::move(next);desired=std::move(saved);*revision=++control_revision;return ZC_OK;
     }
-    bool manager_started = false, acquired = false, started = false, connected = false;
+    bool acquired = false, started = false, connected = false;
 
     ~Device() {
         if (started) camera->stop();
@@ -170,7 +301,6 @@ struct Device {
         allocator.reset();
         if (acquired) camera->release();
         camera.reset();
-        if (manager_started) manager.stop();
     }
     static zc_stream geometry(const StreamConfiguration &cfg) {
         zc_stream stream{};
@@ -206,9 +336,9 @@ struct Device {
     int init(const zc_config &cfg, const zc_pipeline_options &pipe, void *ctx, Completion complete) {
         const auto &opts=pipe.capture;
         requested = cfg; options = opts; context = ctx; callback = complete;
-        if (manager.start() < 0) return ZC_DEVICE;
-        manager_started = true;
-        const auto cameras = manager.cameras();
+        const int manager_rc=manager_lease.acquire();
+        if(manager_rc)return manager_rc;
+        const auto cameras = managerHost().manager->cameras();
         if (cfg.camera_index >= cameras.size()) return ZC_DEVICE;
         camera = cameras[cfg.camera_index];
         if (camera->acquire() < 0) return ZC_BUSY;
@@ -490,4 +620,42 @@ extern "C" int zcd_lores(Device *device,uint32_t index,zc_stream *out) {
     if(index>=device->slots.size())return ZC_INVALID;
     if(!device->has_lores)return ZC_UNSUPPORTED;
     *out=device->slots[index].lores;return ZC_OK;
+}
+
+extern "C" int zcd_discover(const zcd_catalog_sink *s) {
+    try {
+        ManagerLease lease;
+        const int rc=lease.acquire();if(rc)return rc;
+        const auto cameras=managerHost().manager->cameras();
+        if(cameras.size()>UINT32_MAX)return ZC_BUSY;
+        for(size_t i=0;i<cameras.size();i++) {
+            const auto &camera=cameras[i];
+            zcd_catalog_record r{};r.group=i;r.kind=6;r.name="CameraId";r.name_length=8;
+            int result=s->begin(s->context,&r);if(result)return result;
+            zcd_catalog_value v{};v.kind=6;v.flags=1;v.count=camera->id().size();v.data=reinterpret_cast<const uint8_t *>(camera->id().data());v.length=camera->id().size();
+            result=s->value(s->context,&v);if(result)return result;
+            result=s->end(s->context);if(result)return result;
+            result=catalogList(*s,camera->properties(),i);if(result)return result;
+        }
+        return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+extern "C" int zcd_catalog(Device *device,uint32_t kind,uint32_t index,const zcd_catalog_sink *s) {
+    try {
+        if(kind==2)return catalogList(*s,device->camera->properties());
+        if(kind==4) {
+            if(index>=device->slots.size())return ZC_INVALID;
+            return catalogList(*s,device->slots[index].request->metadata());
+        }
+        if(kind!=3)return ZC_INVALID;
+        for(const auto &entry:device->camera->controls()) {
+            int rc=beginCatalog(*s,entry.first,0,entry.first->id(),entry.first->type());if(rc)return rc;
+            const ControlValue *values[]={&entry.second.min(),&entry.second.max(),&entry.second.def()};
+            for(uint32_t i=0;i<3;i++){rc=catalogValue(*s,i+1,*values[i]);if(rc)return rc;}
+            for(const auto &value:entry.second.values()){rc=catalogValue(*s,4,value);if(rc)return rc;}
+            rc=enumCatalog(*s,entry.first);if(rc)return rc;
+            rc=s->end(s->context);if(rc)return rc;
+        }
+        return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }

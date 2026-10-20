@@ -262,3 +262,9 @@ Home reserved retained leases (0.34):
   Source commit: 29f568c7a8e724b15da671de65fe097730a5dc7d.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/29f568c7a8e724b15da671de65fe097730a5dc7d
+
+Home typed capability/metadata catalogs (0.35):
+- src/home/typed_catalog.zig is verbatim packages/video/src/core/typed_catalog.zig.
+  Source commit: f313dc5a6b0472b7f6837fd314f7ef5575c546b9.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/f313dc5a6b0472b7f6837fd314f7ef5575c546b9

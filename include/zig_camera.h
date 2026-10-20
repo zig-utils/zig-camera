@@ -154,6 +154,24 @@ int zc_acquire_focus_locked(zc_camera *,uint64_t job_id,uint32_t require_focused
 int zc_autofocus_start(zc_camera *,uint64_t *job_id);
 int zc_autofocus_cancel(zc_camera *,uint64_t job_id);
 int zc_autofocus_wait(zc_camera *,uint64_t job_id,uint32_t timeout_ms,uint32_t *state);
+/* Owned immutable HCAT v1 snapshots, bounded to 4 MiB. Query/copy is atomic:
+ * null/zero obtains size; too-small destinations remain untouched. Close after
+ * use; snapshots outlive camera/frame close. Unknown backend types retain bytes.
+ * backend: ZC_LIBCAMERA=1 or ZC_SYNTHETIC=0, never implicit fallback. */
+enum { ZC_CATALOG_DISCOVERY=1, ZC_CATALOG_PROPERTIES=2, ZC_CATALOG_CONTROLS=3, ZC_CATALOG_METADATA=4 };
+enum { ZC_CATALOG_INPUT=1, ZC_CATALOG_OUTPUT=2, ZC_CATALOG_ARRAY=4,
+       ZC_CATALOG_DIRECTION_KNOWN=8, ZC_CATALOG_EXTENT_KNOWN=16,
+       ZC_CATALOG_VENDOR_KNOWN=32, ZC_CATALOG_ENUMERATORS_KNOWN=64 };
+enum { ZC_CATALOG_CURRENT=0, ZC_CATALOG_MINIMUM=1, ZC_CATALOG_MAXIMUM=2,
+       ZC_CATALOG_DEFAULT=3, ZC_CATALOG_CHOICE=4, ZC_CATALOG_ENUMERATOR=5 };
+typedef struct zc_catalog zc_catalog;
+int zc_discover(uint32_t backend, zc_catalog **out);
+int zc_camera_properties(zc_camera *, zc_catalog **out);
+int zc_camera_controls(zc_camera *, zc_catalog **out);
+int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);
+int zc_catalog_copy(const zc_catalog *, uint8_t *data, uint64_t capacity, uint64_t *length);
+void zc_catalog_close(zc_catalog *);
+
 uint32_t zc_abi_version(void);
 void zc_default_config(zc_config *config);
 /* Camera lifecycle calls must be serialized by the caller. acquire/release/stats

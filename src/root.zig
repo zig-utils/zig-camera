@@ -52,6 +52,28 @@ pub fn defaultConfig() Config {
     core.zc_default_config(&cfg);
     return cfg;
 }
+pub const catalog_format = @import("catalog.zig").wire;
+pub const Catalog = struct {
+    handle: ?*c.zc_catalog,
+    pub fn deinit(self: *Catalog) void {
+        @import("catalog.zig").zc_catalog_close(self.handle);
+        self.handle = null;
+    }
+    pub fn copy(self: Catalog, allocator: std.mem.Allocator) Error![]u8 {
+        const owned = self.handle orelse return error.Invalid;
+        var length: u64 = 0;
+        try check(@import("catalog.zig").zc_catalog_copy(owned, null, 0, &length));
+        const bytes = try allocator.alloc(u8, @intCast(length));
+        errdefer allocator.free(bytes);
+        try check(@import("catalog.zig").zc_catalog_copy(owned, bytes.ptr, bytes.len, &length));
+        return bytes;
+    }
+};
+pub fn discover(backend: u32) Error!Catalog {
+    var out: ?*c.zc_catalog = null;
+    try check(core.zc_discover(backend, &out));
+    return .{ .handle = out.? };
+}
 pub const Camera = struct {
     handle: *c.zc_camera,
     pub fn init(cfg: Config) Error!Camera {
@@ -68,6 +90,16 @@ pub const Camera = struct {
         var ptr: ?*c.zc_camera = null;
         try check(core.zc_open_pipeline(&cfg, &opts, &ptr));
         return .{ .handle = ptr.? };
+    }
+    pub fn properties(self: Camera) Error!Catalog {
+        var out: ?*c.zc_catalog = null;
+        try check(core.zc_camera_properties(self.handle, &out));
+        return .{ .handle = out.? };
+    }
+    pub fn controls(self: Camera) Error!Catalog {
+        var out: ?*c.zc_catalog = null;
+        try check(core.zc_camera_controls(self.handle, &out));
+        return .{ .handle = out.? };
     }
     pub fn pipelineInfo(self: Camera) c.zc_pipeline_info {
         var out: c.zc_pipeline_info = undefined;
@@ -198,6 +230,12 @@ pub const Frame = struct {
         try check(core.zc_get_stream(self.camera.handle, self.value.token, id, &out));
         return out;
     }
+    pub fn metadataCatalog(self: *const Frame) Error!Catalog {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_catalog = null;
+        try check(core.zc_frame_metadata_catalog(self.camera.handle, self.value.token, &out));
+        return .{ .handle = out.? };
+    }
     pub fn metadata(self: *const Frame) Error!c.zc_metadata {
         if (self.value.token == 0) return error.StaleFrame;
         var out: c.zc_metadata = undefined;
@@ -300,4 +338,33 @@ test "released Zig references reject locally after their camera is destroyed" {
     try std.testing.expectError(error.StaleFrame, frame.metadata());
     try std.testing.expectError(error.StaleFrame, frame.saveDng("never-created.dng"));
     try std.testing.expectError(error.StaleFrame, frame.saveJpeg("never-created.jpg", 90));
+}
+
+test "Zig catalogs own snapshots and copy/read independently after camera close" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var snapshot = try discover(c.ZC_SYNTHETIC);
+    defer snapshot.deinit();
+    const bytes = try snapshot.copy(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqual(@as(u32, 1), (try catalog_format.Reader.init(bytes)).catalog_kind);
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const cam = try Camera.init(cfg);
+    var props = try cam.properties();
+    defer props.deinit();
+    var controls = try cam.controls();
+    defer controls.deinit();
+    try cam.start();
+    var frame = try cam.acquire(0);
+    var meta = try frame.metadataCatalog();
+    defer meta.deinit();
+    try frame.release();
+    try std.testing.expectError(error.StaleFrame, frame.metadataCatalog());
+    try cam.deinit();
+    const owned = try meta.copy(std.testing.allocator);
+    defer std.testing.allocator.free(owned);
+    try std.testing.expectEqual(@as(u32, 4), (try catalog_format.Reader.init(owned)).catalog_kind);
+    meta.deinit();
+    try std.testing.expectError(error.Invalid, meta.copy(std.testing.allocator));
 }

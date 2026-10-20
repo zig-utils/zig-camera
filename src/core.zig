@@ -1453,3 +1453,102 @@ test "concurrent owners retain and retire unique references without recycling a 
     try std.testing.expectEqual(c.ZC_OK, zc_release(camera, parent.token));
     try std.testing.expectEqual(completed_before + 1, session(camera).stats.completed);
 }
+
+const catalogs = @import("catalog.zig");
+pub export fn zc_discover(backend: u32, out: *?*c.zc_catalog) c_int {
+    out.* = null;
+    if (backend != c.ZC_SYNTHETIC and backend != c.ZC_LIBCAMERA) return c.ZC_INVALID;
+    const result = catalogs.Catalog.create(1) catch |e| return catalogs.status(e);
+    var success = false;
+    defer if (!success) result.destroy();
+    const sink = result.sink();
+    // Synthetic discovery remains explicitly selectable in real-backend builds.
+    const rc = if (backend == c.ZC_SYNTHETIC) @import("synthetic.zig").discover(&sink) else if (options.libcamera) driver.discover(&sink) else c.ZC_UNSUPPORTED;
+    if (rc != 0) return rc;
+    _ = result.writer.finish() catch |e| return catalogs.status(e);
+    out.* = result.ptr();
+    success = true;
+    return c.ZC_OK;
+}
+fn cameraCatalog(p: *c.zc_camera, kind: u32, token: u64, out: *?*c.zc_catalog) c_int {
+    out.* = null;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = if (kind == 4) self.leaseIndex(token) orelse return c.ZC_STALE else 0;
+    const result = catalogs.Catalog.create(kind) catch |e| return catalogs.status(e);
+    var success = false;
+    defer if (!success) result.destroy();
+    const sink = result.sink();
+    const rc = driver.catalog(self.device.?, kind, index, &sink);
+    if (rc != 0) return rc;
+    _ = result.writer.finish() catch |e| return catalogs.status(e);
+    out.* = result.ptr();
+    success = true;
+    return c.ZC_OK;
+}
+pub export fn zc_camera_properties(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
+    return cameraCatalog(p, 2, 0, out);
+}
+pub export fn zc_camera_controls(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
+    return cameraCatalog(p, 3, 0, out);
+}
+pub export fn zc_frame_metadata_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
+    return cameraCatalog(p, 4, token, out);
+}
+
+test "owned catalogs survive source release and reject undersized copies without writes" {
+    if (options.libcamera) return error.SkipZigTest;
+    var discovery: ?*c.zc_catalog = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_discover(c.ZC_SYNTHETIC, &discovery));
+    defer catalogs.zc_catalog_close(discovery);
+    var length: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, catalogs.zc_catalog_copy(discovery.?, null, 0, &length));
+    const bytes = try std.testing.allocator.alloc(u8, @intCast(length));
+    defer std.testing.allocator.free(bytes);
+    @memset(bytes, 0xaa);
+    try std.testing.expectEqual(c.ZC_INVALID, catalogs.zc_catalog_copy(discovery.?, bytes.ptr, length - 1, &length));
+    for (bytes) |v| try std.testing.expectEqual(@as(u8, 0xaa), v);
+    try std.testing.expectEqual(c.ZC_OK, catalogs.zc_catalog_copy(discovery.?, bytes.ptr, bytes.len, &length));
+    const discovered = try catalogs.wire.Reader.init(bytes);
+    try std.testing.expectEqual(@as(u32, 1), discovered.catalog_kind);
+    try std.testing.expectEqual(@as(u32, 4), discovered.count);
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    var closed = false;
+    defer if (!closed) {
+        _ = zc_close(camera.?);
+    };
+    var control_catalog: ?*c.zc_catalog = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_camera_controls(camera.?, &control_catalog));
+    defer catalogs.zc_catalog_close(control_catalog);
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var metadata_catalog: ?*c.zc_catalog = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_metadata_catalog(camera.?, frame.token, &metadata_catalog));
+    defer catalogs.zc_catalog_close(metadata_catalog);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    var stale: ?*c.zc_catalog = discovery;
+    try std.testing.expectEqual(c.ZC_STALE, zc_frame_metadata_catalog(camera.?, frame.token, &stale));
+    try std.testing.expect(stale == null);
+    try std.testing.expectEqual(c.ZC_OK, zc_close(camera.?));
+    closed = true;
+    for ([_]*c.zc_catalog{ control_catalog.?, metadata_catalog.? }) |snapshot| {
+        try std.testing.expectEqual(c.ZC_OK, catalogs.zc_catalog_copy(snapshot, null, 0, &length));
+        const copy = try std.testing.allocator.alloc(u8, @intCast(length));
+        defer std.testing.allocator.free(copy);
+        try std.testing.expectEqual(c.ZC_OK, catalogs.zc_catalog_copy(snapshot, copy.ptr, copy.len, &length));
+        const reader = try catalogs.wire.Reader.init(copy);
+        try std.testing.expect(reader.count >= 11);
+    }
+    var invalid: ?*c.zc_catalog = discovery;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_discover(99, &invalid));
+    try std.testing.expect(invalid == null);
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_discover(c.ZC_LIBCAMERA, &invalid));
+    try std.testing.expect(invalid == null);
+}

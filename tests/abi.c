@@ -1,6 +1,7 @@
 #include "zig_camera.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 _Static_assert(sizeof(zc_producer_stats)==104,"producer stats ABI");
@@ -59,6 +60,23 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
 int main(void) {
+    zc_catalog *catalog=NULL;
+    assert(zc_discover(ZC_SYNTHETIC,&catalog)==ZC_OK && catalog);
+    uint64_t catalog_size=0;
+    assert(zc_catalog_copy(catalog,NULL,0,&catalog_size)==ZC_OK && catalog_size>=16);
+    uint8_t *catalog_bytes=malloc(catalog_size);
+    assert(catalog_bytes);
+    memset(catalog_bytes,0xaa,catalog_size);
+    assert(zc_catalog_copy(catalog,catalog_bytes,catalog_size-1,&catalog_size)==ZC_INVALID);
+    assert(catalog_bytes[0]==0xaa);
+    assert(zc_catalog_copy(catalog,catalog_bytes,catalog_size,&catalog_size)==ZC_OK);
+    assert(memcmp(catalog_bytes,"HCAT",4)==0 && catalog_bytes[4]==1);
+    zc_catalog_close(catalog);
+    free(catalog_bytes);
+    catalog=(zc_catalog *)1;
+    assert(zc_discover(99,&catalog)==ZC_INVALID && catalog==NULL);
+    zc_catalog_close(NULL);
+
     zc_output_mailbox *mailbox=NULL;
     assert(zc_output_mailbox_open(3,2,&mailbox)==ZC_OK);
     zc_output_callbacks mailbox_callbacks;
