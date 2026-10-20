@@ -3,6 +3,12 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 const A = std.heap.c_allocator;
 const CapacityWait = @import("home/capacity_wait.zig");
+threadlocal var producer_scope: bool = false;
+pub fn producerScope(enabled: bool) bool {
+    const previous = producer_scope;
+    producer_scope = enabled;
+    return previous;
+}
 const Event = struct { kind: u32, codec: u32 = 0, flags: u32 = 0, offset: u64 = 0, timestamp: u64 = 0 };
 const Mailbox = struct {
     mutex: std.Thread.Mutex = .{},
@@ -10,10 +16,30 @@ const Mailbox = struct {
     timer: std.time.Timer,
     waits: CapacityWait.Registry(16) = .{},
     retired: bool = false,
+    changed: std.Thread.Condition = .{},
+    wait_ns: u64 = 0,
     fn send(self: *Mailbox, event: Event, data: []const u8) c_int {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.retired) return c.ZC_STATE;
+        if (producer_scope and self.wait_ns != 0 and self.queue.failure == null and data.len <= self.queue.fifo.bytes.len and !self.queue.fifo.fits(data.len)) {
+            const ticket = self.waits.begin(data.len, 1, self.wait_ns, self.timer.read(), false) catch {
+                self.queue.rejected +|= 1;
+                return c.ZC_BUSY;
+            };
+            defer self.waits.release(ticket, self.timer.read()) catch unreachable;
+            while (true) {
+                const now = self.timer.read();
+                const available = self.queue.capacity(data.len, 1) catch false;
+                if ((self.waits.poll(ticket, now, available, self.retired or self.queue.failure != null) catch unreachable)) |outcome| {
+                    if (outcome == .ready) break;
+                    self.queue.rejected +|= 1;
+                    return if (outcome == .timeout) c.ZC_BUSY else self.queue.failure orelse c.ZC_STATE;
+                }
+                const deadline = self.waits.get(ticket).?.deadline;
+                self.changed.timedWait(&self.mutex, deadline -| self.timer.read()) catch {};
+            }
+        }
         _ = self.queue.push(event, data) catch |err| return switch (err) {
             error.Closed => c.ZC_IO,
             error.BufferFull, error.PacketTooLarge => c.ZC_BUSY,
@@ -85,6 +111,7 @@ pub export fn zc_output_mailbox_ack(p: *c.zc_output_mailbox, sequence: u64) c_in
     self.mutex.lock();
     defer self.mutex.unlock();
     self.queue.ack(sequence) catch return c.ZC_STALE;
+    self.changed.broadcast();
     return c.ZC_OK;
 }
 pub export fn zc_output_mailbox_fail(p: *c.zc_output_mailbox, code: c_int) c_int {
@@ -94,6 +121,7 @@ pub export fn zc_output_mailbox_fail(p: *c.zc_output_mailbox, code: c_int) c_int
     defer self.mutex.unlock();
     self.queue.fail(code);
     self.waits.close(self.timer.read());
+    self.changed.broadcast();
     return c.ZC_OK;
 }
 pub export fn zc_output_mailbox_prefix(p: *c.zc_output_mailbox, out: *u64) c_int {
@@ -166,6 +194,16 @@ pub export fn zc_output_mailbox_retire(p: *c.zc_output_mailbox) void {
     defer self.mutex.unlock();
     self.retired = true;
     self.waits.close(self.timer.read());
+    self.changed.broadcast();
+}
+pub export fn zc_output_mailbox_backpressure(p: *c.zc_output_mailbox, wait: u64) c_int {
+    if (wait > 60_000_000_000) return c.ZC_INVALID;
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.retired or self.waits.counters.pending != 0) return c.ZC_BUSY;
+    self.wait_ns = wait;
+    return c.ZC_OK;
 }
 test {
     _ = @import("home/delivery_fifo.zig");

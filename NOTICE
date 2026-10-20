@@ -179,3 +179,12 @@ Home host queue telemetry and capacity waits (0.23):
   cooperative capacity tickets without hidden threads, sleeps or allocations.
   Supersedes the delivery_fifo version listed above. The Home MIT license applies.
   https://github.com/home-lang/home/commit/8451cabb28301c5f4ea1ef429122a0151dcbf4ba
+
+Home owned producer admission (0.24):
+- src/home/owned_admission.zig is verbatim from Home's
+  packages/video/src/core/owned_admission.zig at a276dca96b958fec80b51220433b9d499c1c9b54.
+  It bounds separately allocated RGB/PCM inputs with byte/count ownership and
+  stale-ticket protection. The existing capacity_wait and delivery_fifo modules
+  supply actual timed native producer waits and host acknowledgement accounting.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/a276dca96b958fec80b51220433b9d499c1c9b54

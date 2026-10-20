@@ -162,3 +162,19 @@ zc_output_mailbox_stats_get snapshots counters under the queue mutex. Byte-copy
 and partial host-write progress do not acknowledge capacity. Bun additionally
 reports the in-flight hook and caches a bounded set of final epoch reports;
 unacknowledged queue storage becomes abandoned accounting when destroyed.
+
+## Exclusive async producers
+
+See [async producers](async-producers.md) for copied RGB/PCM input admission and
+one persistent native worker per recorder. Ordinary recorder ABI access rejects
+BUSY during a producer turn. Bun's lifecycle loops defer native access, while
+mailbox consumers and telemetry remain available. A producer start is irreversible;
+queued cancellation frees its input, and active completion precedes recorder
+teardown. Completed retained native handles remain charged and block close.
+
+Producer-scoped mailbox sends use a condition variable and Home's capacity_wait
+registry under the queue mutex. They wake on acknowledgement, failure or deadline.
+Only the persistent producer and worker-only recorder close enable this scope;
+synchronous header/attachment/snapshot calls remain fail-fast. Immutable native
+handoff events let Bun retire predecessor hooks and release shared PTS fences
+before a blocked successor needs to complete its producer batch.

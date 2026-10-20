@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { open, lstat, unlink, type FileHandle } from 'node:fs/promises'
+import { fstatSync, statSync } from 'node:fs'
 import {
   native as n,
   ptr,
@@ -88,6 +89,21 @@ export interface OutputCapacityOptions {
 }
 const hooks = new AsyncLocalStorage<boolean>()
 const claims = new WeakMap<object, object>()
+type DescriptorClaim = { scope: OutputScope; role: number }
+const descriptors = new Map<string, Set<DescriptorClaim>>()
+/** Native path writers must respect host descriptors until their stop fence. */
+export function guardHostPath(path: string) {
+  let key: string
+  try {
+    const stat = statSync(path, { bigint: true })
+    key = `${stat.dev}:${stat.ino}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  if (descriptors.has(key))
+    throw new CameraError(-4, 'path aliases an owned host descriptor')
+}
 export interface OutputScope {
   owner: object
   id: bigint | symbol
@@ -138,13 +154,18 @@ export class OutputBridge {
   private retired?: Promise<void>
   private finalQueueStats?: HostOutputQueueStats
   private flight?: { bytes: bigint; sequence: bigint }
+  private descriptorClaims: { key: string; claim: DescriptorClaim }[] = []
   error: unknown
   stopError: unknown
   onError?: (error: unknown) => void
   onRetired?: (stats: HostOutputQueueStats) => void
   constructor(
     readonly output: CustomOutput,
-    options: { maxBytes?: number; maxOperations?: number } = {},
+    options: {
+      maxBytes?: number
+      maxOperations?: number
+      waitMs?: number
+    } = {},
     readonly scope: OutputScope = { owner: {}, id: Symbol() },
   ) {
     const format = output.format ?? 'packets'
@@ -178,9 +199,18 @@ export class OutputBridge {
       operations > 65536
     )
       throw new RangeError('invalid output mailbox bounds')
+    const wait = options.waitMs ?? 100
+    if (!Number.isFinite(wait) || wait < 0 || wait > 60000)
+      throw new RangeError('invalid host backpressure deadline')
     const out = outPointer()
     check(n.zc_output_mailbox_open(BigInt(bytes), operations, ptr(out)))
     this.handle = handle(out)
+    check(
+      n.zc_output_mailbox_backpressure(
+        this.handle,
+        BigInt(Math.floor(wait * 1e6)),
+      ),
+    )
     for (const resource of new Set(resources)) {
       claims.set(resource, this)
       this.claimed.push(resource)
@@ -211,6 +241,29 @@ export class OutputBridge {
         }),
       )
       const fds = await call(() => this.output.descriptors?.() ?? {})
+      for (const [role, fd] of [
+        fds.file,
+        fds.pts,
+        fds.secondaryPts,
+      ].entries()) {
+        if (fd === undefined || fd < 0) continue
+        const stat = fstatSync(fd, { bigint: true }),
+          key = `${stat.dev}:${stat.ino}`
+        const claim = { scope: this.scope, role }
+        const owners = descriptors.get(key) ?? new Set<DescriptorClaim>()
+        for (const other of owners) {
+          if (
+            role !== 2 ||
+            other.role !== 2 ||
+            other.scope.owner !== claim.scope.owner ||
+            other.scope.id !== claim.scope.id
+          )
+            throw new CameraError(-4, 'descriptor aliases an owned host output')
+        }
+        owners.add(claim)
+        descriptors.set(key, owners)
+        this.descriptorClaims.push({ key, claim })
+      }
       view(this.callbacks).setInt32(40, fds.file ?? -1, true)
       view(this.callbacks).setInt32(44, fds.pts ?? -1, true)
       view(this.callbacks).setInt32(48, fds.secondaryPts ?? -1, true)
@@ -480,6 +533,12 @@ export class OutputBridge {
         for (const resource of this.claimed)
           if (claims.get(resource) === this) claims.delete(resource)
         this.claimed = []
+        for (const { key, claim } of this.descriptorClaims) {
+          const owners = descriptors.get(key)
+          owners?.delete(claim)
+          if (owners?.size === 0) descriptors.delete(key)
+        }
+        this.descriptorClaims = []
         this.onRetired?.({ ...this.finalQueueStats })
       }
       if (this.error !== undefined) throw this.error

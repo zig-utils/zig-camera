@@ -533,3 +533,53 @@ test "factory admission does not consume indices when retained native handles fi
     _ = v.finishFactory(rec, 0, state.ticket, c.ZC_STALE);
     for (jobs[1..]) |old| _ = v.closePreparation(old.?);
 }
+
+test "producer ABI owns copies, retains exclusive turn through completion and bounds retained inputs" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer std.testing.expectEqual(c.ZC_OK, m.zc_video_close(rec)) catch unreachable;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_set_producer_limits(rec, 16 * 16 * 3, 1));
+    var pixels: [16 * 16 * 3]u8 = @splat(100);
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 1;
+    frame.main.width = 16;
+    frame.main.height = 16;
+    frame.main.stride = 48;
+    frame.main.plane_count = 1;
+    @memcpy(frame.main.format[0..6], "BGR888");
+    frame.main.planes[0].data = &pixels;
+    frame.main.planes[0].length = pixels.len;
+    frame.main.planes[0].bytes_used = pixels.len;
+    var job: ?*c.zc_producer_job = null;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_frame(rec, &frame, 0, &job));
+    @memset(&pixels, 250);
+    const owned: *@import("producer.zig").Job = @ptrCast(@alignCast(job.?));
+    try std.testing.expectEqual(@as(u8, 100), owned.data[0]);
+    var overflow: ?*c.zc_producer_job = @ptrFromInt(1);
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_producer_frame(rec, &frame, 40_000_000, &overflow));
+    try std.testing.expect(overflow == null);
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_close(rec));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_write(rec, &frame, 40_000_000));
+    var state: c.zc_output_state = undefined;
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_output_state(rec, 0, &state));
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_producer_job_close(job.?));
+    var timer = try std.time.Timer.start();
+    var code: c_int = undefined;
+    while (m.zc_producer_job_finish(job.?, &code) == c.ZC_TIMEOUT) {
+        if (timer.read() > 5_000_000_000) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+    try std.testing.expectEqual(c.ZC_OK, code);
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_output_state(rec, 0, &state));
+    // A completed but retained handle still owns its charged RGB payload.
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_producer_frame(rec, &frame, 40_000_000, &overflow));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+    var stats: c.zc_producer_stats = undefined;
+    _ = m.zc_video_producer_stats(rec, &stats);
+    try std.testing.expectEqual(@as(u64, 0), stats.owned_jobs);
+    try std.testing.expectEqual(@as(u64, 1), stats.completed);
+    try std.testing.expectEqual(@as(u64, 2), stats.rejected);
+}

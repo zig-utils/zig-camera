@@ -16,7 +16,7 @@ self.onmessage = ({
     if (data.operation === 'close') {
       results = storage(8 * 32)
       const amount = new Uint32Array(1)
-      code = native.zc_video_close_outputs(
+      code = native.zc_video_close_outputs_async(
         data.handle,
         ptr(results),
         8,

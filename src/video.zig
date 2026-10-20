@@ -389,6 +389,7 @@ const Output = struct {
     }
 };
 const Recorder = struct {
+    producer: ?*@import("producer.zig").Pool = null,
     preparing: [8]?*Prepared = .{null} ** 8,
     jobs: [8]?*Preparation = .{null} ** 8,
     automatic: [8]?Automatic = .{null} ** 8,
@@ -465,6 +466,7 @@ const Recorder = struct {
         return @intCast(@as(u64, 1000000) * self.config.fps_den / self.config.fps_num);
     }
     fn deinit(self: *Recorder) void {
+        if (self.producer) |pool| pool.destroy();
         for (self.automatic) |entry| if (entry) |value| A.free(value.pattern);
         if (self.output) |out| out.deinit();
         if (self.next) |out| out.deinit();
@@ -591,10 +593,12 @@ const Recorder = struct {
                     old.next = null;
                     _ = self.outputs.replace(id, out) catch unreachable;
                 }
+                const host_handoff = old.callbacks != null and @import("output_mailbox.zig").isMailbox(old.callbacks.?);
                 if (old.worker) |worker| {
                     worker.close(true);
                     out.retired = old;
                 } else old.deinit();
+                if (host_handoff) @import("producer.zig").handoff(id, out.generation);
             }
         }
         if (out.failure != c.ZC_OK) return;
@@ -959,6 +963,7 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
     count.* = 0;
     if (results != null and capacity < 8) return c.ZC_INVALID;
     const self = recorder(p);
+    if (self.producer) |pool| if (pool.count() != 0) return c.ZC_BUSY;
     for (self.factory_policies) |entry| if (entry) |value| if (value.policy.pending != null) return c.ZC_BUSY;
     // External recipes remain caller-owned. Internal jobs are cancelled/joined
     // before recorder storage is consumed. Never strand a worker on close.
@@ -1917,16 +1922,19 @@ pub fn pollPreparations(p: *c.zc_recorder) c_int {
 }
 pub fn preparationState(p: *c.zc_preparation_job, state: *c.zc_preparation_job_state) c_int {
     const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.owner) |owner| if (producerBusy(@ptrCast(owner))) return c.ZC_BUSY;
     state.* = .{ .id = job.id, .generation = job.generation, .phase = @intFromEnum(job.gate.phase), .staged = @intFromBool(job.staged), .done = @intFromBool(job.result != c.ZC_TIMEOUT), .error_code = job.result };
     return c.ZC_OK;
 }
 pub fn cancelPreparation(p: *c.zc_preparation_job) c_int {
     const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.owner) |owner| if (producerBusy(@ptrCast(owner))) return c.ZC_BUSY;
     if (job.result != c.ZC_TIMEOUT or job.staged) return c.ZC_STATE;
     return if (job.gate.cancel()) c.ZC_OK else c.ZC_STATE;
 }
 pub fn closePreparation(p: *c.zc_preparation_job) c_int {
     const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.owner) |owner| if (producerBusy(@ptrCast(owner))) return c.ZC_BUSY;
     if (job.result == c.ZC_TIMEOUT) return c.ZC_BUSY;
     if (job.owner) |owner| owner.jobs[job.slot] = null;
     job.destroy();
@@ -2066,6 +2074,7 @@ pub fn prepareHeld(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*const
 }
 pub fn publishPreparation(p: *c.zc_preparation_job) c_int {
     const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.owner) |owner| if (producerBusy(@ptrCast(owner))) return c.ZC_BUSY;
     if (job.result != c.ZC_TIMEOUT or job.gate.phase != .ready or job.gate.cancel_requested or !job.held) return c.ZC_STATE;
     job.held = false;
     return c.ZC_OK;
@@ -2084,6 +2093,7 @@ pub fn failOutput(p: *c.zc_recorder, id: u64, code: c_int) c_int {
 // Normal user cancellation remains rejected after staging. No waiting here.
 pub fn abortPendingPreparation(p: *c.zc_preparation_job) c_int {
     const job: *Preparation = @ptrCast(@alignCast(p));
+    if (job.owner) |owner| if (producerBusy(@ptrCast(owner))) return c.ZC_BUSY;
     if (job.result != c.ZC_TIMEOUT or !job.staged) return c.ZC_STATE;
     const owner = job.owner orelse return c.ZC_STATE;
     const out = owner.getOutput(job.id) orelse return c.ZC_STATE;
@@ -2389,4 +2399,106 @@ pub fn finishFactory(p: *c.zc_recorder, id: u64, ticket: u64, code: c_int) c_int
     f.policy.finishAt(ticket, code, recorder(p).last_ns) catch return c.ZC_STALE;
     f.started = false;
     return c.ZC_OK;
+}
+
+pub fn producerBusy(p: *c.zc_recorder) bool {
+    const pool = recorder(p).producer orelse return false;
+    return pool.active.load(.acquire);
+}
+fn producerPool(self: *Recorder) !*@import("producer.zig").Pool {
+    if (self.producer == null) self.producer = try @import("producer.zig").Pool.create(self, applyProducer, 64 * 1024 * 1024, 8);
+    return self.producer.?;
+}
+fn applyProducer(ctx: *anyopaque, job: *@import("producer.zig").Job) c_int {
+    const p: *c.zc_recorder = @ptrCast(@alignCast(ctx));
+    for (job.parts) |part| {
+        const code = writeAudio(p, job.data[part.offset..].ptr, part.length, part.timestamp);
+        if (code != c.ZC_OK) return code;
+    }
+    return if (job.audio) writeAudio(p, job.data.ptr, job.data.len, job.timestamp) else write(p, &job.frame, job.timestamp);
+}
+pub fn setProducerLimits(p: *c.zc_recorder, bytes: u64, jobs: u32) c_int {
+    if (bytes == 0 or bytes > 1024 * 1024 * 1024 or jobs == 0 or jobs > 8) return c.ZC_INVALID;
+    const pool = producerPool(recorder(p)) catch |err| return status(err);
+    pool.mutex.lock();
+    defer pool.mutex.unlock();
+    if (pool.admission.count != 0 or pool.active.load(.acquire)) return c.ZC_BUSY;
+    pool.admission.max_bytes = @intCast(bytes);
+    pool.admission.max_items = jobs;
+    return c.ZC_OK;
+}
+pub fn producerStats(p: *c.zc_recorder, out: *c.zc_producer_stats) c_int {
+    out.* = std.mem.zeroes(c.zc_producer_stats);
+    if (recorder(p).producer) |pool| pool.stats(out) else {
+        out.max_bytes = 64 * 1024 * 1024;
+        out.max_jobs = 8;
+    }
+    return c.ZC_OK;
+}
+pub fn producerFrame(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, result: *?*c.zc_producer_job) c_int {
+    return producerAv(p, f, timestamp, null, 0, result);
+}
+pub fn producerAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, inputs: ?[*]const c.zc_producer_audio_input, count: u32, result: *?*c.zc_producer_job) c_int {
+    result.* = null;
+    const self = recorder(p);
+    const s = f.main;
+    if (f.token == 0 or s.width != self.config.width or s.height != self.config.height or s.plane_count != 1 or s.planes[0].data == null or s.planes[0].bytes_used > s.planes[0].length or s.planes[0].bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
+    if (!std.mem.eql(u8, std.mem.sliceTo(&s.format, 0), "BGR888")) return c.ZC_UNSUPPORTED;
+    if (count > 256 or (inputs == null and count != 0)) return c.ZC_INVALID;
+    if (count != 0 and self.recording.sample_rate == 0) return c.ZC_STATE;
+    const rgb_size = @as(usize, s.width) * s.height * 3;
+    var total = rgb_size;
+    if (inputs) |blocks| for (blocks[0..count]) |block| {
+        if (block.data == null or block.length == 0 or block.length > std.math.maxInt(usize) or block.length % (self.recording.channels * 2) != 0) return c.ZC_INVALID;
+        total = std.math.add(usize, total, @intCast(block.length)) catch return c.ZC_INVALID;
+    };
+    const pool = producerPool(self) catch |err| return status(err);
+    const job = pool.allocate(total, false, timestamp, count) catch |err| return if (err == error.PayloadTooLarge) c.ZC_INVALID else status(err);
+    @import("home/plane_pack.zig").rows(s.planes[0].data[0..@intCast(s.planes[0].bytes_used)], s.stride, @as(usize, s.width) * 3, s.height, job.data[0..rgb_size]) catch {
+        _ = pool.release(job);
+        return c.ZC_INVALID;
+    };
+    job.frame.token = 1;
+    job.frame.main.width = s.width;
+    job.frame.main.height = s.height;
+    job.frame.main.stride = s.width * 3;
+    job.frame.main.plane_count = 1;
+    @memcpy(job.frame.main.format[0..6], "BGR888");
+    job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = rgb_size, .bytes_used = rgb_size, .data = job.data.ptr };
+    var offset = rgb_size;
+    if (inputs) |blocks| for (blocks[0..count], job.parts) |block, *part| {
+        const length: usize = @intCast(block.length);
+        part.* = .{ .offset = offset, .length = length, .timestamp = block.timestamp_ns };
+        @memcpy(job.data[offset..][0..length], block.data[0..length]);
+        offset += length;
+    };
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
+}
+pub fn producerAudio(p: *c.zc_recorder, data: [*]const u8, length: u64, timestamp: u64, result: *?*c.zc_producer_job) c_int {
+    result.* = null;
+    const self = recorder(p);
+    if (self.recording.sample_rate == 0) return c.ZC_STATE;
+    if (length == 0 or length > std.math.maxInt(usize) or length % (self.recording.channels * 2) != 0) return c.ZC_INVALID;
+    const pool = producerPool(self) catch |err| return status(err);
+    const job = pool.allocate(@intCast(length), true, timestamp, 0) catch |err| return if (err == error.PayloadTooLarge) c.ZC_INVALID else status(err);
+    @memcpy(job.data, data[0..@intCast(length)]);
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
+}
+pub fn startProducer(p: *c.zc_producer_job) c_int {
+    const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
+    const self: *Recorder = @ptrCast(@alignCast(job.owner.context));
+    if (producerBusy(@ptrCast(self))) return c.ZC_BUSY;
+    // External recipes have void close/build APIs and must finish their caller-
+    // serialized lifetime before exclusive producer execution is possible.
+    for (self.preparing) |maybe| if (maybe) |recipe| {
+        var internal = false;
+        for (self.jobs) |slot| if (slot) |prep| if (prep.recipe == recipe) {
+            internal = true;
+            break;
+        };
+        if (!internal) return c.ZC_BUSY;
+    };
+    return job.owner.start(job);
 }

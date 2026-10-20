@@ -418,6 +418,9 @@ int zc_output_mailbox_wait_open(zc_output_mailbox *,uint64_t bytes,uint32_t oper
 int zc_output_mailbox_wait_poll(zc_output_mailbox *,uint64_t ticket,zc_output_wait_state *);
 int zc_output_mailbox_wait_close(zc_output_mailbox *,uint64_t ticket);
 void zc_output_mailbox_retire(zc_output_mailbox *);
+/* Timed sends apply ONLY in the native async producer scope. Synchronous
+ * callbacks stay fail-fast. Per-operation deadline, maximum 60 seconds. */
+int zc_output_mailbox_backpressure(zc_output_mailbox *,uint64_t wait_ns);
 void zc_output_mailbox_close(zc_output_mailbox *);
 /* Held preparation exposes READY but cannot stage until release. Host drains
  * header delivery before publication. Cancellation/close still owns cleanup. */
@@ -462,6 +465,29 @@ int zc_video_factory_state(zc_recorder *,uint64_t id,zc_factory_state *);
 int zc_video_claim_factory(zc_recorder *,uint64_t id,zc_factory_state *);
 int zc_video_prepare_factory(zc_recorder *,uint64_t id,uint64_t ticket,const zc_output_callbacks *,zc_preparation_job **);
 int zc_video_finish_factory(zc_recorder *,uint64_t id,uint64_t ticket,int code);
+/* Copied RGB/PCM producer jobs. Admission includes completed retained handles.
+ * start gives the persistent worker exclusive recorder access. Finish polls
+ * completion and releases that turn; close then consumes the job. A queued
+ * job may be closed without starting. Active jobs cannot be cancelled/retried.
+ * All ordinary recorder ABI calls return BUSY during an active producer turn.
+ * Creator/caller serializes admission and lifecycle; callbacks remain native. */
+typedef struct zc_producer_job zc_producer_job;
+typedef struct {uint64_t id,generation;} zc_producer_handoff;
+typedef struct {const uint8_t *data;uint64_t length,timestamp_ns;} zc_producer_audio_input;
+typedef struct {uint64_t owned_bytes,owned_jobs,high_bytes,high_jobs,max_bytes,max_jobs,admitted,released,rejected,completed,failed,cancelled;uint32_t running,reserved;} zc_producer_stats;
+int zc_video_set_producer_limits(zc_recorder *,uint64_t bytes,uint32_t jobs);
+int zc_video_producer_stats(zc_recorder *,zc_producer_stats *);
+int zc_video_producer_frame(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,zc_producer_job **);
+int zc_video_producer_audio(zc_recorder *,const uint8_t *,uint64_t length,uint64_t timestamp_ns,zc_producer_job **);
+int zc_video_producer_av(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,const zc_producer_audio_input *,uint32_t count,zc_producer_job **);
+int zc_producer_job_start(zc_producer_job *);
+int zc_producer_job_finish(zc_producer_job *,int *result);
+int zc_producer_job_close(zc_producer_job *);
+/* Immutable host epoch handoffs: retiring hooks may drain/stop while the worker
+ * continues writing the new epoch, releasing shared PTS predecessor fences. */
+int zc_producer_job_handoffs(zc_producer_job *,zc_producer_handoff *out,uint32_t capacity,uint32_t *count);
+/* Worker-only finalization; async host backpressure applies to EOF tails. */
+int zc_video_close_outputs_async(zc_recorder *,zc_output_result *,uint32_t capacity,uint32_t *count);
 
 #ifdef __cplusplus
 }

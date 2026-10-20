@@ -11,6 +11,17 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_video_producer_av: { args: [p, p, n, p, u, p], returns: i },
+  zc_producer_job_handoffs: { args: [p, p, u, p], returns: i },
+  zc_video_close_outputs_async: { args: [p, p, u, p], returns: i },
+  zc_video_set_producer_limits: { args: [p, n, u], returns: i },
+  zc_video_producer_stats: { args: [p, p], returns: i },
+  zc_video_producer_frame: { args: [p, p, n, p], returns: i },
+  zc_video_producer_audio: { args: [p, p, n, n, p], returns: i },
+  zc_producer_job_start: { args: [p], returns: i },
+  zc_producer_job_finish: { args: [p, p], returns: i },
+  zc_producer_job_close: { args: [p], returns: i },
+  zc_output_mailbox_backpressure: { args: [p, n], returns: i },
   zc_output_mailbox_stats_get: { args: [p, p], returns: i },
   zc_output_mailbox_wait_open: { args: [p, n, u, n, p], returns: i },
   zc_output_mailbox_wait_poll: { args: [p, n, p], returns: i },

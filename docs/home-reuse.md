@@ -83,3 +83,14 @@ Home package export, documentation and compiler/architecture workflow coverage
 were pushed at 8451cabb28301c5f4ea1ef429122a0151dcbf4ba before verbatim camera reuse.
 Bun contributes cooperative polling, parent/epoch cancellation and a bounded
 cache of final reports; it does not duplicate the queue or wait policy.
+
+The 0.24 audit reuses capacity_wait and delivery_fifo for producer-scoped timed
+sends, rather than layering another encoded-packet queue over the host mailbox.
+The new owned_admission helper bounds separately allocated input storage and
+retained jobs, rejects stale releases, preserves live ownership on admission
+failure and prevents identity wrap. Its focused tests pass with Zig 0.15.2 and
+Home's development compiler. The package export, documentation and helper matrix
+were pushed to Home main at a276dca96b958fec80b51220433b9d499c1c9b54 before verbatim
+camera reuse. The camera-specific persistent worker owns encoder/recorder turns;
+Bun coordinates hook retirement and lifecycle deferral without borrowing DMA
+buffers or moving runtime callbacks to native threads.

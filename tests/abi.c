@@ -2,6 +2,10 @@
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
+_Static_assert(sizeof(zc_producer_stats)==104,"producer stats ABI");
+_Static_assert(sizeof(zc_producer_handoff)==16,"producer handoff ABI");
+_Static_assert(sizeof(zc_producer_audio_input)==24,"producer PCM input ABI");
 _Static_assert(sizeof(zc_output_event)==48,"output mailbox event ABI");
 _Static_assert(sizeof(zc_output_mailbox_stats)==168,"host queue telemetry ABI");
 _Static_assert(sizeof(zc_output_wait_state)==16,"host capacity wait ABI");
@@ -370,6 +374,25 @@ int main(void) {
     assert(zc_video_factory_state(recorder,0,&factory_state)==ZC_OK);
     assert(!factory_state.pending && factory_state.next_index==43 && factory_state.error_code==ZC_IO);
     assert(zc_video_set_factory(recorder,0,NULL)==ZC_OK);
+    zc_frame producer_frame;assert(zc_acquire(camera,0,&producer_frame)==ZC_OK);
+    zc_producer_job *producer=NULL;
+    assert(zc_video_producer_frame(recorder,&producer_frame,280000000,&producer)==ZC_OK);
+    assert(zc_release(camera,producer_frame.token)==ZC_OK);
+    assert(zc_video_close(recorder)==ZC_BUSY);
+    assert(zc_producer_job_start(producer)==ZC_OK);
+    assert(zc_video_output_state(recorder,0,&state)==ZC_BUSY);
+    assert(zc_producer_job_close(producer)==ZC_BUSY);
+    int producer_result=ZC_TIMEOUT,producer_status=ZC_TIMEOUT;
+    for(unsigned retry=0;retry<10000;retry++) {
+        producer_status=zc_producer_job_finish(producer,&producer_result);
+        if(producer_status!=ZC_TIMEOUT)break;
+        struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+    }
+    assert(producer_status==ZC_OK && producer_result==ZC_OK);
+    assert(zc_producer_job_close(producer)==ZC_OK);
+    zc_producer_stats producer_stats;
+    assert(zc_video_producer_stats(recorder,&producer_stats)==ZC_OK);
+    assert(producer_stats.completed==1 && !producer_stats.owned_jobs && !producer_stats.running);
     assert(zc_video_close(recorder)==ZC_OK);
     for(unsigned i=0;i<32;i++) {
         assert(zc_output_job_wait(drains[i],0)==ZC_OK);

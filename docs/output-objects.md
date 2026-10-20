@@ -244,8 +244,7 @@ return an explicit PtsOutput to recover with a fresh observer after PTS failure.
 
 ## Remaining coverage
 
-Automatic waits inside synchronous host callbacks, arbitrary upstream constructor
-signatures and full Picamera2 class/API compatibility remain work in progress.
+Arbitrary upstream constructor signatures and full Picamera2 class/API compatibility remain work in progress.
 
 See [coverage](parity.md), [native jobs](native-jobs.md), and the
 [C ABI contract](../include/zig_camera.h).
@@ -294,11 +293,12 @@ The optional signalFunction follows normal BunJob ownership rules.
 Capacity is a point-in-time observation, not a reservation. Multiple waiters may
 observe the same free space. Serialize producers and budget headroom for the
 entire encoded/container batch; an individual operation larger than the mailbox,
-or a later burst exceeding that headroom, still fails normally. Native recording
-callbacks remain fail-fast. The API does not sleep on Bun's event loop, move
+or a later burst exceeding that headroom, still fails normally. Synchronous native recording
+callbacks remain fail-fast; async producers support automatic timed sends. The API does not sleep on Bun's event loop, move
 encoding to a worker or promise that an arbitrary later write will fit. Use
 ioStats/setIO for native path-worker telemetry/policy. Custom outputs use
-hostIOStats/waitForOutput; io.waitMs is not silently applied to host callbacks.
+hostIOStats/waitForOutput. Async producer sends use outputQueue.waitMs, falling
+back to io.waitMs when outputQueue is omitted; synchronous sends never wait.
 Cooperative scheduling can deliver timeout notifications after the native
 deadline if the event loop is stalled; polling cannot extend the deadline.
 
@@ -310,3 +310,6 @@ most eight final reports, one per recent stable id; the current host epoch takes
 precedence. A failed unpublished replacement never overwrites its healthy
 predecessor's final report. Reports remain readable after recorder close and
 are returned as copies. They describe ownership, not measured Pi throughput.
+
+For automatic backpressure, owned async writes and camera A/V pumping, see
+[async producers](async-producers.md).

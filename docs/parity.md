@@ -1,4 +1,4 @@
-# Feature coverage in 0.23
+# Feature coverage in 0.24
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -18,14 +18,14 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, owned pre-roll, FileOutput/local PTS and shared PtsStream, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |
 | Async recording preparation | Native bounded workers, held header acceptance, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, custom lifecycle coordination, per-output async splits/recovery; initial native attachment setup remains synchronous |
 | Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | Path patterns or Bun factories, per-output setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
-| Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drain jobs | Async start/streams/commit/stop, owned packet/write/patch delivery, isolated errors and drains; host queues use fail-fast pressure, host telemetry and bounded cooperative capacity waits; automatic host callback waits remain fail-fast |
+| Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drain jobs, exclusive persistent producer worker | Async lifecycle, host telemetry, copied RGB/PCM/A/V writes and automatic native timed sends; synchronous attachment/snapshot calls remain fail-fast |
 | Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Bounded FIFO BunJob, worker reopen/drop/temporary RGB/metadata/lores/JPEG/DNG, cancellation, rollback and preview recreation; recording/AF/lease coexistence and runtime-control restoration remain unsupported |
 | Multiple cameras | Independent camera indices | Independent Camera objects; no synchronized stereo or tracking/navigation |
 
 ## Validation
 
 Native Zig tests exercise bounded queues, ownership, media clocks, codecs and
-preparation races. C checks preserve the ABI v1 layouts. Bun tests cover leases,
+preparation races and exclusive asynchronous producer turns. C checks preserve the ABI v1 layouts. Bun tests cover leases,
 controls, capture jobs, mode rollback, preview recreation, async output hooks,
 publication cancellation, independent custom snapshots, factory rotation/recovery,
 custom pre-roll/live handoff and
