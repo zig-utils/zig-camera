@@ -737,3 +737,31 @@ export class PtsOutput implements CustomOutput {
     }
   }
 }
+
+/** Factory callbacks follow the same no-reentry rule as output hooks. */
+export function invokeOutputFactory<T>(operation: () => T | Promise<T>) {
+  return call(operation)
+}
+/** Claim before discarding a late/invalid factory result; never stop an active sink. */
+export async function discardFactoryOutput(output: CustomOutput) {
+  if (!output || (typeof output !== 'object' && typeof output !== 'function'))
+    return
+  const resources = [output, ...(await call(() => output.resources?.() ?? []))]
+  for (const resource of resources) {
+    if (
+      !resource ||
+      (typeof resource !== 'object' && typeof resource !== 'function')
+    )
+      throw new TypeError('invalid factory resource')
+    if (claims.has(resource))
+      throw new CameraError(-4, 'factory returned an active resource')
+  }
+  const owner = {}
+  for (const resource of resources) claims.set(resource, owner)
+  try {
+    await call(() => output.stop?.({ discard: true }))
+  } finally {
+    for (const resource of resources)
+      if (claims.get(resource) === owner) claims.delete(resource)
+  }
+}

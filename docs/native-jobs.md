@@ -84,14 +84,15 @@ recorder.setRecovery(secondaryId, 'retry-{index:06}.mp4', {
 })
 ```
 
-Automatic patterns apply to path outputs. Custom objects use explicit split and
-recovery jobs. The initial file is opened separately (use `exclusive: true`).
+Automatic patterns apply to path outputs. Bun also accepts asynchronous output
+factories for primary or secondary IDs; see [output objects](output-objects.md). The initial file is opened separately (use `exclusive: true`).
 Configure rotation with the next replacement index. The native CLI opens index
 zero itself. Patterns
 accept one `{index}` or `{index:06}` field, widths 1..128 and paths <=4096 bytes.
 Indices never wrap. Filenames are fresh, not retention slots.
 
-There is one automation per ID: primary rotation or recovery. Additional outputs
+There is one automation per ID. Path rotation is primary-only; factories support
+rotation or recovery on any stable output ID. Additional outputs
 can recover independently while primary rotation continues. Recovery requires
 failure isolation and uses Home's lifetime budget with capped exponential
 backoff on the last accepted capture timestamp. Failed construction consumes
@@ -123,3 +124,24 @@ legacy unhold calls cannot steal a held replay's ownership.
 zc_video_discard_held_output destroys an unpublished target without finalizing
 its writer. Bun stop/close cancels the job, waits for hooks, then discards before
 closing native storage. A committed target follows ordinary finalization.
+
+## Custom snapshots and factory admission
+
+zc_video_freeze_callbacks owns a submission-time GOP/PCM window under the same
+two-window limit as path snapshots. zc_snapshot_open_callbacks binds the fresh
+sink after async start. Serialize binding with the live recorder; pass NULL only
+after source close and callback retirement. The snapshot owns copied history and
+a refcounted reservation registry beyond recorder lifetime. zc_snapshot_step
+produces one video interval, returning TIMEOUT until final tail/patch completion.
+Drain the host mailbox between steps. zc_snapshot_close always consumes the
+handle, including failed binding or cancellation, without finalizing a discarded
+writer. Bun snapshot jobs are independent of the parent close job.
+
+zc_video_set_factory installs Home's policy, not a runtime callback. Claim
+reserves recipe/job capacity and a never-repeated recorder ticket. Host code
+constructs a fresh sink and calls zc_video_prepare_factory with that ticket.
+Generation validation, held headers and keyframe handoff use the existing native
+preparation path. Finish every claim only after native handles and host hooks
+retire; zc_video_finish_factory observes the last media timestamp for retry
+backoff. Close returns BUSY while a claim remains pending. Bun cancels queued
+claims, awaits late factory results and finishes claims before native close.

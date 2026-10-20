@@ -30,7 +30,7 @@ const Identity = struct {
 };
 const Reservations = struct {
     mutex: std.Thread.Mutex = .{},
-    slots: [2]?Identity = .{ null, null },
+    slots: [2]?[3]?Identity = .{ null, null },
     preparing: [8]?[3]?Identity = .{null} ** 8,
     opening: [8]bool = @splat(false),
     refs: usize = 1,
@@ -38,28 +38,42 @@ const Reservations = struct {
         s.mutex.lock();
         defer s.mutex.unlock();
         for (s.opening) |pending| if (pending) return error.Busy;
-        for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
-        for (s.preparing) |slot| if (slot) |ids| for (ids) |other| if (other) |value| if (id.equal(value)) return error.Busy;
+        for (s.slots) |slot| if (slot) |stored| for (stored) |other| if (other) |value| if (id.equal(value)) return error.Busy;
+        for (s.preparing) |slot| if (slot) |stored| for (stored) |other| if (other) |value| if (id.equal(value)) return error.Busy;
     }
     fn reserve(s: *Reservations, id: Identity) !usize {
+        return s.reserveSnapshot(.{ id, null, null });
+    }
+    fn reserveSnapshot(s: *Reservations, ids: [3]?Identity) !usize {
         s.mutex.lock();
         defer s.mutex.unlock();
-        for (s.opening) |pending| if (pending) return error.Busy;
-        for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
-        for (s.preparing) |slot| if (slot) |ids| for (ids) |other| if (other) |value| if (id.equal(value)) return error.Busy;
+        try s.checkSnapshotIds(ids, null);
         for (&s.slots, 0..) |*slot, i| if (slot.* == null) {
-            slot.* = id;
+            slot.* = ids;
             s.refs += 1;
             return i;
         };
         return error.Busy;
+    }
+    fn checkSnapshotIds(s: *Reservations, ids: [3]?Identity, skip: ?usize) !void {
+        for (ids) |maybe| if (maybe) |id| {
+            for (s.opening) |pending| if (pending) return error.Busy;
+            for (s.slots, 0..) |slot, i| if (skip == null or i != skip.?) if (slot) |others| for (others) |other| if (other) |value| if (id.equal(value)) return error.Busy;
+            for (s.preparing) |slot| if (slot) |others| for (others) |other| if (other) |value| if (id.equal(value)) return error.Busy;
+        };
+    }
+    fn bindSnapshot(s: *Reservations, slot: usize, ids: [3]?Identity) !void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        try s.checkSnapshotIds(ids, slot);
+        s.slots[slot] = ids;
     }
     fn reservePreparation(s: *Reservations, ids: [3]?Identity, opening: bool) !usize {
         s.mutex.lock();
         defer s.mutex.unlock();
         for (ids) |maybe| if (maybe) |id| {
             for (s.opening) |pending| if (pending) return error.Busy;
-            for (s.slots) |slot| if (slot) |other| if (id.equal(other)) return error.Busy;
+            for (s.slots) |slot| if (slot) |stored| for (stored) |other| if (other) |value| if (id.equal(value)) return error.Busy;
             for (s.preparing) |slot| if (slot) |others| for (others) |other| if (other) |value| if (id.equal(value)) return error.Busy;
         };
         for (&s.preparing, 0..) |*slot, i| if (slot.* == null) {
@@ -95,6 +109,8 @@ fn reserveFile(path: [*:0]const u8, exclusive: bool, avoid: [27]?*Output, reserv
     return file;
 }
 const Retry = @import("home/output_recovery.zig").Retry;
+const FactoryPolicy = @import("home/factory_policy.zig");
+const Factory = struct { id: u64, policy: FactoryPolicy.State, generation: u64 = 0, started: bool = false };
 const io = @import("output_io.zig");
 const Output = struct {
     io_config: ?io.Config = null,
@@ -376,6 +392,8 @@ const Recorder = struct {
     preparing: [8]?*Prepared = .{null} ** 8,
     jobs: [8]?*Preparation = .{null} ** 8,
     automatic: [8]?Automatic = .{null} ** 8,
+    factory_policies: [8]?Factory = @splat(null),
+    factory_issued: u64 = 0,
     encoder: jpeg.Encoder,
     output: ?*Output = null,
     next: ?*Output = null,
@@ -402,7 +420,33 @@ const Recorder = struct {
     delay_ns: ?u64 = null,
     delay_cut: ?u64 = null,
     delay_scratch: []u8 = &.{},
+    fn factory(self: *Recorder, id: u64) ?*Factory {
+        for (&self.factory_policies) |*entry| if (entry.*) |*value| if (value.id == id) return value;
+        return null;
+    }
+    fn factoryReservations(self: *const Recorder) usize {
+        var total: usize = 0;
+        for (self.factory_policies) |entry| if (entry) |value| {
+            if (value.policy.pending != null and !value.started) total += 1;
+        };
+        return total;
+    }
+    fn freeFactoryJobs(self: *const Recorder) usize {
+        var total: usize = 0;
+        for (self.jobs) |entry| {
+            if (entry == null) total += 1;
+        }
+        return total;
+    }
+    fn freeRecipes(self: *const Recorder) usize {
+        var total: usize = 0;
+        for (self.preparing) |entry| {
+            if (entry == null) total += 1;
+        }
+        return total;
+    }
     fn preparingId(self: *Recorder, id: u64) bool {
+        if (self.factory(id)) |value| if (value.policy.pending != null and !value.started) return true;
         if (hasJob(self, id)) return true;
         for (self.preparing) |slot| if (slot) |job| if (job.id == id) return true;
         return false;
@@ -915,6 +959,7 @@ pub fn closeReport(p: *c.zc_recorder, results: ?[*]c.zc_output_result, capacity:
     count.* = 0;
     if (results != null and capacity < 8) return c.ZC_INVALID;
     const self = recorder(p);
+    for (self.factory_policies) |entry| if (entry) |value| if (value.policy.pending != null) return c.ZC_BUSY;
     // External recipes remain caller-owned. Internal jobs are cancelled/joined
     // before recorder storage is consumed. Never strand a worker on close.
     for (self.preparing) |slot| if (slot) |recipe| {
@@ -1119,6 +1164,14 @@ pub fn audioBufferStats(p: *c.zc_recorder, out: *c.zc_audio_buffer_stats) c_int 
 }
 
 const Frozen = struct {
+    callbacks: bool = false,
+    output: ?*Output = null,
+    scratch: []u8 = &.{},
+    index: usize = 0,
+    complete: bool = false,
+    failure: c_int = c.ZC_OK,
+    owner: ?*Recorder = null,
+    avoid_ids: [81]?Identity = @splat(null),
     data: *Recorder,
     file: ?std.fs.File,
     is_mp4: bool,
@@ -1126,6 +1179,8 @@ const Frozen = struct {
     slot: usize,
     attempted: bool = false,
     fn deinit(s: *Frozen) void {
+        if (s.output) |out| out.deinit();
+        A.free(s.scratch);
         s.data.deinit();
         if (s.file) |f| f.close();
         s.reservations.release(s.slot);
@@ -1161,7 +1216,7 @@ fn freezeImpl(self: *Recorder, path: [*:0]const u8) !*Frozen {
 }
 pub fn writeSnapshot(p: *c.zc_snapshot) c_int {
     const s: *Frozen = @ptrCast(@alignCast(p));
-    if (s.attempted) return c.ZC_STATE;
+    if (s.attempted or s.callbacks) return c.ZC_STATE;
     s.attempted = true;
     writeFrozen(s) catch |err| return status(err);
     return c.ZC_OK;
@@ -1572,6 +1627,7 @@ pub fn prepareSplit(p: *c.zc_recorder, id: u64, path: ?[*:0]const u8, cb: ?*cons
     return c.ZC_OK;
 }
 fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovering: bool, deferred: bool, result: *?*c.zc_prepared_output) !void {
+    if (self.freeRecipes() <= self.factoryReservations()) return error.Busy;
     if (self.reservations == null) {
         self.reservations = try A.create(Reservations);
         self.reservations.?.* = .{};
@@ -1732,6 +1788,10 @@ fn hasJob(self: *Recorder, id: u64) bool {
     return false;
 }
 fn beginPreparation(self: *Recorder, id: u64, path: ?[*:0]const u8, cb: ?*const c.zc_output_callbacks, recovery: bool, automatic: ?usize, result: *?*c.zc_preparation_job) c_int {
+    if (self.freeFactoryJobs() <= self.factoryReservations()) {
+        result.* = null;
+        return c.ZC_BUSY;
+    }
     result.* = null;
     if ((path == null) == (cb == null)) return c.ZC_INVALID;
     const old = self.getOutput(id) orelse return c.ZC_STATE;
@@ -1905,7 +1965,7 @@ fn closePreparations(self: *Recorder) c_int {
 pub fn setAutomatic(p: *c.zc_recorder, id: u64, pattern: ?[*:0]const u8, next: u64, recovery: u32, duration: u64, bytes: u64) c_int {
     const self = recorder(p);
     const out = self.getOutput(id) orelse return c.ZC_STATE;
-    if (out.host_hold) return c.ZC_BUSY;
+    if (out.host_hold or self.factory(id) != null) return c.ZC_BUSY;
     if (recovery > 1 or hasJob(self, id) or self.preparingId(id)) return c.ZC_STATE;
     var slot: ?usize = null;
     for (self.automatic, 0..) |entry, i| if (entry) |value| {
@@ -2154,5 +2214,179 @@ pub fn discardHeldOutput(p: *c.zc_recorder) c_int {
     if (!out.host_hold) return c.ZC_STATE;
     self.output = null;
     out.deinit();
+    return c.ZC_OK;
+}
+
+pub fn freezeCallbacks(p: *c.zc_recorder, result: *?*c.zc_snapshot) c_int {
+    result.* = null;
+    const self = recorder(p);
+    if (self.failed) return c.ZC_STATE;
+    const start = self.replayStart() catch |err| return status(err);
+    const end = self.packetEnd() catch |err| return status(err);
+    self.checkSnapshotAudio(start, end) catch |err| return status(err);
+    if (self.reservations == null) {
+        self.reservations = A.create(Reservations) catch return c.ZC_NOMEM;
+        self.reservations.?.* = .{};
+    }
+    const r = self.reservations.?;
+    const slot = r.reserveSnapshot(.{ null, null, null }) catch |err| return status(err);
+    const copy = cloneHistory(self, start, end) catch |err| {
+        r.release(slot);
+        return status(err);
+    };
+    const frozen = A.create(Frozen) catch {
+        copy.deinit();
+        r.release(slot);
+        return c.ZC_NOMEM;
+    };
+    frozen.* = .{ .data = copy, .file = null, .is_mp4 = false, .reservations = r, .slot = slot, .callbacks = true, .owner = self };
+    var largest: usize = 0;
+    for (0..copy.ring.?.count) |i| largest = @max(largest, copy.ring.?.entry(i).?.length);
+    frozen.scratch = A.alloc(u8, largest) catch {
+        frozen.deinit();
+        return c.ZC_NOMEM;
+    };
+    var index: usize = 0;
+    for (self.avoid()) |maybe| if (maybe) |out| {
+        var ids: [3]?Identity = .{ null, null, null };
+        if (out.file) |file| ids[0] = Identity.of(file) catch {
+            frozen.deinit();
+            return c.ZC_INVALID;
+        };
+        if (out.callbacks) |cb| for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| {
+            if (fd >= 0) ids[i] = Identity.of(.{ .handle = fd }) catch {
+                frozen.deinit();
+                return c.ZC_INVALID;
+            };
+        };
+        for (ids) |id| {
+            frozen.avoid_ids[index] = id;
+            index += 1;
+        }
+    };
+    result.* = @ptrCast(frozen);
+    return c.ZC_OK;
+}
+pub fn openSnapshotCallbacks(p: *c.zc_snapshot, live: ?*c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    const s: *Frozen = @ptrCast(@alignCast(p));
+    if (!s.callbacks or s.attempted) return c.ZC_STATE;
+    s.attempted = true;
+    if (live) |rec| {
+        if (recorder(rec) != s.owner) return c.ZC_INVALID;
+        checkCallbacks(recorder(rec), cb, false) catch |err| return status(err);
+    }
+    checkCallbacks(s.data, cb, false) catch |err| return status(err);
+    var ids: [3]?Identity = .{ null, null, null };
+    for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| if (fd >= 0) {
+        ids[i] = Identity.of(.{ .handle = fd }) catch return c.ZC_INVALID;
+        for (s.avoid_ids) |other| if (other) |value| if (ids[i].?.equal(value)) return c.ZC_INVALID;
+    };
+    s.reservations.bindSnapshot(s.slot, ids) catch |err| return status(err);
+    s.output = Output.initCallbacks(cb.*, &s.data.config, s.data.headers, &s.data.recording, s.data.audio_bitrate) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn stepSnapshot(p: *c.zc_snapshot) c_int {
+    const s: *Frozen = @ptrCast(@alignCast(p));
+    const out = s.output orelse return c.ZC_STATE;
+    if (s.failure != c.ZC_OK) return s.failure;
+    if (s.complete) return c.ZC_STATE;
+    stepSnapshotImpl(s, out) catch |err| {
+        s.failure = status(err);
+        return s.failure;
+    };
+    return if (s.complete) c.ZC_OK else c.ZC_TIMEOUT;
+}
+fn stepSnapshotImpl(s: *Frozen, out: *Output) !void {
+    const self = s.data;
+    const ring = &self.ring.?;
+    if (s.index < ring.count) {
+        const entry = ring.entry(s.index).?;
+        Recorder.prime(out, entry.timestamp, entry.key);
+        try self.drainOutput(out, entry.timestamp);
+        try out.packet(try ring.copy(s.index, s.scratch), entry.timestamp, entry.key);
+        s.index += 1;
+    } else {
+        const end = try self.packetEnd();
+        try self.drainOutput(out, end);
+        try out.finish(self.nominal(), end);
+        s.complete = true;
+    }
+}
+
+pub fn setFactory(p: *c.zc_recorder, id: u64, config: ?*const c.zc_factory_config) c_int {
+    const self = recorder(p);
+    var slot: ?usize = null;
+    for (self.factory_policies, 0..) |entry, i| if (entry) |value| if (value.id == id) {
+        slot = i;
+        break;
+    };
+    if (slot) |i| if (self.factory_policies[i].?.policy.pending != null) return c.ZC_BUSY;
+    if (config == null) {
+        if (slot) |i| self.factory_policies[i] = null;
+        return c.ZC_OK;
+    }
+    const cfg = config.?;
+    if (cfg.struct_size != @sizeOf(c.zc_factory_config) or cfg.reserved != 0 or cfg.mode < 1 or cfg.mode > 2) return c.ZC_INVALID;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (self.failed or out.host_hold or self.preparingId(id) or hasJob(self, id)) return c.ZC_BUSY;
+    if (cfg.mode == 2 and !self.isolate) return c.ZC_STATE;
+    for (self.automatic) |entry| if (entry) |value| if (value.id == id) return c.ZC_BUSY;
+    const settings = FactoryPolicy.Config{ .mode = if (cfg.mode == 1) .rotation else .recovery, .next_index = cfg.next_index, .duration_ns = cfg.duration_ns, .max_bytes = cfg.max_bytes, .max_attempts = cfg.max_attempts, .initial_ns = cfg.initial_ns, .maximum_ns = cfg.maximum_ns };
+    var policy = FactoryPolicy.State.init(settings) catch return c.ZC_INVALID;
+    if (slot) |i| policy.issued = self.factory_policies[i].?.policy.issued else {
+        for (self.factory_policies, 0..) |entry, i| if (entry == null) {
+            slot = i;
+            break;
+        };
+    }
+    const i = slot orelse return c.ZC_BUSY;
+    self.factory_policies[i] = .{ .id = id, .policy = policy };
+    return c.ZC_OK;
+}
+fn factoryStateValue(f: *const Factory) c.zc_factory_state {
+    const claim = f.policy.pending;
+    return .{ .next_index = f.policy.next_index, .ticket = if (claim) |v| v.ticket else 0, .index = if (claim) |v| v.index else 0, .generation = f.generation, .deadline_ns = f.policy.retry.deadline orelse 0, .error_code = f.policy.error_code, .mode = if (f.policy.config.mode == .rotation) 1 else 2, .pending = @intFromBool(claim != null), .attempts = f.policy.retry.attempts, .limit = f.policy.retry.limit, .exhausted = @intFromBool(f.policy.index_exhausted or f.policy.retry.exhausted() or f.policy.issued == std.math.maxInt(u64)), .retry_pending = @intFromBool(f.policy.retry.deadline != null), .reserved = 0 };
+}
+pub fn factoryState(p: *c.zc_recorder, id: u64, state: *c.zc_factory_state) c_int {
+    state.* = std.mem.zeroes(c.zc_factory_state);
+    const f = recorder(p).factory(id) orelse return c.ZC_STATE;
+    state.* = factoryStateValue(f);
+    return c.ZC_OK;
+}
+pub fn claimFactory(p: *c.zc_recorder, id: u64, state: *c.zc_factory_state) c_int {
+    state.* = std.mem.zeroes(c.zc_factory_state);
+    const self = recorder(p);
+    const f = self.factory(id) orelse return c.ZC_STATE;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    const reserved = self.factoryReservations();
+    const available = !self.failed and !out.host_hold and out.retired == null and !self.preparingId(id) and !hasJob(self, id) and self.freeFactoryJobs() > reserved and self.freeRecipes() > reserved and (out.worker == null or out.failure == c.ZC_OK or out.worker.?.ready());
+    const cut = out.delivery_cut orelse out.first_ns;
+    if (f.policy.pending == null) f.policy.issued = self.factory_issued;
+    const claim = f.policy.poll(.{ .now = self.last_ns, .frames = out.frames, .elapsed_ns = if (cut >= out.first_ns) cut - out.first_ns else 0, .bytes = out.bytes, .failed = out.failure != c.ZC_OK, .available = available });
+    if (claim) |value| {
+        f.generation = out.generation;
+        self.factory_issued = value.ticket;
+    }
+    state.* = factoryStateValue(f);
+    return if (claim != null) c.ZC_OK else c.ZC_TIMEOUT;
+}
+pub fn prepareFactory(p: *c.zc_recorder, id: u64, ticket: u64, cb: *const c.zc_output_callbacks, result: *?*c.zc_preparation_job) c_int {
+    result.* = null;
+    const self = recorder(p);
+    const f = self.factory(id) orelse return c.ZC_STATE;
+    const claim = f.policy.pending orelse return c.ZC_STATE;
+    if (claim.ticket != ticket or f.started) return c.ZC_STALE;
+    const out = self.getOutput(id) orelse return c.ZC_STATE;
+    if (out.generation != f.generation) return c.ZC_STALE;
+    f.started = true;
+    const code = prepareHeld(p, id, null, cb, @intFromBool(f.policy.config.mode == .recovery), result);
+    if (code != c.ZC_OK) f.started = false;
+    return code;
+}
+pub fn finishFactory(p: *c.zc_recorder, id: u64, ticket: u64, code: c_int) c_int {
+    const f = recorder(p).factory(id) orelse return c.ZC_STATE;
+    if (hasJob(recorder(p), id)) return c.ZC_BUSY;
+    f.policy.finishAt(ticket, code, recorder(p).last_ns) catch return c.ZC_STALE;
+    f.started = false;
     return c.ZC_OK;
 }

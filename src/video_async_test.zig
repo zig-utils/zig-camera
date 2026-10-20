@@ -441,3 +441,95 @@ test "held replay overflow can be discarded without poisoning healthy consumers"
     try std.testing.expectEqual(@as(usize, 13), healthy);
     try std.testing.expectEqual(@as(usize, 0), pending);
 }
+
+test "callback snapshots share bounded slots, own history across close and step exactly once" {
+    const rec = try circular();
+    for (0..4) |i| try frameWrite(rec, i);
+    var first: ?*c.zc_snapshot = null;
+    var second: ?*c.zc_snapshot = null;
+    var overflow: ?*c.zc_snapshot = null;
+    try std.testing.expectEqual(c.ZC_OK, v.freezeCallbacks(rec, &first));
+    defer v.closeSnapshot(first.?);
+    try std.testing.expectEqual(c.ZC_OK, v.freezeCallbacks(rec, &second));
+    try std.testing.expectEqual(c.ZC_BUSY, v.freezeCallbacks(rec, &overflow));
+    v.closeSnapshot(second.?);
+    for (4..8) |i| try frameWrite(rec, i);
+    try std.testing.expectEqual(c.ZC_OK, v.close(rec));
+    var delivered: usize = 0;
+    var cb = packets(&delivered);
+    try std.testing.expectEqual(c.ZC_OK, v.openSnapshotCallbacks(first.?, null, &cb));
+    try std.testing.expectEqual(c.ZC_STATE, v.writeSnapshot(first.?));
+    while (v.stepSnapshot(first.?) == c.ZC_TIMEOUT) {}
+    try std.testing.expectEqual(@as(usize, 4), delivered);
+    try std.testing.expectEqual(c.ZC_STATE, v.stepSnapshot(first.?));
+}
+fn factoryConfig() c.zc_factory_config {
+    return .{ .struct_size = @sizeOf(c.zc_factory_config), .mode = 1, .max_attempts = 3, .reserved = 0, .next_index = 1, .duration_ns = 0, .max_bytes = 1, .initial_ns = 0, .maximum_ns = 0 };
+}
+test "factory admission reserves native slots and tickets survive reconfiguration" {
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    try frameWrite(rec, 0);
+    var cfg = factoryConfig();
+    try std.testing.expectEqual(c.ZC_OK, v.setFactory(rec, 0, &cfg));
+    var state: c.zc_factory_state = undefined;
+    try std.testing.expectEqual(c.ZC_OK, v.claimFactory(rec, 0, &state));
+    const first = state.ticket;
+    try std.testing.expectEqual(c.ZC_BUSY, v.close(rec));
+    try std.testing.expectEqual(c.ZC_BUSY, v.setFactory(rec, 0, null));
+    var cb = packets(&delivered);
+    var blocked: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_BUSY, v.prepareAsync(rec, 0, null, &cb, 0, &blocked));
+    try std.testing.expectEqual(c.ZC_STALE, v.finishFactory(rec, 0, first + 1, 0));
+    try std.testing.expectEqual(c.ZC_OK, v.finishFactory(rec, 0, first, c.ZC_IO));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, v.claimFactory(rec, 0, &state));
+    try std.testing.expectEqual(c.ZC_OK, v.setFactory(rec, 0, null));
+    try std.testing.expectEqual(c.ZC_OK, v.setFactory(rec, 0, &cfg));
+    try std.testing.expectEqual(c.ZC_OK, v.claimFactory(rec, 0, &state));
+    try std.testing.expect(state.ticket > first);
+    try std.testing.expectEqual(c.ZC_STALE, v.finishFactory(rec, 0, first, 0));
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareFactory(rec, 0, state.ticket, &cb, &job));
+    try std.testing.expectEqual(c.ZC_OK, v.cancelPreparation(job.?));
+    const result = try terminal(rec, job.?);
+    try std.testing.expectEqual(c.ZC_STALE, result.error_code);
+    _ = v.closePreparation(job.?);
+    try std.testing.expectEqual(c.ZC_OK, v.finishFactory(rec, 0, state.ticket, c.ZC_STALE));
+}
+
+test "factory admission does not consume indices when retained native handles fill the pool" {
+    var counts: [8]usize = @splat(0);
+    const rec = try recorder(&counts[0]);
+    defer _ = v.close(rec);
+    var ids: [8]u64 = @splat(0);
+    for (1..8) |i| {
+        var cb = packets(&counts[i]);
+        try std.testing.expectEqual(c.ZC_OK, v.addCallbacks(rec, &cb, &ids[i]));
+    }
+    try frameWrite(rec, 0);
+    var jobs: [8]?*c.zc_preparation_job = @splat(null);
+    for (0..8) |i| {
+        var cb = packets(&counts[i]);
+        try std.testing.expectEqual(c.ZC_OK, v.prepareAsync(rec, ids[i], null, &cb, 0, &jobs[i]));
+        _ = v.cancelPreparation(jobs[i].?);
+        _ = try terminal(rec, jobs[i].?);
+    }
+    var cfg = factoryConfig();
+    try std.testing.expectEqual(c.ZC_OK, v.setFactory(rec, 0, &cfg));
+    var state: c.zc_factory_state = undefined;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, v.claimFactory(rec, 0, &state));
+    try std.testing.expectEqual(@as(u64, 1), state.next_index);
+    _ = v.closePreparation(jobs[0].?);
+    try std.testing.expectEqual(c.ZC_OK, v.claimFactory(rec, 0, &state));
+    var cb = packets(&counts[0]);
+    var blocked: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_BUSY, v.prepareAsync(rec, ids[1], null, &cb, 0, &blocked));
+    var job: ?*c.zc_preparation_job = null;
+    try std.testing.expectEqual(c.ZC_OK, v.prepareFactory(rec, 0, state.ticket, &cb, &job));
+    _ = v.cancelPreparation(job.?);
+    _ = try terminal(rec, job.?);
+    _ = v.closePreparation(job.?);
+    _ = v.finishFactory(rec, 0, state.ticket, c.ZC_STALE);
+    for (jobs[1..]) |old| _ = v.closePreparation(old.?);
+}

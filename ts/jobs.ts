@@ -22,6 +22,8 @@ export class BunJob<T> implements PromiseLike<T> {
   private timer?: ReturnType<typeof setTimeout>
   private abort?: () => void
   private operation: ((job: BunJob<T>) => Promise<T>) | undefined
+  private controller = new AbortController()
+  readonly signal = this.controller.signal
   readonly cancellation = new SharedArrayBuffer(8)
   error: unknown
   callbackError: unknown
@@ -101,6 +103,7 @@ export class BunJob<T> implements PromiseLike<T> {
     this.requested = true
     this.reason = reason
     Atomics.store(new Int32Array(this.cancellation), 0, 1)
+    this.controller.abort(reason)
     if (!this.claimed) this.finish(undefined, reason)
     return true
   }

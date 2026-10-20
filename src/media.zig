@@ -328,3 +328,27 @@ pub export fn zc_pts_clock_accept(state: *c.zc_pts_clock, source: u64, out: *u64
     out.* = value;
     return c.ZC_OK;
 }
+pub export fn zc_video_freeze_callbacks(p: *c.zc_recorder, out: *?*c.zc_snapshot) c_int {
+    return @import("video.zig").freezeCallbacks(p, out);
+}
+pub export fn zc_snapshot_open_callbacks(p: *c.zc_snapshot, live: ?*c.zc_recorder, cb: *const c.zc_output_callbacks) c_int {
+    return @import("video.zig").openSnapshotCallbacks(p, live, cb);
+}
+pub export fn zc_snapshot_step(p: *c.zc_snapshot) c_int {
+    return @import("video.zig").stepSnapshot(p);
+}
+pub export fn zc_video_set_factory(p: *c.zc_recorder, id: u64, cfg: ?*const c.zc_factory_config) c_int {
+    return @import("video.zig").setFactory(p, id, cfg);
+}
+pub export fn zc_video_factory_state(p: *c.zc_recorder, id: u64, state: *c.zc_factory_state) c_int {
+    return @import("video.zig").factoryState(p, id, state);
+}
+pub export fn zc_video_claim_factory(p: *c.zc_recorder, id: u64, state: *c.zc_factory_state) c_int {
+    return @import("video.zig").claimFactory(p, id, state);
+}
+pub export fn zc_video_prepare_factory(p: *c.zc_recorder, id: u64, ticket: u64, cb: *const c.zc_output_callbacks, out: *?*c.zc_preparation_job) c_int {
+    return @import("video.zig").prepareFactory(p, id, ticket, cb, out);
+}
+pub export fn zc_video_finish_factory(p: *c.zc_recorder, id: u64, ticket: u64, code: c_int) c_int {
+    return @import("video.zig").finishFactory(p, id, ticket, code);
+}

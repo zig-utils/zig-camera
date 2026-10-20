@@ -162,3 +162,12 @@ Home shared PTS clock (0.21):
   It supplies exact source-clock epochs across separately rebased output segments.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/ffb6a26ad3983c13ebc20df8d768b439b272aea8
+
+Home asynchronous factory policy (0.22):
+- src/home/factory_policy.zig and src/home/output_recovery.zig are verbatim
+  packages/video/src/core modules at be777d256133638f6242dfdd7a7f2bd847882906.
+  Factory admission composes the existing recording thresholds and retry helper;
+  failed asynchronous construction arms backoff at completion without spending
+  another attempt. Supersedes output_recovery listed above.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/be777d256133638f6242dfdd7a7f2bd847882906

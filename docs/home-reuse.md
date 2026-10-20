@@ -18,6 +18,7 @@ Bun facade are the active implementation and test surfaces.
 | video packet_output | Stable bounded output slots, Annex B and exact PTS helpers |
 | video recording_policy | Soft duration/byte thresholds that ignore empty or pending output |
 | video output_recovery | Lifetime retry budget and capped backoff on supplied media clock |
+| video factory_policy (new in 0.22) | Reserved asynchronous claims, stale-ticket protection and fresh indices |
 | video owned_fifo | Owned output bytes/metadata, in-flight accounting and acknowledgement |
 | async completion_gate / completion_watermark | Terminal completion and retained fixed-prefix I/O drains |
 | async preparation_gate | Cooperative cancellation and serialized ready/publication boundary |
@@ -57,3 +58,16 @@ ffb6a26ad3983c13ebc20df8d768b439b272aea8 and vendored verbatim. Tests cover sour
 gaps, nanosecond epochs near u64 maximum, microsecond collisions and rejection
 without state changes on both pinned and development Zig. Home's helper workflow
 includes the module in its compiler/architecture matrix.
+
+The 0.22 audit reuses packet_ring.cloneFrom and pcm_timeline.cloneWindow for
+independent custom snapshots, and delivery_fifo for bounded, acknowledged replay.
+The new factory_policy composes recording_policy and output_recovery instead of
+moving scheduling, index ownership or retry budgets into TypeScript. Home's
+Retry.observe now arms backoff when async construction completes without
+consuming another attempt. Factory admission, pending claims, stale tickets,
+positive-result rejection, failure latching, lifetime budgets and maximum-u64
+index exhaustion are tested with pinned and development Zig. The helpers,
+package export, documentation and compiler/architecture workflow coverage were
+contributed to Home main at be777d256133638f6242dfdd7a7f2bd847882906 before verbatim
+camera reuse. Bun holds application functions; Zig owns admission, media clocks,
+queue storage, recipes, generation validation and keyframe publication.

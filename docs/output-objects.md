@@ -174,13 +174,79 @@ Use PtsOutput(output, pts) to apply the same observer to ordinary Recorder sinks
 CircularOutput2 wraps its primary automatically. PTS is a delivery sidecar, not an
 input log: discarded inactive frames and audio produce no PTS lines.
 
+## Custom snapshots
+
+`recorder.snapshot(output, options)` returns a cancellable BunJob. It freezes the
+retained encoded GOP and synchronized PCM at submission, before any async sink
+hook runs. Later capture or ring eviction cannot alter the clip. At most two
+frozen windows (path and custom combined) exist per recorder. These jobs remain
+independent of recorder close; await or cancel them and dispose their output
+resources separately. A recorder needs retained circular history to snapshot.
+
+```ts
+const clip = recorder.snapshot(new MuxedOutput('event.mp4'), {
+  timeoutMs: 10000,
+})
+await clip
+```
+
+Replay emits one video interval at a time through the acknowledged bounded host
+mailbox, including Home AAC tail/priming and MP4 patches. Binding checks source
+and snapshot file/PTS aliases before commit. A snapshot using shared PTS needs a
+fresh observer; replay cannot reuse the live output's observer or source epoch.
+Output start/header setup and each native replay interval remain synchronous;
+async hooks do not make these calls realtime. Cancellation waits for in-flight
+hooks and discards the unpublished writer. Arbitrary accepted sink writes cannot
+be undone; built-in files use identity-checked discard cleanup.
+
+## Rotation and recovery factories
+
+```ts
+recorder.setRotation(async ({ index, signal, streams }) => {
+  // Use signal to cancel slow application-side construction.
+  if (signal.aborted) throw signal.reason
+  return new MuxedOutput(`trail-${index}.mp4`)
+}, { durationMs: 5000, nextIndex: 1n, timeoutMs: 10000 })
+recorder.setRecovery(secondaryId, async ({ index }) =>
+  new MuxedOutput(`retry-${index}.mp4`), {
+  maxAttempts: 3, retryDelayMs: 100, maxDelayMs: 5000,
+})
+// Before manually splitting, detaching, or changing this output's routing:
+await recorder.stopAutomatic(secondaryId)
+```
+
+Each factory receives id, index, current generation, reason, copied stream
+metadata and AbortSignal. It runs on Bun's event loop under the same no-reentry
+guard as output hooks. Return a fresh output object; active sinks and aliased
+resources are rejected. Native policy reserves preparation capacity before
+calling the factory. Async start/header acceptance precedes keyframe publication,
+and completion includes predecessor hook retirement. Each factory consumes one
+of the recorder's 16 lifecycle slots and one of eight native preparation slots.
+Indices/tickets never wrap; rejection before admission consumes neither an index
+nor an attempt. An admitted failure or cancellation consumes its index.
+
+Rotation errors latch while the old healthy output continues. Reconfigure idle
+automation to retry. Recovery requires isolation and uses a lifetime attempt
+budget and capped media-clock backoff, armed when construction fails; no wall
+clock timer retries a stalled capture stream. automaticState exposes pending,
+nextIndex, errorCode and the original error; factory states also expose ticket,
+generation, attempts, exhaustion and explicit retryPending (including zero-delay
+retries). recoveryState exposes the retry budget/deadline.
+
+stopAutomatic cancels and awaits factory cleanup. Recorder close does the same,
+including a staged split with no future frame. Deadlines and AbortSignal are
+cooperative: a factory or hook must eventually return before cleanup finishes.
+A late fresh result is discarded, never published. Cancellation after the native
+publication gate is released is rejected; stop waits for that handoff. Duration
+and byte thresholds remain soft during preparation and keyframe waits.
+CircularOutput2 wraps primary factory results with its shared PTS observer;
+return an explicit PtsOutput to recover with a fresh observer after PTS failure.
+
 ## Remaining coverage
 
-Automatic filename rotation/recovery applies to paths; custom objects use
-explicit split/recovery jobs. setIO/ioStats describe native path workers, not
-host-mailbox telemetry. Arbitrary upstream constructor signatures, custom timed
-producer waits, custom sink snapshot factories and full Python-class API
-compatibility remain work in progress.
+setIO/ioStats describe native path workers, not host-mailbox telemetry. Arbitrary
+upstream constructor signatures, custom timed producer waits and full Picamera2
+class/API compatibility remain work in progress.
 
 See [coverage](parity.md), [native jobs](native-jobs.md), and the
 [C ABI contract](../include/zig_camera.h).

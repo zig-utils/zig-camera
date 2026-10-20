@@ -427,6 +427,24 @@ int zc_video_discard_held_output(zc_recorder *);
 typedef struct {uint64_t first_ns,last_ns;uint32_t initialized,reserved;} zc_pts_clock;
 void zc_default_pts_clock(zc_pts_clock *);
 int zc_pts_clock_accept(zc_pts_clock *,uint64_t source_ns,uint64_t *timestamp_us);
+/* Owned custom snapshots share the two-window limit with file snapshots.
+ * Freeze before async hooks. Bind is serialized with the live source, or pass
+ * NULL only after source close and its callback owners have fully retired.
+ * Step one video interval, drain host writes; final OK includes tail/patches.
+ * Close always consumes the snapshot, even after failed binding/cancellation. */
+int zc_video_freeze_callbacks(zc_recorder *,zc_snapshot **);
+int zc_snapshot_open_callbacks(zc_snapshot *,zc_recorder *live,const zc_output_callbacks *);
+int zc_snapshot_step(zc_snapshot *);
+/* Native media-clock policy; Bun owns the asynchronous factory/hook invocation.
+ * mode 1=rotation, 2=recovery. NULL disables an idle factory. Claims reserve
+ * preparation admission; ticket-matched finish releases it after cleanup. */
+typedef struct {uint32_t struct_size,mode,max_attempts,reserved;uint64_t next_index,duration_ns,max_bytes,initial_ns,maximum_ns;} zc_factory_config;
+typedef struct {uint64_t next_index,ticket,index,generation,deadline_ns;int32_t error_code;uint32_t mode,pending,attempts,limit,exhausted,retry_pending,reserved;} zc_factory_state;
+int zc_video_set_factory(zc_recorder *,uint64_t id,const zc_factory_config *);
+int zc_video_factory_state(zc_recorder *,uint64_t id,zc_factory_state *);
+int zc_video_claim_factory(zc_recorder *,uint64_t id,zc_factory_state *);
+int zc_video_prepare_factory(zc_recorder *,uint64_t id,uint64_t ticket,const zc_output_callbacks *,zc_preparation_job **);
+int zc_video_finish_factory(zc_recorder *,uint64_t id,uint64_t ticket,int code);
 
 #ifdef __cplusplus
 }
