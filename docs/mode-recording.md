@@ -41,7 +41,8 @@ Preview pauses while the worker owns the camera and is recreated on Bun's UI
 thread. Temporary captures, cancellation and errors restore the previous mode.
 Preview recreation failure also triggers rollback. Restoration failures are
 reported alongside the original error; they cannot promise a working camera.
-Runtime controls are not independently snapshotted/reapplied across reopen.
+Accepted runtime settings are snapshotted at claim and atomically replayed before
+stream start, including rollback. See [control restoration](controls.md#restoration-across-mode-switches).
 
 Every method returns a `BunJob<T>`: `await job`, `job.wait()` and `job.result()`
 read the same terminal result. `cancel()` or `AbortSignal` requests cooperative
@@ -139,5 +140,5 @@ gap and provides no continuous frame/audio guarantee.
 Job deadlines default to ten seconds, including draining/setup time. Cancellation
 and deadlines cannot interrupt an entered flush, native call or user hook; cleanup
 can extend past the deadline. operationDone fences both owners before callbacks
-run; cleanupDone also includes signalFunction and admission release. Existing
-runtime-control restoration and physical Pi A/V validation remain outstanding.
+run; cleanupDone also includes signalFunction and admission release. Physical Pi
+A/V validation remains outstanding.

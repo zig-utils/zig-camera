@@ -223,3 +223,11 @@ against negotiated capture dimensions before hooks/publication; its exact mask
 requires proposed width (bit 0) and height (bit 1) independently. Failure leaves
 the input configuration unchanged. Direct C callers retain responsibility for
 serializing camera/recorder ownership and joining worker/output cleanup.
+
+Mode workers now copy accepted persistent controls from zc_get_controls at claim
+and call zc_restore_controls before each new stream start, including previous-mode
+restoration. The core stages bounded desired state with Home keyed_state and
+publishes it only after backend acceptance. It excludes one-shot AF commands and
+translates driver metadata revisions onto the carried logical base. The Bun
+checkpoint owns its bytes across worker handoff; no frame lease or callback is
+retained. See [control restoration](controls.md#restoration-across-mode-switches).

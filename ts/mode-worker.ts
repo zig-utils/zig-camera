@@ -14,6 +14,9 @@ export interface ModeRequest {
   previousConfig: Uint8Array
   previousPipeline: Uint8Array
   previousStarted: boolean
+  controls: Uint8Array
+  controlCount: number
+  controlRevision: bigint
   cancel: SharedArrayBuffer
   deadline: number
   capture?: {
@@ -29,6 +32,9 @@ export interface ModeResponse {
   handle: Pointer
   code: number
   restoreCode: number
+  controlCode: number
+  restoreControlCode: number
+  controlRevision: bigint
   target: boolean
   started: boolean
   value?: Uint8Array
@@ -44,6 +50,9 @@ self.onmessage = ({ data: request }) => {
     handle: request.handle,
     code: 0,
     restoreCode: 0,
+    controlCode: 0,
+    restoreControlCode: 0,
+    controlRevision: request.controlRevision,
     target: false,
     started: request.previousStarted,
   }
@@ -53,11 +62,30 @@ self.onmessage = ({ data: request }) => {
   const check = (code: number) => {
     if (code !== 0) throw code
   }
-  const open = (config: Uint8Array, pipeline: Uint8Array, start: boolean) => {
+  const open = (
+    config: Uint8Array,
+    pipeline: Uint8Array,
+    start: boolean,
+    restoring = false,
+  ) => {
     const out = outPointer()
     check(n.zc_open_pipeline(ptr(config), ptr(pipeline), ptr(out)))
     result.handle = handle(out)
     result.started = false
+    const revision = new BigUint64Array(1)
+    const replay = n.zc_restore_controls(
+      result.handle,
+      request.controlCount ? ptr(request.controls) : null,
+      request.controlCount,
+      result.controlRevision,
+      ptr(revision),
+    )
+    if (replay !== 0) {
+      if (restoring) result.restoreControlCode = replay
+      else result.controlCode = replay
+      check(replay)
+    }
+    result.controlRevision = revision[0]
     if (start) {
       check(n.zc_start(result.handle))
       result.started = true
@@ -172,6 +200,7 @@ self.onmessage = ({ data: request }) => {
         request.previousConfig,
         request.previousPipeline,
         request.previousStarted,
+        true,
       )
       result.target = false
     } catch (code) {

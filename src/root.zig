@@ -24,6 +24,14 @@ pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;
 pub const Info = c.zc_info;
 pub const Stats = c.zc_stats;
+pub const ControlSnapshot = struct {
+    values: [c.ZC_MAX_CONTROLS]c.zc_control = undefined,
+    count: u32 = 0,
+    revision: u64 = 0,
+    pub fn controls(self: *const ControlSnapshot) []const c.zc_control {
+        return self.values[0..self.count];
+    }
+};
 pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device };
 pub fn check(rc: c_int) Error!void {
     return switch (rc) {
@@ -103,6 +111,19 @@ pub const Camera = struct {
         try check(core.zc_set_controls(self.handle, values.ptr, @intCast(values.len), &revision));
         return revision;
     }
+    /// Owned settings survive source close. Excludes AF trigger/pause commands.
+    pub fn controlSnapshot(self: Camera) Error!ControlSnapshot {
+        var snapshot: ControlSnapshot = .{};
+        try check(core.zc_get_controls(self.handle, &snapshot.values, snapshot.values.len, &snapshot.count, &snapshot.revision));
+        return snapshot;
+    }
+    /// Fresh camera only, before first start. Revalidates the complete snapshot.
+    pub fn restoreControls(self: Camera, values: []const c.zc_control, base: u64) Error!u64 {
+        if (values.len > c.ZC_MAX_CONTROLS) return error.Invalid;
+        var revision: u64 = 0;
+        try check(core.zc_restore_controls(self.handle, if (values.len == 0) null else values.ptr, @intCast(values.len), base, &revision));
+        return revision;
+    }
     pub fn waitMetadata(self: Camera, after_event: u64, timeout_ms: u32) Error!c.zc_metadata {
         var out: c.zc_metadata = undefined;
         try check(core.zc_wait_metadata(self.handle, after_event, timeout_ms, &out));
@@ -166,4 +187,32 @@ test {
     _ = dng;
     _ = @import("video.zig");
     _ = output_mailbox;
+}
+
+test "Zig control snapshots own settings after source close and replay before streaming" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var config = defaultConfig();
+    config.width = 16;
+    config.height = 16;
+    const source = try Camera.init(config);
+    const snapshot = blk: {
+        defer source.deinit() catch unreachable;
+        var value = std.mem.zeroes(c.zc_control);
+        value.id = c.ZC_EXPOSURE_TIME;
+        value.type = c.ZC_INT;
+        value.count = 1;
+        value.values[0] = 1800;
+        _ = try source.setControls((&value)[0..1]);
+        break :blk try source.controlSnapshot();
+    };
+    const target = try Camera.init(config);
+    defer target.deinit() catch unreachable;
+    const revision = try target.restoreControls(snapshot.controls(), snapshot.revision);
+    try std.testing.expect(revision > snapshot.revision);
+    try target.start();
+    var frame = try target.acquire(0);
+    defer frame.release() catch unreachable;
+    const meta = try frame.metadata();
+    try std.testing.expectEqual(revision, meta.control_revision);
+    try std.testing.expectEqual(@as(u32, 1800), meta.exposure_us);
 }

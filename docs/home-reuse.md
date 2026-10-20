@@ -156,3 +156,14 @@ finalization/producer worker, negotiates via the existing camera worker, prepare
 fresh Home codecs/containers and publishes only after preview/output readiness.
 The helper owns no native resources or locks. Existing Home queue, ownership,
 codec, container and finalization implementations remain in use.
+
+The 0.30 audit adds Home keyed_state.State(T, capacity), pushed to main at
+6e1926728200f9e35470ecdeeb9f3a088589695d and reused verbatim. It stages sorted
+fixed-capacity desired settings by nonzero ID, supports dependency removals before
+explicit updates, bounds both input lists and preserves the source on rejection.
+Zig 0.15.2 and development Zig tests cover replacement, removal, dependency
+invalidation, invalid batches and capacity failure. The Home packet-output
+workflow includes the helper. Camera core supplies control validation, transient
+AF exclusions, AE alias policy, backend acceptance and logical revision mapping.
+Bun mode workers copy the native snapshot and revalidate/replay it before every
+start and rollback; Home owns no camera pointer, revision, thread or lock.

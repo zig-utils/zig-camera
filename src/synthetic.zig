@@ -23,6 +23,7 @@ pub const Handle = struct {
     never_scan: bool = false,
     // Fault injection for the shared ownership state machine's tests.
     fail_queue: bool = false,
+    fail_controls_once: bool = false,
     fail_sync_begin: bool = false,
     fail_sync_end: bool = false,
     fail_stop_once: bool = false,
@@ -372,6 +373,10 @@ pub fn controlInfo(h: *Handle, id: u32, out: *c.zc_control_info) c_int {
     return c.ZC_OK;
 }
 pub fn setControls(h: *Handle, values: [*]const c.zc_control, count: u32, revision: *u64) c_int {
+    if (h.fail_controls_once) {
+        h.fail_controls_once = false;
+        return c.ZC_IO;
+    }
     if (h.revision == std.math.maxInt(u64)) return c.ZC_STATE;
     for (values[0..count]) |value| h.pending[value.id] = value;
     h.revision += 1;

@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.29 adds coordinated async camera/recorder mode switching. One job
-drains the previous recording, negotiates camera geometry, recreates preview and
-prepares codecs/output before publishing a matching session and resuming capture.
-Failure before publication restores the camera and retains the flushed recorder.
+Version 0.30 restores accepted runtime controls across permanent, temporary and
+coordinated recording mode switches. Native snapshots replay before streaming,
+revalidate target capabilities and preserve logical control revisions. Failed
+replay rolls back; one-shot autofocus commands are excluded.
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

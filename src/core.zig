@@ -7,7 +7,13 @@ const driver = if (options.libcamera) @import("real.zig") else @import("syntheti
 const State = enum { idle, queued, ready, leased };
 const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata) };
 const Gate = @import("home/completion_gate.zig").Gate;
+const ControlState = @import("home/keyed_state.zig").State(c.zc_control, c.ZC_MAX_CONTROLS);
 const Session = struct {
+    desired: ControlState = .{},
+    control_revision: u64 = 0,
+    control_base: u64 = 0,
+    restored: bool = false,
+    started_once: bool = false,
     latest: c.zc_metadata = std.mem.zeroes(c.zc_metadata),
     af: ?Gate = null,
     af_id: u64 = 0,
@@ -74,6 +80,12 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
         return;
     }
     self.latest = metadata.?.*;
+    self.latest.control_revision = std.math.add(u64, self.control_base, self.latest.control_revision) catch {
+        self.fatal = c.ZC_DEVICE;
+        self.stats.errors += 1;
+        self.changed.broadcast();
+        return;
+    };
     self.latest.event_id = self.stats.completed + 1;
     self.latest.struct_size = @sizeOf(c.zc_metadata);
     self.slots[index] = .{ .state = .ready, .frame = frame.?.*, .metadata = self.latest };
@@ -193,6 +205,7 @@ pub export fn zc_start(p: *c.zc_camera) c_int {
     if (rc != 0) return rc;
     self.mutex.lock();
     self.running = true;
+    self.started_once = true;
     self.mutex.unlock();
     for (0..self.info.buffer_count) |i| {
         const queued = self.queue(@intCast(i));
@@ -371,7 +384,28 @@ fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u6
             if (prev.id == v.id) return c.ZC_INVALID;
         }
     }
-    return driver.setControls(self.device.?, values.ptr, @intCast(values.len), revision);
+    if (self.control_revision == std.math.maxInt(u64)) return c.ZC_STATE;
+    var kept: [c.ZC_MAX_CONTROLS]c.zc_control = undefined;
+    var count: usize = 0;
+    var ae = false;
+    for (values) |value| {
+        if (value.id == c.ZC_AE_ENABLE) ae = true;
+        if (value.id == c.ZC_AF_TRIGGER or value.id == c.ZC_AF_PAUSE) continue;
+        kept[count] = value;
+        count += 1;
+    }
+    // AeEnable resets both modern mode aliases in the backend. Do not replay
+    // older explicit overrides; explicit modes in THIS batch still win.
+    const removed: []const u32 = if (ae) &.{ c.ZC_EXPOSURE_TIME_MODE, c.ZC_ANALOGUE_GAIN_MODE } else &.{};
+    const next = self.desired.updated(kept[0..count], removed) catch return c.ZC_INVALID;
+    var native_revision: u64 = 0;
+    const rc = driver.setControls(self.device.?, values.ptr, @intCast(values.len), &native_revision);
+    if (rc != 0) return rc;
+    const logical = std.math.add(u64, self.control_base, native_revision) catch return c.ZC_DEVICE;
+    self.desired = next;
+    self.control_revision = logical;
+    revision.* = logical;
+    return c.ZC_OK;
 }
 pub export fn zc_set_controls(p: *c.zc_camera, values: [*]const c.zc_control, count: u32, revision: *u64) c_int {
     if (count == 0 or count > c.ZC_MAX_CONTROLS) return c.ZC_INVALID;
@@ -387,6 +421,44 @@ pub export fn zc_set_controls(p: *c.zc_camera, values: [*]const c.zc_control, co
         }
     }
     return setControlsLocked(self, values[0..count], revision);
+}
+/// Accepted persistent requests, not inferred automatic sensor state.
+pub export fn zc_get_controls(p: *c.zc_camera, values: ?[*]c.zc_control, capacity: u32, count: *u32, revision: *u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    count.* = @intCast(self.desired.count);
+    revision.* = self.control_revision;
+    if (values) |out| {
+        if (capacity < self.desired.count) return c.ZC_INVALID;
+        @memcpy(out[0..self.desired.count], self.desired.values());
+    } else if (capacity != 0) return c.ZC_INVALID;
+    return c.ZC_OK;
+}
+/// Fresh unopened-to-stream session only. Revalidate before first start; retain
+/// logical revision continuity without replaying one-shot autofocus commands.
+pub export fn zc_restore_controls(p: *c.zc_camera, values: ?[*]const c.zc_control, count: u32, base: u64, revision: *u64) c_int {
+    if (count > c.ZC_MAX_CONTROLS or (count != 0 and values == null)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.started_once or self.restored or self.control_revision != 0 or self.desired.count != 0) return c.ZC_STATE;
+    if (count != 0) {
+        if (base == std.math.maxInt(u64)) return c.ZC_STATE;
+        for (values.?[0..count]) |value| if (value.id == c.ZC_AF_TRIGGER or value.id == c.ZC_AF_PAUSE) return c.ZC_INVALID;
+    }
+    self.control_base = base;
+    self.control_revision = base;
+    if (count != 0) {
+        const rc = setControlsLocked(self, values.?[0..count], revision);
+        if (rc != c.ZC_OK) {
+            self.control_base = 0;
+            self.control_revision = 0;
+            return rc;
+        }
+    } else revision.* = base;
+    self.restored = true;
+    return c.ZC_OK;
 }
 pub export fn zc_get_frame_metadata(p: *c.zc_camera, token: u64, out: *c.zc_metadata) c_int {
     const self = session(p);
@@ -792,4 +864,96 @@ test "pipeline mode selection and lores preserve ownership and ABI" {
     try std.testing.expectEqual(c.ZC_OK, zc_get_stream(p.?, f.token, c.ZC_LORES, &lores));
     try std.testing.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
     try std.testing.expectEqual(c.ZC_STALE, zc_get_stream(p.?, f.token, c.ZC_LORES, &lores));
+}
+
+test "persistent control journal commits only accepted settings, excludes commands and invalidates stale AE aliases" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 32;
+    cfg.height = 24;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    var revision: u64 = 0;
+    const manual = [_]c.zc_control{ testControl(c.ZC_EXPOSURE_TIME_MODE, c.ZC_INT, &.{1}), testControl(c.ZC_ANALOGUE_GAIN_MODE, c.ZC_INT, &.{1}), testControl(c.ZC_EXPOSURE_TIME, c.ZC_INT, &.{1500}) };
+    try std.testing.expectEqual(c.ZC_OK, zc_set_controls(camera.?, &manual, manual.len, &revision));
+    const before = revision;
+    session(camera.?).device.?.fail_controls_once = true;
+    var gain = testControl(c.ZC_ANALOGUE_GAIN, c.ZC_FLOAT, &.{2});
+    try std.testing.expectEqual(c.ZC_IO, zc_set_controls(camera.?, (&gain)[0..1].ptr, 1, &revision));
+    var data: [32]c.zc_control = undefined;
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_controls(camera.?, &data, data.len, &count, &revision));
+    try std.testing.expectEqual(before, revision);
+    try std.testing.expectEqual(@as(u32, 3), count);
+    const reset = [_]c.zc_control{ testControl(c.ZC_AF_TRIGGER, c.ZC_INT, &.{0}), testControl(c.ZC_AE_ENABLE, c.ZC_BOOL, &.{1}), testControl(c.ZC_AF_PAUSE, c.ZC_INT, &.{0}), gain };
+    try std.testing.expectEqual(c.ZC_OK, zc_set_controls(camera.?, &reset, reset.len, &revision));
+    try std.testing.expectEqual(c.ZC_OK, zc_get_controls(camera.?, &data, data.len, &count, &revision));
+    try std.testing.expectEqual(@as(u32, 3), count);
+    for (data[0..count]) |value| try std.testing.expect(value.id < c.ZC_AF_TRIGGER);
+    var sentinel: [1]c.zc_control = .{testControl(999, c.ZC_INT, &.{123})};
+    try std.testing.expectEqual(c.ZC_INVALID, zc_get_controls(camera.?, &sentinel, 1, &count, &revision));
+    try std.testing.expectEqual(@as(u32, 999), sentinel[0].id);
+}
+test "fresh control replay preserves logical revisions, rejects commands and is retryable after driver failure" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 32;
+    cfg.height = 24;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    var revision: u64 = 0;
+    var command = testControl(c.ZC_AF_TRIGGER, c.ZC_INT, &.{0});
+    try std.testing.expectEqual(c.ZC_INVALID, zc_restore_controls(camera.?, (&command)[0..1].ptr, 1, 100, &revision));
+    var exposure = testControl(c.ZC_EXPOSURE_TIME, c.ZC_INT, &.{1700});
+    session(camera.?).device.?.fail_controls_once = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_restore_controls(camera.?, (&exposure)[0..1].ptr, 1, 100, &revision));
+    var count: u32 = 99;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_controls(camera.?, null, 0, &count, &revision));
+    try std.testing.expectEqual(@as(u32, 0), count);
+    try std.testing.expectEqual(@as(u64, 0), revision);
+    try std.testing.expectEqual(c.ZC_OK, zc_restore_controls(camera.?, (&exposure)[0..1].ptr, 1, 100, &revision));
+    try std.testing.expectEqual(@as(u64, 101), revision);
+    try std.testing.expectEqual(c.ZC_STATE, zc_restore_controls(camera.?, null, 0, 0, &revision));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var meta: c.zc_metadata = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(camera.?, frame.token, &meta));
+    try std.testing.expectEqual(@as(u64, 101), meta.control_revision);
+    try std.testing.expectEqual(@as(u32, 1700), meta.exposure_us);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(camera.?, &id));
+    var state: u32 = 0;
+    for (0..12) |_| {
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+        if (zc_autofocus_wait(camera.?, id, 0, &state) == c.ZC_OK) break;
+    }
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), state);
+}
+test "control revision seeding and update exhaustion never wrap" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    var exposure = testControl(c.ZC_EXPOSURE_TIME, c.ZC_INT, &.{1700});
+    var revision: u64 = 0;
+    try std.testing.expectEqual(c.ZC_STATE, zc_restore_controls(camera.?, (&exposure)[0..1].ptr, 1, std.math.maxInt(u64), &revision));
+    try std.testing.expectEqual(c.ZC_OK, zc_restore_controls(camera.?, (&exposure)[0..1].ptr, 1, std.math.maxInt(u64) - 1, &revision));
+    try std.testing.expectEqual(std.math.maxInt(u64), revision);
+    try std.testing.expectEqual(c.ZC_STATE, zc_set_controls(camera.?, (&exposure)[0..1].ptr, 1, &revision));
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_controls(camera.?, null, 0, &count, &revision));
+    try std.testing.expectEqual(std.math.maxInt(u64), revision);
+    try std.testing.expectEqual(@as(u32, 1), count);
 }

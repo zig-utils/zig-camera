@@ -133,6 +133,16 @@ function decodeMetadata(data: Uint8Array) {
     analogueGain: d.getFloat32(56, true),
     lensPosition: d.getFloat32(60, true),
     frameDurationUs: u64(data, 72),
+    validMask: d.getUint32(4, true),
+    afPauseState: d.getInt32(48, true),
+    redGain: d.getFloat32(64, true),
+    blueGain: d.getFloat32(68, true),
+    crop: {
+      x: d.getInt32(80, true),
+      y: d.getInt32(84, true),
+      width: d.getInt32(88, true),
+      height: d.getInt32(92, true),
+    },
   }
 }
 class ModeWorkerFault extends Error {}
@@ -162,6 +172,11 @@ function runModeWorker(request: ModeRequest): Promise<ModeResponse> {
   })
 }
 
+export interface RuntimeControl {
+  id: number
+  type: 'bool' | 'int' | 'float' | 'rect'
+  values: number[]
+}
 export interface CameraOptions {
   simulate?: boolean
   width?: number
@@ -232,18 +247,7 @@ export class Frame {
     this.open()
     const data = storage(96)
     check(n.zc_get_frame_metadata(this.camera.handle, this.token, ptr(data)))
-    const d = view(data)
-    return {
-      eventId: u64(data, 8),
-      sequence: u64(data, 16),
-      timestampNs: u64(data, 24),
-      controlRevision: u64(data, 32),
-      exposureUs: d.getUint32(40, true),
-      afState: d.getInt32(44, true),
-      analogueGain: d.getFloat32(56, true),
-      lensPosition: d.getFloat32(60, true),
-      frameDurationUs: u64(data, 72),
-    }
+    return decodeMetadata(data)
   }
   saveJPEG(path: string, quality = 98) {
     this.open()
@@ -379,13 +383,59 @@ export class Camera {
     check(n.zc_acquire(this.handle, uint(timeoutMs), ptr(data)), 'acquire')
     return new Frame(this, data)
   }
-  setControls(
-    controls: {
-      id: number
-      type: 'bool' | 'int' | 'float' | 'rect'
-      values: number[]
-    }[],
-  ) {
+  controlSnapshot(): { revision: bigint; controls: RuntimeControl[] } {
+    this.assertOpen()
+    const snapshot = this.readControls(),
+      data = view(snapshot.controls)
+    return {
+      revision: snapshot.controlRevision,
+      controls: Array.from({ length: snapshot.controlCount }, (_, index) => {
+        const offset = index * 144,
+          count = data.getUint32(offset + 8, true)
+        return {
+          id: data.getUint32(offset, true),
+          type: (['bool', 'int', 'float', 'rect'] as const)[
+            data.getUint32(offset + 4, true) - 1
+          ],
+          values: Array.from({ length: count }, (_, i) =>
+            data.getFloat64(offset + 16 + i * 8, true),
+          ),
+        }
+      }),
+    }
+  }
+  private readControls() {
+    const controls = storage(32 * 144),
+      count = new Uint32Array(1),
+      revision = new BigUint64Array(1)
+    check(
+      n.zc_get_controls(
+        this.handle,
+        ptr(controls),
+        32,
+        ptr(count),
+        ptr(revision),
+      ),
+      'snapshot controls',
+    )
+    return {
+      controls: controls.slice(0, count[0] * 144),
+      controlCount: count[0],
+      controlRevision: revision[0],
+    }
+  }
+  private readModeControls() {
+    const snapshot = this.readControls()
+    // One target replay plus up to three rollback/fallback replays must fit before
+    // any camera ownership is consumed. Zero-control snapshots only seed a base.
+    if (
+      snapshot.controlCount &&
+      snapshot.controlRevision > 0xffffffffffffffffn - 4n
+    )
+      throw new CameraError(-2, 'control revision budget exhausted')
+    return snapshot
+  }
+  setControls(controls: RuntimeControl[]) {
     this.assertOpen()
     if (!controls.length || controls.length > 32)
       throw new RangeError('1..32 controls required')
@@ -599,8 +649,11 @@ export class Camera {
     const deadline = Date.now() + effective.timeoutMs
     const initialRecording = this.recording
     let reservation: ReturnType<Recorder[typeof coordinateRecorder]> | undefined
-    let claimed = false
+    let claimed = false,
+      released = false
     const release = () => {
+      if (released) return
+      released = true
       reservation?.release()
       if (this.coordinatedRecorder === recorder) {
         this.coordinatedRecorder = undefined
@@ -619,7 +672,8 @@ export class Camera {
         const previous = this.options,
           old = cameraConfiguration(previous)
         const started = this.started,
-          title = this.previewTitle
+          title = this.previewTitle,
+          controls = this.readModeControls()
         let response: ModeResponse | undefined,
           published = false,
           resumed: Recording | undefined
@@ -677,12 +731,21 @@ export class Camera {
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousStarted: started,
+            ...controls,
             cancel: current.cancellation,
             deadline,
             dropFrames,
           })
           this.handle = response.handle
           this.started = response.started
+          if (response.controlCode && !response.restoreCode)
+            throw Object.assign(
+              new CameraError(
+                response.code || response.controlCode,
+                'runtime control restoration',
+              ),
+              { controlCode: response.controlCode },
+            )
           if (Date.now() >= deadline && !current.cancelRequested)
             current.cancel(new CameraError(-3, 'mode deadline'))
           if (response.restoreCode)
@@ -691,7 +754,11 @@ export class Camera {
                 response.code || response.restoreCode,
                 'mode restoration',
               ),
-              { restoreCode: response.restoreCode },
+              {
+                restoreCode: response.restoreCode,
+                controlCode: response.controlCode,
+                restoreControlCode: response.restoreControlCode,
+              },
             )
           if (response.code === -5 && current.cancelRequested) current.check()
           check(response.code, 'recording camera mode')
@@ -757,6 +824,8 @@ export class Camera {
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousStarted: true,
+                ...controls,
+                controlRevision: response!.controlRevision,
                 cancel: new SharedArrayBuffer(8),
                 deadline: Infinity,
                 dropFrames: 0,
@@ -830,9 +899,7 @@ export class Camera {
     }
     this.coordinatedRecorder = recorder
     this.coordinatedInitial = initialRecording
-    void job.operationDone.then(() => {
-      if (!claimed) release()
-    })
+    void job.operationDone.then(release)
     this.modeJobs.add(job)
     this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
     return job
@@ -967,7 +1034,8 @@ export class Camera {
         const previous = this.options,
           old = cameraConfiguration(previous),
           started = this.started,
-          title = this.previewTitle
+          title = this.previewTitle,
+          controls = this.readModeControls()
         this.modeActive = true
         if (this.timer !== undefined) {
           clearTimeout(this.timer)
@@ -1001,6 +1069,7 @@ export class Camera {
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousStarted: started,
+            ...controls,
             cancel: current.cancellation,
             deadline,
             capture,
@@ -1008,6 +1077,14 @@ export class Camera {
           })
           this.handle = response.handle
           this.started = response.started
+          if (response.controlCode && !response.restoreCode)
+            throw Object.assign(
+              new CameraError(
+                response.code || response.controlCode,
+                'runtime control restoration',
+              ),
+              { controlCode: response.controlCode },
+            )
           if (Date.now() >= deadline && !current.cancelRequested)
             current.cancel(new CameraError(-3, 'mode deadline'))
           if (response.restoreCode) {
@@ -1016,6 +1093,10 @@ export class Camera {
               'mode restoration',
             ) as CameraError & { restoreCode: number }
             error.restoreCode = response.restoreCode
+            Object.assign(error, {
+              controlCode: response.controlCode,
+              restoreControlCode: response.restoreControlCode,
+            })
             throw error
           }
           if (response.code === -5 && current.cancelRequested) current.check()
@@ -1044,6 +1125,8 @@ export class Camera {
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousStarted: true,
+                ...controls,
+                controlRevision: response!.controlRevision,
                 cancel: new SharedArrayBuffer(8),
                 deadline: Infinity,
                 dropFrames: 0,

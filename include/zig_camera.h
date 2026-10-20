@@ -113,6 +113,15 @@ typedef struct {
  uint64_t frame_duration_us; int32_t crop[4];
 } zc_metadata;
 int zc_get_control_info(zc_camera *,uint32_t id,zc_control_info *);
+/* Copied, sorted persistent requests (AF trigger/pause excluded). Null/zero queries
+ * count/revision. Small buffers reject without copying. Revisions are logical
+ * request submissions, not physical application acknowledgements. */
+int zc_get_controls(zc_camera *,zc_control *,uint32_t capacity,uint32_t *count,uint64_t *revision);
+/* Replay atomically before the FIRST start on a fresh handle, once only. Rejects
+ * one-shot controls. The base carries revision continuity across reopened modes.
+ * Invalid/unsupported replay leaves the fresh handle retryable. Empty replay
+ * seeds the base without issuing controls. Never mutates an already-used handle. */
+int zc_restore_controls(zc_camera *,const zc_control *,uint32_t count,uint64_t base_revision,uint64_t *revision);
 int zc_set_controls(zc_camera *,const zc_control *,uint32_t count,uint64_t *revision);
 int zc_get_frame_metadata(zc_camera *,uint64_t token,zc_metadata *);
 /* Observer only: consumes no frame. event_id is monotonic across restart.

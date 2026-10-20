@@ -227,3 +227,11 @@ Home negotiated session geometry (0.29):
   and codec shapes without changing the proposal. Supersedes session_config above.
   The Home MIT license applies.
   https://github.com/home-lang/home/commit/79484d1a12ae9ab0b325474faebd2ad2a0cc3d3e
+
+Home bounded desired settings (0.30):
+- src/home/keyed_state.zig is verbatim from Home's
+  packages/video/src/core/keyed_state.zig at 6e1926728200f9e35470ecdeeb9f3a088589695d.
+  It stages sorted bounded settings with dependency invalidation and immutable
+  source state on failure. The camera publishes only after driver acceptance.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/6e1926728200f9e35470ecdeeb9f3a088589695d

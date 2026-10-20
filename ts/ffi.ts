@@ -93,6 +93,8 @@ export const native = dlopen(library, {
   zc_copy_rgb: { args: [p, p, n], returns: i },
   zc_copy_stream: { args: [p, p, n], returns: i },
   zc_get_frame_metadata: { args: [p, n, p], returns: i },
+  zc_get_controls: { args: [p, p, u, p, p], returns: i },
+  zc_restore_controls: { args: [p, p, u, n, p], returns: i },
   zc_set_controls: { args: [p, p, u, p], returns: i },
   zc_get_control_info: { args: [p, u, p], returns: i },
   zc_wait_metadata: { args: [p, n, u, p], returns: i },
