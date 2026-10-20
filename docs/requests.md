@@ -37,6 +37,15 @@ captureRequest for work that crosses an await. A published request handoff is se
 against cancellation; cancellation before handoff retires the owned reference.
 User completion callbacks do not extend native capture ownership.
 
+captureFocusLockedRequestAsync/captureFocusLockedRequest provide the same owned
+handoff after pausing continuous AF, validating a focused frame, and restoring
+prior pause intent. The selected request stays pinned throughout restoration.
+Failure/cancellation before publication discards it; after publication its caller
+owns release. Keep another physical buffer free for restoration acknowledgement.
+captureFocusLockedStreamsAsync/captureFocusLockedStreams return owned paired
+stream copies and metadata. See [continuous AF](controls.md#continuous-autofocus-and-focus-locked-capture)
+for restoration deadlines, buffer pressure and explicit recovery semantics.
+
 captureStreams(['main', 'raw', 'lores']) copies all selected streams and metadata
 from one completed request. Results own their arrays, so later captures cannot
 change them. Names are validated/copied at admission. copyStreams on a retained

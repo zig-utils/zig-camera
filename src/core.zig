@@ -308,8 +308,7 @@ pub export fn zc_retain(p: *c.zc_camera, token: u64, out: *c.zc_frame) c_int {
     defer self.mutex.unlock();
     const index = self.leases.resource(token) orelse return c.ZC_STALE;
     // Reserve primary reference capacity for every currently unleased buffer.
-    if (c.ZC_MAX_FRAME_REFERENCES - self.leases.used <= self.info.buffer_count - self.stats.leased) return c.ZC_BUSY;
-    const retained = self.leases.retain(token) catch |err| return if (err == error.SequenceExhausted) c.ZC_STATE else c.ZC_BUSY;
+    const retained = self.leases.retainReserved(token, self.info.buffer_count - self.stats.leased) catch |err| return if (err == error.SequenceExhausted) c.ZC_STATE else c.ZC_BUSY;
     out.* = self.slots[index].frame;
     out.token = retained;
     return c.ZC_OK;

@@ -255,3 +255,10 @@ Home retained capture request leases (0.33):
   Source commit: f29a36b4a0be60c9b781dbf1358826a5359cb10b.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/f29a36b4a0be60c9b781dbf1358826a5359cb10b
+
+Home reserved retained leases (0.34):
+- src/home/lease_pool.zig is verbatim packages/video/src/core/lease_pool.zig,
+  adding atomic reference retention with reserved producer capacity.
+  Source commit: 29f568c7a8e724b15da671de65fe097730a5dc7d.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/29f568c7a8e724b15da671de65fe097730a5dc7d

@@ -198,3 +198,15 @@ capacity bounds on pinned/development Zig Debug and ReleaseSafe. The camera
 serializes the helper under its existing locks, reserves primary-reference
 capacity for other buffers, and performs DMA end/requeue only on final release.
 Existing Home plane packing handles raw row copies and I420/RGB padding removal.
+
+The 0.34 audit extends Home lease_pool with retainReserved(token, freeEntries),
+published at 29f568c7a8e724b15da671de65fe097730a5dc7d and copied verbatim. This
+moves primary-producer reference reservation into Home's atomic retain operation.
+Tests prove reserved entries remain usable by other physical resources, oversized
+reservations reject without mutation, zero reservation matches retain, and
+sequence exhaustion preserves live ownership on pinned/development Zig Debug and
+ReleaseSafe. Camera core supplies the reservation under its existing locks.
+Focus-locked Bun requests transfer the pump's primary owner without an extra
+reference allocation; that owner remains private until CAF restoration succeeds,
+and cancellation/failure releases it. AF acknowledgement continues to use Home
+CompletionGate; codecs/containers and bounded media queues remain Home-based.

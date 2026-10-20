@@ -6,11 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.33 adds retained completed requests, cancellable capture jobs, and
-same-request main/raw/lores captures with metadata. Distinct native reference
-tokens keep DMA mappings pinned until the final owner releases them. Bayer buffer
-copies preserve packed/unpacked samples while removing row padding.
-See [request ownership](docs/requests.md) and the [parity worklist](docs/parity-plan.md).
+Version 0.34 adds focus-locked request handoff for asynchronous processing and
+paired main/raw/lores focus-locked captures. CAF restoration completes before
+publication; cancellation or failure retires unpublished requests. Home supplies
+reserved-capacity retained leases and revision-aware AF acknowledgement.
+See [continuous autofocus](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
+[request ownership](docs/requests.md) and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

@@ -167,6 +167,10 @@ await camera.autofocusResumeAsync() // waits for Running
 const metadata = await camera.captureFocusLockedFile('trail.jpg')
 // metadata describes the selected paused, focused frame; CAF intent is restored.
 const rgb = await camera.captureFocusLockedRGB()
+using request = await camera.captureFocusLockedRequest()
+// The focused request stays pinned after CAF resumes, including across awaits.
+await processImage(request.copyRGB())
+const streams = await camera.captureFocusLockedStreams(['main', 'raw', 'lores'])
 ```
 
 captureFocusLockedAsync(callback, options) runs a synchronous frame callback while
@@ -185,6 +189,25 @@ flowing to recording/preview and cannot satisfy the capture. The ordinary shared
 pump encodes/displays the selected frame too; the capture releases no independent
 recording frame. Every callback and selection failure releases the lease. Async
 callbacks reject because frame storage cannot cross an await boundary.
+Use captureFocusLockedRequestAsync(options) for a BunJob<Frame>, or
+captureFocusLockedRequest(options) for its Promise. The pump transfers its native
+reference without copying pixels or allocating another reference-table entry.
+The result is published only after restoration completes; cancellation,
+restoration failure or publication failure releases the private reference. After
+publication, cancellation returns false and the caller must release the request.
+retain creates independent owners using Home's generation-checked lease pool.
+Returning a retained Frame from a custom callback does not provide this managed
+failure cleanup; use the request helper for an owned request result.
+
+The pinned request occupies a physical buffer during restoration, which needs at
+least one other free buffer to observe acknowledgement. Release older held
+requests before capture. If restoration exhausts its deadline under buffer
+pressure, only the private request is discarded; caller-owned requests remain
+valid. The job reports the error and explicit resume remains available.
+captureFocusLockedStreamsAsync(streams, options) and its Promise convenience
+captureFocusLockedStreams copy an admitted list of streams and metadata from the
+same focused, paused request. Their arrays remain valid after release. These
+helpers share the existing focus-lock options, cancellation and restoration rules.
 
 Capture joins restoration of the prior accepted pause command before settling.
 An already paused camera stays paused; an initially running camera resumes.
@@ -197,6 +220,9 @@ require stop before new AF work. A timed-out restore can leave CAF paused; use a
 explicit resume job after handling the error. Failed cancellation commands never
 falsely mark native work complete. Stop/close join the native owner before freeing
 its handle, using a private recycle path when the public pump has stopped.
+If restore submission itself fails, cleanup also attempts to cancel the original
+command so a pending AF owner cannot be silently stranded. Request-release errors
+are preserved alongside capture/restoration errors in an AggregateError.
 
 One scan/pause/resume/locked-capture job may own a camera at once. Runtime control
 updates and new captures are blocked during locked capture. Mode jobs reject a
