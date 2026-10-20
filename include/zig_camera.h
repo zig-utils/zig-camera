@@ -401,6 +401,23 @@ int zc_output_mailbox_ack(zc_output_mailbox *,uint64_t sequence);
 int zc_output_mailbox_fail(zc_output_mailbox *,int code);
 int zc_output_mailbox_prefix(zc_output_mailbox *,uint64_t *);
 int zc_output_mailbox_poll(zc_output_mailbox *,uint64_t target);
+/* Capacity is observed, never reserved. No call sleeps or blocks a producer.
+ * Wait tickets (16 per mailbox) use a monotonic native deadline; poll observes
+ * capacity, release cancels pending waits. Retire closes pending waits before
+ * destroying storage; terminal outcomes remain stable until release. */
+typedef struct {
+    uint64_t queued_bytes,queued_ops,accepted_ops,completed_ops,rejected_ops;
+    uint64_t high_bytes,high_ops,max_bytes,max_ops,accepted_bytes,completed_bytes;
+    uint64_t wait_requests,blocked_waits,satisfied_waits,timed_out_waits;
+    uint64_t cancelled_waits,closed_waits,pending_waits,total_wait_ns,high_wait_ns;
+    int32_t error_code;uint32_t reserved;
+} zc_output_mailbox_stats;
+typedef struct {uint64_t remaining_ns;int32_t code;uint32_t done;} zc_output_wait_state;
+int zc_output_mailbox_stats_get(zc_output_mailbox *,zc_output_mailbox_stats *);
+int zc_output_mailbox_wait_open(zc_output_mailbox *,uint64_t bytes,uint32_t operations,uint64_t timeout_ns,uint64_t *ticket);
+int zc_output_mailbox_wait_poll(zc_output_mailbox *,uint64_t ticket,zc_output_wait_state *);
+int zc_output_mailbox_wait_close(zc_output_mailbox *,uint64_t ticket);
+void zc_output_mailbox_retire(zc_output_mailbox *);
 void zc_output_mailbox_close(zc_output_mailbox *);
 /* Held preparation exposes READY but cannot stage until release. Host drains
  * header delivery before publication. Cancellation/close still owns cleanup. */

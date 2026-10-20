@@ -2,13 +2,18 @@
 const std = @import("std");
 const c = @import("abi.zig").c;
 const A = std.heap.c_allocator;
+const CapacityWait = @import("home/capacity_wait.zig");
 const Event = struct { kind: u32, codec: u32 = 0, flags: u32 = 0, offset: u64 = 0, timestamp: u64 = 0 };
 const Mailbox = struct {
     mutex: std.Thread.Mutex = .{},
     queue: @import("home/delivery_fifo.zig").Queue(Event),
+    timer: std.time.Timer,
+    waits: CapacityWait.Registry(16) = .{},
+    retired: bool = false,
     fn send(self: *Mailbox, event: Event, data: []const u8) c_int {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (self.retired) return c.ZC_STATE;
         _ = self.queue.push(event, data) catch |err| return switch (err) {
             error.Closed => c.ZC_IO,
             error.BufferFull, error.PacketTooLarge => c.ZC_BUSY,
@@ -40,7 +45,11 @@ pub export fn zc_output_mailbox_open(bytes: u64, operations: u32, out: *?*c.zc_o
     out.* = null;
     if (bytes == 0 or bytes > 1024 * 1024 * 1024 or operations == 0 or operations > 65536) return c.ZC_INVALID;
     const self = A.create(Mailbox) catch return c.ZC_NOMEM;
-    self.* = .{ .queue = @TypeOf(self.queue).init(A, @intCast(bytes), operations) catch {
+    const timer = std.time.Timer.start() catch {
+        A.destroy(self);
+        return c.ZC_IO;
+    };
+    self.* = .{ .timer = timer, .queue = @TypeOf(self.queue).init(A, @intCast(bytes), operations) catch {
         A.destroy(self);
         return c.ZC_NOMEM;
     } };
@@ -84,6 +93,7 @@ pub export fn zc_output_mailbox_fail(p: *c.zc_output_mailbox, code: c_int) c_int
     self.mutex.lock();
     defer self.mutex.unlock();
     self.queue.fail(code);
+    self.waits.close(self.timer.read());
     return c.ZC_OK;
 }
 pub export fn zc_output_mailbox_prefix(p: *c.zc_output_mailbox, out: *u64) c_int {
@@ -103,6 +113,59 @@ pub export fn zc_output_mailbox_close(p: *c.zc_output_mailbox) void {
     const self = box(p);
     self.queue.deinit();
     A.destroy(self);
+}
+pub export fn zc_output_mailbox_stats_get(p: *c.zc_output_mailbox, out: *c.zc_output_mailbox_stats) c_int {
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    const q = self.queue.stats();
+    const w = self.waits.counters;
+    out.* = .{ .queued_bytes = q.queued_bytes, .queued_ops = q.queued_items, .accepted_ops = q.accepted, .completed_ops = q.completed, .rejected_ops = q.rejected, .high_bytes = q.high_bytes, .high_ops = q.high_items, .max_bytes = q.max_bytes, .max_ops = q.max_items, .accepted_bytes = q.accepted_bytes, .completed_bytes = q.completed_bytes, .wait_requests = w.requested, .blocked_waits = w.blocked, .satisfied_waits = w.satisfied, .timed_out_waits = w.timed_out, .cancelled_waits = w.cancelled, .closed_waits = w.closed, .pending_waits = w.pending, .total_wait_ns = w.total_ns, .high_wait_ns = w.high_ns, .error_code = q.failure orelse 0, .reserved = 0 };
+    return c.ZC_OK;
+}
+pub export fn zc_output_mailbox_wait_open(p: *c.zc_output_mailbox, bytes: u64, operations: u32, timeout: u64, ticket: *u64) c_int {
+    ticket.* = 0;
+    if (bytes > std.math.maxInt(usize) or timeout > 60_000_000_000) return c.ZC_INVALID;
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.retired) return c.ZC_STATE;
+    const available = self.queue.capacity(@intCast(bytes), operations) catch |err| return if (err == error.Closed) self.queue.failure.? else c.ZC_INVALID;
+    ticket.* = self.waits.begin(bytes, operations, timeout, self.timer.read(), available) catch return c.ZC_BUSY;
+    return c.ZC_OK;
+}
+pub export fn zc_output_mailbox_wait_poll(p: *c.zc_output_mailbox, ticket: u64, out: *c.zc_output_wait_state) c_int {
+    out.* = std.mem.zeroes(c.zc_output_wait_state);
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    const wait = self.waits.get(ticket) orelse return c.ZC_STALE;
+    const now = self.timer.read();
+    const available = self.queue.capacity(@intCast(wait.bytes), wait.operations) catch false;
+    const outcome = (self.waits.poll(ticket, now, available, self.retired or self.queue.failure != null) catch unreachable);
+    out.remaining_ns = if (outcome == null) wait.deadline -| now else 0;
+    out.done = @intFromBool(outcome != null);
+    out.code = if (outcome) |value| switch (value) {
+        .ready => c.ZC_OK,
+        .timeout => c.ZC_TIMEOUT,
+        .cancelled => c.ZC_STALE,
+        .closed => self.queue.failure orelse c.ZC_STATE,
+    } else c.ZC_TIMEOUT;
+    return c.ZC_OK;
+}
+pub export fn zc_output_mailbox_wait_close(p: *c.zc_output_mailbox, ticket: u64) c_int {
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.waits.release(ticket, self.timer.read()) catch return c.ZC_STALE;
+    return c.ZC_OK;
+}
+pub export fn zc_output_mailbox_retire(p: *c.zc_output_mailbox) void {
+    const self = box(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.retired = true;
+    self.waits.close(self.timer.read());
 }
 test {
     _ = @import("home/delivery_fifo.zig");
@@ -145,4 +208,43 @@ test "mailbox owns bytes, sequence-checks acknowledgement and preserves complete
     _ = zc_output_mailbox_fail(mailbox.?, c.ZC_IO);
     try std.testing.expectEqual(c.ZC_OK, zc_output_mailbox_poll(mailbox.?, event.sequence));
     try std.testing.expectEqual(c.ZC_IO, zc_output_mailbox_poll(mailbox.?, event.sequence + 1));
+}
+
+test "capacity tickets are bounded, retained through failure and never expose freed queue storage" {
+    var mailbox: ?*c.zc_output_mailbox = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_output_mailbox_open(3, 2, &mailbox));
+    defer zc_output_mailbox_close(mailbox.?);
+    var cb: c.zc_output_callbacks = undefined;
+    _ = zc_output_mailbox_callbacks(mailbox.?, 0, &cb);
+    const data = [_]u8{1};
+    const packet: c.zc_output_packet = .{ .data = &data, .length = 1, .timestamp_ns = 0, .codec = 3, .flags = 1 };
+    try std.testing.expectEqual(c.ZC_OK, cb.packet.?(cb.context, &packet));
+    var tickets: [16]u64 = undefined;
+    for (&tickets) |*ticket| try std.testing.expectEqual(c.ZC_OK, zc_output_mailbox_wait_open(mailbox.?, 3, 1, 1_000_000_000, ticket));
+    var overflow: u64 = 123;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_output_mailbox_wait_open(mailbox.?, 3, 1, 0, &overflow));
+    try std.testing.expectEqual(@as(u64, 0), overflow);
+    var state: c.zc_output_wait_state = undefined;
+    _ = zc_output_mailbox_wait_poll(mailbox.?, tickets[0], &state);
+    try std.testing.expectEqual(@as(u32, 0), state.done);
+    try std.testing.expectEqual(c.ZC_OK, zc_output_mailbox_wait_close(mailbox.?, tickets[0]));
+    _ = zc_output_mailbox_ack(mailbox.?, 1);
+    _ = zc_output_mailbox_wait_poll(mailbox.?, tickets[1], &state);
+    try std.testing.expectEqual(@as(u32, 1), state.done);
+    try std.testing.expectEqual(c.ZC_OK, state.code);
+    _ = zc_output_mailbox_fail(mailbox.?, c.ZC_IO);
+    _ = zc_output_mailbox_wait_poll(mailbox.?, tickets[1], &state);
+    try std.testing.expectEqual(c.ZC_OK, state.code);
+    _ = zc_output_mailbox_wait_poll(mailbox.?, tickets[2], &state);
+    try std.testing.expectEqual(c.ZC_IO, state.code);
+    zc_output_mailbox_retire(mailbox.?);
+    var stats: c.zc_output_mailbox_stats = undefined;
+    _ = zc_output_mailbox_stats_get(mailbox.?, &stats);
+    try std.testing.expectEqual(@as(u64, 16), stats.wait_requests);
+    try std.testing.expectEqual(@as(u64, 1), stats.cancelled_waits);
+    try std.testing.expectEqual(@as(u64, 1), stats.satisfied_waits);
+    try std.testing.expectEqual(@as(u64, 14), stats.closed_waits);
+    try std.testing.expectEqual(@as(u64, 0), stats.pending_waits);
+    try std.testing.expectEqual(@as(u64, 1), stats.completed_bytes);
+    for (tickets[1..]) |ticket| try std.testing.expectEqual(c.ZC_OK, zc_output_mailbox_wait_close(mailbox.?, ticket));
 }

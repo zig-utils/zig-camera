@@ -50,6 +50,42 @@ export interface ByteSink {
     data: Uint8Array,
   ): void | number | Promise<void | number>
 }
+export interface HostOutputQueueStats {
+  queuedBytes: bigint
+  queuedOperations: bigint
+  acceptedOperations: bigint
+  completedOperations: bigint
+  rejectedOperations: bigint
+  highBytes: bigint
+  highOperations: bigint
+  maxBytes: bigint
+  maxOperations: bigint
+  acceptedBytes: bigint
+  completedBytes: bigint
+  waitRequests: bigint
+  blockedWaits: bigint
+  satisfiedWaits: bigint
+  timedOutWaits: bigint
+  cancelledWaits: bigint
+  closedWaits: bigint
+  pendingWaits: bigint
+  totalWaitNs: bigint
+  highWaitNs: bigint
+  errorCode: number
+  error: unknown
+  inFlight: boolean
+  inFlightBytes: bigint
+  inFlightSequence: bigint
+  abandonedBytes: bigint
+  abandonedOperations: bigint
+  closed: boolean
+  retiring: boolean
+}
+export interface OutputCapacityOptions {
+  minBytes?: number
+  minOperations?: number
+  timeoutMs?: number
+}
 const hooks = new AsyncLocalStorage<boolean>()
 const claims = new WeakMap<object, object>()
 export interface OutputScope {
@@ -100,9 +136,12 @@ export class OutputBridge {
   private detached = false
   private discarded = false
   private retired?: Promise<void>
+  private finalQueueStats?: HostOutputQueueStats
+  private flight?: { bytes: bigint; sequence: bigint }
   error: unknown
   stopError: unknown
   onError?: (error: unknown) => void
+  onRetired?: (stats: HostOutputQueueStats) => void
   constructor(
     readonly output: CustomOutput,
     options: { maxBytes?: number; maxOperations?: number } = {},
@@ -190,6 +229,98 @@ export class OutputBridge {
       throw this.error
     }
   }
+  stats(): HostOutputQueueStats {
+    if (this.freed) return { ...this.finalQueueStats! }
+    const data = storage(168)
+    check(n.zc_output_mailbox_stats_get(this.handle, ptr(data)))
+    const d = view(data),
+      value = (offset: number) => d.getBigUint64(offset, true)
+    return {
+      queuedBytes: value(0),
+      queuedOperations: value(8),
+      acceptedOperations: value(16),
+      completedOperations: value(24),
+      rejectedOperations: value(32),
+      highBytes: value(40),
+      highOperations: value(48),
+      maxBytes: value(56),
+      maxOperations: value(64),
+      acceptedBytes: value(72),
+      completedBytes: value(80),
+      waitRequests: value(88),
+      blockedWaits: value(96),
+      satisfiedWaits: value(104),
+      timedOutWaits: value(112),
+      cancelledWaits: value(120),
+      closedWaits: value(128),
+      pendingWaits: value(136),
+      totalWaitNs: value(144),
+      highWaitNs: value(152),
+      errorCode: d.getInt32(160, true),
+      error: this.error,
+      inFlight: this.flight !== undefined,
+      inFlightBytes: this.flight?.bytes ?? 0n,
+      inFlightSequence: this.flight?.sequence ?? 0n,
+      abandonedBytes: 0n,
+      abandonedOperations: 0n,
+      closed: this.freed,
+      retiring: this.detached,
+    }
+  }
+  capacityWait({
+    minBytes = 0,
+    minOperations = 1,
+    timeoutMs = 100,
+  }: OutputCapacityOptions) {
+    if (this.detached || this.freed) throw new CameraError(-2, 'output retired')
+    if (
+      !Number.isSafeInteger(minBytes) ||
+      minBytes < 0 ||
+      !Number.isInteger(minOperations) ||
+      minOperations < 1 ||
+      minOperations > 65536 ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs < 0 ||
+      timeoutMs > 60000
+    )
+      throw new RangeError('invalid output capacity wait')
+    const ticket = new BigUint64Array(1)
+    check(
+      n.zc_output_mailbox_wait_open(
+        this.handle,
+        BigInt(minBytes),
+        minOperations,
+        BigInt(Math.floor(timeoutMs * 1e6)),
+        ptr(ticket),
+      ),
+      'output capacity wait',
+    )
+    let released = false
+    return {
+      close: () => {
+        if (released) return
+        released = true
+        if (!this.freed) n.zc_output_mailbox_wait_close(this.handle, ticket[0])
+      },
+      wait: async (checkCancellation: () => void) => {
+        while (true) {
+          checkCancellation()
+          if (this.detached || this.freed)
+            throw new CameraError(-2, 'output retired')
+          const state = storage(16)
+          check(
+            n.zc_output_mailbox_wait_poll(this.handle, ticket[0], ptr(state)),
+          )
+          const d = view(state)
+          if (d.getUint32(12, true)) {
+            check(d.getInt32(8, true), 'output capacity wait')
+            return
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 1))
+        }
+      },
+    }
+  }
   private schedule() {
     if (
       !this.timer &&
@@ -234,6 +365,7 @@ export class OutputBridge {
                 BigInt(size),
               ),
             )
+          this.flight = { bytes: BigInt(size), sequence }
           if (kind === 0) {
             if (this.output.outputframe)
               await call(() =>
@@ -269,6 +401,8 @@ export class OutputBridge {
         }
       } catch (error) {
         this.fail(error)
+      } finally {
+        this.flight = undefined
       }
     })().finally(() => {
       this.pumping = undefined
@@ -309,6 +443,7 @@ export class OutputBridge {
   retire(discard = false): Promise<void> {
     if (this.retired) return this.retired
     this.detached = true
+    n.zc_output_mailbox_retire(this.handle)
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = undefined
@@ -331,11 +466,21 @@ export class OutputBridge {
         this.error ??= this.stopError
       } finally {
         this.issued = this.prefix()
+        const final = this.stats()
+        this.finalQueueStats = {
+          ...final,
+          closed: true,
+          queuedBytes: 0n,
+          queuedOperations: 0n,
+          abandonedBytes: final.queuedBytes,
+          abandonedOperations: final.queuedOperations,
+        }
         n.zc_output_mailbox_close(this.handle)
         this.freed = true
         for (const resource of this.claimed)
           if (claims.get(resource) === this) claims.delete(resource)
         this.claimed = []
+        this.onRetired?.({ ...this.finalQueueStats })
       }
       if (this.error !== undefined) throw this.error
     })()

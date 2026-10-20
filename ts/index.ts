@@ -9,6 +9,8 @@ import {
   type CustomOutput,
   type OutputStreams,
   type OutputScope,
+  type HostOutputQueueStats,
+  type OutputCapacityOptions,
 } from './outputs'
 export {
   FileOutput,
@@ -20,6 +22,8 @@ export {
   type OutputPacket,
   type OutputStreams,
   type ByteSink,
+  type HostOutputQueueStats,
+  type OutputCapacityOptions,
 } from './outputs'
 import { BunJob, type JobOptions } from './jobs'
 import { cameraConfiguration, copyConfiguration } from './config'
@@ -949,6 +953,10 @@ export interface RecorderOptions {
   outputQueue?: { maxBytes: number; maxOperations: number }
   io?: { maxBytes: number; maxOperations: number; waitMs?: number }
 }
+export interface HostOutputStats extends HostOutputQueueStats {
+  id: bigint
+  generation: bigint
+}
 export interface PreparationState {
   id: bigint
   generation: bigint
@@ -1177,6 +1185,8 @@ export class Recorder {
   }>()
   private retiringOutputs = new Set<bigint>()
   private factories = new Map<bigint, FactoryEntry>()
+  private hostReports = new Map<bigint, HostOutputStats>()
+  private publishedHostOutputs = new WeakSet<OutputBridge>()
   private schedulingFactories = false
   private tasks = 0
   private finalStats?: RecordingStats
@@ -1464,6 +1474,58 @@ export class Recorder {
       splitError: view(data).getInt32(84, true),
     }
   }
+  /** Native queue ownership and host hook state for one output epoch. */
+  hostIOStats(id: bigint | number = 0n): HostOutputStats {
+    guardOutputHook()
+    const key = BigInt(id),
+      current = this.objectOutputs.get(key)
+    if (current)
+      return {
+        id: key,
+        generation: current.generation,
+        ...current.bridge.stats(),
+      }
+    const final = this.hostReports.get(key)
+    if (final) return { ...final }
+    throw new CameraError(-2, 'no host output telemetry')
+  }
+  /** Wait for observed headroom; this does not reserve capacity or retry media. */
+  waitForOutput(
+    id: bigint | number = 0n,
+    options: OutputCapacityOptions &
+      Omit<JobOptions<HostOutputStats>, 'timeoutMs'> = {},
+  ): BunJob<HostOutputStats> {
+    this.assertOpen()
+    const key = BigInt(id),
+      current = this.objectOutputs.get(key)
+    if (!current) throw new CameraError(-2, 'no host output')
+    const wait = current.bridge.capacityWait(options)
+    try {
+      const job = this.objectJob<HostOutputStats>(
+        async (job) => {
+          try {
+            await wait.wait(() => job.check())
+            job.check()
+            if (this.objectOutputs.get(key) !== current)
+              throw new CameraError(-5, 'output epoch replaced')
+            return {
+              id: key,
+              generation: current.generation,
+              ...current.bridge.stats(),
+            }
+          } finally {
+            wait.close()
+          }
+        },
+        { signal: options.signal, signalFunction: options.signalFunction },
+      )
+      void job.operationDone.then(() => wait.close())
+      return job
+    } catch (error) {
+      wait.close()
+      throw error
+    }
+  }
   setDelay(
     id: bigint | number,
     delayMs: number,
@@ -1668,7 +1730,7 @@ export class Recorder {
     scope: OutputScope = { owner: this, id: Symbol() },
   ) {
     if (this.options.io?.waitMs)
-      throw new CameraError(-8, 'host outputs require fail-fast pressure')
+      throw new CameraError(-8, 'host producers wait with waitForOutput')
     if (
       (output.format ?? 'packets') === 'mp4' &&
       this.options.audio &&
@@ -1687,7 +1749,27 @@ export class Recorder {
       scope,
     )
   }
+  private setHostOutput(
+    id: bigint,
+    current: { bridge: OutputBridge; generation: bigint },
+  ) {
+    if (!current.bridge.onRetired)
+      this.bindBridge(id, current.generation, current.bridge)
+    this.publishedHostOutputs.add(current.bridge)
+    this.hostReports.delete(id)
+    this.objectOutputs.set(id, current)
+  }
   private bindBridge(id: bigint, generation: bigint, bridge: OutputBridge) {
+    bridge.onRetired = (stats) => {
+      if (!this.publishedHostOutputs.has(bridge)) return
+      const previous = this.hostReports.get(id)
+      if (!previous || previous.generation <= generation) {
+        this.hostReports.delete(id)
+        this.hostReports.set(id, { id, generation, ...stats })
+        if (this.hostReports.size > 8)
+          this.hostReports.delete(this.hostReports.keys().next().value!)
+      }
+    }
     bridge.onError = (error) => {
       if (this.handle && !this.closing) {
         const state = storage(24)
@@ -1801,7 +1883,7 @@ export class Recorder {
           check(n.zc_video_hold_output(this.handle, id, 0))
         }
         this.bindBridge(id, 0n, bridge)
-        this.objectOutputs.set(id, { bridge, generation: 0n })
+        this.setHostOutput(id, { bridge, generation: 0n })
         job.seal()
         return (primary ? undefined : id) as T
       } catch (error) {
@@ -1812,7 +1894,7 @@ export class Recorder {
           const state = storage(24)
           if (n.zc_video_output_state(this.handle, id, ptr(state)) === 0) {
             if (bridge)
-              this.objectOutputs.set(id, { bridge, generation: u64(state) })
+              this.setHostOutput(id, { bridge, generation: u64(state) })
             throw error
           }
         }
@@ -1943,7 +2025,7 @@ export class Recorder {
           ) {
             committed = true
             if (bridge)
-              this.objectOutputs.set(id, {
+              this.setHostOutput(id, {
                 bridge,
                 generation: generation + 1n,
               })
@@ -1987,7 +2069,7 @@ export class Recorder {
           ) {
             committed = true
             if (bridge)
-              this.objectOutputs.set(id, {
+              this.setHostOutput(id, {
                 bridge,
                 generation: generation + 1n,
               })

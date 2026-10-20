@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <string.h>
 _Static_assert(sizeof(zc_output_event)==48,"output mailbox event ABI");
+_Static_assert(sizeof(zc_output_mailbox_stats)==168,"host queue telemetry ABI");
+_Static_assert(sizeof(zc_output_wait_state)==16,"host capacity wait ABI");
+_Static_assert(offsetof(zc_output_mailbox_stats,error_code)==160,"host queue error ABI");
 _Static_assert(sizeof(zc_pts_clock)==24,"shared PTS clock ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
 _Static_assert(sizeof(zc_automatic_state)==16,"automatic state ABI");
@@ -51,6 +54,32 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
 int main(void) {
+    zc_output_mailbox *mailbox=NULL;
+    assert(zc_output_mailbox_open(3,2,&mailbox)==ZC_OK);
+    zc_output_callbacks mailbox_callbacks;
+    assert(zc_output_mailbox_callbacks(mailbox,ZC_OUTPUT_PACKETS,&mailbox_callbacks)==ZC_OK);
+    const uint8_t payload[3]={1,2,3};
+    zc_output_packet mailbox_packet={payload,3,0,ZC_MJPEG,1};
+    assert(mailbox_callbacks.packet(mailbox_callbacks.context,&mailbox_packet)==ZC_OK);
+    uint64_t ticket=0;
+    assert(zc_output_mailbox_wait_open(mailbox,3,1,0,&ticket)==ZC_OK && ticket);
+    zc_output_wait_state wait_state;
+    assert(zc_output_mailbox_wait_poll(mailbox,ticket,&wait_state)==ZC_OK);
+    assert(wait_state.done && wait_state.code==ZC_TIMEOUT && !wait_state.remaining_ns);
+    assert(zc_output_mailbox_wait_close(mailbox,ticket)==ZC_OK);
+    assert(zc_output_mailbox_wait_close(mailbox,ticket)==ZC_STALE);
+    zc_output_mailbox_stats host_stats;
+    assert(zc_output_mailbox_stats_get(mailbox,&host_stats)==ZC_OK);
+    assert(host_stats.queued_bytes==3 && host_stats.accepted_bytes==3 && !host_stats.completed_bytes);
+    assert(host_stats.timed_out_waits==1 && !host_stats.pending_waits && !host_stats.error_code);
+    assert(zc_output_mailbox_ack(mailbox,1)==ZC_OK);
+    assert(zc_output_mailbox_wait_open(mailbox,3,2,0,&ticket)==ZC_OK);
+    assert(zc_output_mailbox_fail(mailbox,ZC_IO)==ZC_OK);
+    assert(zc_output_mailbox_wait_poll(mailbox,ticket,&wait_state)==ZC_OK && wait_state.done && wait_state.code==ZC_OK);
+    assert(zc_output_mailbox_wait_close(mailbox,ticket)==ZC_OK);
+    zc_output_mailbox_retire(mailbox);
+    assert(zc_output_mailbox_wait_open(mailbox,0,1,0,&ticket)==ZC_STATE && !ticket);
+    zc_output_mailbox_close(mailbox);
     zc_pts_clock pts_clock;
     zc_default_pts_clock(&pts_clock);
     uint64_t timestamp=123;

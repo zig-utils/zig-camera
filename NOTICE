@@ -171,3 +171,11 @@ Home asynchronous factory policy (0.22):
   another attempt. Supersedes output_recovery listed above.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/be777d256133638f6242dfdd7a7f2bd847882906
+
+Home host queue telemetry and capacity waits (0.23):
+- src/home/delivery_fifo.zig and src/home/capacity_wait.zig are verbatim Home
+  packages/video/src/core modules at 8451cabb28301c5f4ea1ef429122a0151dcbf4ba.
+  They provide acknowledged ownership telemetry and bounded, caller-clocked
+  cooperative capacity tickets without hidden threads, sleeps or allocations.
+  Supersedes the delivery_fifo version listed above. The Home MIT license applies.
+  https://github.com/home-lang/home/commit/8451cabb28301c5f4ea1ef429122a0151dcbf4ba

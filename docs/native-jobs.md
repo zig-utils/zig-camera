@@ -145,3 +145,20 @@ preparation path. Finish every claim only after native handles and host hooks
 retire; zc_video_finish_factory observes the last media timestamp for retry
 backoff. Close returns BUSY while a claim remains pending. Bun cancels queued
 claims, awaits late factory results and finishes claims before native close.
+
+## Host capacity waits
+
+Host producer capacity waits use Home capacity_wait.Registry(16), with a native
+monotonic timer per mailbox and explicit open/poll/release ABI calls. No native
+call sleeps. BunJob polls cooperatively and enforces parent cancellation and
+output epoch ownership. Capacity considers bytes and operation entries together,
+including unacknowledged in-flight work. It is an observation, not a reservation.
+Terminal outcomes survive later failure, and releasing pending tickets cancels
+them. Retire closes pending waits before mailbox destruction. Bun guards every
+poll/release against freed bridge storage. Native snapshots and fixed-prefix
+drain jobs retain their existing ownership semantics.
+
+zc_output_mailbox_stats_get snapshots counters under the queue mutex. Byte-copy
+and partial host-write progress do not acknowledge capacity. Bun additionally
+reports the in-flight hook and caches a bounded set of final epoch reports;
+unacknowledged queue storage becomes abandoned accounting when destroyed.

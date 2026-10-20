@@ -71,3 +71,15 @@ package export, documentation and compiler/architecture workflow coverage were
 contributed to Home main at be777d256133638f6242dfdd7a7f2bd847882906 before verbatim
 camera reuse. Bun holds application functions; Zig owns admission, media clocks,
 queue storage, recipes, generation validation and keyframe publication.
+
+The 0.23 audit keeps queue storage and accounting in Home delivery_fifo, extending
+it with exact ownership snapshots, high-water marks and non-reserving byte/entry
+headroom predicates. Home's new capacity_wait.Registry uses a fixed ticket array,
+caller-supplied clock/capacity observations, immutable terminal outcomes, bounded
+admission and nonwrapping identities. It supplies cancellation/closure accounting
+and saturating elapsed-time counters without a second packet queue or thread.
+Both modules pass focused tests with pinned Zig 0.15.2 and development Zig. The
+Home package export, documentation and compiler/architecture workflow coverage
+were pushed at 8451cabb28301c5f4ea1ef429122a0151dcbf4ba before verbatim camera reuse.
+Bun contributes cooperative polling, parent/epoch cancellation and a bounded
+cache of final reports; it does not duplicate the queue or wait policy.

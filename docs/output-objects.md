@@ -244,9 +244,69 @@ return an explicit PtsOutput to recover with a fresh observer after PTS failure.
 
 ## Remaining coverage
 
-setIO/ioStats describe native path workers, not host-mailbox telemetry. Arbitrary
-upstream constructor signatures, custom timed producer waits and full Picamera2
-class/API compatibility remain work in progress.
+Automatic waits inside synchronous host callbacks, arbitrary upstream constructor
+signatures and full Picamera2 class/API compatibility remain work in progress.
 
 See [coverage](parity.md), [native jobs](native-jobs.md), and the
 [C ABI contract](../include/zig_camera.h).
+
+## Host queue telemetry and bounded producer waits
+
+```ts
+const before = recorder.hostIOStats(outputId)
+const ready = await recorder.waitForOutput(outputId, {
+  minBytes: 1024 * 1024, // Headroom appropriate for this producer's batch.
+  minOperations: 16,
+  timeoutMs: 100,
+  signal: abortController.signal,
+})
+// Keep the source Frame lease alive if waiting before recorder.write(frame).
+const after = recorder.hostIOStats(outputId)
+```
+
+hostIOStats reports the host output epoch's stable id and generation. Byte and
+operation counts include the event currently inside an async hook until its
+acknowledgement. Copying an event or completing a partial sink write does not
+release its capacity. Zero-byte packet notifications still consume an operation.
+acceptedOperations/completedOperations count admissions/acknowledgements;
+acceptedBytes/completedBytes count owned payloads. rejectedOperations counts
+failed native admissions, not failed capacity observations. highBytes and
+highOperations retain peaks for that epoch. inFlightBytes/inFlightSequence
+identify the current hook. errorCode records the native mailbox failure and error
+preserves the host exception when available.
+
+Telemetry also reports waitRequests, blockedWaits, satisfiedWaits, timedOutWaits,
+cancelledWaits, closedWaits, pendingWaits, totalWaitNs and highWaitNs. Counters use
+Home's allocation-free native primitives; lifetime byte/wait counters saturate.
+A successful immediate capacity observation counts as satisfied even if its Bun
+job is cancelled before delivery. Native terminal results do not change later.
+
+waitForOutput returns a BunJob bound to the output epoch observed at submission.
+The deadline starts at submission, not when the job's microtask first runs.
+Defaults are zero bytes, one operation and 100 ms; timeoutMs must be 0..60000.
+Zero checks immediate capacity. Impossible headroom requests fail before ticket
+admission. At most 16 tickets exist per mailbox, including completed tickets
+until cleanup, and each Bun job uses the recorder's 16-slot lifecycle pool.
+Cancellation, abort, output retirement and parent close release owned tickets.
+Timeouts do not poison a sink, drop queued data or retry an encoded frame.
+The optional signalFunction follows normal BunJob ownership rules.
+
+Capacity is a point-in-time observation, not a reservation. Multiple waiters may
+observe the same free space. Serialize producers and budget headroom for the
+entire encoded/container batch; an individual operation larger than the mailbox,
+or a later burst exceeding that headroom, still fails normally. Native recording
+callbacks remain fail-fast. The API does not sleep on Bun's event loop, move
+encoding to a worker or promise that an arbitrary later write will fit. Use
+ioStats/setIO for native path-worker telemetry/policy. Custom outputs use
+hostIOStats/waitForOutput; io.waitMs is not silently applied to host callbacks.
+Cooperative scheduling can deliver timeout notifications after the native
+deadline if the event loop is stalled; polling cannot extend the deadline.
+
+After an output retires, the final report has closed=true, zero live queue counts
+and abandonedBytes/abandonedOperations for unacknowledged events released with
+the arena. A partially accepted external sink write cannot be undone, so an
+abandoned event may already have external side effects. The recorder retains at
+most eight final reports, one per recent stable id; the current host epoch takes
+precedence. A failed unpublished replacement never overwrites its healthy
+predecessor's final report. Reports remain readable after recorder close and
+are returned as copies. They describe ownership, not measured Pi throughput.

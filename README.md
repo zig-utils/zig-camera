@@ -6,12 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.22 adds custom-output snapshots and asynchronous rotation/recovery
-factories in Bun. Snapshots own their submission-time GOP/PCM window and survive
-source close. Factories create fresh outputs under bounded native admission,
-with keyframe publication, cancellation, per-output failure isolation and shared
-CircularOutput2 PTS ordering. Home supplies the factory policy, retry clock,
-containers, codecs and acknowledged output queues.
+Version 0.23 adds host-output queue telemetry and bounded cooperative producer
+waits in Bun. hostIOStats reports native byte/operation ownership, in-flight hooks,
+high-water marks, rejections and wait outcomes. waitForOutput observes requested
+headroom with a native monotonic deadline while the Bun event loop keeps draining.
+Home supplies the acknowledged queue telemetry and bounded wait-ticket policy.
 
 The former Python facade has been removed. This is a feature-oriented alternative
 to Picamera2, not a drop-in package or a claim of full parity. The Bun facade
