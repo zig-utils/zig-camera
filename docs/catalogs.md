@@ -100,7 +100,9 @@ Native, C and Bun tests cover explicit discovery, exact i64, all portable types,
 geometry/arrays/opaque data, malformed inputs, retained/stopped request stability,
 mode changes, source close, short-copy atomicity and cleanup on failure. Linux
 x86/ARM CI builds/loads the real bridge and performs repeated no-camera discovery;
-actual camera properties/metadata and hotplug still require hardware acceptance.
+a system-C++ test also traverses real libcamera ControlValue scalars, arrays,
+geometry and strings without a camera and checks sink error propagation. Actual
+camera properties/metadata and hotplug still require hardware acceptance.
 
 The manager lifetime rule and thread-safe camera enumeration follow the
 [libcamera CameraManager implementation](https://github.com/raspberrypi/libcamera/blob/main/src/libcamera/camera_manager.cpp).
