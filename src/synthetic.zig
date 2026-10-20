@@ -2,6 +2,9 @@
 const std = @import("std");
 const c = @import("abi.zig").c;
 const Alloc = std.heap.c_allocator;
+pub const model = "zig-camera synthetic";
+pub const black_level: i32 = 1024;
+pub const color_matrix = [9]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 pub const Callback = @import("real.zig").Callback;
 pub const Handle = struct {
     config: c.zc_config,
@@ -289,9 +292,9 @@ pub fn queue(h: *Handle, index: u32) c_int {
 pub fn metadata(_: *Handle, _: u32, out: *c.zc_raw_metadata) c_int {
     out.* = std.mem.zeroes(c.zc_raw_metadata);
     out.valid = 7;
-    out.black_levels = @splat(1024);
-    out.camera_to_srgb = .{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-    @memcpy(out.model[0..20], "zig-camera synthetic");
+    out.black_levels = @splat(@floatFromInt(black_level));
+    out.camera_to_srgb = color_matrix;
+    @memcpy(out.model[0..model.len], model);
     return c.ZC_OK;
 }
 

@@ -368,3 +368,52 @@ test "Zig catalogs own snapshots and copy/read independently after camera close"
     meta.deinit();
     try std.testing.expectError(error.Invalid, meta.copy(std.testing.allocator));
 }
+
+test "synthetic catalogs and DNG calibration describe the same virtual sensor" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const cam = try Camera.init(cfg);
+    defer cam.deinit() catch unreachable;
+    try cam.start();
+    var frame = try cam.acquire(0);
+    defer frame.release() catch unreachable;
+    var raw_meta: c.zc_raw_metadata = undefined;
+    try check(core.zc_get_raw_metadata(cam.handle, frame.value.token, &raw_meta));
+    var meta = try frame.metadataCatalog();
+    defer meta.deinit();
+    const data = try meta.copy(std.testing.allocator);
+    defer std.testing.allocator.free(data);
+    var records = (try catalog_format.Reader.init(data)).records();
+    var fields: u32 = 0;
+    while (try records.next()) |record| {
+        var values = record.values();
+        const first = (try values.next()).?;
+        if (std.mem.eql(u8, record.info.name, "SensorBlackLevels")) {
+            fields += 1;
+            for (0..4) |i| {
+                const level = std.mem.readInt(i32, first.data[i * 4 ..][0..4], @import("builtin").cpu.arch.endian());
+                try std.testing.expectEqual(raw_meta.black_levels[i], @as(f32, @floatFromInt(level)));
+            }
+        } else if (std.mem.eql(u8, record.info.name, "ColourCorrectionMatrix")) {
+            fields += 1;
+            try std.testing.expectEqualSlices(u8, std.mem.asBytes(&raw_meta.camera_to_srgb), first.data);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 2), fields);
+    var props = try cam.properties();
+    defer props.deinit();
+    const properties = try props.copy(std.testing.allocator);
+    defer std.testing.allocator.free(properties);
+    var property_records = (try catalog_format.Reader.init(properties)).records();
+    var found = false;
+    while (try property_records.next()) |record| {
+        if (std.mem.eql(u8, record.info.name, "Model")) {
+            var values = record.values();
+            try std.testing.expectEqualStrings(std.mem.sliceTo(&raw_meta.model, 0), (try values.next()).?.data);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}

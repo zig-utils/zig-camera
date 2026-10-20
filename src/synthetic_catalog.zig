@@ -4,6 +4,7 @@ const c = @import("abi.zig").c;
 const api = @import("catalog.zig");
 const Sink = api.Sink;
 const b = api.bridge;
+const synthetic = @import("synthetic.zig");
 const names = [_][]const u8{ "", "AeEnable", "ExposureTime", "AnalogueGain", "ExposureValue", "AwbEnable", "ColourGains", "Brightness", "Contrast", "Saturation", "Sharpness", "FrameDurationLimits", "LensPosition", "AfMode", "AfTrigger", "AfRange", "AfSpeed", "AfMetering", "AfWindows", "ScalerCrop", "NoiseReductionMode", "AeMeteringMode", "AeExposureMode", "AwbMode", "ExposureTimeMode", "AnalogueGainMode", "AfPause", "AeConstraintMode", "ColourTemperature", "AeFlickerMode", "AeFlickerPeriod" };
 fn begin(s: *const Sink, group: u32, id: u32, name: []const u8, kind: u32, app_id: u32, flags: u32, extent: u32) c_int {
     const vendor = "synthetic";
@@ -22,7 +23,7 @@ fn field(s: *const Sink, group: u32, id: u32, name: []const u8, kind: u32, count
     return s.end.?(s.context);
 }
 pub fn properties(s: *const Sink, group: u32) c_int {
-    var rc = field(s, group, 1, "Model", 6, 25, "zig-camera virtual sensor", true);
+    var rc = field(s, group, 1, "Model", 6, synthetic.model.len, synthetic.model, true);
     if (rc != 0) return rc;
     const size = [_]u32{ 4056, 3040 };
     rc = field(s, group, 2, "PixelArraySize", 8, 1, std.mem.asBytes(&size), false);
@@ -82,8 +83,8 @@ pub fn metadata(s: *const Sink, m: c.zc_metadata) c_int {
     const duration: i64 = @intCast(m.frame_duration_us);
     const exposure: i32 = @intCast(m.exposure_us);
     const gains = [_]f32{ m.red_gain, m.blue_gain };
-    const matrix = [_]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-    const black = [_]i32{ 256, 256, 256, 256 };
+    const matrix = synthetic.color_matrix;
+    const black: [4]i32 = @splat(synthetic.black_level);
     const Fields = struct { id: u32, name: []const u8, kind: u32, count: u32 = 1, data: []const u8, is_array: bool = false };
     const fields = [_]Fields{
         .{ .id = 100, .name = "SensorTimestamp", .kind = 4, .data = std.mem.asBytes(&timestamp) },

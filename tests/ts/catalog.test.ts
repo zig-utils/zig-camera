@@ -94,7 +94,7 @@ test('explicit virtual discovery returns stable IDs and advertised properties wi
   })
   expect(
     camera.properties.find((r) => r.name === 'Model')!.values[0].value,
-  ).toBe('zig-camera virtual sensor')
+  ).toBe('zig-camera synthetic')
   expect(
     camera.properties.find((r) => r.name === 'PixelArraySize')!.values[0].value,
   ).toEqual({ width: 4056, height: 3040 })
@@ -174,7 +174,7 @@ test('full metadata owns exact timestamps, arrays and opaque values from one ret
       1, 0, 0, 0, 1, 0, 0, 0, 1,
     ])
     expect(current(metadata, 'SensorBlackLevels').value).toEqual([
-      256, 256, 256, 256,
+      1024, 1024, 1024, 1024,
     ])
     expect(current(metadata, 'SyntheticOpaque')).toMatchObject({
       kind: 'opaque',
