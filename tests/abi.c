@@ -401,6 +401,27 @@ int main(void) {
     zc_producer_stats producer_stats;
     assert(zc_video_producer_stats(recorder,&producer_stats)==ZC_OK);
     assert(producer_stats.completed==1 && !producer_stats.owned_jobs && !producer_stats.running);
+    for(unsigned flush=0;flush<3;flush++) {
+        zc_producer_job *barrier=NULL;
+        assert(zc_video_producer_barrier(recorder,flush?1:0,&barrier)==ZC_OK);
+        assert(zc_producer_job_start(barrier)==ZC_OK);
+        if(flush) assert(zc_producer_job_cancel(barrier)==ZC_STATE);
+        for(unsigned retry=0;retry<10000;retry++) {
+            producer_status=zc_producer_job_finish(barrier,&producer_result);
+            if(producer_status!=ZC_TIMEOUT)break;
+            struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+        }
+        assert(producer_status==ZC_OK && producer_result==ZC_OK);
+        for(unsigned retry=0;retry<10000;retry++) {
+            producer_status=zc_producer_job_drain_outputs(barrier);
+            if(producer_status!=ZC_TIMEOUT)break;
+            struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+        }
+        assert(producer_status==ZC_OK);
+        assert(zc_video_close(recorder)==ZC_BUSY);
+        assert(zc_producer_job_close(barrier)==ZC_OK);
+    }
+    assert(zc_video_producer_frame(recorder,&producer_frame,320000000,&producer)==ZC_STATE && producer==NULL);
     assert(zc_video_close(recorder)==ZC_OK);
     for(unsigned i=0;i<32;i++) {
         assert(zc_producer_drain_poll(producer_drains[i])==ZC_OK);

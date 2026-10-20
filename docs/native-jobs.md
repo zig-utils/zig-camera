@@ -189,3 +189,12 @@ Producer drains capture input cleanup regardless of each operation's result;
 output drains still fence sink acknowledgements. See
 [async producers](async-producers.md) for partial-delivery, failure precedence,
 timeout, retained-handle and parent-close semantics.
+
+`Recorder.drainRecordingAsync` joins the producer FIFO and native/host delivery
+prefixes, including retiring output epochs. `Recorder.flushAsync` terminally
+flushes video, delayed output, synchronized PCM/AAC and container tails before
+that acknowledgement fence. Entered flushes reject cancellation; queued ones
+remain cancellable. Both use bounded native producer control slots and release
+retained sink fences before completion callbacks. Home's finalization latch makes
+repeated flush/close idempotent. See the [full contract](async-producers.md#end-to-end-recording-drains-and-terminal-codec-flush)
+for terminal media state, pending-preparation restrictions and C ABI sequencing.

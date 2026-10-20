@@ -478,20 +478,25 @@ export class OutputBridge {
   }
   async drain(target = this.prefix()) {
     while (true) {
-      if (target <= this.completed) return
-      if (this.freed) {
-        if (this.error !== undefined) throw this.error
-        throw new CameraError(-5, 'output retired before delivery')
-      }
-      const code = n.zc_output_mailbox_poll(this.handle, target)
-      if (code === 0) return
-      if (code !== -3) {
-        if (this.error !== undefined) throw this.error
-        check(code, 'output delivery')
-      }
+      if (this.pollDrain(target)) return
       await this.pump()
       await new Promise((resolve) => setTimeout(resolve, 1))
     }
+  }
+  /** @internal A nonblocking poll; the bridge owns its pump and hook lifetime. */
+  pollDrain(target: bigint) {
+    if (target <= this.completed) return true
+    if (this.freed) {
+      if (this.error !== undefined) throw this.error
+      throw new CameraError(-5, 'output retired before delivery')
+    }
+    const code = n.zc_output_mailbox_poll(this.handle, target)
+    if (code === 0) return true
+    if (code !== -3) {
+      if (this.error !== undefined) throw this.error
+      check(code, 'output delivery')
+    }
+    return false
   }
   retire(discard = false): Promise<void> {
     if (this.retired) return this.retired

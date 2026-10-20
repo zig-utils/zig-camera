@@ -196,3 +196,11 @@ Home producer ownership fences (0.25):
   without retaining payloads or keeping an unbounded completion history.
   Supersedes the owned_admission version above. The Home MIT license applies.
   https://github.com/home-lang/home/commit/55852d43d52c745565176d0b3ed52ec1304ab1e9
+
+Home terminal media finalization (0.26):
+- src/home/recording_policy.zig is verbatim from Home's
+  packages/video/src/core/recording_policy.zig at 3b4b323f3100e513e25e63c2e4679064238ef89b.
+  Finalization enters once and latches success/failure, preventing repeated codec
+  tails and container patches. Supersedes recording_policy listed above.
+  The Home MIT license applies.
+  https://github.com/home-lang/home/commit/3b4b323f3100e513e25e63c2e4679064238ef89b

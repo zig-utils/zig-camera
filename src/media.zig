@@ -447,6 +447,12 @@ pub export fn zc_producer_job_cancel(p: *c.zc_producer_job) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
     return job.owner.cancel(job);
 }
+pub export fn zc_video_producer_barrier(p: *c.zc_recorder, flush: u32, out: *?*c.zc_producer_job) c_int {
+    return @import("video.zig").producerBarrier(p, flush, out);
+}
+pub export fn zc_producer_job_drain_outputs(p: *c.zc_producer_job) c_int {
+    return @import("producer.zig").pollOutputs(@ptrCast(@alignCast(p)));
+}
 pub export fn zc_video_producer_drain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
     return @import("video.zig").producerDrain(p, out);
 }

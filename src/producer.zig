@@ -20,6 +20,8 @@ pub const Job = struct {
     frame: c.zc_frame = std.mem.zeroes(c.zc_frame),
     timestamp: u64,
     audio: bool,
+    operation: enum { write, drain, flush } = .write,
+    drains: [9]?*@import("output_io.zig").Drain = @splat(null),
     started: bool = false,
     released: bool = false,
     done: std.atomic.Value(bool) = .init(false),
@@ -91,7 +93,7 @@ pub const Pool = struct {
     pub fn cancel(self: *Pool, job: *Job) c_int {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+        if ((job.operation == .flush and job.started) or job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
         job.cancel_requested.store(true, .release);
         return c.ZC_OK;
     }
@@ -101,6 +103,7 @@ pub const Pool = struct {
         if (job.started and !job.released) return c.ZC_BUSY;
         if (!job.started) self.cancelled +|= 1;
         self.admission.release(job.ticket) catch unreachable;
+        for (job.drains) |drain| if (drain) |value| value.destroy();
         A.free(job.data);
         A.free(job.parts);
         A.destroy(job);
@@ -155,6 +158,21 @@ pub const Pool = struct {
         }
     }
 };
+
+/// Poll retained native sink prefixes; no recorder access after worker completion.
+pub fn pollOutputs(job: *Job) c_int {
+    if (!job.done.load(.acquire)) return c.ZC_TIMEOUT;
+    if (job.operation == .write) return c.ZC_STATE;
+    var failure: c_int = c.ZC_OK;
+    var pending = false;
+    for (job.drains) |drain| if (drain) |value| {
+        const code = value.wait(0);
+        if (code == c.ZC_TIMEOUT) pending = true else if (code != c.ZC_OK and failure == c.ZC_OK) {
+            failure = code;
+        }
+    };
+    return if (pending) c.ZC_TIMEOUT else failure;
+}
 
 /// Retained cleanup prefix, independent of the recorder and worker lifetimes.
 pub const Drain = struct {

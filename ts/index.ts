@@ -1238,6 +1238,8 @@ export class Recorder {
   private schedulingFactories = false
   private tasks = 0
   private producerTail: Promise<void> = Promise.resolve()
+  private deliveryBridges = new Set<OutputBridge>()
+  private deliveryFailure: unknown
   private producerTurn?: Promise<void>
   private pendingHostOutputs = new Map<
     bigint,
@@ -1487,7 +1489,11 @@ export class Recorder {
     )
     return this.queueProducer(handle(out), options)
   }
-  private queueProducer(native: Pointer, options: JobOptions<void>) {
+  private queueProducer(
+    native: Pointer,
+    options: JobOptions<void>,
+    mode: 'write' | 'drain' | 'flush' = 'write',
+  ) {
     let owned = true
     const release = () => {
       if (owned) {
@@ -1512,9 +1518,12 @@ export class Recorder {
           try {
             check(n.zc_producer_job_start(native), 'producer start')
             started = true
-            job.setCancellationGuard(
-              () => n.zc_producer_job_cancel(native) === 0,
-            )
+            if (mode === 'flush') job.seal()
+            else
+              job.setCancellationGuard(
+                () =>
+                  n.zc_producer_job_cancel(native) === 0 || mode === 'drain',
+              )
             const code = new Int32Array(1),
               handoffs = storage(8 * 16),
               count = new Uint32Array(1)
@@ -1552,6 +1561,42 @@ export class Recorder {
               finished = true
               retire()
               if (code[0] === -10) job.check()
+              if (mode !== 'write') {
+                if (mode === 'drain') job.setCancellationGuard(undefined)
+                const prefixes = [...this.deliveryBridges].map((bridge) => ({
+                  bridge,
+                  target: bridge.prefix(),
+                  done: false,
+                }))
+                let failure: unknown = this.deliveryFailure
+                while (true) {
+                  if (mode !== 'flush') job.check()
+                  let pending = false
+                  const nativeCode = n.zc_producer_job_drain_outputs(native)
+                  if (nativeCode === -3) pending = true
+                  else if (nativeCode !== 0)
+                    failure ??= new CameraError(
+                      nativeCode,
+                      'recording delivery',
+                    )
+                  for (const prefix of prefixes) {
+                    if (prefix.done) continue
+                    try {
+                      prefix.done = prefix.bridge.pollDrain(prefix.target)
+                    } catch (error) {
+                      failure ??= error
+                      prefix.done = true
+                    }
+                    if (!prefix.done) pending = true
+                  }
+                  if (!pending) {
+                    check(code[0], 'recording barrier')
+                    if (failure !== undefined) throw failure
+                    break
+                  }
+                  await pause()
+                }
+              }
               check(code[0], 'async producer write')
               job.check()
               job.seal()
@@ -2060,11 +2105,13 @@ export class Recorder {
     if (!current.bridge.onRetired)
       this.bindBridge(id, current.generation, current.bridge)
     this.publishedHostOutputs.add(current.bridge)
+    this.deliveryBridges.add(current.bridge)
     this.hostReports.delete(id)
     this.objectOutputs.set(id, current)
   }
   private bindBridge(id: bigint, generation: bigint, bridge: OutputBridge) {
     bridge.onRetired = (stats) => {
+      this.deliveryBridges.delete(bridge)
       if (!this.publishedHostOutputs.has(bridge)) return
       const previous = this.hostReports.get(id)
       if (!previous || previous.generation <= generation) {
@@ -2075,6 +2122,7 @@ export class Recorder {
       }
     }
     const report = (error: unknown) => {
+      if (this.publishedHostOutputs.has(bridge)) this.deliveryFailure ??= error
       if (this.producerTurn) {
         this.deferredOutputFailures.add(() => report(error))
         return
@@ -2759,6 +2807,23 @@ export class Recorder {
     this.assertOpen(allowProducer)
     if (this.tasks >= 16) throw new CameraError(-4, 'lifecycle queue')
     this.tasks++
+  }
+  /** Join preceding producers and acknowledge every emitted output prefix. */
+  drainRecordingAsync(options: JobOptions<void> = {}): BunJob<void> {
+    return this.recordingBarrier(false, options)
+  }
+  /** Terminally flush codec/container tails and acknowledge all output. */
+  flushAsync(options: JobOptions<void> = {}): BunJob<void> {
+    return this.recordingBarrier(true, options)
+  }
+  private recordingBarrier(flush: boolean, options: JobOptions<void>) {
+    this.assertOpen(true)
+    const out = outPointer()
+    check(
+      n.zc_video_producer_barrier(this.handle, Number(flush), ptr(out)),
+      'recording barrier admission',
+    )
+    return this.queueProducer(handle(out), options, flush ? 'flush' : 'drain')
   }
   /** Wait for copied inputs admitted so far to finish cleanup, regardless of
    * their individual results. Does not wait for output acknowledgements. */

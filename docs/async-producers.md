@@ -159,3 +159,81 @@ protect media and PTS files during asynchronous retirement. Immutable handoffs
 also publish the successor's host epoch for telemetry and capacity waits while
 the producer is active. Async input FIFO orders async submissions; await queued
 inputs before mixing in synchronous producer calls.
+
+## End-to-end recording drains and terminal codec flush
+
+```ts
+const writing = recorder.writeAVAsync(frame, pcmBlocks, timestampNs)
+frame.release()
+const delivered = recorder.drainRecordingAsync()
+await writing // Individual producer result, including validation/cancellation.
+await delivered // Every earlier producer finished; all its emitted output acknowledged.
+await recorder.flushAsync() // Terminal video, delayed media, AAC and MP4 tails + delivery.
+// Inspect outputs while the recorder still owns them, then release resources.
+await recorder.close()
+```
+
+`drainRecordingAsync(options?)` inserts a control job into the producer FIFO.
+After earlier inputs finish native processing/cleanup, the worker captures the
+current and retiring native output-I/O prefixes. Bun captures published host
+mailbox prefixes, including still-retiring epochs. The job waits for all these
+acknowledgements, surfacing a delivery error only after other captured sinks
+settle. Isolation still preserves healthy outputs. Published host delivery errors
+remain latched for later whole-recording drains, including after an epoch retires;
+individual output drains retain their existing prefix/epoch semantics.
+
+This drain keeps the FIFO barrier until acknowledgement completes. Later async
+writes may be admitted within bounds but cannot execute through it. Synchronous
+recorder mutations return BUSY during that Bun turn, including while native
+producerStats.running is false and the barrier is waiting on hooks. Cancellation,
+AbortSignal and timeout can release a recording drain while it waits. They do not
+cancel earlier inputs or hooks, and create no abandoned background polling jobs.
+Previously submitted producer jobs retain their own results; cancellation or a
+validation failure in one is not itself a delivery failure. Await those jobs to
+observe their results. Native I/O and codec errors remain errors.
+
+A nonterminal drain does not force buffered AVC/HEVC packets, the final MP4 sample,
+AAC padding, unmatched queued PCM, or delayed circular tails onto the output.
+`flushAsync(options?)` adds a terminal control job: it drains the Home video codec,
+forwards delayed video, drains synchronized PCM through the last video's nominal
+end, flushes per-output AAC, emits the final MP4 sample and duration/edit patches,
+and then waits for all captured native/host output acknowledgements. No stop hook
+runs and no recorder or descriptor is freed. Stop submitting input before flush;
+submissions already queued behind it fail STATE when executed. Submissions after
+native finalization entry reject before copying input. A new recorder is required
+to encode more media.
+
+Terminal flush is irreversible once its native job starts. Queued flushes can be
+cancelled without ending codecs; active cancel returns false and parent close
+joins the entire flush/delivery job. A deadline cannot forcibly interrupt an
+entered codec flush or user hook. Repeated flush and subsequent close replay the
+native finalization result without repeating codec tails or container patches.
+Native file-I/O workers use their finalization policy for these tails; host sends
+retain their configured per-send wait budget. Neither drain nor flush is fsync or
+a physical storage durability guarantee.
+
+Flush rejects BUSY before codec entry while a held output, unfinished preparation,
+pending split or claimed factory owns publication. Finish that transition with
+more frames, cancel it through its supported lifecycle, or close the recorder.
+A rejected flush leaves media acceptance intact. Queries, output drains, output
+retirement and supported retained-history snapshots remain usable after flush;
+new attachments, splits, recovery and media writes reject STATE. Close still
+joins preparation/retirement and runs stop hooks.
+
+Both new jobs use a zero-payload slot in the same native producer admission pool
+(default eight, configurable through producerQueue) and one of the 16 Bun lifecycle
+slots. Reserve a producer slot when queuing barriers behind writes. They appear
+in admitted/completed/cancelled/failed producer counters and remain charged as
+ownedJobs until their fences are freed; they own no copied RGB/PCM bytes.
+`drainProducersAsync` therefore also fences earlier retained control-job cleanup.
+
+The additive C API `zc_video_producer_barrier(recorder, flush, &job)` creates these
+control jobs (0 = capture delivery prefixes, 1 = terminal flush then capture).
+The caller orders native starts after prior producer writes, polls finish to
+release the recorder turn, then polls `zc_producer_job_drain_outputs` until all
+retained native worker prefixes settle. Native callers may resume later writes
+after a nonterminal marker; those cannot extend its captured fences. C callbacks
+must supply their own host acknowledgement fence if they enqueue asynchronous
+work; Bun combines both layers. A retained control job keeps recorder close BUSY
+until job_close releases its fences. Future inputs, control cancellation and
+native handle close remain caller-serialized.

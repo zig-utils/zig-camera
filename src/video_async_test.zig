@@ -652,3 +652,93 @@ test "active AV cancellation finishes entered PCM, skips remaining PCM and frame
     try std.testing.expectEqual(@as(usize, 3), ctx.videos);
     try std.testing.expectEqual(@as(usize, 7680), ctx.audio_bytes);
 }
+
+fn finishProducer(job: *c.zc_producer_job) !c_int {
+    const m = @import("media.zig");
+    var code: c_int = undefined;
+    var timer = try std.time.Timer.start();
+    while (m.zc_producer_job_finish(job, &code) == c.ZC_TIMEOUT) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+    return code;
+}
+
+test "terminal flush jobs preserve live outputs, reject new input and replay without duplicate packets" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    try frameWrite(rec, 0);
+    try frameWrite(rec, 1);
+    var invalid: ?*c.zc_producer_job = @ptrFromInt(1);
+    try std.testing.expectEqual(c.ZC_INVALID, m.zc_video_producer_barrier(rec, 2, &invalid));
+    try std.testing.expect(invalid == null);
+    for (0..2) |_| {
+        var job: ?*c.zc_producer_job = null;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_barrier(rec, 1, &job));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        try std.testing.expectEqual(c.ZC_STATE, m.zc_producer_job_cancel(job.?));
+        try std.testing.expectEqual(c.ZC_OK, try finishProducer(job.?));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_drain_outputs(job.?));
+        try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_close(rec));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+    }
+    try std.testing.expectEqual(@as(usize, 2), delivered);
+    var cb = packets(&delivered);
+    try std.testing.expectEqual(c.ZC_STATE, v.splitCallbacks(rec, &cb));
+    var rejected: ?*c.zc_prepared_output = null;
+    try std.testing.expectEqual(c.ZC_STATE, v.prepareSplit(rec, 0, null, &cb, &rejected));
+    var frame = std.mem.zeroes(c.zc_frame);
+    try std.testing.expectEqual(c.ZC_STATE, m.zc_video_producer_frame(rec, &frame, 80_000_000, &invalid));
+}
+
+test "native recording barrier retains worker prefixes and later source writes do not extend them" {
+    const m = @import("media.zig");
+    const Context = struct {
+        first: std.Thread.ResetEvent = .{},
+        second: std.Thread.ResetEvent = .{},
+        release_first: std.Thread.ResetEvent = .{},
+        release_second: std.Thread.ResetEvent = .{},
+        calls: usize = 0,
+        fn packet(ctx: ?*anyopaque, _: [*c]const c.zc_output_packet) callconv(.c) c_int {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.calls += 1;
+            if (self.calls == 1) {
+                self.first.set();
+                self.release_first.wait();
+            }
+            if (self.calls == 2) {
+                self.second.set();
+                self.release_second.wait();
+            }
+            return c.ZC_OK;
+        }
+    };
+    var ctx: Context = .{};
+    var unused: usize = 0;
+    const rec = try recorder(&unused);
+    defer _ = v.close(rec);
+    defer {
+        ctx.release_first.set();
+        ctx.release_second.set();
+    }
+    try std.testing.expectEqual(c.ZC_OK, v.closeOutput(rec));
+    var cb = packets(&unused);
+    cb.context = &ctx;
+    cb.packet = Context.packet;
+    try std.testing.expectEqual(c.ZC_OK, v.openCallbacks(rec, &cb));
+    try std.testing.expectEqual(c.ZC_OK, v.setOutputIo(rec, 0, 32768, 8, 0));
+    try frameWrite(rec, 0);
+    try ctx.first.timedWait(5 * std.time.ns_per_s);
+    var job: ?*c.zc_producer_job = null;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_barrier(rec, 0, &job));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+    try std.testing.expectEqual(c.ZC_OK, try finishProducer(job.?));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, m.zc_producer_job_drain_outputs(job.?));
+    try frameWrite(rec, 1);
+    ctx.release_first.set();
+    try ctx.second.timedWait(5 * std.time.ns_per_s);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_drain_outputs(job.?));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+}

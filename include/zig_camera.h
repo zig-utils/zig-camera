@@ -481,6 +481,13 @@ int zc_video_producer_frame(zc_recorder *,const zc_frame *,uint64_t timestamp_ns
 int zc_video_producer_audio(zc_recorder *,const uint8_t *,uint64_t length,uint64_t timestamp_ns,zc_producer_job **);
 int zc_video_producer_av(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,const zc_producer_audio_input *,uint32_t count,zc_producer_job **);
 int zc_producer_job_start(zc_producer_job *);
+/* Bounded FIFO control jobs on the same worker. flush=0 captures all native sink
+ * prefixes; flush=1 first terminally flushes video/AAC/container tails. Caller
+ * orders starts after earlier writes. Entered flush cannot be cancelled.
+ * finish releases the native turn; output polling fences delivery separately.
+ * Retained jobs (including controls) keep recorder close BUSY until job_close. */
+int zc_video_producer_barrier(zc_recorder *,uint32_t flush,zc_producer_job **);
+int zc_producer_job_drain_outputs(zc_producer_job *);
 /* Cancellation is cooperative between PCM blocks/frames. An operation already
  * entered finishes; accepted bytes are not rolled back. Always finish+close.
  * Returns STATE after completion or a previous request. A real operation failure

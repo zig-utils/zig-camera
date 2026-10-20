@@ -19,6 +19,8 @@ export const native = dlopen(library, {
   zc_video_producer_frame: { args: [p, p, n, p], returns: i },
   zc_video_producer_audio: { args: [p, p, n, n, p], returns: i },
   zc_producer_job_start: { args: [p], returns: i },
+  zc_video_producer_barrier: { args: [p, u, p], returns: i },
+  zc_producer_job_drain_outputs: { args: [p], returns: i },
   zc_producer_job_cancel: { args: [p], returns: i },
   zc_video_producer_drain: { args: [p, p], returns: i },
   zc_producer_drain_poll: { args: [p], returns: i },

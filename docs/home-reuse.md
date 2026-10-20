@@ -106,3 +106,16 @@ and documented settlement semantics, copied verbatim here. Focused tests pass
 with pinned Zig 0.15.2 and Home's development Zig. Camera code supplies retained
 native drain handles, serialized cancellation/completion and safe codec-boundary
 checkpoints; Bun only coordinates lifecycle polling and cancellation reasons.
+
+The 0.26 audit keeps native delivery fences on Home completion_watermark and
+uses delivery_fifo's acknowledged host prefixes. It adds Finalization to Home's
+recording_policy: one irreversible codec/container entry, concurrent-entry
+rejection, explicit media-acceptance state and immutable terminal success/failure.
+Home main 3b4b323f3100e513e25e63c2e4679064238ef89b contains the helper, tests and
+contract; the module is reused verbatim. Standalone tests pass on Zig 0.15.2 and
+Home's development compiler. Existing workflow paths already include this module.
+The camera supplies one bounded producer worker and retains at most nine native
+sink fences per control job, while Bun combines published/retiring host epochs
+without moving JavaScript callbacks onto native threads. Codec and AAC wrappers
+remain the existing Home implementations; finalization prevents re-entering their
+terminal flush loops during a later close.
