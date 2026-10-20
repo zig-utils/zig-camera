@@ -223,3 +223,13 @@ cleanup; the system C++ bridge only traverses libcamera values and borrows them 
 Zig callbacks. Bun validates lengths/counts and decodes bigint/arrays/geometry with
 owned raw bytes. Home packet-output CI includes the helper. Existing Home lease,
 queue, codec, container and completion helpers continue to supply capture/media.
+
+The 0.36 audit contributes device_identity.Identity(capacity) to Home video at
+ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801 and copies it verbatim. It owns a bounded
+UTF-8 backend key, rejects malformed/empty/NUL/oversized input, matches byte-exact
+identities without normalization, and rejects short copies atomically. Pinned and
+development Zig Debug/ReleaseSafe tests cover ownership, Unicode byte bounds and
+strict matching. Camera core copies the actual selected ID once after acquisition;
+Bun workers use it for target and rollback opens regardless of stale enumeration
+indices. Home owns no camera-manager lease or thread. Existing Home control journals,
+AF gates, catalog, media queues, codecs and containers remain in use.

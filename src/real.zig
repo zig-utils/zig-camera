@@ -31,3 +31,10 @@ pub extern fn zcd_discover(*const @import("catalog.zig").Sink) c_int;
 pub extern fn zcd_catalog(*Handle, u32, u32, *const @import("catalog.zig").Sink) c_int;
 pub const discover = zcd_discover;
 pub const catalog = zcd_catalog;
+
+pub extern fn zcd_open_id(*const c.zc_config, *const c.zc_pipeline_options, [*]const u8, u32, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
+pub extern fn zcd_camera_id(*Handle, ?[*]u8, u64, *u64) c_int;
+pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, negotiated: *c.zc_pipeline_info) c_int {
+    return zcd_open_id(cfg, pipeline, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
+}
+pub const cameraId = zcd_camera_id;

@@ -5,6 +5,7 @@ const help =
     \\  --width N --height N      Processed size; omit both for default still size
     \\  --buffers N              Preallocated request count, 2..32 (default 4)
     \\  --camera N               libcamera camera index (default 0)
+    \\  --camera-id ID           Exact backend ID from list; mutually exclusive with --camera
     \\  --fifo                   Deliver in order; default discards older ready frames
     \\  --exposure-us N --gain N  Manual exposure (set both); default auto exposure
     \\  --frame-us N             Requested frame duration, microseconds
@@ -87,6 +88,8 @@ fn run() !void {
     var show_preview = eq(command, "preview");
     var output: [:0]const u8 = if (eq(command, "record")) "capture.mkv" else "capture.ppm";
     var simulate = false;
+    var camera_id: ?[:0]const u8 = null;
+    var camera_index_set = false;
     var warmup: u32 = 30;
     var frames: u32 = 300;
     var quality: u32 = if (eq(command, "record")) 90 else 98;
@@ -119,6 +122,8 @@ fn run() !void {
         const value = args[i];
         if (eq(key, "--lores-format")) {
             pipeline.lores_format = if (eq(value, "YUV420")) camera.c.ZC_YUV420 else if (eq(value, "BGR888")) camera.c.ZC_RGB24 else return error.InvalidLoresFormat;
+        } else if (eq(key, "--camera-id")) {
+            camera_id = value;
         } else if (eq(key, "--codec")) {
             codec = if (eq(value, "h264")) camera.c.ZC_H264 else if (eq(value, "hevc")) camera.c.ZC_HEVC else if (eq(value, "mjpeg")) camera.c.ZC_MJPEG else return error.InvalidCodec;
         } else if (eq(key, "--output")) {
@@ -165,6 +170,7 @@ fn run() !void {
                 cfg.buffer_count = n;
             } else if (eq(key, "--camera")) {
                 cfg.camera_index = n;
+                camera_index_set = true;
             } else if (eq(key, "--exposure-us")) {
                 cfg.exposure_us = n;
             } else if (eq(key, "--frame-us")) {
@@ -198,7 +204,8 @@ fn run() !void {
         if (cfg.frame_duration_us == 0) cfg.frame_duration_us = 1_000_000 / fps;
     }
     pipeline.capture = capture_opts;
-    const cam = try camera.Camera.initPipeline(cfg, pipeline);
+    if (camera_id != null and camera_index_set) return error.AmbiguousCameraSelector;
+    const cam = if (camera_id) |id| try camera.Camera.initPipelineId(cfg, pipeline, id) else try camera.Camera.initPipeline(cfg, pipeline);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;

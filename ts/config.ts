@@ -7,7 +7,25 @@ export function copyConfiguration(options: CameraOptions): CameraOptions {
     lores: options.lores ? { ...options.lores } : undefined,
   }
 }
+export function cameraIdentity(options: CameraOptions) {
+  if (options.cameraId === undefined) return undefined
+  if (options.cameraIndex !== undefined)
+    throw new RangeError('cameraId and cameraIndex are mutually exclusive')
+  const id = options.cameraId
+  if (
+    typeof id !== 'string' ||
+    !id.length ||
+    id.includes('\0') ||
+    !id.isWellFormed()
+  )
+    throw new RangeError('invalid camera ID')
+  const bytes = new TextEncoder().encode(id)
+  if (bytes.length > 4096)
+    throw new RangeError('camera ID exceeds 4096 UTF-8 bytes')
+  return bytes
+}
 export function cameraConfiguration(options: CameraOptions) {
+  const cameraId = cameraIdentity(options)
   const config = storage(72),
     pipeline = storage(44)
   n.zc_default_config(ptr(config))
@@ -53,5 +71,5 @@ export function cameraConfiguration(options: CameraOptions) {
     put(pipeline, 36, options.lores.height)
     put(pipeline, 40, options.lores.rgb ? 1 : 0)
   }
-  return { config, pipeline }
+  return { config, pipeline, cameraId }
 }

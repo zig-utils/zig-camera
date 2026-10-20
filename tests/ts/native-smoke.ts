@@ -13,12 +13,23 @@ try {
   assert.equal(camera.properties().kind, 'properties')
   assert.equal(camera.controls().kind, 'controls')
   assert.ok(Camera.discover().some((entry) => entry.id === discovered[0]?.id))
+  const id = camera.cameraId
   await camera.close()
+  const exact = new Camera({ cameraId: id })
+  assert.equal(exact.cameraId, id)
+  await exact.switchMode({ width: 640, height: 480 })
+  assert.equal(exact.cameraId, id)
+  await exact.close()
   console.log('libcamera loaded and discovered a camera')
 } catch (error) {
   if (!(error instanceof CameraError) || error.code !== -9) throw error
   console.log('libcamera loaded; no camera present on CI host (expected)')
 }
+
+assert.throws(
+  () => new Camera({ cameraId: 'zig-utils-absent-smoke-test-camera' }),
+  (error) => error instanceof CameraError && error.code === -9,
+)
 
 // Independent Bun isolates share the same driver/manager instance. Exercise
 // concurrent manager leases even on CI machines with no physical camera.

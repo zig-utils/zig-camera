@@ -101,6 +101,25 @@ pub const Camera = struct {
         try check(core.zc_camera_controls(self.handle, &out));
         return .{ .handle = out.? };
     }
+    pub fn initId(cfg: Config, id: []const u8) Error!Camera {
+        var options: c.zc_pipeline_options = undefined;
+        core.zc_default_pipeline_options(&options);
+        return initPipelineId(cfg, options, id);
+    }
+    pub fn initPipelineId(cfg: Config, opts: c.zc_pipeline_options, id: []const u8) Error!Camera {
+        if (id.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_id_pipeline(&cfg, &opts, id.ptr, @intCast(id.len), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn cameraId(self: Camera, allocator: std.mem.Allocator) Error![]u8 {
+        var length: u32 = 0;
+        try check(core.zc_get_camera_id(self.handle, null, 0, &length));
+        const bytes = try allocator.alloc(u8, length);
+        errdefer allocator.free(bytes);
+        try check(core.zc_get_camera_id(self.handle, bytes.ptr, @intCast(bytes.len), &length));
+        return bytes;
+    }
     pub fn pipelineInfo(self: Camera) c.zc_pipeline_info {
         var out: c.zc_pipeline_info = undefined;
         check(core.zc_get_pipeline_info(self.handle, &out)) catch unreachable;
@@ -416,4 +435,22 @@ test "synthetic catalogs and DNG calibration describe the same virtual sensor" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "Zig exact camera IDs survive open close and preserve the old index API" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const first = try Camera.init(cfg);
+    const id = try first.cameraId(std.testing.allocator);
+    defer std.testing.allocator.free(id);
+    try first.deinit();
+    const selected = try Camera.initId(cfg, id);
+    defer selected.deinit() catch unreachable;
+    const copy = try selected.cameraId(std.testing.allocator);
+    defer std.testing.allocator.free(copy);
+    try std.testing.expectEqualSlices(u8, id, copy);
+    try std.testing.expectError(error.Device, Camera.initId(cfg, "missing"));
+    try std.testing.expectError(error.Invalid, Camera.initId(cfg, "bad\x00id"));
 }

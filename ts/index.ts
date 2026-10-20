@@ -38,7 +38,11 @@ export {
   type OutputCapacityOptions,
 } from './outputs'
 import { BunJob, JobCancelledError, type JobOptions } from './jobs'
-import { cameraConfiguration, copyConfiguration } from './config'
+import {
+  cameraConfiguration,
+  copyConfiguration,
+  cameraIdentity,
+} from './config'
 import type { ModeRequest, ModeResponse } from './mode-worker'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
@@ -176,6 +180,7 @@ export interface CameraOptions {
   height?: number
   buffers?: number
   cameraIndex?: number
+  cameraId?: string
   fifo?: boolean
   raw?: boolean
   unpackedRaw?: boolean
@@ -333,6 +338,12 @@ type CaptureRequest = {
   signal?: AbortSignal
 }
 export class Camera {
+  private selectedId!: string
+  private selectedIdBytes!: Uint8Array
+  /** Full backend ID, retained even after close. Mode jobs always pin this ID. */
+  get cameraId() {
+    return this.selectedId
+  }
   static discover(options: { simulate?: boolean } = {}) {
     guardOutputHook()
     if (options.simulate !== undefined && typeof options.simulate !== 'boolean')
@@ -393,14 +404,47 @@ export class Camera {
   }
   constructor(options: CameraOptions = {}) {
     this.configuration = copyConfiguration(options)
-    const { config: cfg, pipeline } = cameraConfiguration(options)
+    const { config: cfg, pipeline, cameraId } = cameraConfiguration(options)
     const out = outPointer()
-    check(n.zc_open_pipeline(ptr(cfg), ptr(pipeline), ptr(out)), 'open camera')
+    check(
+      cameraId
+        ? n.zc_open_id_pipeline(
+            ptr(cfg),
+            ptr(pipeline),
+            ptr(cameraId),
+            cameraId.length,
+            ptr(out),
+          )
+        : n.zc_open_pipeline(ptr(cfg), ptr(pipeline), ptr(out)),
+      'open camera',
+    )
     this.handle = handle(out)
-    if ((options.simulate ?? false) !== (this.info().backend === 0)) {
+    try {
+      const length = new Uint32Array(1)
+      check(n.zc_get_camera_id(this.handle, null, 0, ptr(length)), 'camera ID')
+      if (!length[0] || length[0] > 4096)
+        throw new CameraError(-9, 'camera ID length')
+      this.selectedIdBytes = new Uint8Array(length[0])
+      check(
+        n.zc_get_camera_id(
+          this.handle,
+          ptr(this.selectedIdBytes),
+          this.selectedIdBytes.length,
+          ptr(length),
+        ),
+        'camera ID',
+      )
+      if (length[0] !== this.selectedIdBytes.length)
+        throw new CameraError(-9, 'camera ID changed')
+      this.selectedId = new TextDecoder('utf-8', { fatal: true }).decode(
+        this.selectedIdBytes,
+      )
+      if ((options.simulate ?? false) !== (this.info().backend === 0))
+        throw new CameraError(-8, 'synthetic backend unavailable')
+    } catch (error) {
       n.zc_close(this.handle)
       this.handle = 0 as Pointer
-      throw new CameraError(-8, 'synthetic backend unavailable')
+      throw error
     }
   }
   assertOpen() {
@@ -425,7 +469,7 @@ export class Camera {
       width: v.getUint32(8, true),
       height: v.getUint32(12, true),
       stride: v.getUint32(16, true),
-      cameraId: text(d, 424, 256),
+      cameraId: this.selectedId,
     }
   }
   stats() {
@@ -1196,6 +1240,7 @@ export class Camera {
     jobOptions: RecordingModeOptions = {},
   ): BunJob<Recording> {
     this.assertOpen()
+    cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
     const autofocus = jobOptions.autofocus ?? false
     if (
@@ -1213,13 +1258,16 @@ export class Camera {
       (options.simulate !== undefined &&
         options.simulate !== (this.configuration.simulate ?? false)) ||
       (options.cameraIndex !== undefined &&
-        options.cameraIndex !== (this.configuration.cameraIndex ?? 0))
+        (this.configuration.cameraId !== undefined ||
+          options.cameraIndex !== (this.configuration.cameraIndex ?? 0))) ||
+      (options.cameraId !== undefined && options.cameraId !== this.selectedId)
     )
       throw new CameraError(-1, 'mode must retain camera/backend')
     const target = copyConfiguration({
       ...options,
       simulate: this.configuration.simulate,
       cameraIndex: this.configuration.cameraIndex,
+      cameraId: this.configuration.cameraId,
     })
     const encoded = cameraConfiguration(target),
       dropFrames = uint(jobOptions.dropFrames ?? 0)
@@ -1333,6 +1381,7 @@ export class Camera {
           response = await runModeWorker({
             handle: this.handle,
             ...encoded,
+            cameraId: this.selectedIdBytes,
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousStarted: started,
@@ -1438,6 +1487,7 @@ export class Camera {
               const restored = await runModeWorker({
                 handle: this.handle,
                 ...old,
+                cameraId: this.selectedIdBytes,
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousStarted: true,
@@ -1604,6 +1654,7 @@ export class Camera {
     jobOptions: ModeJobOptions<T>,
   ) {
     guardOutputHook()
+    cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
     const autofocus = jobOptions.autofocus ?? false
     if (!this.handle || this.closing || this.stopJob)
@@ -1622,12 +1673,15 @@ export class Camera {
       ...options,
       simulate: this.configuration.simulate,
       cameraIndex: this.configuration.cameraIndex,
+      cameraId: this.configuration.cameraId,
     })
     if (
       (options.simulate !== undefined &&
         options.simulate !== (this.configuration.simulate ?? false)) ||
       (options.cameraIndex !== undefined &&
-        options.cameraIndex !== (this.configuration.cameraIndex ?? 0))
+        (this.configuration.cameraId !== undefined ||
+          options.cameraIndex !== (this.configuration.cameraIndex ?? 0))) ||
+      (options.cameraId !== undefined && options.cameraId !== this.selectedId)
     )
       throw new CameraError(-1, 'mode must retain camera/backend')
     const encoded = cameraConfiguration(target),
@@ -1683,6 +1737,7 @@ export class Camera {
           response = await runModeWorker({
             handle: this.handle,
             ...encoded,
+            cameraId: this.selectedIdBytes,
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousStarted: started,
@@ -1751,6 +1806,7 @@ export class Camera {
               const restored = await runModeWorker({
                 handle: this.handle,
                 ...old,
+                cameraId: this.selectedIdBytes,
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousStarted: true,

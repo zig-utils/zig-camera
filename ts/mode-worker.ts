@@ -10,6 +10,7 @@ import {
 } from './ffi'
 export interface ModeRequest {
   handle: Pointer
+  cameraId: Uint8Array
   config: Uint8Array
   pipeline: Uint8Array
   previousConfig: Uint8Array
@@ -72,7 +73,17 @@ self.onmessage = ({ data: request }) => {
     restoring = false,
   ) => {
     const out = outPointer()
-    check(n.zc_open_pipeline(ptr(config), ptr(pipeline), ptr(out)))
+    const selected = config.slice()
+    view(selected).setUint32(12, 0, true)
+    check(
+      n.zc_open_id_pipeline(
+        ptr(selected),
+        ptr(pipeline),
+        ptr(request.cameraId),
+        request.cameraId.length,
+        ptr(out),
+      ),
+    )
     result.handle = handle(out)
     result.started = false
     const revision = new BigUint64Array(1)

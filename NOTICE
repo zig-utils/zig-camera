@@ -268,3 +268,9 @@ Home typed capability/metadata catalogs (0.35):
   Source commit: f313dc5a6b0472b7f6837fd314f7ef5575c546b9.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/f313dc5a6b0472b7f6837fd314f7ef5575c546b9
+
+Home owned device identities (0.36):
+- src/home/device_identity.zig is verbatim packages/video/src/core/device_identity.zig.
+  Source commit: ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801

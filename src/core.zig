@@ -8,7 +8,9 @@ const State = enum { idle, queued, ready, leased };
 const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata) };
 const Gate = @import("home/completion_gate.zig").Gate;
 const ControlState = @import("home/keyed_state.zig").State(c.zc_control, c.ZC_MAX_CONTROLS);
+const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID);
 const Session = struct {
+    identity: Identity = .{},
     desired: ControlState = .{},
     control_revision: u64 = 0,
     control_base: u64 = 0,
@@ -147,6 +149,15 @@ pub export fn zc_default_pipeline_options(out: *c.zc_pipeline_options) void {
     zc_default_capture_options(&out.capture);
 }
 pub export fn zc_open_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, out: *?*c.zc_camera) c_int {
+    return openPipeline(cfg, pipeline, null, out);
+}
+pub export fn zc_open_id_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
+    out.* = null;
+    if (id == null or length == 0 or length > c.ZC_MAX_CAMERA_ID or cfg.camera_index != 0) return c.ZC_INVALID;
+    const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
+    return openPipeline(cfg, pipeline, requested.bytes(), out);
+}
+fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[]const u8, out: *?*c.zc_camera) c_int {
     out.* = null;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
@@ -159,7 +170,7 @@ pub export fn zc_open_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pi
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.* };
-    const rc = driver.open(cfg, pipeline, self, completed, &self.device, &self.info, &self.pipeline);
+    const rc = if (id) |selected| driver.openId(cfg, pipeline, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
@@ -168,6 +179,25 @@ pub export fn zc_open_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pi
         driver.close(self.device.?);
         std.heap.c_allocator.destroy(self);
         return c.ZC_DEVICE;
+    }
+    var length: u64 = 0;
+    var identity_rc = driver.cameraId(self.device.?, null, 0, &length);
+    if (identity_rc == 0 and (length == 0 or length > c.ZC_MAX_CAMERA_ID)) identity_rc = c.ZC_DEVICE;
+    if (identity_rc == 0) identity_rc = driver.cameraId(self.device.?, &self.identity.storage, c.ZC_MAX_CAMERA_ID, &length);
+    if (identity_rc == 0) {
+        self.identity = Identity.init(self.identity.storage[0..@intCast(length)]) catch {
+            driver.close(self.device.?);
+            std.heap.c_allocator.destroy(self);
+            return c.ZC_DEVICE;
+        };
+        if (id) |expected| if (!self.identity.matches(expected)) {
+            identity_rc = c.ZC_DEVICE;
+        };
+    }
+    if (identity_rc != 0) {
+        driver.close(self.device.?);
+        std.heap.c_allocator.destroy(self);
+        return identity_rc;
     }
     out.* = self.ptr();
     return c.ZC_OK;
@@ -1551,4 +1581,76 @@ test "owned catalogs survive source release and reject undersized copies without
     try std.testing.expect(invalid == null);
     try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_discover(c.ZC_LIBCAMERA, &invalid));
     try std.testing.expect(invalid == null);
+}
+
+pub export fn zc_get_camera_id(p: *c.zc_camera, data: ?[*]u8, capacity: u32, length: *u32) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    length.* = self.identity.length;
+    if (data == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    _ = self.identity.copy(data.?[0..capacity]) catch return c.ZC_INVALID;
+    return c.ZC_OK;
+}
+
+test "camera ID selection is exact and full ID copies are atomic" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    var camera: ?*c.zc_camera = null;
+    const expected = "synthetic";
+    try std.testing.expectEqual(c.ZC_OK, zc_open_id_pipeline(&cfg, &pipeline, expected, expected.len, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    var length: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_camera_id(camera.?, null, 0, &length));
+    try std.testing.expectEqual(@as(u32, expected.len), length);
+    var output: [12]u8 = @splat(0xaa);
+    try std.testing.expectEqual(c.ZC_INVALID, zc_get_camera_id(camera.?, &output, expected.len - 1, &length));
+    for (output) |b| try std.testing.expectEqual(@as(u8, 0xaa), b);
+    try std.testing.expectEqual(c.ZC_OK, zc_get_camera_id(camera.?, &output, output.len, &length));
+    try std.testing.expectEqualStrings(expected, output[0..length]);
+    try std.testing.expectEqual(@as(u8, 0xaa), output[length]);
+    for ([_][]const u8{ "syntheti", "synthetic2", "Synthetic", " synthetic", "synthetic " }) |other| {
+        var missing: ?*c.zc_camera = camera;
+        try std.testing.expectEqual(c.ZC_DEVICE, zc_open_id_pipeline(&cfg, &pipeline, other.ptr, @intCast(other.len), &missing));
+        try std.testing.expect(missing == null);
+    }
+    for ([_][]const u8{ "", "bad\x00id", "\xff" }) |bad| {
+        var invalid: ?*c.zc_camera = camera;
+        try std.testing.expectEqual(c.ZC_INVALID, zc_open_id_pipeline(&cfg, &pipeline, bad.ptr, @intCast(bad.len), &invalid));
+        try std.testing.expect(invalid == null);
+    }
+    cfg.camera_index = 1;
+    var invalid: ?*c.zc_camera = camera;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_open_id_pipeline(&cfg, &pipeline, expected, expected.len, &invalid));
+    try std.testing.expect(invalid == null);
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+}
+
+test "full camera ID copies preserve identifiers beyond legacy info storage" {
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    const self = try std.heap.c_allocator.create(Session);
+    defer std.heap.c_allocator.destroy(self);
+    const source: [c.ZC_MAX_CAMERA_ID]u8 = @splat('x');
+    self.* = .{ .config = cfg, .identity = try Identity.init(&source) };
+    @memcpy(self.info.camera_id[0..6], "legacy");
+    var length: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_camera_id(self.ptr(), null, 0, &length));
+    try std.testing.expectEqual(@as(u32, c.ZC_MAX_CAMERA_ID), length);
+    var output: [c.ZC_MAX_CAMERA_ID + 1]u8 = @splat(0xaa);
+    try std.testing.expectEqual(c.ZC_INVALID, zc_get_camera_id(self.ptr(), &output, self.info.camera_id.len, &length));
+    for (output) |value| try std.testing.expectEqual(@as(u8, 0xaa), value);
+    try std.testing.expectEqual(c.ZC_OK, zc_get_camera_id(self.ptr(), &output, output.len, &length));
+    try std.testing.expectEqualSlices(u8, &source, output[0..length]);
+    try std.testing.expectEqual(@as(u8, 0xaa), output[length]);
 }

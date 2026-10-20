@@ -34,6 +34,9 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
           bun test tests/ts
           ./zig-out/bin/zig-camera list --simulate
+          ./zig-out/bin/zig-camera info --simulate --camera-id synthetic
+          if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi
+          if ./zig-out/bin/zig-camera info --simulate --camera-id synthetic --camera 0; then exit 1; fi
           ./zig-out/bin/zig-camera modes --simulate
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
           bun tests/ts/check-media.ts zig-out --lores

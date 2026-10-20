@@ -11,7 +11,7 @@ No fallback from a missing real camera to synthetic data occurs.
 ```ts
 const cameras = Camera.discover()
 for (const camera of cameras) console.log(camera.index, camera.id, camera.properties)
-const camera = new Camera({ cameraIndex: cameras[0].index })
+const camera = new Camera({ cameraId: cameras[0].id })
 const advertised = camera.controls()
 const properties = camera.properties()
 using request = await camera.captureRequest()
@@ -20,7 +20,8 @@ console.log(full.records.find((r) => r.name === 'SensorTimestamp')?.values)
 ```
 
 Discovery indices describe the current manager snapshot and may change after
-hotplug; persistent selection by ID is not yet implemented. The CLI command
+hotplug; use [exact camera ID selection](camera-selection.md) to retain the selected
+backend identity across mode reopens. The CLI command
 `zig-camera list` prints index and ID without opening a camera; `list --simulate`
 selects virtual discovery. Enumeration/queries are synchronous, may start the
 manager and allocate, and belong outside latency-sensitive capture callbacks.

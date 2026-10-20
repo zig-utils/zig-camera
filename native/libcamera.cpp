@@ -333,14 +333,19 @@ struct Device {
         }
         return ZC_OK;
     }
-    int init(const zc_config &cfg, const zc_pipeline_options &pipe, void *ctx, Completion complete) {
+    int init(const zc_config &cfg, const zc_pipeline_options &pipe, void *ctx, Completion complete, const std::string *selected_id=nullptr) {
         const auto &opts=pipe.capture;
         requested = cfg; options = opts; context = ctx; callback = complete;
         const int manager_rc=manager_lease.acquire();
         if(manager_rc)return manager_rc;
-        const auto cameras = managerHost().manager->cameras();
-        if (cfg.camera_index >= cameras.size()) return ZC_DEVICE;
-        camera = cameras[cfg.camera_index];
+        if(selected_id) {
+            camera=managerHost().manager->get(*selected_id);
+            if(!camera)return ZC_DEVICE;
+        } else {
+            const auto cameras = managerHost().manager->cameras();
+            if (cfg.camera_index >= cameras.size()) return ZC_DEVICE;
+            camera = cameras[cfg.camera_index];
+        }
         if (camera->acquire() < 0) return ZC_BUSY;
         acquired = true;
         pending=ControlList(camera->controls());desired=ControlList(camera->controls());
@@ -658,4 +663,21 @@ extern "C" int zcd_catalog(Device *device,uint32_t kind,uint32_t index,const zcd
         }
         return ZC_OK;
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+
+extern "C" int zcd_open_id(const zc_config *cfg,const zc_pipeline_options *opts,const uint8_t *id,uint32_t length,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
+    *out=nullptr;
+    try {
+        auto device=std::make_unique<Device>();
+        const std::string selected(reinterpret_cast<const char *>(id),length);
+        const int rc=device->init(*cfg,*opts,ctx,cb,&selected);
+        if(rc)return rc;
+        *info=device->info;*pipeline=device->pipeline;*out=device.release();return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+extern "C" int zcd_camera_id(Device *device,uint8_t *data,uint64_t capacity,uint64_t *length) {
+    const auto &id=device->camera->id();*length=id.size();
+    if(!data)return capacity==0 ? ZC_OK : ZC_INVALID;
+    if(capacity<id.size())return ZC_INVALID;
+    std::memcpy(data,id.data(),id.size());return ZC_OK;
 }

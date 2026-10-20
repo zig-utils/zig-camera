@@ -1,4 +1,4 @@
-# Feature coverage in 0.35
+# Feature coverage in 0.36
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -8,7 +8,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Capability | Native Zig/C implementation | Bun surface / remaining work |
 | --- | --- | --- |
 | Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs; mapped-array views and synchronized multi-camera requests remain incomplete |
-| Discovery/catalogs | Shared manager, unacquired enumeration, owned typed properties/control ranges/full request metadata | Camera.discover, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; hotplug watches and generic native control writes missing |
+| Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata | Camera.discover, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; hotplug watches and generic native control writes missing |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
 | Controls and autofocus | Typed atomic control batches; bounded desired-state snapshots; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls, controlSnapshot, shared metadata decoding, cancellable scan and CAF pause/resume jobs; focus-locked retained requests, paired streams and RGB/metadata/lores/JPEG/DNG with joined restoration and discard on failure; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics unvalidated |
 | Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
@@ -21,7 +21,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | Path patterns or Bun factories, per-output setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
 | Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drains, terminal flush, transactional session restart/reconfiguration and persistent producer worker | Async lifecycle, host telemetry, RGB/PCM/A/V writes, cooperative cancellation, recording drains, flush/restart/reconfigure, per-session codec/audio settings and camera-pump session reuse; synchronous attachment/snapshot calls remain fail-fast |
 | Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Bounded FIFO BunJob, worker reopen/drop/temporary RGB/metadata/lores/JPEG/DNG, cancellation, rollback and preview recreation; coordinated recording switch drains/reconfigures/resumes with negotiated geometry and audio; runtime settings replay with strict target validation; AF coordination with revision-filtered capture; outstanding leases remain unsupported |
-| Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects; no synchronized stereo or tracking/navigation |
+| Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
 

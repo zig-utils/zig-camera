@@ -460,3 +460,17 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
         else => c.ZC_INVALID,
     };
 }
+
+pub const device_id = "synthetic";
+pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    out.* = null;
+    if (!std.mem.eql(u8, id, device_id)) return c.ZC_DEVICE;
+    return open(config, opts, context, callback, out, info, pipeline);
+}
+pub fn cameraId(_: *Handle, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = device_id.len;
+    if (data == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < device_id.len) return c.ZC_INVALID;
+    @memcpy(data.?[0..device_id.len], device_id);
+    return c.ZC_OK;
+}

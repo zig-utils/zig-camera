@@ -73,6 +73,13 @@ typedef struct {
     zc_stream lores;
 } zc_pipeline_info;
 void zc_default_pipeline_options(zc_pipeline_options *);
+/* Exact UTF-8 backend ID selection. ID bytes are nonempty, at most 4096 bytes,
+ * with no NUL or terminator. cfg.camera_index must be zero; never falls back.
+ * Old config/ABI layouts remain unchanged. Copy returns the full selected ID;
+ * null/zero queries length, short buffers reject without writing a prefix. */
+#define ZC_MAX_CAMERA_ID 4096
+int zc_open_id_pipeline(const zc_config *, const zc_pipeline_options *, const uint8_t *id, uint32_t length, zc_camera **out);
+int zc_get_camera_id(zc_camera *, uint8_t *data, uint32_t capacity, uint32_t *length);
 int zc_open_pipeline(const zc_config *,const zc_pipeline_options *,zc_camera **);
 int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
 /* Cached discovery: no reconfiguration or capture interruption. Query with

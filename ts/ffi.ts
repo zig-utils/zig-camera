@@ -85,6 +85,8 @@ export const native = dlopen(library, {
   zc_abi_version: { args: [], returns: u },
   zc_default_config: { args: [p], returns: v },
   zc_default_pipeline_options: { args: [p], returns: v },
+  zc_open_id_pipeline: { args: [p, p, p, u, p], returns: i },
+  zc_get_camera_id: { args: [p, p, u, p], returns: i },
   zc_open_pipeline: { args: [p, p, p], returns: i },
   zc_start: { args: [p], returns: i },
   zc_stop: { args: [p], returns: i },

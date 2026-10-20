@@ -60,6 +60,24 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
 int main(void) {
+    zc_config identity_cfg;zc_default_config(&identity_cfg);
+    identity_cfg.width=16;identity_cfg.height=16;
+    zc_pipeline_options identity_pipeline;zc_default_pipeline_options(&identity_pipeline);
+    const uint8_t device_id[]="synthetic";
+    zc_camera *identity_camera=NULL;
+    assert(zc_open_id_pipeline(&identity_cfg,&identity_pipeline,device_id,sizeof(device_id)-1,&identity_camera)==ZC_OK);
+    uint32_t identity_length=0;
+    assert(zc_get_camera_id(identity_camera,NULL,0,&identity_length)==ZC_OK && identity_length==9);
+    uint8_t identity_copy[10];memset(identity_copy,0xaa,sizeof(identity_copy));
+    assert(zc_get_camera_id(identity_camera,identity_copy,8,&identity_length)==ZC_INVALID);
+    assert(identity_copy[0]==0xaa && identity_copy[8]==0xaa);
+    assert(zc_get_camera_id(identity_camera,identity_copy,sizeof(identity_copy),&identity_length)==ZC_OK);
+    assert(memcmp(identity_copy,device_id,identity_length)==0 && identity_copy[9]==0xaa);
+    assert(zc_close(identity_camera)==ZC_OK);
+    identity_camera=(zc_camera *)1;
+    assert(zc_open_id_pipeline(&identity_cfg,&identity_pipeline,(const uint8_t *)"absent",6,&identity_camera)==ZC_DEVICE && !identity_camera);
+    assert(zc_open_id_pipeline(&identity_cfg,&identity_pipeline,(const uint8_t *)"bad\0id",6,&identity_camera)==ZC_INVALID && !identity_camera);
+
     zc_catalog *catalog=NULL;
     assert(zc_discover(ZC_SYNTHETIC,&catalog)==ZC_OK && catalog);
     uint64_t catalog_size=0;

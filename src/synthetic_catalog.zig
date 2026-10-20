@@ -32,7 +32,7 @@ pub fn properties(s: *const Sink, group: u32) c_int {
     return field(s, group, 3, "PixelArrayActiveAreas", 7, 1, std.mem.asBytes(&areas), true);
 }
 pub fn discover(s: *const Sink) c_int {
-    const name = "synthetic";
+    const name = synthetic.device_id;
     const rc = field(s, 0, 0, "CameraId", 6, name.len, name, true);
     if (rc != 0) return rc;
     return properties(s, 0);
