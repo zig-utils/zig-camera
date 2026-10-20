@@ -505,6 +505,9 @@ export class Camera {
     )
     this.focusProducesValue = false
     this.focusJob = job
+    void job.operationDone.then(() => {
+      if (this.focusJob === job) this.focusJob = undefined
+    })
     if (options.signal?.aborted) job.cancel(options.signal.reason)
     void job.start()
     return job
@@ -562,6 +565,9 @@ export class Camera {
     )
     this.focusProducesValue = false
     this.focusJob = job
+    void job.operationDone.then(() => {
+      if (this.focusJob === job) this.focusJob = undefined
+    })
     if (options.signal?.aborted) job.cancel(options.signal.reason)
     void job.start()
     return job
@@ -713,6 +719,9 @@ export class Camera {
     )
     this.focusProducesValue = true
     this.focusJob = job
+    void job.operationDone.then(() => {
+      if (this.focusJob === job) this.focusJob = undefined
+    })
     if (options.signal?.aborted) job.cancel(options.signal.reason)
     void job.start()
     return job
@@ -1680,11 +1689,11 @@ export class Camera {
     this.stopJob = (async () => {
       let failure: unknown
       await this.cancelModes()
-      if (this.focusJob && !this.focusJob.done) {
-        this.focusJob.cancel(new CameraError(-2, 'camera stopped'))
-        await this.focusJob.operationDone
-        if (this.focusJob.error !== this.focusJob.cancellationReason)
-          failure = this.focusJob.error
+      const focus = this.focusJob
+      if (focus && !focus.done) {
+        focus.cancel(new CameraError(-2, 'camera stopped'))
+        await focus.operationDone
+        if (focus.error !== focus.cancellationReason) failure = focus.error
       }
       try {
         this.stopPreview()
