@@ -1512,7 +1512,9 @@ export class Recorder {
           try {
             check(n.zc_producer_job_start(native), 'producer start')
             started = true
-            job.seal() // Encoder mutation is irreversible; no active cancellation.
+            job.setCancellationGuard(
+              () => n.zc_producer_job_cancel(native) === 0,
+            )
             const code = new Int32Array(1),
               handoffs = storage(8 * 16),
               count = new Uint32Array(1)
@@ -1549,10 +1551,14 @@ export class Recorder {
               check(state, 'producer completion')
               finished = true
               retire()
+              if (code[0] === -10) job.check()
               check(code[0], 'async producer write')
+              job.check()
+              job.seal()
               break
             }
           } finally {
+            job.setCancellationGuard(undefined)
             if (!started || finished) release()
             this.producerTurn = undefined
             unlock()
@@ -2753,6 +2759,49 @@ export class Recorder {
     this.assertOpen(allowProducer)
     if (this.tasks >= 16) throw new CameraError(-4, 'lifecycle queue')
     this.tasks++
+  }
+  /** Wait for copied inputs admitted so far to finish cleanup, regardless of
+   * their individual results. Does not wait for output acknowledgements. */
+  drainProducersAsync(options: JobOptions<void> = {}): BunJob<void> {
+    this.assertOpen(true)
+    const out = outPointer()
+    check(n.zc_video_producer_drain(this.handle, ptr(out)), 'producer drain')
+    const native = handle(out)
+    let owned = true
+    const release = () => {
+      if (owned) {
+        n.zc_producer_drain_close(native)
+        owned = false
+      }
+    }
+    try {
+      const lifecycle = this.objectJob<void>(
+        async (job) => {
+          try {
+            while (true) {
+              job.check()
+              const code = n.zc_producer_drain_poll(native)
+              if (code === -3) {
+                await pause()
+                continue
+              }
+              check(code, 'producer drain')
+              job.seal()
+              return
+            }
+          } finally {
+            release()
+          }
+        },
+        options,
+        'host',
+      )
+      void lifecycle.operationDone.then(release)
+      return lifecycle
+    } catch (error) {
+      release()
+      throw error
+    }
   }
   async drain(id: bigint | number = 0n) {
     this.admit()

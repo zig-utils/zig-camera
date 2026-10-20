@@ -583,3 +583,72 @@ test "producer ABI owns copies, retains exclusive turn through completion and bo
     try std.testing.expectEqual(@as(u64, 1), stats.completed);
     try std.testing.expectEqual(@as(u64, 2), stats.rejected);
 }
+
+test "active AV cancellation finishes entered PCM, skips remaining PCM and frame, and preserves the recorder" {
+    const m = @import("media.zig");
+    const Context = struct {
+        entered: std.Thread.ResetEvent = .{},
+        unblock: std.Thread.ResetEvent = .{},
+        videos: usize = 0,
+        audio_bytes: usize = 0,
+        fn packet(ctx: ?*anyopaque, p: [*c]const c.zc_output_packet) callconv(.c) c_int {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            if (p.*.codec == c.ZC_PCM_S16LE) {
+                self.entered.set();
+                self.unblock.wait();
+                self.audio_bytes += @intCast(p.*.length);
+            } else self.videos += 1;
+            return c.ZC_OK;
+        }
+    };
+    var ctx: Context = .{};
+    const cfg = c.zc_video_config{ .width = 16, .height = 16, .fps_num = 25, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 80, .gop = 0 };
+    var opts = v.defaultRecordingOptions();
+    opts.sample_rate = 48000;
+    var rec: ?*c.zc_recorder = null;
+    try std.testing.expectEqual(c.ZC_OK, v.create(&cfg, &opts, 0, &rec));
+    defer _ = v.close(rec.?);
+    var cb = packets(&ctx.videos);
+    cb.context = &ctx;
+    cb.packet = Context.packet;
+    try std.testing.expectEqual(c.ZC_OK, v.openCallbacks(rec.?, &cb));
+    try frameWrite(rec.?, 0);
+    try frameWrite(rec.?, 1);
+    var pcm_bytes: [3840]u8 = @splat(42); // 40ms at 48kHz mono S16LE.
+    var pixels: [16 * 16 * 3]u8 = @splat(100);
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 1;
+    frame.main.width = 16;
+    frame.main.height = 16;
+    frame.main.stride = 48;
+    frame.main.plane_count = 1;
+    @memcpy(frame.main.format[0..6], "BGR888");
+    frame.main.planes[0].data = &pixels;
+    frame.main.planes[0].length = pixels.len;
+    frame.main.planes[0].bytes_used = pixels.len;
+    const blocks = [_]c.zc_producer_audio_input{
+        .{ .data = &pcm_bytes, .length = pcm_bytes.len, .timestamp_ns = 0 },
+        .{ .data = &pcm_bytes, .length = pcm_bytes.len, .timestamp_ns = 40_000_000 },
+    };
+    var job: ?*c.zc_producer_job = null;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_av(rec.?, &frame, 80_000_000, &blocks, 2, &job));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+    try ctx.entered.timedWait(5 * std.time.ns_per_s);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(job.?));
+    try std.testing.expectEqual(c.ZC_BUSY, m.zc_producer_job_close(job.?));
+    ctx.unblock.set();
+    var code: c_int = undefined;
+    while (m.zc_producer_job_finish(job.?, &code) == c.ZC_TIMEOUT) std.Thread.sleep(100_000);
+    try std.testing.expectEqual(c.ZC_CANCELLED, code);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+    try std.testing.expectEqual(@as(usize, 2), ctx.videos);
+    try std.testing.expectEqual(@as(usize, 3840), ctx.audio_bytes);
+    var stats: c.zc_recording_stats = undefined;
+    _ = v.recordingStats(rec.?, &stats);
+    try std.testing.expectEqual(@as(u64, 1920), stats.audio_frames);
+    // Resume from the actual admitted audio prefix; cancelled data was not retried.
+    try std.testing.expectEqual(c.ZC_OK, v.writeAudio(rec.?, &pcm_bytes, pcm_bytes.len, 40_000_000));
+    try frameWrite(rec.?, 2);
+    try std.testing.expectEqual(@as(usize, 3), ctx.videos);
+    try std.testing.expectEqual(@as(usize, 7680), ctx.audio_bytes);
+}

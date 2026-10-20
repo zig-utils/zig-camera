@@ -178,3 +178,14 @@ Only the persistent producer and worker-only recorder close enable this scope;
 synchronous header/attachment/snapshot calls remain fail-fast. Immutable native
 handoff events let Bun retire predecessor hooks and release shared PTS fences
 before a blocked successor needs to complete its producer batch.
+
+## Producer cancellation and cleanup fences
+
+Copied producer jobs additionally support cooperative active cancellation and
+`Recorder.drainProducersAsync(options?)`. Entered writes finish before input
+cleanup; checkpoints skip later PCM blocks/video frames. Native cancellation is
+linearized against completion and never forcibly interrupts codecs or hooks.
+Producer drains capture input cleanup regardless of each operation's result;
+output drains still fence sink acknowledgements. See
+[async producers](async-producers.md) for partial-delivery, failure precedence,
+timeout, retained-handle and parent-close semantics.

@@ -443,6 +443,21 @@ pub export fn zc_producer_job_close(p: *c.zc_producer_job) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
     return job.owner.release(job);
 }
+pub export fn zc_producer_job_cancel(p: *c.zc_producer_job) c_int {
+    const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
+    return job.owner.cancel(job);
+}
+pub export fn zc_video_producer_drain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
+    return @import("video.zig").producerDrain(p, out);
+}
+pub export fn zc_producer_drain_poll(p: *c.zc_producer_drain) c_int {
+    const drain: *@import("producer.zig").Drain = @ptrCast(@alignCast(p));
+    return drain.poll();
+}
+pub export fn zc_producer_drain_close(p: *c.zc_producer_drain) void {
+    const drain: *@import("producer.zig").Drain = @ptrCast(@alignCast(p));
+    drain.destroy();
+}
 
 pub export fn zc_video_close_outputs_async(p: *c.zc_recorder, results: [*]c.zc_output_result, capacity: u32, count: *u32) c_int {
     if (@import("video.zig").producerBusy(p)) {

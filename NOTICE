@@ -188,3 +188,11 @@ Home owned producer admission (0.24):
   supply actual timed native producer waits and host acknowledgement accounting.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/a276dca96b958fec80b51220433b9d499c1c9b54
+
+Home producer ownership fences (0.25):
+- src/home/owned_admission.zig is verbatim from Home's
+  packages/video/src/core/owned_admission.zig at 55852d43d52c745565176d0b3ed52ec1304ab1e9.
+  Fixed-prefix cleanup scans handle out-of-order releases and later slot reuse
+  without retaining payloads or keeping an unbounded completion history.
+  Supersedes the owned_admission version above. The Home MIT license applies.
+  https://github.com/home-lang/home/commit/55852d43d52c745565176d0b3ed52ec1304ab1e9

@@ -10,7 +10,7 @@ extern "C" {
 #define ZC_MAX_PLANES 4
 /* Negative results, stable across platforms. */
 enum { ZC_OK=0, ZC_INVALID=-1, ZC_STATE=-2, ZC_TIMEOUT=-3, ZC_BUSY=-4,
-       ZC_STALE=-5, ZC_IO=-6, ZC_NOMEM=-7, ZC_UNSUPPORTED=-8, ZC_DEVICE=-9 };
+       ZC_STALE=-5, ZC_IO=-6, ZC_NOMEM=-7, ZC_UNSUPPORTED=-8, ZC_DEVICE=-9, ZC_CANCELLED=-10 };
 enum { ZC_FIFO=0, ZC_LATEST=1 };
 enum { ZC_SYNTHETIC=0, ZC_LIBCAMERA=1 };
 /* Zero dimensions select libcamera's default still size. Set both or neither.
@@ -468,7 +468,7 @@ int zc_video_finish_factory(zc_recorder *,uint64_t id,uint64_t ticket,int code);
 /* Copied RGB/PCM producer jobs. Admission includes completed retained handles.
  * start gives the persistent worker exclusive recorder access. Finish polls
  * completion and releases that turn; close then consumes the job. A queued
- * job may be closed without starting. Active jobs cannot be cancelled/retried.
+ * job may be closed without starting. Cancellation never rolls back/retries data.
  * All ordinary recorder ABI calls return BUSY during an active producer turn.
  * Creator/caller serializes admission and lifecycle; callbacks remain native. */
 typedef struct zc_producer_job zc_producer_job;
@@ -481,6 +481,18 @@ int zc_video_producer_frame(zc_recorder *,const zc_frame *,uint64_t timestamp_ns
 int zc_video_producer_audio(zc_recorder *,const uint8_t *,uint64_t length,uint64_t timestamp_ns,zc_producer_job **);
 int zc_video_producer_av(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,const zc_producer_audio_input *,uint32_t count,zc_producer_job **);
 int zc_producer_job_start(zc_producer_job *);
+/* Cancellation is cooperative between PCM blocks/frames. An operation already
+ * entered finishes; accepted bytes are not rolled back. Always finish+close.
+ * Returns STATE after completion or a previous request. A real operation failure
+ * takes precedence over CANCELLED in finish's result. */
+int zc_producer_job_cancel(zc_producer_job *);
+typedef struct zc_producer_drain zc_producer_drain;
+/* Captures admitted input ownership, including queued and retained handles.
+ * Completion means cleanup, regardless of individual write success. Later inputs
+ * do not extend the prefix. At most 32 retained drains; safe after recorder close. */
+int zc_video_producer_drain(zc_recorder *,zc_producer_drain **);
+int zc_producer_drain_poll(zc_producer_drain *);
+void zc_producer_drain_close(zc_producer_drain *);
 int zc_producer_job_finish(zc_producer_job *,int *result);
 int zc_producer_job_close(zc_producer_job *);
 /* Immutable host epoch handoffs: retiring hooks may drain/stop while the worker

@@ -74,7 +74,6 @@ test('async producer owns copied RGB after lease release and automatically waits
     await until(() => recorder.producerStats().running)
     await until(() => recorder.hostIOStats().blockedWaits === 1n)
     expect(second.done).toBe(false)
-    expect(second.cancel()).toBe(false)
     expect(() => recorder.stats()).toThrow(CameraError)
     expect(() => recorder.poll()).toThrow(CameraError)
     sink.gate.release()
@@ -173,7 +172,7 @@ test('automatic wait timeout isolates its output and preserves healthy shared en
     await camera.close()
   }
 })
-test('parent close cancels pending producer inputs but waits for an irreversible active write', async () => {
+test('parent close cancels pending and active inputs, joining the entered write before cleanup', async () => {
   const camera = cam(),
     sink = new Sink(),
     recorder = await Recorder.open(sink, {
@@ -185,17 +184,57 @@ test('parent close cancels pending producer inputs but waits for an irreversible
     await submit(camera, recorder, 0)
     await until(() => sink.entered)
     const active = submit(camera, recorder, 1)
-    await until(() => recorder.producerStats().running)
+    await until(() => recorder.hostIOStats().blockedWaits === 1n)
     const queued = submit(camera, recorder, 2)
+    const drain = recorder.drainProducersAsync()
     const closed = recorder.close()
     await expect(Promise.resolve(queued)).rejects.toMatchObject({ code: -2 })
+    await expect(Promise.resolve(drain)).rejects.toMatchObject({ code: -2 })
     expect(active.done).toBe(false)
     sink.gate.release()
-    await active
+    await expect(Promise.resolve(active)).rejects.toMatchObject({ code: -2 })
     await closed
     expect(sink.frames.length).toBe(2)
     expect(recorder.producerStats().ownedJobs).toBe(0n)
-    expect(recorder.producerStats().cancelled).toBe(1n)
+    expect(recorder.producerStats().cancelled).toBe(2n)
+  } finally {
+    sink.gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+
+test('active cancellation callback can close its recorder after ownership cleanup', async () => {
+  const camera = cam(),
+    sink = new Sink()
+  const recorder = await Recorder.open(sink, {
+    width: 32,
+    height: 24,
+    outputQueue: { maxBytes: 65536, maxOperations: 1, waitMs: 1000 },
+  })
+  try {
+    await submit(camera, recorder, 0)
+    await until(() => sink.entered)
+    using frame = camera.acquire()
+    let callbackOwned = -1n
+    const active = recorder.writeAsync(frame, 40_000_000n, {
+      signalFunction: async () => {
+        callbackOwned = recorder.producerStats().ownedBytes
+        await recorder.close()
+      },
+    })
+    frame.release()
+    await until(() => recorder.hostIOStats().blockedWaits === 1n)
+    expect(active.cancel()).toBe(true)
+    sink.gate.release()
+    await expect(Promise.resolve(active)).rejects.toBeInstanceOf(
+      JobCancelledError,
+    )
+    await active.cleanupDone
+    expect(active.callbackError).toBeUndefined()
+    expect(callbackOwned).toBe(0n)
+    expect(sink.stops).toBe(1)
+    expect(recorder.producerStats().ownedJobs).toBe(0n)
   } finally {
     sink.gate.release()
     await recorder.close()
@@ -588,3 +627,237 @@ test('retiring host descriptors reject aliases until their asynchronous stop fen
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('active cancellation keeps input and owner until entered output completes, then recording continues', async () => {
+  const camera = cam(),
+    sink = new Sink()
+  const recorder = await Recorder.open(sink, {
+    width: 32,
+    height: 24,
+    outputQueue: { maxBytes: 65536, maxOperations: 1, waitMs: 1000 },
+  })
+  try {
+    await submit(camera, recorder, 0)
+    await until(() => sink.entered)
+    const active = submit(camera, recorder, 1)
+    await until(() => recorder.hostIOStats().blockedWaits === 1n)
+    const reason = new Error('user stopped this frame')
+    expect(active.cancel(reason)).toBe(true)
+    expect(active.cancel()).toBe(false)
+    const drain = recorder.drainProducersAsync()
+    await pause(5)
+    expect(active.done).toBe(false)
+    expect(drain.done).toBe(false)
+    expect(recorder.producerStats().ownedBytes).toBe(2304n)
+    expect(() => recorder.stats()).toThrow(CameraError)
+    sink.gate.release()
+    await expect(Promise.resolve(active)).rejects.toBe(reason)
+    await drain
+    expect(recorder.producerStats().ownedJobs).toBe(0n)
+    expect(active.cancel()).toBe(false)
+    await submit(camera, recorder, 2)
+    await recorder.drain()
+    expect(sink.frames.map((f) => f.timestampNs)).toEqual([
+      0n,
+      40_000_000n,
+      80_000_000n,
+    ])
+    expect(recorder.producerStats().cancelled).toBe(1n)
+    expect(recorder.producerStats().failed).toBe(0n)
+  } finally {
+    sink.gate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+
+test('producer drain captures a cleanup prefix and excludes later blocked writes', async () => {
+  const camera = cam(),
+    sink = new Sink()
+  const recorder = await Recorder.open(sink, {
+    width: 32,
+    height: 24,
+    outputQueue: { maxBytes: 65536, maxOperations: 1, waitMs: 1000 },
+  })
+  const firstGate = sink.gate,
+    secondGate = deferred()
+  try {
+    await submit(camera, recorder, 0)
+    await until(() => sink.entered)
+    const second = submit(camera, recorder, 1)
+    await until(() => recorder.hostIOStats().blockedWaits === 1n)
+    const prefix = recorder.drainProducersAsync()
+    const third = submit(camera, recorder, 2)
+    sink.gate = secondGate
+    firstGate.release()
+    await second
+    await prefix
+    await until(() => recorder.hostIOStats().blockedWaits === 2n)
+    expect(third.done).toBe(false)
+    const cancelled = recorder.drainProducersAsync()
+    expect(cancelled.cancel()).toBe(true)
+    await expect(Promise.resolve(cancelled)).rejects.toBeInstanceOf(
+      JobCancelledError,
+    )
+    const deadline = recorder.drainProducersAsync({ timeoutMs: 5 })
+    await expect(Promise.resolve(deadline)).rejects.toMatchObject({ code: -3 })
+    expect(third.cancelRequested).toBe(false)
+    secondGate.release()
+    await third
+    await recorder.drainProducersAsync()
+    await recorder.drain()
+    expect(sink.frames.length).toBe(3)
+  } finally {
+    firstGate.release()
+    secondGate.release()
+    await recorder.close()
+    await camera.close()
+  }
+})
+
+for (const mode of ['signal', 'deadline'] as const) {
+  test(`active producer ${mode} waits for native cleanup before rejection`, async () => {
+    const camera = cam(),
+      sink = new Sink(),
+      controller = new AbortController()
+    const recorder = await Recorder.open(sink, {
+      width: 32,
+      height: 24,
+      outputQueue: { maxBytes: 65536, maxOperations: 1, waitMs: 1000 },
+    })
+    try {
+      await submit(camera, recorder, 0)
+      await until(() => sink.entered)
+      using frame = camera.acquire()
+      const active = recorder.writeAsync(
+        frame,
+        40_000_000n,
+        mode === 'signal' ? { signal: controller.signal } : { timeoutMs: 30 },
+      )
+      frame.release()
+      await until(() => recorder.hostIOStats().blockedWaits === 1n)
+      if (mode === 'signal') controller.abort(new Error('abort frame'))
+      await until(() => active.cancelRequested)
+      expect(active.done).toBe(false)
+      expect(camera.stats().leased).toBe(0)
+      sink.gate.release()
+      if (mode === 'signal')
+        await expect(Promise.resolve(active)).rejects.toBe(
+          controller.signal.reason,
+        )
+      else
+        await expect(Promise.resolve(active)).rejects.toMatchObject({
+          code: -3,
+        })
+      await recorder.drainProducersAsync()
+      expect(recorder.producerStats().ownedJobs).toBe(0n)
+    } finally {
+      sink.gate.release()
+      await recorder.close()
+      await camera.close()
+    }
+  })
+}
+
+for (const codec of ['h264', 'hevc'] as const) {
+  mediaTest(
+    `${codec} active cancellation completes MP4/AAC operations and preserves later recording`,
+    async () => {
+      const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+      const { tmpdir } = await import('node:os')
+      const { join } = await import('node:path')
+      const { MuxedOutput } = await import('../../ts')
+      const { mp4, decodeAudio, decodeVideo } = await import('./media')
+      const gate = deferred()
+      let hold = false,
+        entered = false,
+        data = Buffer.alloc(0)
+      const bytes = {
+        async write(value: Uint8Array) {
+          if (hold) {
+            entered = true
+            await gate.promise
+          }
+          data = Buffer.concat([data, Buffer.from(value)])
+          return value.length
+        },
+        async patch(offset: bigint, value: Uint8Array) {
+          if (hold) {
+            entered = true
+            await gate.promise
+          }
+          Buffer.from(value).copy(data, Number(offset))
+          return value.length
+        },
+      }
+      const dir = mkdtempSync(join(tmpdir(), 'zc-cancel-mp4-'))
+      const camera = new Camera({
+        simulate: true,
+        width: 128,
+        height: 96,
+        fifo: true,
+      })
+      const recorder = await Recorder.open(new MuxedOutput(bytes), {
+        width: 128,
+        height: 96,
+        fps: 25,
+        codec,
+        gop: 4,
+        audio: { sampleRate: 48000, channels: 2 },
+        outputQueue: { maxBytes: 1024 * 1024, maxOperations: 1, waitMs: 1000 },
+      })
+      const sequences: bigint[] = []
+      try {
+        camera.start()
+        for (let i = 0; i < 12; i++) {
+          const pcm = new Uint8Array(1920 * 4),
+            view = new DataView(pcm.buffer)
+          for (let sample = 0; sample < 1920; sample++) {
+            const value = (((i * 1920 + sample) % 200) - 100) * 100
+            view.setInt16(sample * 4, value, true)
+            view.setInt16(sample * 4 + 2, -value, true)
+          }
+          if (i === 4) hold = true
+          using frame = camera.acquire()
+          sequences.push(frame.sequence)
+          const job = recorder.writeAVAsync(
+            frame,
+            [{ data: pcm, timestampNs: BigInt(i) * 40_000_000n }],
+            BigInt(i) * 40_000_000n,
+          )
+          frame.release()
+          if (i === 4) {
+            await until(
+              () => entered && recorder.hostIOStats().pendingWaits > 0n,
+            )
+            expect(job.cancel()).toBe(true)
+            expect(job.done).toBe(false)
+            gate.release()
+            await expect(Promise.resolve(job)).rejects.toBeInstanceOf(
+              JobCancelledError,
+            )
+          } else await job
+        }
+        await recorder.drainProducersAsync()
+        await recorder.close()
+        const path = join(dir, 'cancel.mp4')
+        writeFileSync(path, data)
+        const tracks = mp4(path),
+          video = tracks.get(1)!,
+          audio = tracks.get(2)!
+        expect(video.samples.length).toBe(12)
+        decodeVideo(path, video, sequences)
+        decodeAudio(path, audio, 0, 12 * 1920)
+        expect(recorder.producerStats().cancelled).toBe(1n)
+        expect(recorder.producerStats().failed).toBe(0n)
+        expect(recorder.hostIOStats().rejectedOperations).toBe(0n)
+      } finally {
+        gate.release()
+        await recorder.close()
+        await camera.close()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+    30000,
+  )
+}

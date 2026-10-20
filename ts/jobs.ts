@@ -18,6 +18,7 @@ export class BunJob<T> implements PromiseLike<T> {
   private claimed = false
   private settled = false
   private requested = false
+  private cancellationGuard?: () => boolean
   private reason: unknown = new JobCancelledError()
   private timer?: ReturnType<typeof setTimeout>
   private abort?: () => void
@@ -97,9 +98,14 @@ export class BunJob<T> implements PromiseLike<T> {
     )
       throw new Error('job publication rejected')
   }
+  /** @internal Linearize active cancellation with the native operation. */
+  setCancellationGuard(guard?: () => boolean) {
+    this.cancellationGuard = guard
+  }
   cancel(reason: unknown = new JobCancelledError()) {
-    if (this.settled || n.zc_preparation_step(ptr(this.gate), 4) !== 1)
-      return false
+    if (this.settled || this.requested || this.phase >= 3) return false
+    if (this.cancellationGuard && !this.cancellationGuard()) return false
+    if (n.zc_preparation_step(ptr(this.gate), 4) !== 1) return false
     this.requested = true
     this.reason = reason
     Atomics.store(new Int32Array(this.cancellation), 0, 1)

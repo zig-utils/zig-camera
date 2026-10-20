@@ -94,3 +94,15 @@ were pushed to Home main at a276dca96b958fec80b51220433b9d499c1c9b54 before verb
 camera reuse. The camera-specific persistent worker owns encoder/recorder turns;
 Bun coordinates hook retirement and lifecycle deferral without borrowing DMA
 buffers or moving runtime callbacks to native threads.
+
+The 0.25 audit extends owned_admission with pendingThrough(target), a bounded
+cleanup-prefix scan that tolerates out-of-order releases and slot reuse. The
+existing async completion_watermark deliberately assumes FIFO completions and
+latches operation failures; producer input cleanup must also handle cancellation
+holes and allow later inputs, so it uses the ownership registry instead. The
+helper does not add threads, payload retention or completion-history allocation.
+Home main commit 55852d43d52c745565176d0b3ed52ec1304ab1e9 contains the tested helper
+and documented settlement semantics, copied verbatim here. Focused tests pass
+with pinned Zig 0.15.2 and Home's development Zig. Camera code supplies retained
+native drain handles, serialized cancellation/completion and safe codec-boundary
+checkpoints; Bun only coordinates lifecycle polling and cancellation reasons.

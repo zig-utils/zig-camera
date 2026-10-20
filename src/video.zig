@@ -2409,12 +2409,20 @@ fn producerPool(self: *Recorder) !*@import("producer.zig").Pool {
     if (self.producer == null) self.producer = try @import("producer.zig").Pool.create(self, applyProducer, 64 * 1024 * 1024, 8);
     return self.producer.?;
 }
+pub fn producerDrain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
+    out.* = null;
+    const pool = producerPool(recorder(p)) catch |err| return status(err);
+    out.* = @ptrCast(@import("producer.zig").Drain.create(pool) catch |err| return status(err));
+    return c.ZC_OK;
+}
 fn applyProducer(ctx: *anyopaque, job: *@import("producer.zig").Job) c_int {
     const p: *c.zc_recorder = @ptrCast(@alignCast(ctx));
     for (job.parts) |part| {
+        if (job.cancel_requested.load(.acquire)) return c.ZC_CANCELLED;
         const code = writeAudio(p, job.data[part.offset..].ptr, part.length, part.timestamp);
         if (code != c.ZC_OK) return code;
     }
+    if (job.cancel_requested.load(.acquire)) return c.ZC_CANCELLED;
     return if (job.audio) writeAudio(p, job.data.ptr, job.data.len, job.timestamp) else write(p, &job.frame, job.timestamp);
 }
 pub fn setProducerLimits(p: *c.zc_recorder, bytes: u64, jobs: u32) c_int {
