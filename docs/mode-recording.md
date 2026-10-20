@@ -30,8 +30,9 @@ DNG requests unpacked Bayer automatically; unsupported raw modes still fail.
 These methods use this project's typed options, not arbitrary Picamera2 configs.
 
 Ordinary mode jobs are FIFO, with at most 32 admitted mode/capture operations.
-Recording, autofocus, pending captures and outstanding frame leases prevent an
+Recording, pending captures and outstanding frame leases prevent an
 ordinary mode change. Use the coordinated recording API below for recording.
+Autofocus uses the [mode coordination policy](controls.md#autofocus-coordination-across-mode-switches).
 Checks run again when a queued job claims the camera. Release leases first;
 never carry a frame descriptor across reconfiguration. Other camera operations
 are rejected while a mode transaction owns its native handle. Start, preview,

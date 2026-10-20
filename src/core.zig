@@ -957,3 +957,55 @@ test "control revision seeding and update exhaustion never wrap" {
     try std.testing.expectEqual(std.math.maxInt(u64), revision);
     try std.testing.expectEqual(@as(u32, 1), count);
 }
+
+test "AF callbacks ignore an older outcome after observing newer controls" {
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    var self: Session = .{ .config = cfg, .running = true, .af = .{ .revision = 9 } };
+    self.info.buffer_count = 4;
+    var frame = std.mem.zeroes(c.zc_frame);
+    var metadata = std.mem.zeroes(c.zc_metadata);
+    metadata.valid = 1;
+    metadata.control_revision = 12;
+    metadata.af_state = 1;
+    self.slots[0].state = .queued;
+    completed(&self, 0, &frame, &metadata, 0);
+    try std.testing.expectEqual(@import("home/completion_gate.zig").State.active, self.af.?.state);
+    metadata.control_revision = 11;
+    metadata.af_state = 3;
+    self.slots[1].state = .queued;
+    completed(&self, 1, &frame, &metadata, 0);
+    try std.testing.expectEqual(@import("home/completion_gate.zig").State.active, self.af.?.state);
+    metadata.control_revision = 12;
+    metadata.af_state = 2;
+    self.slots[2].state = .queued;
+    completed(&self, 2, &frame, &metadata, 0);
+    try std.testing.expectEqual(@import("home/completion_gate.zig").State.succeeded, self.af.?.state);
+}
+
+test "failed AF cancellation retains ownership until retry or stop and stale IDs cannot cancel a new scan" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var p: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try std.testing.expectEqual(c.ZC_OK, zc_start(p.?));
+    var id: u64 = 0;
+    var next: u64 = 0;
+    var state: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &id));
+    session(p.?).device.?.fail_controls_once = true;
+    try std.testing.expect(zc_autofocus_cancel(p.?, id) != c.ZC_OK);
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_autofocus_wait(p.?, id, 0, &state));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_autofocus_start(p.?, &next));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(p.?, id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_start(p.?, &next));
+    try std.testing.expectEqual(c.ZC_STALE, zc_autofocus_cancel(p.?, id));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_autofocus_wait(p.?, next, 0, &state));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, next, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_STOPPED), state);
+}

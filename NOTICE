@@ -235,3 +235,10 @@ Home bounded desired settings (0.30):
   source state on failure. The camera publishes only after driver acceptance.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/6e1926728200f9e35470ecdeeb9f3a088589695d
+
+Home autofocus observation ordering (0.31):
+- src/home/completion_gate.zig is copied verbatim from
+  packages/async/src/completion_gate.zig, with monotonic observation revisions.
+  Source commit: 012ffc48852bb77d5527ae67c01dc5f8b1827eeb.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/012ffc48852bb77d5527ae67c01dc5f8b1827eeb

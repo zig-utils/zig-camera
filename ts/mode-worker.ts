@@ -1,3 +1,4 @@
+import { decodeMetadata } from './metadata'
 import {
   native as n,
   ptr,
@@ -26,6 +27,7 @@ export interface ModeRequest {
     dng?: boolean
     quality?: number
   }
+  autofocus?: boolean
   dropFrames: number
 }
 export interface ModeResponse {
@@ -35,6 +37,7 @@ export interface ModeResponse {
   controlCode: number
   restoreControlCode: number
   controlRevision: bigint
+  autofocusState?: number
   target: boolean
   started: boolean
   value?: Uint8Array
@@ -93,17 +96,42 @@ self.onmessage = ({ data: request }) => {
   }
   const close = () => {
     if (!result.handle) return
+    // AF start/cancel consumes revisions too. Preserve them across every rollback.
+    const count = new Uint32Array(1),
+      revision = new BigUint64Array(1)
+    check(n.zc_get_controls(result.handle, null, 0, ptr(count), ptr(revision)))
+    if (revision[0] > result.controlRevision)
+      result.controlRevision = revision[0]
     check(n.zc_stop(result.handle))
     result.started = false
     check(n.zc_close(result.handle))
     result.handle = 0 as Pointer
   }
+  let focusRevision: bigint | undefined
   const acquire = () => {
     const frame = storage(456)
     while (true) {
       if (cancelled()) throw -5
       const code = n.zc_acquire(result.handle, 20, ptr(frame))
-      if (code === 0) return frame
+      if (code === 0) {
+        if (focusRevision !== undefined) {
+          const metadata = storage(96)
+          const token = view(frame).getBigUint64(0, true)
+          let accepted = false
+          try {
+            check(n.zc_get_frame_metadata(result.handle, token, ptr(metadata)))
+            const m = decodeMetadata(metadata)
+            accepted =
+              !!(m.validMask & 1) &&
+              m.controlRevision >= focusRevision &&
+              m.afState === 2
+          } finally {
+            if (!accepted) check(n.zc_release(result.handle, token))
+          }
+          if (!accepted) continue
+        }
+        return frame
+      }
       if (code !== -3) throw code
     }
   }
@@ -119,6 +147,43 @@ self.onmessage = ({ data: request }) => {
     for (let i = 0; i < request.dropFrames; i++) {
       const frame = acquire()
       check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+    }
+    if (request.autofocus) {
+      const id = new BigUint64Array(1),
+        state = new Uint32Array(1)
+      check(n.zc_autofocus_start(result.handle, ptr(id)))
+      try {
+        while (true) {
+          if (cancelled()) throw -5
+          const code = n.zc_autofocus_wait(result.handle, id[0], 0, ptr(state))
+          result.autofocusState = state[0]
+          if (!code) {
+            if (state[0] !== 3) throw -6
+            break
+          }
+          if (code !== -3) throw code
+          const frame = acquire()
+          check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+        }
+      } finally {
+        check(n.zc_autofocus_cancel(result.handle, id[0]))
+      }
+      const count = new Uint32Array(1),
+        revision = new BigUint64Array(1)
+      check(
+        n.zc_get_controls(result.handle, null, 0, ptr(count), ptr(revision)),
+      )
+      result.controlRevision = revision[0]
+      focusRevision = revision[0]
+      // A successful observation can precede delivery of older ready frames.
+      // Recycle one full buffer set through the focused-frame predicate before
+      // publishing a permanent mode or selecting a temporary capture.
+      const info = storage(680)
+      check(n.zc_get_info(result.handle, ptr(info)))
+      for (let i = 0; i < view(info).getUint32(4, true); i++) {
+        const frame = acquire()
+        check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+      }
     }
     if (request.capture) {
       const frame = acquire(),

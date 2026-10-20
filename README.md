@@ -6,10 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.30 restores accepted runtime controls across permanent, temporary and
-coordinated recording mode switches. Native snapshots replay before streaming,
-revalidate target capabilities and preserve logical control revisions. Failed
-replay rolls back; one-shot autofocus commands are excluded.
+Version 0.31 coordinates autofocus with permanent, temporary and recording mode
+switches: cancel or wait for an existing scan, then optionally require fresh
+successful AF in the target mode. Camera owners are joined before handle closure,
+and stale ready frames are filtered before focused capture/publication.
+See [autofocus coordination](docs/controls.md#autofocus-coordination-across-mode-switches).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative
@@ -83,7 +84,8 @@ const still = await camera.switchModeAndCaptureRGB(
 // The previous camera configuration is restored before this resolves.
 ```
 
-Mode jobs require released leases and idle recording/autofocus/capture work.
+Mode jobs require released leases and idle recording/capture work. Existing
+autofocus uses an explicit cancel, wait or reject policy.
 See [mode jobs](docs/mode-recording.md) and [custom output objects](docs/output-objects.md)
 for temporary JPEG/DNG capture, cancellation, async hooks and owned byte sinks.
 

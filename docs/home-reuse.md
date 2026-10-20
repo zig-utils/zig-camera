@@ -167,3 +167,14 @@ workflow includes the helper. Camera core supplies control validation, transient
 AF exclusions, AE alias policy, backend acceptance and logical revision mapping.
 Bun mode workers copy the native snapshot and revalidate/replay it before every
 start and rollback; Home owns no camera pointer, revision, thread or lock.
+
+The 0.31 audit revisits Home's CompletionGate in packages/async. Home main commit
+012ffc48852bb77d5527ae67c01dc5f8b1827eeb adds a monotonic observation watermark:
+once a newer revision is seen, an older scan/result cannot advance the job, even
+if it exceeds the original admission revision. Equal-revision transitions remain
+valid; terminal outcomes remain immutable. The camera copies this helper verbatim
+and exercises it through its native AF completion callback, including out-of-order
+failure metadata. Home's standalone gate tests pass on pinned and development Zig.
+Bun coordination keeps each AF job bound to its original handle, joins it before
+mode transfer, and uses the same native Home gate for fresh target-mode scans.
+Codec, container, queue and session helpers continue to come from Home.

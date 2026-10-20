@@ -45,7 +45,8 @@ AF trigger and AF pause are one-shot commands and are never replayed. AF mode,
 range, speed, metering, windows and explicitly requested lens position remain
 persistent. Successful autofocus jobs update the persistent AF mode through the
 same native path; reopening does not restart that job or trigger a new scan.
-Mode changes still reject a live autofocus job or outstanding frame leases.
+Mode changes coordinate live autofocus jobs as described below. Outstanding frame
+leases still prevent ownership transfer.
 A new AeEnable setting clears older ExposureTimeMode/AnalogueGainMode aliases;
 explicit aliases in the same batch override it independently of argument order.
 
@@ -82,3 +83,59 @@ complete persistent batch and revision base once on a fresh handle, before any
 start or accepted runtime update. Rejected replay leaves it retryable; one-shot
 commands reject. ABI v1 control and metadata layouts are unchanged. C/Zig callers
 serialize ownership and carry the snapshot between camera handles explicitly.
+
+## Autofocus coordination across mode switches
+
+All Bun mode APIs accept ModeJobOptions, including temporary RGB/metadata/buffer/
+JPEG/DNG capture and coordinated Recording.switchModeAsync. autofocusPolicy is
+'cancel' by default: cancel the existing scan and join its operation before
+closing its original native handle. The replaced AF job rejects JobCancelledError.
+'wait' keeps recycling frames until that scan finishes successfully; a failed or
+aborted scan fails the mode job before stop/reopen or recorder flush. 'reject'
+preserves explicit BUSY behavior. Queued jobs use the AF owner present at claim.
+Mode cancellation while waiting leaves the old AF job running, unless the mode
+already requested its cancellation. A pre-cancelled mode never touches AF.
+
+Camera.autofocusAsync returns BunJob<number>, with cancellation, deadlines,
+operationDone and cleanupDone. autofocus remains its Promise facade; success is
+state 3, failed scan is 4. Cancellation joins native command cleanup, and stop/
+close join the AF operation before releasing the handle. User completion callbacks
+are separate from native ownership and cannot hold the camera open. A cancelled
+AF command failing at the backend fails coordination before ownership transfer.
+A native stop can terminate any remaining scan. No old ID is polled on a reopened
+handle.
+
+Set autofocus: true to trigger a fresh AF scan after target start and dropFrames,
+before capture, preview recreation or recorder output preparation/publication.
+The worker requires scan success, then discards older ready frames using AF valid
+metadata, focused state and the new logical revision, recycling a full buffer set
+before publication. Temporary captures additionally validate the selected frame.
+Every rejected frame is released. The shared mode deadline bounds warmup, scan,
+frame filtering and output preparation. Cancellation or AF failure restores the
+previous mode/settings; autofocusState is attached to errors when observed. An
+unsupported AF camera rejects explicitly. No automatic fallback to an unfocused
+capture is performed. Revision headroom includes fresh trigger/cancel operations.
+
+```ts
+const focus = camera.autofocusAsync()
+await camera.switchModeAndCaptureFile(
+  { role: 'still', width: 4056, height: 3040 },
+  'focused.jpg',
+  { autofocusPolicy: 'wait', autofocus: true, timeoutMs: 15_000 },
+)
+await focus
+```
+
+Coordinated recording reserves the camera/recorder while the old scan settles.
+Its AF-only pump recycles frames without submitting new media or calling output
+hooks. Already copied producers finish normally, then the existing flush and
+session replacement transaction runs. Pre-publication failure restores the camera
+but cannot undo an already completed codec flush. The usual fresh-output retry
+rules apply. A failed candidate never replays AF trigger/pause commands on rollback.
+Continuous AF and manual lens settings remain persistent controls; a fresh single
+scan explicitly selects auto AF mode in the target. Temporary rollback restores
+the previous requested settings, not a measured physical lens position.
+
+The scan/terminal semantics follow the [libcamera control specification](https://docs.libcamera.org/master/internal-api/namespacelibcamera_1_1controls.html).
+Tests use synthetic metadata and failure injection; actual lens settling and focus
+quality on Raspberry Pi hardware remain unvalidated.

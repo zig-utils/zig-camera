@@ -1,3 +1,4 @@
+import { decodeMetadata } from './metadata'
 import {
   OutputBridge,
   invokeOutputFactory,
@@ -26,7 +27,7 @@ export {
   type HostOutputQueueStats,
   type OutputCapacityOptions,
 } from './outputs'
-import { BunJob, type JobOptions } from './jobs'
+import { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import { cameraConfiguration, copyConfiguration } from './config'
 import type { ModeRequest, ModeResponse } from './mode-worker'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
@@ -46,8 +47,14 @@ export { CameraError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
-export interface RecordingModeOptions extends JobOptions<Recording> {
+export interface ModeJobOptions<T = unknown> extends JobOptions<T> {
   dropFrames?: number
+  /** Resolve the existing scan before transferring camera ownership. Default: cancel. */
+  autofocusPolicy?: 'cancel' | 'wait' | 'reject'
+  /** Require a fresh successful scan in the target mode before capture/publication. */
+  autofocus?: boolean
+}
+export interface RecordingModeOptions extends ModeJobOptions<Recording> {
   audio?: AudioCapture
 }
 export const Codec = { h264: 1, hevc: 2, mjpeg: 3 } as const
@@ -119,30 +126,6 @@ function state(data: Uint8Array) {
     errorCode: view(data).getInt32(8, true),
     splitState: view(data).getUint32(12, true),
     pending: !!view(data).getUint32(16, true),
-  }
-}
-function decodeMetadata(data: Uint8Array) {
-  const d = view(data)
-  return {
-    eventId: u64(data, 8),
-    sequence: u64(data, 16),
-    timestampNs: u64(data, 24),
-    controlRevision: u64(data, 32),
-    exposureUs: d.getUint32(40, true),
-    afState: d.getInt32(44, true),
-    analogueGain: d.getFloat32(56, true),
-    lensPosition: d.getFloat32(60, true),
-    frameDurationUs: u64(data, 72),
-    validMask: d.getUint32(4, true),
-    afPauseState: d.getInt32(48, true),
-    redGain: d.getFloat32(64, true),
-    blueGain: d.getFloat32(68, true),
-    crop: {
-      x: d.getInt32(80, true),
-      y: d.getInt32(84, true),
-      width: d.getInt32(88, true),
-      height: d.getInt32(92, true),
-    },
   }
 }
 class ModeWorkerFault extends Error {}
@@ -289,7 +272,10 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
-  private focusJobs = 0
+  private focusJob?: BunJob<number>
+  private get focusJobs() {
+    return this.focusJob && !this.focusJob.done ? 1 : 0
+  }
   private configuration: CameraOptions
   private modeActive = false
   private coordinatedRecorder?: Recorder
@@ -424,13 +410,14 @@ export class Camera {
       controlRevision: revision[0],
     }
   }
-  private readModeControls() {
+  private readModeControls(extra = 0n) {
     const snapshot = this.readControls()
     // One target replay plus up to three rollback/fallback replays must fit before
-    // any camera ownership is consumed. Zero-control snapshots only seed a base.
+    // any camera ownership is consumed. Extra headroom covers fresh AF start/cancel;
+    // zero-control snapshots only seed a base.
     if (
-      snapshot.controlCount &&
-      snapshot.controlRevision > 0xffffffffffffffffn - 4n
+      (snapshot.controlCount || extra) &&
+      snapshot.controlRevision > 0xffffffffffffffffn - 4n - extra
     )
       throw new CameraError(-2, 'control revision budget exhausted')
     return snapshot
@@ -466,33 +453,90 @@ export class Camera {
     )
     return revision[0]
   }
-  async autofocus({
-    signal,
-    timeoutMs = 5000,
-  }: { signal?: AbortSignal; timeoutMs?: number } = {}) {
+  async autofocus(options: JobOptions<number> = {}): Promise<number> {
+    return this.autofocusAsync(options).wait()
+  }
+  autofocusAsync(options: JobOptions<number> = {}): BunJob<number> {
     this.assertOpen()
-    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
-    this.start()
-    const id = new BigUint64Array(1)
-    check(n.zc_autofocus_start(this.handle, ptr(id)))
-    this.focusJobs++
-    this.ensurePump()
-    const deadline = performance.now() + timeoutMs
-    try {
-      while (true) {
-        this.assertOpen()
-        if (signal?.aborted || performance.now() >= deadline) {
-          check(n.zc_autofocus_cancel(this.handle, id[0]))
-          throw signal?.reason ?? new CameraError(-3, 'autofocus')
+    if (this.hasPendingModes() || this.focusJobs)
+      throw new CameraError(-4, 'camera jobs active')
+    const owned = this.handle
+    const job = new BunJob<number>(
+      async (current) => {
+        current.check()
+        this.start()
+        const id = new BigUint64Array(1)
+        check(n.zc_autofocus_start(owned, ptr(id)), 'start autofocus')
+        this.ensurePump()
+        try {
+          while (true) {
+            current.check()
+            const result = new Uint32Array(1)
+            const code = n.zc_autofocus_wait(owned, id[0], 0, ptr(result))
+            if (code === 0) return result[0]
+            if (code !== -3) check(code)
+            await pause()
+          }
+        } finally {
+          check(n.zc_autofocus_cancel(owned, id[0]), 'finish autofocus')
         }
-        const result = new Uint32Array(1)
-        const code = n.zc_autofocus_wait(this.handle, id[0], 0, ptr(result))
-        if (code === 0) return result[0]
-        if (code !== -3) check(code)
-        await pause()
-      }
-    } finally {
-      this.focusJobs--
+      },
+      () => {},
+      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+    )
+    this.focusJob = job
+    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    void job.start()
+    return job
+  }
+  private modeFocusPolicy<T>(options: ModeJobOptions<T>) {
+    const policy = options.autofocusPolicy ?? 'cancel'
+    if (!['cancel', 'wait', 'reject'].includes(policy))
+      throw new RangeError('invalid autofocus policy')
+    if (
+      options.autofocus !== undefined &&
+      typeof options.autofocus !== 'boolean'
+    )
+      throw new RangeError('invalid autofocus option')
+    if (policy === 'reject' && this.focusJobs)
+      throw new CameraError(-4, 'autofocus active')
+    return policy
+  }
+  private checkModeLeases() {
+    const stats = storage(40)
+    check(n.zc_get_stats(this.handle, ptr(stats)))
+    if (view(stats).getUint32(36, true))
+      throw new CameraError(-4, 'mode requires unleased camera')
+  }
+  private async settleFocus<T>(
+    policy: 'cancel' | 'wait' | 'reject',
+    current: BunJob<T>,
+  ) {
+    const focus = this.focusJob
+    if (!focus || focus.done) return
+    if (policy === 'reject') throw new CameraError(-4, 'autofocus active')
+    if (policy === 'cancel')
+      focus.cancel(new JobCancelledError('autofocus superseded by mode switch'))
+    while (!focus.done) {
+      current.check()
+      await pause()
+    }
+    await focus.operationDone
+    current.check()
+    // Waiting observes the old scan's outcome; cancellation intentionally replaces it.
+    if (
+      policy === 'cancel' &&
+      focus.error !== undefined &&
+      focus.error !== focus.cancellationReason
+    )
+      throw focus.error
+    if (policy === 'wait') {
+      const state = await focus
+      if (state !== 3)
+        throw Object.assign(
+          new CameraError(-6, 'autofocus failed before mode switch'),
+          { autofocusState: state },
+        )
     }
   }
   capture<T>(
@@ -597,10 +641,11 @@ export class Camera {
     jobOptions: RecordingModeOptions = {},
   ): BunJob<Recording> {
     this.assertOpen()
+    const focusPolicy = this.modeFocusPolicy(jobOptions)
+    const autofocus = jobOptions.autofocus ?? false
     if (
       this.hasPendingModes() ||
       this.requests.length ||
-      this.focusJobs ||
       this.failedRecordings.size
     )
       throw new CameraError(-4, 'camera jobs active')
@@ -669,11 +714,15 @@ export class Camera {
     const job = new BunJob<Recording>(
       async (current) => {
         claimed = true
+        current.check()
+        this.checkModeLeases()
+        await this.settleFocus(focusPolicy, current)
+        current.check()
         const previous = this.options,
           old = cameraConfiguration(previous)
         const started = this.started,
           title = this.previewTitle,
-          controls = this.readModeControls()
+          controls = this.readModeControls(autofocus ? 2n : 0n)
         let response: ModeResponse | undefined,
           published = false,
           resumed: Recording | undefined
@@ -735,9 +784,21 @@ export class Camera {
             cancel: current.cancellation,
             deadline,
             dropFrames,
+            autofocus,
           })
           this.handle = response.handle
           this.started = response.started
+          if (
+            response.autofocusState !== undefined &&
+            response.code &&
+            response.code !== -5 &&
+            !response.restoreCode &&
+            !current.cancelRequested
+          )
+            throw Object.assign(
+              new CameraError(response.code, 'target autofocus'),
+              { autofocusState: response.autofocusState },
+            )
           if (response.controlCode && !response.restoreCode)
             throw Object.assign(
               new CameraError(
@@ -899,6 +960,7 @@ export class Camera {
     }
     this.coordinatedRecorder = recorder
     this.coordinatedInitial = initialRecording
+    if (this.focusJobs) this.ensurePump()
     void job.operationDone.then(release)
     this.modeJobs.add(job)
     this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
@@ -907,9 +969,7 @@ export class Camera {
 
   switchMode(
     options: CameraOptions,
-    jobOptions: JobOptions<ReturnType<Camera['info']>> & {
-      dropFrames?: number
-    } = {},
+    jobOptions: ModeJobOptions<ReturnType<Camera['info']>> = {},
   ) {
     return this.submitMode(options, undefined, jobOptions) as BunJob<
       ReturnType<Camera['info']>
@@ -918,13 +978,13 @@ export class Camera {
   switchModeAndDropFrames(
     options: CameraOptions,
     dropFrames: number,
-    jobOptions: JobOptions<ReturnType<Camera['info']>> = {},
+    jobOptions: ModeJobOptions<ReturnType<Camera['info']>> = {},
   ) {
     return this.switchMode(options, { ...jobOptions, dropFrames })
   }
   switchModeAndCaptureRGB(
     options: CameraOptions,
-    jobOptions: JobOptions<Uint8Array> & { dropFrames?: number } = {},
+    jobOptions: ModeJobOptions<Uint8Array> = {},
   ) {
     return this.submitMode(
       options,
@@ -934,9 +994,7 @@ export class Camera {
   }
   switchModeAndCaptureMetadata(
     options: CameraOptions,
-    jobOptions: JobOptions<ReturnType<Frame['metadata']>> & {
-      dropFrames?: number
-    } = {},
+    jobOptions: ModeJobOptions<ReturnType<Frame['metadata']>> = {},
   ) {
     return this.submitMode(options, { kind: 'metadata' }, jobOptions) as BunJob<
       ReturnType<Frame['metadata']>
@@ -945,12 +1003,12 @@ export class Camera {
   switchModeAndCaptureBuffer(
     options: CameraOptions,
     stream: 'main' | 'raw' | 'lores' = 'main',
-    jobOptions: JobOptions<{
+    jobOptions: ModeJobOptions<{
       width: number
       height: number
       format: string
       data: Uint8Array
-    }> & { dropFrames?: number } = {},
+    }> = {},
   ) {
     return this.submitMode(
       options,
@@ -966,8 +1024,7 @@ export class Camera {
   switchModeAndCaptureFile(
     options: CameraOptions,
     path: string,
-    jobOptions: JobOptions<ReturnType<Frame['metadata']>> & {
-      dropFrames?: number
+    jobOptions: ModeJobOptions<ReturnType<Frame['metadata']>> & {
       quality?: number
     } = {},
   ) {
@@ -988,9 +1045,11 @@ export class Camera {
   private submitMode<T>(
     options: CameraOptions,
     capture: ModeRequest['capture'],
-    jobOptions: JobOptions<T> & { dropFrames?: number },
+    jobOptions: ModeJobOptions<T>,
   ) {
     guardOutputHook()
+    const focusPolicy = this.modeFocusPolicy(jobOptions)
+    const autofocus = jobOptions.autofocus ?? false
     if (!this.handle || this.closing || this.stopJob)
       throw new CameraError(-2, 'camera unavailable')
     if (this.modeJobs.size + this.requests.length >= 32)
@@ -999,7 +1058,6 @@ export class Camera {
       this.coordinatedRecorder ||
       this.recording ||
       this.failedRecordings.size ||
-      this.focusJobs ||
       this.requests.length
     )
       throw new CameraError(-4, 'camera jobs active')
@@ -1022,12 +1080,14 @@ export class Camera {
     const job = new BunJob<T>(
       async (current) => {
         current.check()
+        this.checkModeLeases()
+        await this.settleFocus(focusPolicy, current)
+        current.check()
         const stats = storage(40)
         check(n.zc_get_stats(this.handle, ptr(stats)))
         if (
           view(stats).getUint32(36, true) ||
           this.recording ||
-          this.focusJobs ||
           this.requests.length
         )
           throw new CameraError(-4, 'mode requires unleased idle camera')
@@ -1035,7 +1095,7 @@ export class Camera {
           old = cameraConfiguration(previous),
           started = this.started,
           title = this.previewTitle,
-          controls = this.readModeControls()
+          controls = this.readModeControls(autofocus ? 2n : 0n)
         this.modeActive = true
         if (this.timer !== undefined) {
           clearTimeout(this.timer)
@@ -1074,9 +1134,21 @@ export class Camera {
             deadline,
             capture,
             dropFrames,
+            autofocus,
           })
           this.handle = response.handle
           this.started = response.started
+          if (
+            response.autofocusState !== undefined &&
+            response.code &&
+            response.code !== -5 &&
+            !response.restoreCode &&
+            !current.cancelRequested
+          )
+            throw Object.assign(
+              new CameraError(response.code, 'target autofocus'),
+              { autofocusState: response.autofocusState },
+            )
           if (response.controlCode && !response.restoreCode)
             throw Object.assign(
               new CameraError(
@@ -1202,7 +1274,23 @@ export class Camera {
     this.pumping = true
     try {
       this.timer = undefined
-      if (!this.handle || this.closing || this.coordinatedRecorder) return
+      if (!this.handle || this.closing || this.modeActive) return
+      if (this.coordinatedRecorder) {
+        if (this.focusJobs) {
+          const frame = storage(456)
+          const code = n.zc_acquire(this.handle, 0, ptr(frame))
+          const failure =
+            code === 0
+              ? n.zc_release(this.handle, view(frame).getBigUint64(0, true))
+              : code
+          if (failure && failure !== -3)
+            this.focusJob?.cancel(
+              new CameraError(failure, 'autofocus observation pump'),
+            )
+          if (this.focusJobs) this.timer = setTimeout(() => this.pump(), 1)
+        }
+        return
+      }
       const now = performance.now()
       this.requests = this.requests.filter((job) => {
         if (job.signal?.aborted || now >= job.deadline) {
@@ -1318,6 +1406,12 @@ export class Camera {
     this.stopJob = (async () => {
       let failure: unknown
       await this.cancelModes()
+      if (this.focusJob && !this.focusJob.done) {
+        this.focusJob.cancel(new CameraError(-2, 'camera stopped'))
+        await this.focusJob.operationDone
+        if (this.focusJob.error !== this.focusJob.cancellationReason)
+          failure = this.focusJob.error
+      }
       try {
         this.stopPreview()
       } catch (error) {
