@@ -1,4 +1,4 @@
-# Feature coverage in 0.30
+# Feature coverage in 0.33
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -7,7 +7,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 
 | Capability | Native Zig/C implementation | Bun surface / remaining work |
 | --- | --- | --- |
-| Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, linear leases | Camera/Frame, owned RGB/lores copies; bounded async capture queue |
+| Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs; mapped-array views and synchronized multi-camera requests remain incomplete |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
 | Controls and autofocus | Typed atomic control batches; bounded desired-state snapshots; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls, controlSnapshot, shared metadata decoding, cancellable scan and CAF pause/resume jobs; focus-locked RGB/metadata/lores/JPEG/DNG; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics unvalidated |
 | Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
@@ -42,3 +42,7 @@ No camera/microphone is attached to the development machine. Pi throughput,
 optical quality, long-run reliability and physical A/V sync remain unmeasured.
 See [native jobs](native-jobs.md), [C ABI](../include/zig_camera.h), and
 [hardware acceptance](performance.md).
+
+The broader goal remains active. The [scope worklist](parity-plan.md) and pinned
+[upstream API inventory](parity-reference.json) include unresolved capabilities
+beyond this table; passing current tests is not proof of full parity.

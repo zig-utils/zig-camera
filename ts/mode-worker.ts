@@ -238,8 +238,10 @@ self.onmessage = ({ data: request }) => {
           const name = new TextDecoder()
             .decode(stream.subarray(16, 48))
             .split('\0')[0]
-          if (name !== 'BGR888' && name !== 'YUV420') throw -8
-          result.value = storage(width * height * (name === 'YUV420' ? 1.5 : 3))
+          const size = new BigUint64Array(1)
+          check(n.zc_stream_copy_size(ptr(stream), ptr(size)))
+          if (size[0] > BigInt(Number.MAX_SAFE_INTEGER)) throw -1
+          result.value = storage(Number(size[0]))
           check(
             n.zc_copy_stream(
               ptr(stream),

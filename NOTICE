@@ -249,3 +249,9 @@ Home continuous AF acknowledgement jobs (0.32):
   Source commit: 5c80e5d184337b81fcf712286797b99c95fbc987.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/5c80e5d184337b81fcf712286797b99c95fbc987
+
+Home retained capture request leases (0.33):
+- src/home/lease_pool.zig is verbatim packages/video/src/core/lease_pool.zig.
+  Source commit: f29a36b4a0be60c9b781dbf1358826a5359cb10b.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/f29a36b4a0be60c9b781dbf1358826a5359cb10b

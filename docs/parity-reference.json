@@ -1,0 +1,983 @@
+{
+  "upstream": "raspberrypi/picamera2",
+  "commit": "5e2a35d3bb230825c98c56d98e01b41ddeb43e86",
+  "note": "Public class/function names inventoried from source text only, never executed. This is a scope checklist, not evidence of implemented parity. Underscore-prefixed implementation names are omitted; constructors/context managers are represented by their owning class.",
+  "surface": [
+    {
+      "path": "picamera2/allocators/allocator.py",
+      "classes": [
+        {
+          "name": "Allocator",
+          "methods": [
+            "allocate",
+            "buffers",
+            "acquire",
+            "release",
+            "close"
+          ]
+        },
+        {
+          "name": "Sync",
+          "methods": []
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/allocators/dmaallocator.py",
+      "classes": [
+        {
+          "name": "DmaAllocator",
+          "methods": [
+            "allocate",
+            "buffers",
+            "acquire",
+            "release",
+            "cleanup",
+            "close"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/allocators/libcameraallocator.py",
+      "classes": [
+        {
+          "name": "LibcameraAllocator",
+          "methods": [
+            "allocate",
+            "buffers"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/allocators/persistent_allocator.py",
+      "classes": [
+        {
+          "name": "PersistentAllocator",
+          "methods": [
+            "allocate",
+            "cleanup",
+            "deallocate",
+            "close"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/configuration.py",
+      "classes": [
+        {
+          "name": "Configuration",
+          "methods": [
+            "update",
+            "make_dict",
+            "align"
+          ]
+        },
+        {
+          "name": "StreamConfiguration",
+          "methods": []
+        },
+        {
+          "name": "SensorConfiguration",
+          "methods": []
+        },
+        {
+          "name": "CameraConfiguration",
+          "methods": [
+            "enable_lores",
+            "enable_raw",
+            "align"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/controls.py",
+      "classes": [
+        {
+          "name": "Controls",
+          "methods": [
+            "set_controls",
+            "get_libcamera_controls",
+            "make_dict"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/converters.py",
+      "classes": [],
+      "functions": [
+        "YUV420_to_RGB"
+      ]
+    },
+    {
+      "path": "picamera2/devices/hailo/hailo.py",
+      "classes": [
+        {
+          "name": "Hailo",
+          "methods": [
+            "callback",
+            "get_input_shape",
+            "describe",
+            "run_async",
+            "run",
+            "close"
+          ]
+        }
+      ],
+      "functions": [
+        "hailo_architecture"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/imx500.py",
+      "classes": [
+        {
+          "name": "OutputTensorInfo",
+          "methods": []
+        },
+        {
+          "name": "CnnOutputTensorInfoExported",
+          "methods": []
+        },
+        {
+          "name": "NetworkIntrinsics",
+          "methods": [
+            "intrinsics",
+            "update_with_defaults",
+            "task",
+            "inference_rate",
+            "fps",
+            "bbox_normalization",
+            "bbox_order",
+            "softmax",
+            "postprocess",
+            "preserve_aspect_ratio",
+            "labels",
+            "ignore_dash_labels"
+          ]
+        },
+        {
+          "name": "IMX500",
+          "methods": [
+            "camera_num",
+            "config",
+            "network_intrinsics",
+            "convert_inference_coords",
+            "get_device_id",
+            "get_injection_cmp_frm",
+            "get_fw_upload_progress",
+            "show_network_fw_progress_bar",
+            "get_roi_scaled",
+            "get_isp_output_size",
+            "get_input_size",
+            "input_tensor_image",
+            "prepare_tensor_for_injection",
+            "get_outputs",
+            "get_output_shapes",
+            "set_inference_roi_abs",
+            "set_inference_aspect_ratio",
+            "set_auto_aspect_ratio",
+            "get_kpi_info"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess.py",
+      "classes": [
+        {
+          "name": "BoxFormat",
+          "methods": []
+        },
+        {
+          "name": "COCODrawer",
+          "methods": [
+            "get_coords",
+            "draw_bounding_box",
+            "draw_keypoints",
+            "annotate_image",
+            "overlay_masks"
+          ]
+        }
+      ],
+      "functions": [
+        "nms",
+        "combined_nms",
+        "combined_nms_seg",
+        "convert_to_ymin_xmin_ymax_xmax_format",
+        "clip_boxes",
+        "scale_boxes",
+        "scale_coords",
+        "clip_coords",
+        "softmax",
+        "crop_mask"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess_efficientdet_lite0.py",
+      "classes": [],
+      "functions": [
+        "postprocess_efficientdet_lite0_detection",
+        "box_decoding_edetlite",
+        "generate_anchors_EDETLITE"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess_highernet.py",
+      "classes": [],
+      "functions": [
+        "postprocess_higherhrnet",
+        "parse",
+        "ResizeBilinear",
+        "top_k",
+        "nms",
+        "np_max_pool",
+        "np_topk",
+        "match",
+        "match_by_tag",
+        "py_max_match",
+        "adjust_func",
+        "refine_func",
+        "processKeypoints"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess_nanodet.py",
+      "classes": [],
+      "functions": [
+        "postprocess_nanodet_detection",
+        "generate_anchors_NANODET"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess_yolov5.py",
+      "classes": [],
+      "functions": [
+        "postprocess_yolov5_detection",
+        "box_decoding_yolov5n",
+        "scale_boxes",
+        "clip_boxes",
+        "apply_normalization",
+        "coco80_to_coco91",
+        "yolov5n_preprocess"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx500/postprocess_yolov8.py",
+      "classes": [],
+      "functions": [
+        "postprocess_yolov8_detection",
+        "postprocess_yolov8_keypoints",
+        "postprocess_yolov8_inst_seg",
+        "make_anchors_yolo_v8",
+        "dist2bbox_yolo_v8",
+        "pad_with_zeros",
+        "process_masks"
+      ]
+    },
+    {
+      "path": "picamera2/devices/imx708/imx708.py",
+      "classes": [
+        {
+          "name": "IMX708",
+          "methods": [
+            "close",
+            "set_sensor_hdr_mode"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/dma_heap.py",
+      "classes": [
+        {
+          "name": "dma_buf_sync",
+          "methods": []
+        },
+        {
+          "name": "dma_heap_allocation_data",
+          "methods": []
+        },
+        {
+          "name": "UniqueFD",
+          "methods": [
+            "release",
+            "get",
+            "isValid"
+          ]
+        },
+        {
+          "name": "DmaHeap",
+          "methods": [
+            "isValid",
+            "alloc",
+            "close"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/encoder.py",
+      "classes": [
+        {
+          "name": "Quality",
+          "methods": []
+        },
+        {
+          "name": "Encoder",
+          "methods": [
+            "running",
+            "width",
+            "height",
+            "size",
+            "stride",
+            "format",
+            "output",
+            "name",
+            "encode",
+            "send_streams",
+            "start",
+            "stop",
+            "outputframe"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/h264_encoder.py",
+      "classes": [
+        {
+          "name": "H264Encoder",
+          "methods": [
+            "force_key_frame"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/jpeg_encoder.py",
+      "classes": [
+        {
+          "name": "JpegEncoder",
+          "methods": [
+            "encode_func"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/libav_h264_encoder.py",
+      "classes": [
+        {
+          "name": "LibavH264Encoder",
+          "methods": [
+            "use_hw",
+            "force_key_frame"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/libav_mjpeg_encoder.py",
+      "classes": [
+        {
+          "name": "LibavMjpegEncoder",
+          "methods": []
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/mjpeg_encoder.py",
+      "classes": [
+        {
+          "name": "MJPEGEncoder",
+          "methods": []
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/multi_encoder.py",
+      "classes": [
+        {
+          "name": "MultiEncoder",
+          "methods": [
+            "output_thread",
+            "do_encode",
+            "encode_func"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/encoders/v4l2_encoder.py",
+      "classes": [
+        {
+          "name": "V4L2Encoder",
+          "methods": [
+            "thread_poll"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/formats.py",
+      "classes": [],
+      "functions": [
+        "is_YUV",
+        "is_RGB",
+        "is_Bayer",
+        "is_mono",
+        "is_raw",
+        "assert_format_valid"
+      ]
+    },
+    {
+      "path": "picamera2/job.py",
+      "classes": [
+        {
+          "name": "Job",
+          "methods": [
+            "execute",
+            "signal",
+            "get_result",
+            "cancel"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/metadata.py",
+      "classes": [
+        {
+          "name": "Metadata",
+          "methods": [
+            "make_dict"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/circularoutput.py",
+      "classes": [
+        {
+          "name": "CircularOutput",
+          "methods": [
+            "buffersize",
+            "outputframe",
+            "stop"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/circularoutput2.py",
+      "classes": [
+        {
+          "name": "CircularOutput2",
+          "methods": [
+            "buffer_duration_ms",
+            "open_output",
+            "close_output",
+            "outputframe",
+            "start",
+            "stop"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/ffmpegoutput.py",
+      "classes": [
+        {
+          "name": "FfmpegOutput",
+          "methods": [
+            "start",
+            "stop",
+            "outputframe"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/fileoutput.py",
+      "classes": [
+        {
+          "name": "FileOutput",
+          "methods": [
+            "fileoutput",
+            "connectiondead",
+            "outputframe",
+            "stop",
+            "close"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/output.py",
+      "classes": [
+        {
+          "name": "Output",
+          "methods": [
+            "start",
+            "stop",
+            "outputframe",
+            "outputtimestamp",
+            "ptsoutput"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/pyavoutput.py",
+      "classes": [
+        {
+          "name": "PyavOutput",
+          "methods": [
+            "start",
+            "stop",
+            "outputframe"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/outputs/splittableoutput.py",
+      "classes": [
+        {
+          "name": "SplittableOutput",
+          "methods": [
+            "split_output",
+            "outputframe",
+            "start",
+            "stop"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/picamera2.py",
+      "classes": [
+        {
+          "name": "Preview",
+          "methods": []
+        },
+        {
+          "name": "GlobalCameraInfo",
+          "methods": []
+        },
+        {
+          "name": "CameraManager",
+          "methods": [
+            "setup",
+            "cms",
+            "reset",
+            "add",
+            "cleanup",
+            "listen",
+            "handle_request"
+          ]
+        },
+        {
+          "name": "classproperty",
+          "methods": []
+        },
+        {
+          "name": "Picamera2",
+          "methods": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+            "set_logging",
+            "load_tuning_file",
+            "find_tuning_algo",
+            "global_camera_info",
+            "camera_manager",
+            "preview_configuration",
+            "still_configuration",
+            "video_configuration",
+            "request_callback",
+            "camera_properties",
+            "camera_controls",
+            "title_fields",
+            "sensor_modes",
+            "attach_preview",
+            "start_preview",
+            "detach_preview",
+            "is_wayland_gl_preview",
+            "stop_preview",
+            "close",
+            "create_preview_configuration",
+            "create_still_configuration",
+            "create_video_configuration",
+            "check_stream_config",
+            "check_camera_config",
+            "align_stream",
+            "align_configuration",
+            "configure_",
+            "configure",
+            "camera_configuration",
+            "stream_configuration",
+            "is_mono",
+            "start_",
+            "start",
+            "cancel_all_and_flush",
+            "stop_",
+            "stop",
+            "set_controls",
+            "process_requests",
+            "wait",
+            "dispatch_functions",
+            "set_frame_drops_",
+            "drop_frames_",
+            "wait_for_timestamp_",
+            "drop_frames",
+            "capture_file_",
+            "capture_file",
+            "switch_mode_",
+            "switch_mode",
+            "switch_mode_and_drop_frames",
+            "switch_mode_and_capture_file",
+            "switch_mode_and_capture_request",
+            "capture_request_",
+            "capture_request",
+            "switch_mode_capture_request_and_stop",
+            "capture_sync_request",
+            "captured_request",
+            "captured_sync_request",
+            "capture_metadata_",
+            "capture_metadata",
+            "capture_buffer_",
+            "capture_buffer",
+            "capture_buffers_and_metadata_",
+            "capture_buffers",
+            "switch_mode_and_capture_buffer",
+            "switch_mode_and_capture_buffers",
+            "capture_array_",
+            "capture_array",
+            "capture_arrays_and_metadata_",
+            "capture_arrays",
+            "switch_mode_and_capture_array",
+            "switch_mode_and_capture_arrays",
+            "capture_image_",
+            "capture_image",
+            "switch_mode_and_capture_image",
+            "start_encoder",
+            "stop_encoder",
+            "encoders",
+            "start_recording",
+            "stop_recording",
+            "set_overlay",
+            "start_and_capture_files",
+            "start_and_capture_file",
+            "start_and_record_video",
+            "autofocus_cycle"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/platform.py",
+      "classes": [
+        {
+          "name": "Platform",
+          "methods": []
+        }
+      ],
+      "functions": [
+        "get_platform"
+      ]
+    },
+    {
+      "path": "picamera2/previews/drm_preview.py",
+      "classes": [
+        {
+          "name": "DrmManager",
+          "methods": [
+            "add",
+            "remove"
+          ]
+        },
+        {
+          "name": "DrmPreview",
+          "methods": [
+            "render_request",
+            "handle_request",
+            "init_drm",
+            "set_overlay",
+            "render_drm",
+            "stop"
+          ]
+        }
+      ],
+      "functions": [
+        "list_devices"
+      ]
+    },
+    {
+      "path": "picamera2/previews/gl_helpers.py",
+      "classes": [
+        {
+          "name": "Buffer",
+          "methods": []
+        }
+      ],
+      "functions": [
+        "getEGLNativeDisplay",
+        "getglEGLImageTargetTexture2DOES",
+        "compile_program",
+        "build_camera_programs",
+        "str_to_fourcc",
+        "get_gl_extensions",
+        "check_gl_extensions",
+        "get_egl_extensions",
+        "check_egl_extensions"
+      ]
+    },
+    {
+      "path": "picamera2/previews/null_preview.py",
+      "classes": [
+        {
+          "name": "NullPreview",
+          "methods": [
+            "thread_func",
+            "start",
+            "set_overlay",
+            "render_request",
+            "handle_request",
+            "stop",
+            "set_title_function"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/q_gl_picamera2.py",
+      "classes": [
+        {
+          "name": "EglState",
+          "methods": [
+            "create_display",
+            "choose_config",
+            "create_context"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/q_gl_picamera2_wl.py",
+      "classes": [],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/q_gl_picamera2_wl_direct.py",
+      "classes": [],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/q_picamera2.py",
+      "classes": [],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/qt.py",
+      "classes": [],
+      "functions": [
+        "is_wayland_gl_widget"
+      ]
+    },
+    {
+      "path": "picamera2/previews/qt_compatibility.py",
+      "classes": [],
+      "functions": []
+    },
+    {
+      "path": "picamera2/previews/qt_previews.py",
+      "classes": [
+        {
+          "name": "Command",
+          "methods": []
+        },
+        {
+          "name": "QtPreviewBase",
+          "methods": [
+            "make_picamera2_widget",
+            "get_title",
+            "thread_func",
+            "start",
+            "stop",
+            "fin",
+            "set_overlay",
+            "set_title_function"
+          ]
+        },
+        {
+          "name": "QtPreview",
+          "methods": [
+            "make_picamera2_widget",
+            "get_title"
+          ]
+        },
+        {
+          "name": "QtGlPreview",
+          "methods": [
+            "start",
+            "make_picamera2_widget",
+            "get_title"
+          ]
+        },
+        {
+          "name": "QtGlPreviewWayland",
+          "methods": [
+            "start",
+            "make_picamera2_widget",
+            "get_title"
+          ]
+        },
+        {
+          "name": "QtGlPreviewDirect",
+          "methods": [
+            "make_picamera2_widget",
+            "get_title"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/remote.py",
+      "classes": [
+        {
+          "name": "Process",
+          "methods": [
+            "send",
+            "close",
+            "run"
+          ]
+        },
+        {
+          "name": "RemoteMappedArray",
+          "methods": [
+            "array"
+          ]
+        },
+        {
+          "name": "RemoteRequest",
+          "methods": [
+            "get_metadata",
+            "get_config",
+            "make_buffer",
+            "make_array",
+            "make_image",
+            "save",
+            "save_dng"
+          ]
+        },
+        {
+          "name": "Pool",
+          "methods": [
+            "send",
+            "close"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/request.py",
+      "classes": [
+        {
+          "name": "MappedArray",
+          "methods": [
+            "array"
+          ]
+        },
+        {
+          "name": "CompletedRequest",
+          "methods": [
+            "acquire",
+            "release",
+            "make_buffer",
+            "get_metadata",
+            "make_array",
+            "make_image",
+            "save",
+            "save_dng"
+          ]
+        },
+        {
+          "name": "Helpers",
+          "methods": [
+            "make_array",
+            "make_image",
+            "save",
+            "save_dng",
+            "decompress"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/sensor_format.py",
+      "classes": [
+        {
+          "name": "SensorFormat",
+          "methods": [
+            "format",
+            "unpacked",
+            "mono",
+            "transform"
+          ]
+        }
+      ],
+      "functions": []
+    },
+    {
+      "path": "picamera2/utils.py",
+      "classes": [],
+      "functions": [
+        "convert_from_libcamera_type",
+        "colour_space_to_libcamera",
+        "colour_space_from_libcamera",
+        "transform_to_orientation",
+        "orientation_to_transform"
+      ]
+    }
+  ]
+}

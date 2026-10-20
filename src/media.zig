@@ -79,11 +79,32 @@ pub export fn zc_copy_rgb(f: *const c.zc_frame, out: [*]u8, length: u64) c_int {
     return c.ZC_OK;
 }
 
+/// Tight owned-copy byte count. Does not dereference source plane pointers.
+pub export fn zc_stream_copy_size(m: *const c.zc_stream, out: *u64) c_int {
+    const std = @import("std");
+    if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384) return c.ZC_INVALID;
+    const name = std.mem.sliceTo(&m.format, 0);
+    const pixels = @as(u64, m.width) * m.height;
+    const size = if (std.mem.eql(u8, name, "BGR888")) pixels * 3 else if (std.mem.eql(u8, name, "YUV420")) blk: {
+        if ((m.width | m.height) & 1 != 0) return c.ZC_INVALID;
+        break :blk pixels + pixels / 2;
+    } else blk: {
+        const format = @import("raw.zig").Format.parse(name) catch return c.ZC_UNSUPPORTED;
+        const row = format.rowBytes(m.width) catch return c.ZC_INVALID;
+        break :blk @as(u64, row) * m.height;
+    };
+    out.* = size;
+    return c.ZC_OK;
+}
 /// Descriptors and DMA access remain borrowed for the duration of this call.
 pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_int {
     const std = @import("std");
     const pack = @import("home/plane_pack.zig");
     if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384 or m.plane_count == 0 or m.plane_count > c.ZC_MAX_PLANES or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    var required: u64 = 0;
+    const size_rc = zc_stream_copy_size(m, &required);
+    if (size_rc != 0) return size_rc;
+    if (length < required) return c.ZC_INVALID;
     for (m.planes[0..m.plane_count]) |p| {
         if (p.data == null or p.bytes_used > p.length or p.bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
     }
@@ -103,7 +124,12 @@ pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_i
             planes = .{ data[0..ysize], data[ysize..][0 .. ysize / 4], data[ysize + ysize / 4 ..] };
         } else return c.ZC_UNSUPPORTED;
         pack.packI420(planes, .{ m.stride, m.stride / 2, m.stride / 2 }, m.width, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
-    } else return c.ZC_UNSUPPORTED;
+    } else {
+        if (m.plane_count != 1) return c.ZC_INVALID;
+        const format = @import("raw.zig").Format.parse(name) catch return c.ZC_UNSUPPORTED;
+        const row = format.rowBytes(m.width) catch return c.ZC_INVALID;
+        pack.rows(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.stride, row, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
+    }
     return c.ZC_OK;
 }
 
@@ -527,4 +553,38 @@ pub export fn zc_producer_job_handoffs(p: *c.zc_producer_job, out: [*]c.zc_produ
 }
 pub export fn zc_video_producer_av(p: *c.zc_recorder, frame: *const c.zc_frame, timestamp: u64, inputs: ?[*]const c.zc_producer_audio_input, count: u32, out: *?*c.zc_producer_job) c_int {
     return @import("video.zig").producerAv(p, frame, timestamp, inputs, count, out);
+}
+
+test "raw copies preserve unpacked and CSI2 bytes while removing padding and reject short planes atomically" {
+    const std = @import("std");
+    var stream = std.mem.zeroes(c.zc_stream);
+    stream.width = 3;
+    stream.height = 2;
+    stream.stride = 8;
+    stream.plane_count = 1;
+    @memcpy(stream.format[0..7], "SRGGB12");
+    const input = [_]u8{ 1, 2, 3, 4, 5, 6, 99, 99, 7, 8, 9, 10, 11, 12 };
+    stream.planes[0].data = &input;
+    stream.planes[0].length = input.len;
+    stream.planes[0].bytes_used = input.len;
+    var size: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_stream_copy_size(&stream, &size));
+    try std.testing.expectEqual(@as(u64, 12), size);
+    var out: [12]u8 = @splat(42);
+    try std.testing.expectEqual(c.ZC_OK, zc_copy_stream(&stream, &out, out.len));
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }, &out);
+    stream.format = @splat(0);
+    @memcpy(stream.format[0..13], "SRGGB12_CSI2P");
+    try std.testing.expectEqual(c.ZC_OK, zc_stream_copy_size(&stream, &size));
+    try std.testing.expectEqual(@as(u64, 12), size);
+    try std.testing.expectEqual(c.ZC_OK, zc_copy_stream(&stream, &out, out.len));
+    out = @splat(42);
+    stream.planes[0].bytes_used -= 1;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_copy_stream(&stream, &out, out.len));
+    try std.testing.expectEqualSlices(u8, &@as([12]u8, @splat(42)), &out);
+    stream.format = @splat(0);
+    @memcpy(stream.format[0..18], "SRGGB16_PISP_COMP1");
+    size = 99;
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_stream_copy_size(&stream, &size));
+    try std.testing.expectEqual(@as(u64, 99), size);
 }

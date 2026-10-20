@@ -8,6 +8,7 @@ extern "C" {
 #define ZC_ABI_VERSION 1
 #define ZC_MAX_BUFFERS 32
 #define ZC_MAX_PLANES 4
+#define ZC_MAX_FRAME_REFERENCES 256
 /* Negative results, stable across platforms. */
 enum { ZC_OK=0, ZC_INVALID=-1, ZC_STATE=-2, ZC_TIMEOUT=-3, ZC_BUSY=-4,
        ZC_STALE=-5, ZC_IO=-6, ZC_NOMEM=-7, ZC_UNSUPPORTED=-8, ZC_DEVICE=-9, ZC_CANCELLED=-10 };
@@ -80,7 +81,10 @@ int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
 int zc_get_sensor_modes(zc_camera *,zc_sensor_mode *,uint32_t capacity,uint32_t *count);
 /* Borrowed descriptor valid only for this lease. Disabled stream: UNSUPPORTED. */
 int zc_get_stream(zc_camera *,uint64_t token,uint32_t stream,zc_stream *);
-/* Tight owned copy: BGR888 => RGB bytes; YUV420 => I420 Y,U,V. */
+/* Tight owned copies: BGR888 => RGB; YUV420 => I420; Bayer => unchanged
+ * unpacked samples or CSI-2 packed rows, with row padding removed. PiSP compressed
+ * formats are unsupported. The size query never dereferences plane pointers. */
+int zc_stream_copy_size(const zc_stream *,uint64_t *bytes);
 int zc_copy_stream(const zc_stream *,uint8_t *out,uint64_t length);
 typedef struct {
     uint32_t valid; /* bit 0 black levels, bit 1 CCM, bit 2 white balance */
@@ -163,6 +167,13 @@ int zc_save_dng(zc_camera *, uint64_t token, const char *path);
 int zc_get_info(zc_camera *, zc_info *out);
 int zc_start(zc_camera *);
 int zc_acquire(zc_camera *, uint32_t timeout_ms, zc_frame *out);
+/* Distinct token for the same completed request, without copying pixels.
+ * Release each token once. Final release ends DMA access and recycles.
+ * Stats.leased counts pinned buffers, not references. Capacity is reserved for
+ * primary references of unleased buffers. Retains survive stop; close/restart
+ * reject any outstanding reference. Tokens are scoped to the issuing camera. */
+int zc_retain(zc_camera *,uint64_t token,zc_frame *out);
+int zc_frame_references(zc_camera *,uint64_t token,uint32_t *out);
 int zc_release(zc_camera *, uint64_t token);
 int zc_stop(zc_camera *);
 int zc_close(zc_camera *);

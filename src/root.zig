@@ -163,14 +163,28 @@ pub const Camera = struct {
         return .{ .camera = self, .value = f };
     }
 };
-/// Linear resource: copying the descriptor does not create another lease.
+/// Linear reference: copying the descriptor does not create another lease.
+/// retain creates a distinct reference; mappings expire only on final release.
 /// Views expire on release. DMA-BUF fds are borrowed and must never be closed.
 pub const Frame = struct {
     camera: Camera,
     value: c.zc_frame,
+    pub fn retain(self: *const Frame) Error!Frame {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: c.zc_frame = undefined;
+        try check(core.zc_retain(self.camera.handle, self.value.token, &out));
+        return .{ .camera = self.camera, .value = out };
+    }
+    pub fn referenceCount(self: *const Frame) Error!u32 {
+        if (self.value.token == 0) return error.StaleFrame;
+        var count: u32 = 0;
+        try check(core.zc_frame_references(self.camera.handle, self.value.token, &count));
+        return count;
+    }
     pub fn release(self: *Frame) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
         const rc = core.zc_release(self.camera.handle, self.value.token);
-        if (rc != c.ZC_STALE) self.value.token = 0;
+        self.value.token = 0;
         try check(rc);
     }
     pub fn rgb(self: *const Frame) pixels.RgbView.Error!pixels.RgbView {
@@ -179,19 +193,23 @@ pub const Frame = struct {
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
     }
     pub fn stream(self: *const Frame, id: u32) Error!c.zc_stream {
+        if (self.value.token == 0) return error.StaleFrame;
         var out: c.zc_stream = undefined;
         try check(core.zc_get_stream(self.camera.handle, self.value.token, id, &out));
         return out;
     }
     pub fn metadata(self: *const Frame) Error!c.zc_metadata {
+        if (self.value.token == 0) return error.StaleFrame;
         var out: c.zc_metadata = undefined;
         try check(core.zc_get_frame_metadata(self.camera.handle, self.value.token, &out));
         return out;
     }
     pub fn saveDng(self: *const Frame, path: [:0]const u8) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_save_dng(self.camera.handle, self.value.token, path));
     }
     pub fn saveJpeg(self: *const Frame, path: [:0]const u8, quality: u32) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_save_jpeg(self.camera.handle, self.value.token, path, quality));
     }
 };
@@ -230,4 +248,56 @@ test "Zig control snapshots own settings after source close and replay before st
     const meta = try frame.metadata();
     try std.testing.expectEqual(revision, meta.control_revision);
     try std.testing.expectEqual(@as(u32, 1800), meta.exposure_us);
+}
+
+test "Zig retained frames pin a stopped request until every independent owner leaves" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var config = defaultConfig();
+    config.width = 16;
+    config.height = 16;
+    const camera = try Camera.init(config);
+    defer camera.deinit() catch unreachable;
+    try camera.start();
+    var parent = try camera.acquire(0);
+    var child = try parent.retain();
+    defer child.release() catch {};
+    try std.testing.expectEqual(@as(u32, 2), try child.referenceCount());
+    try std.testing.expect(parent.value.token != child.value.token);
+    try parent.release();
+    try std.testing.expectEqual(@as(u32, 1), try child.referenceCount());
+    try camera.stop();
+    const pixels_view = try child.rgb();
+    try std.testing.expectEqual(@as(usize, 16), pixels_view.width);
+    try std.testing.expectEqual(child.value.sequence, (try child.metadata()).sequence);
+    try std.testing.expectError(error.Busy, camera.start());
+    try std.testing.expectError(error.Busy, camera.deinit());
+    try child.release();
+    try camera.start();
+    var next = try camera.acquire(0);
+    defer next.release() catch unreachable;
+    try std.testing.expect(next.value.token != child.value.token);
+}
+
+test "released Zig references reject locally after their camera is destroyed" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var config = defaultConfig();
+    config.width = 16;
+    config.height = 16;
+    const camera = try Camera.init(config);
+    var closed = false;
+    defer if (!closed) camera.deinit() catch {};
+    try camera.start();
+    var frame = try camera.acquire(0);
+    try check(core.zc_release(camera.handle, frame.value.token));
+    try std.testing.expectError(error.StaleFrame, frame.release());
+    try std.testing.expectEqual(@as(u64, 0), frame.value.token);
+    try camera.deinit();
+    closed = true;
+    try std.testing.expectError(error.StaleFrame, frame.retain());
+    try std.testing.expectError(error.StaleFrame, frame.referenceCount());
+    try std.testing.expectError(error.StaleFrame, frame.release());
+    try std.testing.expectError(error.StaleFrame, frame.stream(c.ZC_MAIN));
+    try std.testing.expectError(error.StaleFrame, frame.metadata());
+    try std.testing.expectError(error.StaleFrame, frame.saveDng("never-created.dng"));
+    try std.testing.expectError(error.StaleFrame, frame.saveJpeg("never-created.jpg", 90));
 }

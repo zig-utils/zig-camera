@@ -6,11 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.32 adds continuous autofocus pause/resume jobs and focus-locked capture.
-Jobs await revision-filtered Paused/Running metadata; locked captures select a
-paused, focused frame through the shared recording/preview pump and restore the
-previous pause intent before settling, including cancellation and callback errors.
-See [continuous AF and focus lock](docs/controls.md#continuous-autofocus-and-focus-locked-capture).
+Version 0.33 adds retained completed requests, cancellable capture jobs, and
+same-request main/raw/lores captures with metadata. Distinct native reference
+tokens keep DMA mappings pinned until the final owner releases them. Bayer buffer
+copies preserve packed/unpacked samples while removing row padding.
+See [request ownership](docs/requests.md) and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative
@@ -67,7 +67,8 @@ await recording.close()
 
 `ZIG_CAMERA_LIBRARY` selects an alternate shared-library path. Synthetic builds
 require `new Camera({ simulate: true, ... })`; no real camera is silently replaced.
-Frame descriptors are linear leases. Use `using frame = camera.acquire()` and
+Frame descriptors are linear references. retain() creates an independent owner;
+only final release recycles a request. Use `using frame = camera.acquire()` and
 release before leaving the camera scope. Copies returned by `copyRGB` and
 `copyStream` own their bytes. Do not pass a released descriptor to low-level FFI.
 

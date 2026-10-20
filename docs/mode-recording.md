@@ -24,7 +24,8 @@ const rgb = await camera.switchModeAndCaptureRGB(
 `switchModeAndCaptureMetadata`, `switchModeAndCaptureBuffer` and
 `switchModeAndCaptureFile` restore the previous constructor configuration and
 running/stopped state before returning owned results. Buffer capture packs main
-RGB or configured RGB/I420 lores; raw buffer packing remains unsupported. File
+RGB, configured RGB/I420 lores or Bayer rows (packed CSI-2 or unpacked samples);
+PiSP compressed raw remains unsupported. File
 capture accepts JPEG or DNG, returns frame metadata and uses Home image writers.
 DNG requests unpacked Bayer automatically; unsupported raw modes still fail.
 These methods use this project's typed options, not arbitrary Picamera2 configs.

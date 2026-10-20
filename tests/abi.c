@@ -150,7 +150,18 @@ int main(void) {
     zc_frame controlled;zc_metadata controlled_meta;
     assert(zc_acquire(camera,0,&controlled)==ZC_OK);
     assert(zc_get_frame_metadata(camera,controlled.token,&controlled_meta)==ZC_OK && controlled_meta.control_revision==41 && controlled_meta.exposure_us==1700);
+    zc_frame retained_request;uint32_t request_references=0;
+    assert(zc_retain(camera,controlled.token,&retained_request)==ZC_OK);
+    assert(retained_request.token!=controlled.token && retained_request.sequence==controlled.sequence);
+    assert(zc_frame_references(camera,retained_request.token,&request_references)==ZC_OK && request_references==2);
     assert(zc_release(camera,controlled.token)==ZC_OK);
+    assert(zc_release(camera,controlled.token)==ZC_STALE);
+    assert(zc_get_frame_metadata(camera,retained_request.token,&controlled_meta)==ZC_OK);
+    assert(zc_frame_references(camera,retained_request.token,&request_references)==ZC_OK && request_references==1);
+    zc_stream retained_stream;uint64_t retained_size=0;
+    assert(zc_get_stream(camera,retained_request.token,ZC_MAIN,&retained_stream)==ZC_OK);
+    assert(zc_stream_copy_size(&retained_stream,&retained_size)==ZC_OK && retained_size==16*16*3);
+    assert(zc_release(camera,retained_request.token)==ZC_OK);
     zc_control caf={0};caf.id=ZC_AF_MODE;caf.type=ZC_INT;caf.count=1;caf.values[0]=2;
     assert(zc_set_controls(camera,&caf,1,&control_revision)==ZC_OK);
     uint64_t pause_job=0,restore_pause_job=0;uint32_t pause_state=0;

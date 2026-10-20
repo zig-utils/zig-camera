@@ -174,6 +174,28 @@ export interface CameraOptions {
   sensor?: { width: number; height: number; bitDepth: number }
   lores?: { width: number; height: number; rgb?: boolean }
 }
+export type StreamName = 'main' | 'raw' | 'lores'
+export interface PackedStream {
+  width: number
+  height: number
+  format: string
+  rowBytes: number
+  data: Uint8Array
+}
+export interface CapturedStreams {
+  streams: Partial<Record<StreamName, PackedStream>>
+  metadata: ReturnType<Frame['metadata']>
+}
+function streamNames(streams: readonly StreamName[]): StreamName[] {
+  if (
+    !streams.length ||
+    streams.length > 3 ||
+    new Set(streams).size !== streams.length ||
+    streams.some((name) => !['main', 'raw', 'lores'].includes(name))
+  )
+    throw new RangeError('1..3 distinct stream names required')
+  return [...streams]
+}
 export class Frame {
   private released = false
   constructor(
@@ -220,11 +242,36 @@ export class Frame {
       width = d.getUint32(0, true),
       height = d.getUint32(4, true)
     const format = text(data, 16, 32)
-    if (format !== 'BGR888' && format !== 'YUV420')
-      throw new CameraError(-8, 'packed stream')
-    const out = storage(width * height * (format === 'YUV420' ? 1.5 : 3))
+    const size = new BigUint64Array(1)
+    check(n.zc_stream_copy_size(ptr(data), ptr(size)), 'stream copy size')
+    if (size[0] > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new RangeError('stream too large')
+    const out = storage(Number(size[0]))
     check(n.zc_copy_stream(ptr(data), ptr(out), BigInt(out.length)))
-    return { width, height, format, data: out }
+    const rowBytes = format === 'YUV420' ? width : out.length / height
+    return { width, height, format, rowBytes, data: out }
+  }
+  copyStreams(streams: readonly StreamName[] = ['main']): CapturedStreams {
+    this.open()
+    const names = streamNames(streams),
+      result: CapturedStreams = { streams: {}, metadata: this.metadata() }
+    for (const name of names) result.streams[name] = this.copyStream(name)
+    return result
+  }
+  retain() {
+    this.open()
+    const data = storage(456)
+    check(
+      n.zc_retain(this.camera.handle, this.token, ptr(data)),
+      'retain request',
+    )
+    return new Frame(this.camera, data)
+  }
+  get referenceCount() {
+    this.open()
+    const count = new Uint32Array(1)
+    check(n.zc_frame_references(this.camera.handle, this.token, ptr(count)))
+    return count[0]
   }
   metadata() {
     this.open()
@@ -246,8 +293,9 @@ export class Frame {
   }
   release() {
     if (this.released) return
-    check(n.zc_release(this.camera.handle, this.token))
+    const code = n.zc_release(this.camera.handle, this.token)
     this.released = true
+    check(code)
   }
   [Symbol.dispose]() {
     this.release()
@@ -260,6 +308,7 @@ export interface FocusLockedOptions<T = unknown> extends JobOptions<T> {
   restoreTimeoutMs?: number
 }
 type CaptureRequest = {
+  transfer?: boolean
   accept?: (frame: Frame) => number
   operation: (frame: Frame) => unknown
   resolve: (value: unknown) => void
@@ -814,30 +863,157 @@ export class Camera {
   }
   capture<T>(
     operation: (frame: Frame) => T,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    options: JobOptions<T> = {},
   ): Promise<T> {
+    return this.captureAsync(operation, options).wait()
+  }
+  captureAsync<T>(
+    operation: (frame: Frame) => T,
+    options: JobOptions<T> = {},
+  ): BunJob<T> {
+    return this.submitCapture(operation, options)
+  }
+  private submitCapture<T>(
+    operation: (frame: Frame) => T,
+    options: JobOptions<T>,
+    discard?: (value: T) => void,
+    transfer = false,
+  ): BunJob<T> {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.focusCaptureActive)
       throw new CameraError(-4, 'focus-locked capture active')
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
-    this.start()
-    const result = new Promise<T>((resolve, reject) =>
-      this.requests.push({
-        operation,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        deadline: performance.now() + (options.timeoutMs ?? 5000),
-        signal: options.signal,
-      }),
+    const job = new BunJob<T>(
+      async (current) => {
+        current.check()
+        this.start()
+        let captured = false,
+          value: T | undefined
+        try {
+          value = await new Promise<T>((resolve, reject) => {
+            this.requests.push({
+              transfer,
+              operation: (frame) => {
+                const result = operation(frame)
+                if (
+                  result &&
+                  typeof (result as { then?: unknown }).then === 'function'
+                ) {
+                  void Promise.resolve(result).catch(() => {})
+                  throw new TypeError(
+                    'capture callback must be synchronous; retain the request for async work',
+                  )
+                }
+                return result
+              },
+              resolve: resolve as (value: unknown) => void,
+              reject,
+              deadline: Infinity,
+              signal: current.signal,
+            })
+            this.ensurePump()
+          })
+          captured = true
+          current.check()
+          current.seal()
+          return value
+        } catch (error) {
+          if (captured && discard) {
+            try {
+              discard(value as T)
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [error, cleanupError],
+                'capture ownership cleanup failed',
+              )
+            }
+          }
+          throw error
+        }
+      },
+      () => {},
+      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
     )
-    this.ensurePump()
-    return result
+    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    void job.start()
+    return job
   }
-  captureRGB(options?: { timeoutMs?: number; signal?: AbortSignal }) {
+  captureRequestAsync(options: JobOptions<Frame> = {}) {
+    return this.submitCapture(
+      (frame) => frame,
+      options,
+      (frame) => frame.release(),
+      true,
+    )
+  }
+  captureRequest(options: JobOptions<Frame> = {}) {
+    return this.captureRequestAsync(options).wait()
+  }
+  captureStreamsAsync(
+    streams: readonly StreamName[] = ['main'],
+    options: JobOptions<CapturedStreams> = {},
+  ) {
+    const names = streamNames(streams)
+    return this.captureAsync((frame) => frame.copyStreams(names), options)
+  }
+  captureStreams(
+    streams: readonly StreamName[] = ['main'],
+    options: JobOptions<CapturedStreams> = {},
+  ) {
+    return this.captureStreamsAsync(streams, options).wait()
+  }
+  captureBufferAsync(
+    stream: StreamName = 'main',
+    options: JobOptions<PackedStream> = {},
+  ) {
+    const [name] = streamNames([stream])
+    return this.captureAsync((frame) => frame.copyStream(name), options)
+  }
+  captureBuffer(
+    stream: StreamName = 'main',
+    options: JobOptions<PackedStream> = {},
+  ) {
+    return this.captureBufferAsync(stream, options).wait()
+  }
+  captureRGBAsync(options: JobOptions<Uint8Array> = {}) {
+    return this.captureAsync((frame) => frame.copyRGB(), options)
+  }
+  captureMetadataAsync(
+    options: JobOptions<ReturnType<Frame['metadata']>> = {},
+  ) {
+    return this.captureAsync((frame) => frame.metadata(), options)
+  }
+  captureFileAsync(
+    path: string,
+    options: JobOptions<ReturnType<Frame['metadata']>> & {
+      quality?: number
+    } = {},
+  ) {
+    const dng = path.toLowerCase().endsWith('.dng'),
+      quality = uint(options.quality ?? 98)
+    if (!dng && !/\.jpe?g$/i.test(path))
+      throw new CameraError(-8, 'capture file format')
+    if (!dng && (quality < 1 || quality > 100))
+      throw new RangeError('invalid JPEG quality')
+    return this.captureAsync((frame) => {
+      if (dng) frame.saveDNG(path)
+      else frame.saveJPEG(path, quality)
+      return frame.metadata()
+    }, options)
+  }
+  captureFile(
+    path: string,
+    options: JobOptions<ReturnType<Frame['metadata']>> & {
+      quality?: number
+    } = {},
+  ) {
+    return this.captureFileAsync(path, options).wait()
+  }
+  captureRGB(options?: JobOptions<Uint8Array>) {
     return this.capture((frame) => frame.copyRGB(), options)
   }
-  captureMetadata(options?: { timeoutMs?: number; signal?: AbortSignal }) {
+  captureMetadata(options?: JobOptions<ReturnType<Frame['metadata']>>) {
     return this.capture((frame) => frame.metadata(), options)
   }
   startPreview(title = 'zig-camera') {
@@ -1584,6 +1760,7 @@ export class Camera {
       )
         return
       let frame: Frame | undefined
+      let selected: CaptureRequest | undefined, capturedValue: unknown
       let producer: Promise<void> | undefined, writing: Recording | undefined
       try {
         frame = this.acquire(0)
@@ -1614,7 +1791,8 @@ export class Camera {
             if (code !== -3) {
               this.requests.shift()
               check(code, 'focus-locked frame')
-              job.resolve(job.operation(frame))
+              capturedValue = job.operation(frame)
+              selected = job
             }
           } catch (error) {
             if (this.requests[0] === job) this.requests.shift()
@@ -1633,8 +1811,25 @@ export class Camera {
           this.stopPreview()
         }
       } finally {
-        frame?.release()
+        try {
+          if (!selected?.transfer) frame?.release()
+        } catch (error) {
+          selected?.reject(error)
+          selected = undefined
+          for (const job of this.requests) job.reject(error)
+          this.requests = []
+          this.focusJob?.cancel(error)
+          if (this.recording) {
+            this.recording.error = error
+            this.failedRecordings.add(this.recording)
+            this.recording = undefined
+          }
+          try {
+            this.stopPreviewOwned()
+          } catch {}
+        }
       }
+      selected?.resolve(capturedValue)
       if (producer) {
         try {
           await producer

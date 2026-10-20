@@ -188,3 +188,13 @@ nonterminal newer observations, stale responses and terminal stop/cancellation.
 Native CAF pause/resume uses this helper under the same callback mutex, with an
 independent metadata validity bit. Existing Home codecs, containers, bounded
 queues, persistent setting journal and finalization helpers remain in use.
+
+The 0.33 audit contributes lease_pool.Pool(resources, references) to Home video,
+pushed at f29a36b4a0be60c9b781dbf1358826a5359cb10b and copied verbatim. Fixed
+reference tables issue a distinct generation-checked token for each retained
+owner; resource lookup and release are constant time. Tests cover parent release,
+slot reuse, stale/double releases, atomic capacity rejection, exhaustion and odd
+capacity bounds on pinned/development Zig Debug and ReleaseSafe. The camera
+serializes the helper under its existing locks, reserves primary-reference
+capacity for other buffers, and performs DMA end/requeue only on final release.
+Existing Home plane packing handles raw row copies and I420/RGB padding removal.

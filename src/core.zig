@@ -26,7 +26,7 @@ const Session = struct {
     changed: std.Thread.Condition = .{},
     running: bool = false,
     fatal: c_int = 0,
-    next_token: u64 = 1,
+    leases: @import("home/lease_pool.zig").Pool(c.ZC_MAX_BUFFERS, c.ZC_MAX_FRAME_REFERENCES) = .{},
     config: c.zc_config,
     info: c.zc_info = std.mem.zeroes(c.zc_info),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
@@ -40,8 +40,7 @@ const Session = struct {
     fn leaseIndex(self: *Session, token: u64) ?u32 {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.slots[0..self.info.buffer_count], 0..) |*slot, i| if (slot.state == .leased and slot.frame.token == token) return @intCast(i);
-        return null;
+        return self.leases.resource(token);
     }
     fn ptr(self: *Session) *c.zc_camera {
         return @ptrCast(self);
@@ -255,6 +254,11 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
             self.mutex.unlock();
             continue;
         }
+        if (self.leases.used == c.ZC_MAX_FRAME_REFERENCES or self.leases.issued == @TypeOf(self.leases).max_sequence) {
+            const rc = if (self.leases.used == c.ZC_MAX_FRAME_REFERENCES) c.ZC_BUSY else c.ZC_STATE;
+            self.mutex.unlock();
+            return rc;
+        }
         var dropped: [c.ZC_MAX_BUFFERS]u32 = undefined;
         var num_dropped: usize = 0;
         if (self.config.policy == c.ZC_LATEST) {
@@ -267,14 +271,9 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
         }
         const index = self.pop();
         const slot = &self.slots[index];
-        if (self.next_token == std.math.maxInt(u64)) {
-            self.fatal = c.ZC_STATE;
-            self.mutex.unlock();
-            return c.ZC_STATE;
-        }
+        const token = self.leases.acquire(index) catch unreachable;
         slot.state = .leased;
-        slot.frame.token = self.next_token;
-        self.next_token += 1;
+        slot.frame.token = token;
         self.stats.leased += 1;
         self.stats.dropped += num_dropped;
         self.mutex.unlock();
@@ -286,6 +285,7 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
         if (rc != 0) {
             self.mutex.lock();
             slot.state = .idle;
+            _ = self.leases.release(token) catch unreachable;
             self.stats.leased -= 1;
             self.stats.errors += 1;
             self.fatal = rc;
@@ -300,31 +300,56 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
         return c.ZC_OK;
     }
 }
+pub export fn zc_retain(p: *c.zc_camera, token: u64, out: *c.zc_frame) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    const index = self.leases.resource(token) orelse return c.ZC_STALE;
+    // Reserve primary reference capacity for every currently unleased buffer.
+    if (c.ZC_MAX_FRAME_REFERENCES - self.leases.used <= self.info.buffer_count - self.stats.leased) return c.ZC_BUSY;
+    const retained = self.leases.retain(token) catch |err| return if (err == error.SequenceExhausted) c.ZC_STATE else c.ZC_BUSY;
+    out.* = self.slots[index].frame;
+    out.token = retained;
+    return c.ZC_OK;
+}
+pub export fn zc_frame_references(p: *c.zc_camera, token: u64, out: *u32) c_int {
+    const self = session(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    out.* = self.leases.count(token) catch return c.ZC_STALE;
+    return c.ZC_OK;
+}
 pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
     self.mutex.lock();
-    for (self.slots[0..self.info.buffer_count], 0..) |*slot, i| {
-        if (slot.state == .leased and slot.frame.token == token) {
-            self.mutex.unlock();
-            const rc = driver.sync(self.device.?, @intCast(i), false);
-            self.mutex.lock();
-            slot.state = .idle;
-            self.stats.leased -= 1;
-            const running = self.running and self.fatal == 0;
-            if (rc != 0) {
-                self.fatal = rc;
-                self.stats.errors += 1;
-                self.changed.broadcast();
-            }
-            self.mutex.unlock();
-            if (rc != 0) return rc;
-            return if (running) self.queue(@intCast(i)) else c.ZC_OK;
-        }
+    const index = self.leases.resource(token) orelse {
+        self.mutex.unlock();
+        return c.ZC_STALE;
+    };
+    const final = self.leases.release(token) catch unreachable;
+    if (!final) {
+        self.mutex.unlock();
+        return c.ZC_OK;
+    }
+    const slot = &self.slots[index];
+    self.mutex.unlock();
+    const rc = driver.sync(self.device.?, index, false);
+    self.mutex.lock();
+    slot.state = .idle;
+    self.stats.leased -= 1;
+    const running = self.running and self.fatal == 0;
+    if (rc != 0) {
+        self.fatal = rc;
+        self.stats.errors += 1;
+        self.changed.broadcast();
     }
     self.mutex.unlock();
-    return c.ZC_STALE;
+    if (rc != 0) return rc;
+    return if (running) self.queue(index) else c.ZC_OK;
 }
 fn stopLocked(self: *Session) c_int {
     self.mutex.lock();
@@ -608,9 +633,8 @@ pub export fn zc_focus_locked_validate(p: *c.zc_camera, id: u64, token: u64, req
     defer self.mutex.unlock();
     const status = focusLockStatus(self, id);
     if (status != 0) return status;
-    const metadata = for (self.slots[0..self.info.buffer_count]) |slot| {
-        if (slot.state == .leased and slot.frame.token == token) break slot.metadata;
-    } else return c.ZC_STALE;
+    const index = self.leases.resource(token) orelse return c.ZC_STALE;
+    const metadata = self.slots[index].metadata;
     if (metadata.control_revision < self.af.?.revision or metadata.valid & 32 == 0 or metadata.af_pause_state != 2) return c.ZC_TIMEOUT;
     if (require_focused != 0) {
         if (metadata.valid & 1 == 0) return c.ZC_UNSUPPORTED;
@@ -695,24 +719,18 @@ pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, qua
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
-    self.mutex.lock();
-    for (self.slots[0..self.info.buffer_count]) |*slot| {
-        if (slot.state == .leased and slot.frame.token == token) {
-            self.mutex.unlock();
-            if (options.jpeg) return zcd_save_jpeg(&slot.frame, path, quality);
-            var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
-            defer encoder.deinit();
-            const m = slot.frame.main;
-            const encoded = encoder.encode(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride, 3, @intCast(quality)) catch return c.ZC_NOMEM;
-            var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
-            defer atom.deinit();
-            atom.file_writer.file.writeAll(encoded) catch return c.ZC_IO;
-            atom.finish() catch return c.ZC_IO;
-            return c.ZC_OK;
-        }
-    }
-    self.mutex.unlock();
-    return c.ZC_STALE;
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    const slot = &self.slots[index];
+    if (options.jpeg) return zcd_save_jpeg(&slot.frame, path, quality);
+    var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
+    defer encoder.deinit();
+    const m = slot.frame.main;
+    const encoded = encoder.encode(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride, 3, @intCast(quality)) catch return c.ZC_NOMEM;
+    var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+    defer atom.deinit();
+    atom.file_writer.file.writeAll(encoded) catch return c.ZC_IO;
+    atom.finish() catch return c.ZC_IO;
+    return c.ZC_OK;
 }
 pub export fn zc_get_raw_metadata(p: *c.zc_camera, token: u64, out: *c.zc_raw_metadata) c_int {
     const self = session(p);
@@ -1328,4 +1346,111 @@ test "continuous AF command headroom rejects before mutation and preserves cance
     try std.testing.expectEqual(c.ZC_STATE, zc_autofocus_pause_start(camera.?, 0, &id));
     try std.testing.expectEqual(@as(u64, 0), id);
     try std.testing.expectEqual(revision, session(camera.?).control_revision);
+}
+
+test "retained request tokens release independently and synchronize only once on final release" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var parent: c.zc_frame = undefined;
+    var child: c.zc_frame = undefined;
+    var sibling: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &parent));
+    try std.testing.expectEqual(c.ZC_OK, zc_retain(camera, parent.token, &child));
+    try std.testing.expectEqual(c.ZC_OK, zc_retain(camera, child.token, &sibling));
+    try std.testing.expect(parent.token != child.token and child.token != sibling.token);
+    try std.testing.expectEqual(parent.sequence, child.sequence);
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_references(camera, child.token, &count));
+    try std.testing.expectEqual(@as(u32, 3), count);
+    const index = session(camera).leaseIndex(child.token).?;
+    const completed_before = session(camera).stats.completed;
+    session(camera).device.?.fail_sync_end = true;
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, parent.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_release(camera, parent.token));
+    var metadata: c.zc_metadata = undefined;
+    try std.testing.expectEqual(c.ZC_STALE, zc_get_frame_metadata(camera, parent.token, &metadata));
+    try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(camera, child.token, &metadata));
+    try std.testing.expectEqual(parent.sequence, metadata.sequence);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, child.token));
+    try std.testing.expectEqual(completed_before, session(camera).stats.completed);
+    try std.testing.expectEqual(State.leased, session(camera).slots[index].state);
+    try std.testing.expectEqual(c.ZC_IO, zc_release(camera, sibling.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_release(camera, sibling.token));
+    try std.testing.expectEqual(@as(usize, 0), session(camera).leases.used);
+    try std.testing.expectEqual(@as(u32, 0), session(camera).stats.leased);
+}
+test "retains reserve primary capacity for other buffers and stale refs cannot consume reused slots" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var refs: [c.ZC_MAX_FRAME_REFERENCES]c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &refs[0]));
+    var used: usize = 1;
+    while (used < c.ZC_MAX_FRAME_REFERENCES - 1) : (used += 1) try std.testing.expectEqual(c.ZC_OK, zc_retain(camera, refs[0].token, &refs[used]));
+    var other: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_retain(camera, refs[0].token, &other));
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &other));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_retain(camera, other.token, &other));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, other.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(camera));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_start(camera));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_close(camera));
+    for (refs[0..used]) |frame| try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera));
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &other));
+    for (refs[0..used]) |frame| try std.testing.expectEqual(c.ZC_STALE, zc_release(camera, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, other.token));
+}
+test "reference sequence exhaustion preserves live leases and leaves outputs untouched" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &frame));
+    session(camera).leases.issued = @TypeOf(session(camera).leases).max_sequence;
+    var unchanged = frame;
+    try std.testing.expectEqual(c.ZC_STATE, zc_retain(camera, frame.token, &unchanged));
+    try std.testing.expectEqual(frame.token, unchanged.token);
+    const ready = session(camera).count;
+    try std.testing.expectEqual(c.ZC_STATE, zc_acquire(camera, 0, &unchanged));
+    try std.testing.expectEqual(ready, session(camera).count);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+}
+test "concurrent owners retain and retire unique references without recycling a live parent" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var parent: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &parent));
+    const completed_before = session(camera).stats.completed;
+    var errors = std.atomic.Value(u32).init(0);
+    const Worker = struct {
+        fn run(p: *c.zc_camera, token: u64, failures: *std.atomic.Value(u32)) void {
+            for (0..200) |_| {
+                var child: c.zc_frame = undefined;
+                if (zc_retain(p, token, &child) != 0) {
+                    _ = failures.fetchAdd(1, .monotonic);
+                    continue;
+                }
+                var metadata: c.zc_metadata = undefined;
+                if (zc_get_frame_metadata(p, child.token, &metadata) != 0 or metadata.sequence != child.sequence) _ = failures.fetchAdd(1, .monotonic);
+                if (zc_release(p, child.token) != 0) _ = failures.fetchAdd(1, .monotonic);
+                if (zc_release(p, child.token) != c.ZC_STALE) _ = failures.fetchAdd(1, .monotonic);
+            }
+        }
+    };
+    {
+        var threads: [4]std.Thread = undefined;
+        var started: usize = 0;
+        defer for (threads[0..started]) |thread| thread.join();
+        for (&threads) |*thread| {
+            thread.* = try std.Thread.spawn(.{}, Worker.run, .{ camera, parent.token, &errors });
+            started += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 0), errors.load(.monotonic));
+    try std.testing.expectEqual(completed_before, session(camera).stats.completed);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, parent.token));
+    try std.testing.expectEqual(completed_before + 1, session(camera).stats.completed);
 }

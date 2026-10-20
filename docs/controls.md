@@ -172,7 +172,8 @@ const rgb = await camera.captureFocusLockedRGB()
 captureFocusLockedAsync(callback, options) runs a synchronous frame callback while
 CAF is paused. The RGB, Metadata, Buffer and File helpers return owned results;
 file capture supports JPEG and DNG in the already configured camera mode. DNG
-requires an enabled unpacked raw stream; raw buffer packing remains unsupported.
+requires an enabled unpacked raw stream. Bayer buffer capture preserves packed or
+unpacked sample bytes; PiSP compressed raw remains unsupported.
 The default deferred pause requires a focused selected frame. Immediate capture
 with requireFocused: false deliberately permits a frozen Scanning/Failed frame.
 No fallback to that behavior happens implicitly. Paused non-focused metadata with
