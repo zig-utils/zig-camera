@@ -151,6 +151,29 @@ int main(void) {
     assert(zc_acquire(camera,0,&controlled)==ZC_OK);
     assert(zc_get_frame_metadata(camera,controlled.token,&controlled_meta)==ZC_OK && controlled_meta.control_revision==41 && controlled_meta.exposure_us==1700);
     assert(zc_release(camera,controlled.token)==ZC_OK);
+    zc_control caf={0};caf.id=ZC_AF_MODE;caf.type=ZC_INT;caf.count=1;caf.values[0]=2;
+    assert(zc_set_controls(camera,&caf,1,&control_revision)==ZC_OK);
+    uint64_t pause_job=0,restore_pause_job=0;uint32_t pause_state=0;
+    assert(zc_autofocus_pause_start(camera,3,&pause_job)==ZC_INVALID);
+    assert(zc_autofocus_pause_start(camera,1,&pause_job)==ZC_OK);
+    for(unsigned i=0;i<32 && zc_autofocus_wait(camera,pause_job,0,&pause_state)==ZC_TIMEOUT;i++) {
+        assert(zc_acquire(camera,0,&controlled)==ZC_OK);
+        assert(zc_release(camera,controlled.token)==ZC_OK);
+    }
+    assert(zc_autofocus_wait(camera,pause_job,0,&pause_state)==ZC_OK && pause_state==ZC_AF_SUCCEEDED);
+    assert(zc_acquire_focus_locked(camera,pause_job,1,100,&controlled)==ZC_OK);
+    assert(zc_focus_locked_validate(camera,pause_job,controlled.token,1)==ZC_OK);
+    assert(zc_get_frame_metadata(camera,controlled.token,&controlled_meta)==ZC_OK);
+    assert((controlled_meta.valid&33)==33 && controlled_meta.af_state==2 && controlled_meta.af_pause_state==2);
+    assert(zc_release(camera,controlled.token)==ZC_OK);
+    assert(zc_autofocus_pause_restore(camera,pause_job,&restore_pause_job)==ZC_OK);
+    assert(zc_autofocus_cancel(camera,pause_job)==ZC_STALE);
+    for(unsigned i=0;i<32 && zc_autofocus_wait(camera,restore_pause_job,0,&pause_state)==ZC_TIMEOUT;i++) {
+        assert(zc_acquire(camera,0,&controlled)==ZC_OK);
+        assert(zc_release(camera,controlled.token)==ZC_OK);
+    }
+    assert(zc_autofocus_wait(camera,restore_pause_job,0,&pause_state)==ZC_OK && pause_state==ZC_AF_SUCCEEDED);
+
     zc_video_config video;
     zc_default_video_config(&video);video.width=16;video.height=16;
     zc_video_config negotiated=video;

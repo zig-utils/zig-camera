@@ -6,11 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.31 coordinates autofocus with permanent, temporary and recording mode
-switches: cancel or wait for an existing scan, then optionally require fresh
-successful AF in the target mode. Camera owners are joined before handle closure,
-and stale ready frames are filtered before focused capture/publication.
-See [autofocus coordination](docs/controls.md#autofocus-coordination-across-mode-switches).
+Version 0.32 adds continuous autofocus pause/resume jobs and focus-locked capture.
+Jobs await revision-filtered Paused/Running metadata; locked captures select a
+paused, focused frame through the shared recording/preview pump and restore the
+previous pause intent before settling, including cancellation and callback errors.
+See [continuous AF and focus lock](docs/controls.md#continuous-autofocus-and-focus-locked-capture).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

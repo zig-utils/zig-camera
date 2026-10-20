@@ -130,7 +130,9 @@ test('target AF precedes temporary metadata, RGB, lores and file capture, then r
     }
     c.start()
     using frame = c.acquire()
-    expect(frame.metadata().afState).toBe(0)
+    // The constructor default is continuous AF; reopening starts it Running.
+    expect(frame.metadata().afPauseState).toBe(0)
+    expect(frame.metadata().validMask & 32).toBe(32)
   } finally {
     await c.close()
     rmSync(dir, { recursive: true, force: true })

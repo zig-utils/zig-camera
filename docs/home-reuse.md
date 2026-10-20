@@ -178,3 +178,13 @@ failure metadata. Home's standalone gate tests pass on pinned and development Zi
 Bun coordination keeps each AF job bound to its original handle, joins it before
 mode transfer, and uses the same native Home gate for fresh target-mode scans.
 Codec, container, queue and session helpers continue to come from Home.
+
+The 0.32 audit extends Home CompletionGate with acknowledge(revision, outcome).
+This single-phase path shares observe's monotonic watermark and immutable terminal
+states, but accepts a direct acknowledgement without a scanning/active event.
+Home main commit 5c80e5d184337b81fcf712286797b99c95fbc987 is copied verbatim.
+Pinned/development Zig Debug and ReleaseSafe tests cover direct success/failure,
+nonterminal newer observations, stale responses and terminal stop/cancellation.
+Native CAF pause/resume uses this helper under the same callback mutex, with an
+independent metadata validity bit. Existing Home codecs, containers, bounded
+queues, persistent setting journal and finalization helpers remain in use.

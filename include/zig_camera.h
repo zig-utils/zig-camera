@@ -106,7 +106,7 @@ typedef struct {
  double min[4],max[4],def[4]; uint64_t enum_mask;
 } zc_control_info;
 typedef struct {
- uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8, timestamp BOOTTIME=16 */
+ uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8, timestamp BOOTTIME=16, AF pause=32 */
  uint64_t event_id,sequence,timestamp_ns,control_revision;
  uint32_t exposure_us; int32_t af_state,af_pause_state; uint32_t reserved;
  float analogue_gain,lens_position,red_gain,blue_gain;
@@ -129,6 +129,24 @@ int zc_get_frame_metadata(zc_camera *,uint64_t token,zc_metadata *);
 int zc_wait_metadata(zc_camera *,uint64_t after_event,uint32_t timeout_ms,zc_metadata *);
 enum { ZC_AF_PENDING=1,ZC_AF_SCANNING=2,ZC_AF_SUCCEEDED=3,ZC_AF_FAILED=4,
  ZC_AF_CANCELLED=5,ZC_AF_STOPPED=6 };
+/* Continuous AF requires an explicit accepted AfMode=2 setting. Pause commands:
+ * immediate=0, deferred=1, resume=2. Wait/cancel use the same AF ID namespace.
+ * Pause success acknowledges Paused, resume success acknowledges Running, at or
+ * after the submitted revision. Cancellation restores the prior accepted intent.
+ * Restore supersedes this owned pause with a fresh job for its previous intent.
+ * One-shot pause intent is not included in persistent mode replay. */
+enum { ZC_AF_PAUSE_IMMEDIATE=0,ZC_AF_PAUSE_DEFERRED=1,ZC_AF_PAUSE_RESUME=2 };
+int zc_autofocus_pause_start(zc_camera *,uint32_t command,uint64_t *job_id);
+int zc_autofocus_pause_restore(zc_camera *,uint64_t job_id,uint64_t *restore_job_id);
+/* Requires a successful pause job. Filters stale/unpaused frames and releases
+ * every rejection. require_focused=1 also requires AF metadata reporting Focused;
+ * paused scanning/failed => STATE, absent AF metadata => UNSUPPORTED.
+ * Later focus controls/resume invalidate the token.
+ * Validate an existing lease with the same predicate; TIMEOUT means this frame
+ * is older/unpaused. Does not acquire, release or mutate the frame. */
+int zc_focus_locked_validate(zc_camera *,uint64_t job_id,uint64_t token,uint32_t require_focused);
+/* Acquire variant releases all rejected frames. timeout=0 tries one frame. */
+int zc_acquire_focus_locked(zc_camera *,uint64_t job_id,uint32_t require_focused,uint32_t timeout_ms,zc_frame *);
 int zc_autofocus_start(zc_camera *,uint64_t *job_id);
 int zc_autofocus_cancel(zc_camera *,uint64_t job_id);
 int zc_autofocus_wait(zc_camera *,uint64_t job_id,uint32_t timeout_ms,uint32_t *state);

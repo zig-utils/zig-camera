@@ -19,6 +19,8 @@ pub const Handle = struct {
     pending: [31]?c.zc_control = @splat(null),
     af_steps: u32 = 0,
     af_state: i32 = 0,
+    af_pause_state: i32 = 0,
+    omit_pause_metadata: bool = false,
     fail_af: bool = false,
     never_scan: bool = false,
     // Fault injection for the shared ownership state machine's tests.
@@ -165,7 +167,12 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
     out.* = h;
     return c.ZC_OK;
 }
-pub fn start(_: *Handle) c_int {
+pub fn start(h: *Handle) c_int {
+    h.af_pause_state = 0;
+    if (h.active[c.ZC_AF_MODE].values[0] == 2) {
+        h.af_state = 1;
+        h.af_steps = if (h.never_scan) 0 else 3;
+    }
     return c.ZC_OK;
 }
 pub fn stop(h: *Handle) c_int {
@@ -178,6 +185,7 @@ pub fn stop(h: *Handle) c_int {
     h.pending[c.ZC_AF_PAUSE] = null;
     h.af_steps = 0;
     h.af_state = 0;
+    h.af_pause_state = 0;
     return c.ZC_OK;
 }
 pub fn close(h: *Handle) void {
@@ -194,8 +202,26 @@ pub fn queue(h: *Handle, index: u32) c_int {
     if (h.fail_queue) return c.ZC_DEVICE;
     for (&h.pending, 0..) |*entry, id| {
         if (entry.*) |value| {
+            const previous = h.active[id].values[0];
             h.active[id] = value;
-            if (id == c.ZC_AF_TRIGGER) {
+            if (id == c.ZC_AF_MODE and value.values[0] != previous) {
+                h.af_pause_state = 0;
+                h.af_state = if (value.values[0] == 2) 1 else 0;
+                h.af_steps = if (value.values[0] == 2 and !h.never_scan) 3 else 0;
+            }
+            if (id == c.ZC_AF_PAUSE and h.active[c.ZC_AF_MODE].values[0] == 2) {
+                // Repeated pause commands do not resume a paused algorithm.
+                if (value.values[0] == 2) {
+                    if (h.af_pause_state != 0) {
+                        h.af_pause_state = 0;
+                        h.af_state = 1;
+                        h.af_steps = if (h.never_scan) 0 else 3;
+                    }
+                } else if (h.af_pause_state == 0) {
+                    h.af_pause_state = if (value.values[0] == 1 and h.af_state == 1) 1 else 2;
+                }
+            }
+            if (id == c.ZC_AF_TRIGGER and h.active[c.ZC_AF_MODE].values[0] == 1) {
                 if (value.values[0] == 0 and !h.never_scan) {
                     h.af_steps = 3;
                     h.af_state = 1;
@@ -243,9 +269,16 @@ pub fn queue(h: *Handle, index: u32) c_int {
     for (0..4) |i| meta.crop[i] = @intFromFloat(h.active[c.ZC_SCALER_CROP].values[i]);
     meta.af_state = h.af_state;
     meta.af_pause_state = -1;
-    if (h.af_steps > 0) {
+    if (h.active[c.ZC_AF_MODE].values[0] == 2 and !h.omit_pause_metadata) {
+        meta.valid |= 32;
+        meta.af_pause_state = h.af_pause_state;
+    }
+    if (h.af_steps > 0 and h.af_pause_state != 2) {
         h.af_steps -= 1;
-        if (h.af_steps == 0) h.af_state = if (h.fail_af) 3 else 2;
+        if (h.af_steps == 0) {
+            h.af_state = if (h.fail_af) 3 else 2;
+            if (h.af_pause_state == 1) h.af_pause_state = 2;
+        }
     }
     h.callback(h.context, index, &f, &meta, c.ZC_OK);
     return c.ZC_OK;

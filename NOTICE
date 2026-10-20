@@ -242,3 +242,10 @@ Home autofocus observation ordering (0.31):
   Source commit: 012ffc48852bb77d5527ae67c01dc5f8b1827eeb.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/012ffc48852bb77d5527ae67c01dc5f8b1827eeb
+
+Home continuous AF acknowledgement jobs (0.32):
+- src/home/completion_gate.zig is verbatim packages/async/src/completion_gate.zig,
+  adding revision-filtered single-phase command acknowledgement.
+  Source commit: 5c80e5d184337b81fcf712286797b99c95fbc987.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/5c80e5d184337b81fcf712286797b99c95fbc987

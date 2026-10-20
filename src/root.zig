@@ -134,6 +134,21 @@ pub const Camera = struct {
         try check(core.zc_autofocus_start(self.handle, &id));
         return id;
     }
+    pub fn autofocusPauseStart(self: Camera, command: u32) Error!u64 {
+        var id: u64 = 0;
+        try check(core.zc_autofocus_pause_start(self.handle, command, &id));
+        return id;
+    }
+    pub fn autofocusPauseRestore(self: Camera, id: u64) Error!u64 {
+        var restored: u64 = 0;
+        try check(core.zc_autofocus_pause_restore(self.handle, id, &restored));
+        return restored;
+    }
+    pub fn acquireFocusLocked(self: Camera, id: u64, require_focused: bool, timeout_ms: u32) Error!Frame {
+        var frame: c.zc_frame = undefined;
+        try check(core.zc_acquire_focus_locked(self.handle, id, @intFromBool(require_focused), timeout_ms, &frame));
+        return .{ .camera = self, .value = frame };
+    }
     pub fn autofocusWait(self: Camera, id: u64, timeout_ms: u32) Error!u32 {
         var state: u32 = 0;
         try check(core.zc_autofocus_wait(self.handle, id, timeout_ms, &state));

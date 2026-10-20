@@ -378,7 +378,7 @@ struct Device {
         extra.control_revision=slots[index].control_revision;extra.exposure_us=frame.exposure_us;extra.analogue_gain=frame.analogue_gain;extra.red_gain=frame.red_gain;extra.blue_gain=frame.blue_gain;
         extra.af_state=-1;extra.af_pause_state=-1;
         const auto af=meta.get(controls::AfState);if(af){extra.af_state=*af;extra.valid|=1;}
-        const auto pause=meta.get(controls::AfPauseState);if(pause)extra.af_pause_state=*pause;
+        const auto pause=meta.get(controls::AfPauseState);if(pause){extra.af_pause_state=*pause;extra.valid|=32;}
         const auto lens=meta.get(controls::LensPosition);if(lens){extra.lens_position=*lens;extra.valid|=2;}
         const auto duration=meta.get(controls::FrameDuration);if(duration && *duration>=0){extra.frame_duration_us=*duration;extra.valid|=4;}
         const auto crop=meta.get(controls::ScalerCrop);if(crop){extra.crop[0]=crop->x;extra.crop[1]=crop->y;extra.crop[2]=crop->width;extra.crop[3]=crop->height;extra.valid|=8;}

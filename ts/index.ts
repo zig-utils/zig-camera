@@ -253,7 +253,14 @@ export class Frame {
     this.release()
   }
 }
+export interface FocusLockedOptions<T = unknown> extends JobOptions<T> {
+  immediate?: boolean
+  requireFocused?: boolean
+  /** Deadline for acknowledgement of restored pause intent; default 5000 ms. */
+  restoreTimeoutMs?: number
+}
 type CaptureRequest = {
+  accept?: (frame: Frame) => number
   operation: (frame: Frame) => unknown
   resolve: (value: unknown) => void
   reject: (error: unknown) => void
@@ -272,7 +279,17 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
-  private focusJob?: BunJob<number>
+  private focusJob?: Pick<
+    BunJob<unknown>,
+    | 'done'
+    | 'cancel'
+    | 'operationDone'
+    | 'error'
+    | 'cancellationReason'
+    | 'result'
+  >
+  private focusProducesValue = false
+  private focusCaptureActive = false
   private get focusJobs() {
     return this.focusJob && !this.focusJob.done ? 1 : 0
   }
@@ -426,6 +443,8 @@ export class Camera {
     this.assertOpen()
     if (!controls.length || controls.length > 32)
       throw new RangeError('1..32 controls required')
+    if (this.focusCaptureActive)
+      throw new CameraError(-4, 'focus-locked capture active')
     const d = storage(controls.length * 144)
     controls.forEach((control, index) => {
       if (
@@ -484,10 +503,254 @@ export class Camera {
       () => {},
       { ...options, timeoutMs: options.timeoutMs ?? 5000 },
     )
+    this.focusProducesValue = false
     this.focusJob = job
     if (options.signal?.aborted) job.cancel(options.signal.reason)
     void job.start()
     return job
+  }
+  startContinuousAutofocus() {
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs)
+      throw new CameraError(-4, 'camera jobs active')
+    const revision = this.setControls([
+      { id: Control.afMode, type: 'int', values: [2] },
+      { id: Control.afPause, type: 'int', values: [2] },
+    ])
+    this.start()
+    return revision
+  }
+  autofocusPauseAsync(
+    options: JobOptions<number> & { immediate?: boolean } = {},
+  ) {
+    if (
+      options.immediate !== undefined &&
+      typeof options.immediate !== 'boolean'
+    )
+      throw new RangeError('invalid immediate option')
+    return this.submitPause(options.immediate ? 0 : 1, options)
+  }
+  autofocusResumeAsync(options: JobOptions<number> = {}) {
+    return this.submitPause(2, options)
+  }
+  private submitPause(command: number, options: JobOptions<number>) {
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs)
+      throw new CameraError(-4, 'camera jobs active')
+    const owned = this.handle
+    const job = new BunJob<number>(
+      async (current) => {
+        current.check()
+        this.start()
+        const id = new BigUint64Array(1)
+        check(
+          n.zc_autofocus_pause_start(owned, command, ptr(id)),
+          'continuous AF command',
+        )
+        this.ensurePump()
+        try {
+          return await this.waitFocus(owned, id[0], current)
+        } finally {
+          check(
+            n.zc_autofocus_cancel(owned, id[0]),
+            'finish continuous AF command',
+          )
+        }
+      },
+      () => {},
+      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+    )
+    this.focusProducesValue = false
+    this.focusJob = job
+    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    void job.start()
+    return job
+  }
+  private async waitFocus(
+    owned: Pointer,
+    id: bigint,
+    current?: { check(): void },
+    deadline = Infinity,
+  ): Promise<number> {
+    while (true) {
+      current?.check()
+      if (performance.now() >= deadline)
+        throw new CameraError(-3, 'AF restoration deadline')
+      const state = new Uint32Array(1)
+      const code = n.zc_autofocus_wait(owned, id, 0, ptr(state))
+      if (!code) return state[0]
+      if (code !== -3) check(code)
+      // stop/close has suspended the public pump but must join this owner first.
+      if (this.closing || this.stopJob) {
+        const frame = storage(456)
+        const rc = n.zc_acquire(owned, 0, ptr(frame))
+        if (!rc) check(n.zc_release(owned, view(frame).getBigUint64(0, true)))
+        else if (rc !== -3) check(rc)
+      } else this.ensurePump()
+      await pause()
+    }
+  }
+  captureFocusLockedAsync<T>(
+    operation: (frame: Frame) => T,
+    options: FocusLockedOptions<T> = {},
+  ): BunJob<T> {
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs || this.requests.length)
+      throw new CameraError(-4, 'camera jobs active')
+    for (const value of [options.immediate, options.requireFocused])
+      if (value !== undefined && typeof value !== 'boolean')
+        throw new RangeError('invalid focus-lock option')
+    const immediate = options.immediate ?? false,
+      requireFocused = options.requireFocused ?? true
+    const restoreTimeout = options.restoreTimeoutMs ?? 5000
+    if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
+      throw new RangeError('invalid restoration deadline')
+    const owned = this.handle
+    const job = new BunJob<T>(
+      async (current) => {
+        current.check()
+        this.start()
+        if (this.readControls().controlRevision > 0xffffffffffffffffn - 3n)
+          throw new CameraError(
+            -2,
+            'focus restoration revision budget exhausted',
+          )
+        const id = new BigUint64Array(1)
+        check(
+          n.zc_autofocus_pause_start(owned, immediate ? 0 : 1, ptr(id)),
+          'lock continuous AF',
+        )
+        this.focusCaptureActive = true
+        this.ensurePump()
+        let failure: unknown,
+          failed = false,
+          value: T | undefined
+        try {
+          const state = await this.waitFocus(owned, id[0], current)
+          if (state !== 3) throw new CameraError(-2, 'AF lock stopped')
+          current.check()
+          value = await new Promise<T>((resolve, reject) => {
+            this.requests.push({
+              accept: (frame) =>
+                n.zc_focus_locked_validate(
+                  owned,
+                  id[0],
+                  frame.token,
+                  requireFocused ? 1 : 0,
+                ),
+              operation: (frame) => {
+                const result = operation(frame)
+                if (
+                  result &&
+                  typeof (result as { then?: unknown }).then === 'function'
+                ) {
+                  void Promise.resolve(result).catch(() => {})
+                  throw new TypeError(
+                    'focus capture callback must be synchronous',
+                  )
+                }
+                return result
+              },
+              resolve: resolve as (value: unknown) => void,
+              reject,
+              signal: current.signal,
+              deadline: Infinity,
+            })
+            this.ensurePump()
+          })
+          current.check()
+        } catch (error) {
+          failure = error
+          failed = true
+        }
+        let restoreId: bigint | undefined
+        try {
+          const restored = new BigUint64Array(1)
+          check(
+            n.zc_autofocus_pause_restore(owned, id[0], ptr(restored)),
+            'restore continuous AF intent',
+          )
+          restoreId = restored[0]
+          const state = await this.waitFocus(
+            owned,
+            restored[0],
+            undefined,
+            performance.now() + restoreTimeout,
+          )
+          if (state !== 3) throw new CameraError(-2, 'AF restoration stopped')
+        } catch (restorationError) {
+          if (restoreId !== undefined) {
+            const code = n.zc_autofocus_cancel(owned, restoreId)
+            if (
+              code &&
+              restorationError &&
+              typeof restorationError === 'object'
+            )
+              Object.assign(restorationError, {
+                restorationCancellationCode: code,
+              })
+          }
+          if (failed && failure && typeof failure === 'object')
+            Object.assign(failure, { restorationError })
+          else if (failed)
+            failure = new AggregateError(
+              [failure, restorationError],
+              'focus capture restoration failed',
+            )
+          else {
+            failure = restorationError
+            failed = true
+          }
+        } finally {
+          this.focusCaptureActive = false
+        }
+        if (failed) throw failure
+        current.check()
+        return value as T
+      },
+      () => {},
+      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+    )
+    this.focusProducesValue = true
+    this.focusJob = job
+    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    void job.start()
+    return job
+  }
+  captureFocusLockedRGB(options: FocusLockedOptions<Uint8Array> = {}) {
+    return this.captureFocusLockedAsync((frame) => frame.copyRGB(), options)
+  }
+  captureFocusLockedMetadata(
+    options: FocusLockedOptions<ReturnType<Frame['metadata']>> = {},
+  ) {
+    return this.captureFocusLockedAsync((frame) => frame.metadata(), options)
+  }
+  captureFocusLockedBuffer(
+    stream: 'main' | 'raw' | 'lores' = 'main',
+    options: FocusLockedOptions<ReturnType<Frame['copyStream']>> = {},
+  ) {
+    return this.captureFocusLockedAsync(
+      (frame) => frame.copyStream(stream),
+      options,
+    )
+  }
+  captureFocusLockedFile(
+    path: string,
+    options: FocusLockedOptions<ReturnType<Frame['metadata']>> & {
+      quality?: number
+    } = {},
+  ) {
+    const dng = path.toLowerCase().endsWith('.dng'),
+      quality = uint(options.quality ?? 98)
+    if (!dng && !/\.jpe?g$/i.test(path))
+      throw new CameraError(-8, 'focus capture file format')
+    if (!dng && (quality < 1 || quality > 100))
+      throw new RangeError('invalid JPEG quality')
+    return this.captureFocusLockedAsync((frame) => {
+      if (dng) frame.saveDNG(path)
+      else frame.saveJPEG(path, quality)
+      return frame.metadata()
+    }, options)
   }
   private modeFocusPolicy<T>(options: ModeJobOptions<T>) {
     const policy = options.autofocusPolicy ?? 'cancel'
@@ -512,7 +775,8 @@ export class Camera {
     policy: 'cancel' | 'wait' | 'reject',
     current: BunJob<T>,
   ) {
-    const focus = this.focusJob
+    const focus = this.focusJob,
+      producesValue = this.focusProducesValue
     if (!focus || focus.done) return
     if (policy === 'reject') throw new CameraError(-4, 'autofocus active')
     if (policy === 'cancel')
@@ -531,8 +795,8 @@ export class Camera {
     )
       throw focus.error
     if (policy === 'wait') {
-      const state = await focus
-      if (state !== 3)
+      const state = await focus.result()
+      if (!producesValue && state !== 3)
         throw Object.assign(
           new CameraError(-6, 'autofocus failed before mode switch'),
           { autofocusState: state },
@@ -545,6 +809,8 @@ export class Camera {
   ): Promise<T> {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (this.focusCaptureActive)
+      throw new CameraError(-4, 'focus-locked capture active')
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
     this.start()
     const result = new Promise<T>((resolve, reject) =>
@@ -646,6 +912,7 @@ export class Camera {
     if (
       this.hasPendingModes() ||
       this.requests.length ||
+      this.focusCaptureActive ||
       this.failedRecordings.size
     )
       throw new CameraError(-4, 'camera jobs active')
@@ -1058,6 +1325,7 @@ export class Camera {
       this.coordinatedRecorder ||
       this.recording ||
       this.failedRecordings.size ||
+      this.focusCaptureActive ||
       this.requests.length
     )
       throw new CameraError(-4, 'camera jobs active')
@@ -1330,11 +1598,17 @@ export class Camera {
           if (code === 1) this.stopPreview()
           else check(code)
         }
-        const job = this.requests.shift()
+        const job = this.requests[0]
         if (job) {
           try {
-            job.resolve(job.operation(frame))
+            const code = job.accept?.(frame) ?? 0
+            if (code !== -3) {
+              this.requests.shift()
+              check(code, 'focus-locked frame')
+              job.resolve(job.operation(frame))
+            }
           } catch (error) {
+            if (this.requests[0] === job) this.requests.shift()
             job.reject(error)
           }
         }

@@ -139,3 +139,77 @@ the previous requested settings, not a measured physical lens position.
 The scan/terminal semantics follow the [libcamera control specification](https://docs.libcamera.org/master/internal-api/namespacelibcamera_1_1controls.html).
 Tests use synthetic metadata and failure injection; actual lens settling and focus
 quality on Raspberry Pi hardware remain unvalidated.
+
+## Continuous autofocus and focus-locked capture
+
+Use startContinuousAutofocus() to stage AfModeContinuous (2), resume intent and start the camera.
+Call autofocusPauseAsync() for a deferred pause, or pass { immediate: true } to
+freeze movement immediately. autofocusResumeAsync() requests running again. Each
+returns BunJob<number> with the same success state 3, cancellation, deadlines and
+operationDone ownership contract as single-scan AF jobs. They require an explicit
+accepted AfMode=2 setting; unsupported controls reject. A successful pause confirms
+Paused metadata at/after the command revision. Resume confirms Running. Neither
+success means that a scan itself found focus. Immediate pause may freeze Scanning;
+deferred pause lets a running scan finish, including a Failed result. Repeated
+pause commands do not resume an already paused algorithm. Resume acknowledges
+Running and may start a fresh scan; it does not promise preserved focus.
+
+The native metadata validMask now reserves bit 5 (32) for AfPauseState, independent
+of bit 0 for AfState. Missing pause metadata never acknowledges a job. libcamera
+and the synthetic driver both populate this flag without changing the ABI layout.
+Home CompletionGate.acknowledge handles commands that may acknowledge directly
+without an intermediate state, while rejecting stale/out-of-order observations.
+
+```ts
+camera.startContinuousAutofocus()
+await camera.autofocusPauseAsync() // deferred, waits for Paused
+await camera.autofocusResumeAsync() // waits for Running
+const metadata = await camera.captureFocusLockedFile('trail.jpg')
+// metadata describes the selected paused, focused frame; CAF intent is restored.
+const rgb = await camera.captureFocusLockedRGB()
+```
+
+captureFocusLockedAsync(callback, options) runs a synchronous frame callback while
+CAF is paused. The RGB, Metadata, Buffer and File helpers return owned results;
+file capture supports JPEG and DNG in the already configured camera mode. DNG
+requires an enabled unpacked raw stream; raw buffer packing remains unsupported.
+The default deferred pause requires a focused selected frame. Immediate capture
+with requireFocused: false deliberately permits a frozen Scanning/Failed frame.
+No fallback to that behavior happens implicitly. Paused non-focused metadata with
+requireFocused: true rejects STATE; missing AfState rejects UNSUPPORTED.
+
+Selection validates the job ID, pause acknowledgement, logical revision, metadata
+validity and paused/focused state on the leased frame. Stale ready frames keep
+flowing to recording/preview and cannot satisfy the capture. The ordinary shared
+pump encodes/displays the selected frame too; the capture releases no independent
+recording frame. Every callback and selection failure releases the lease. Async
+callbacks reject because frame storage cannot cross an await boundary.
+
+Capture joins restoration of the prior accepted pause command before settling.
+An already paused camera stays paused; an initially running camera resumes.
+Cancellation after acknowledgement still restores intent. timeoutMs bounds the
+capture phase; restoreTimeoutMs (default 5000) independently bounds cleanup, so a
+cancelled job can remain running until restoration finishes. On cleanup failure,
+the restore job is cancelled/retired; a restorationError accompanies a primary
+capture failure. Cancellation failure reports restorationCancellationCode and may
+require stop before new AF work. A timed-out restore can leave CAF paused; use an
+explicit resume job after handling the error. Failed cancellation commands never
+falsely mark native work complete. Stop/close join the native owner before freeing
+its handle, using a private recycle path when the public pump has stopped.
+
+One scan/pause/resume/locked-capture job may own a camera at once. Runtime control
+updates and new captures are blocked during locked capture. Mode jobs reject a
+locked capture transaction; wait for it to finish first. Pause/resume jobs use the
+existing mode-switch wait/cancel/reject policies, including coordinated recording.
+Reopening replays persistent AfMode, but excludes one-shot pause commands: CAF
+starts Running in the new/restored mode. Pause explicitly again if needed.
+Revision headroom is checked before pause/capture commands; overflow never wraps.
+
+C/Zig callers can use zc_autofocus_pause_start, the existing AF wait/cancel API,
+zc_autofocus_pause_restore and zc_acquire_focus_locked. The validate variant checks
+an existing lease without consuming another frame. Restore intentionally retires
+the old command ID and returns a new acknowledgement job; stop invalidates lock
+tokens. Serialize ownership, join waiters before close, and do not use focus
+controls to invalidate a lock while another consumer owns it. Zig Camera exposes
+matching pause-start, restore and acquireFocusLocked helpers. These jobs validate
+metadata, not optical sharpness; hardware focus quality remains unmeasured.

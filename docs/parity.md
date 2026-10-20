@@ -9,7 +9,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | --- | --- | --- |
 | Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, linear leases | Camera/Frame, owned RGB/lores copies; bounded async capture queue |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
-| Controls and autofocus | Typed atomic control batches; bounded desired-state snapshots; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls, controlSnapshot, shared metadata decoding, cancellable AF jobs; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics unvalidated |
+| Controls and autofocus | Typed atomic control batches; bounded desired-state snapshots; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls, controlSnapshot, shared metadata decoding, cancellable scan and CAF pause/resume jobs; focus-locked RGB/metadata/lores/JPEG/DNG; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics unvalidated |
 | Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
 | Still images | Home JPEG 4:4:4, PPM; Bayer DNG with metadata/calibration | JPEG/DNG capture; PiSP compressed raw and advanced DNG profiles missing |
 | Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Recorder; no hardware encoder or per-output codec settings |

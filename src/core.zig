@@ -17,6 +17,10 @@ const Session = struct {
     latest: c.zc_metadata = std.mem.zeroes(c.zc_metadata),
     af: ?Gate = null,
     af_id: u64 = 0,
+    af_command: ?u32 = null,
+    pause_command: u32 = 2,
+    af_restore_pause: u32 = 2,
+    af_lock_valid: bool = false,
     operation: std.Thread.Mutex = .{},
     mutex: std.Thread.Mutex = .{},
     changed: std.Thread.Condition = .{},
@@ -90,7 +94,12 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
     self.latest.struct_size = @sizeOf(c.zc_metadata);
     self.slots[index] = .{ .state = .ready, .frame = frame.?.*, .metadata = self.latest };
     if (self.af) |*af| {
-        if (self.latest.valid & 1 != 0) {
+        if (self.af_command) |command| {
+            if (self.latest.valid & 32 != 0) {
+                const expected: i32 = if (command == 2) 0 else 2;
+                af.acknowledge(self.latest.control_revision, if (self.latest.af_pause_state == expected) true else null);
+            }
+        } else if (self.latest.valid & 1 != 0) {
             const state = self.latest.af_state;
             af.observe(self.latest.control_revision, state == 1, if (state == 2) true else if (state == 3 or state == 0) false else null);
         }
@@ -320,6 +329,8 @@ pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
 fn stopLocked(self: *Session) c_int {
     self.mutex.lock();
     self.running = false;
+    self.af_lock_valid = false;
+    self.pause_command = 2;
     if (self.af) |*af| af.stop();
     self.changed.broadcast();
     self.mutex.unlock();
@@ -402,6 +413,21 @@ fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u6
     const rc = driver.setControls(self.device.?, values.ptr, @intCast(values.len), &native_revision);
     if (rc != 0) return rc;
     const logical = std.math.add(u64, self.control_base, native_revision) catch return c.ZC_DEVICE;
+    // Track accepted operational intent separately from persistent replay state.
+    // Any later focus command invalidates an older focus-lock token.
+    var pause: ?u32 = null;
+    for (values) |value| {
+        if (value.id >= c.ZC_LENS_POSITION and value.id <= c.ZC_AF_WINDOWS or value.id == c.ZC_AF_PAUSE) self.af_lock_valid = false;
+        if (value.id == c.ZC_AF_MODE) {
+            const previous = for (self.desired.values()) |old| {
+                if (old.id == c.ZC_AF_MODE) break old.values[0];
+            } else @as(f64, if (self.config.lens_position >= 0) 0 else 2);
+            if (previous != value.values[0]) self.pause_command = 2;
+        }
+        if (value.id == c.ZC_AF_PAUSE) pause = @intFromFloat(value.values[0]);
+    }
+    // Backends process mode before pause regardless of caller batch order.
+    if (pause) |command| self.pause_command = command;
     self.desired = next;
     self.control_revision = logical;
     revision.* = logical;
@@ -514,8 +540,112 @@ pub export fn zc_autofocus_start(p: *c.zc_camera, job_id: *u64) c_int {
     defer self.mutex.unlock();
     self.af_id += 1;
     self.af = .{ .revision = revision };
+    self.af_command = null;
     job_id.* = self.af_id;
     return c.ZC_OK;
+}
+fn continuous(self: *Session) bool {
+    for (self.desired.values()) |value| if (value.id == c.ZC_AF_MODE) return value.values[0] == 2;
+    return false;
+}
+// operation held. Replacing an owned pause command is explicit and returns a fresh ID.
+fn pauseStartLocked(self: *Session, command: u32, replace: bool, job_id: *u64) c_int {
+    if (command > 2) return c.ZC_INVALID;
+    self.mutex.lock();
+    const running = self.running;
+    const busy = if (self.af) |af| !af.terminal() else false;
+    self.mutex.unlock();
+    if (!running or !continuous(self)) return c.ZC_STATE;
+    if ((!replace and busy) or self.af_id == std.math.maxInt(u64)) return c.ZC_BUSY;
+    // Leave one revision for restoring accepted pause intent after cancellation.
+    if (!replace and self.control_revision >= std.math.maxInt(u64) - 1) return c.ZC_STATE;
+    const previous = self.pause_command;
+    var value = std.mem.zeroes(c.zc_control);
+    value.id = c.ZC_AF_PAUSE;
+    value.type = c.ZC_INT;
+    value.count = 1;
+    value.values[0] = @floatFromInt(command);
+    var revision: u64 = 0;
+    const rc = setControlsLocked(self, (&value)[0..1], &revision);
+    if (rc != 0) return rc;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.af_id += 1;
+    self.af = .{ .revision = revision };
+    self.af_command = command;
+    self.af_restore_pause = previous;
+    self.af_lock_valid = true;
+    job_id.* = self.af_id;
+    return c.ZC_OK;
+}
+pub export fn zc_autofocus_pause_start(p: *c.zc_camera, command: u32, job_id: *u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return pauseStartLocked(self, command, false, job_id);
+}
+pub export fn zc_autofocus_pause_restore(p: *c.zc_camera, id: u64, job_id: *u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (id != self.af_id or self.af_command == null or !self.af_lock_valid) return c.ZC_STALE;
+    return pauseStartLocked(self, self.af_restore_pause, true, job_id);
+}
+// Both operation and mutex held.
+fn focusLockStatus(self: *Session, id: u64) c_int {
+    if (self.af_id != id or self.af_command == null or self.af_command.? == 2 or !self.af_lock_valid) return c.ZC_STALE;
+    if (self.af == null or self.af.?.state != .succeeded) return c.ZC_STATE;
+    return c.ZC_OK;
+}
+/// Validate an existing lease without consuming another frame. TIMEOUT means
+/// this frame predates the lock; it can still be used by recording/preview.
+pub export fn zc_focus_locked_validate(p: *c.zc_camera, id: u64, token: u64, require_focused: u32) c_int {
+    if (require_focused > 1) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    const status = focusLockStatus(self, id);
+    if (status != 0) return status;
+    const metadata = for (self.slots[0..self.info.buffer_count]) |slot| {
+        if (slot.state == .leased and slot.frame.token == token) break slot.metadata;
+    } else return c.ZC_STALE;
+    if (metadata.control_revision < self.af.?.revision or metadata.valid & 32 == 0 or metadata.af_pause_state != 2) return c.ZC_TIMEOUT;
+    if (require_focused != 0) {
+        if (metadata.valid & 1 == 0) return c.ZC_UNSUPPORTED;
+        if (metadata.af_state != 2) return c.ZC_STATE;
+    }
+    return c.ZC_OK;
+}
+/// Select a frame proven to have been captured while this pause token was valid.
+/// A zero timeout attempts one frame; rejected frames are always released.
+pub export fn zc_acquire_focus_locked(p: *c.zc_camera, id: u64, require_focused: u32, timeout_ms: u32, out: *c.zc_frame) c_int {
+    if (require_focused > 1) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    self.mutex.lock();
+    const status = focusLockStatus(self, id);
+    self.mutex.unlock();
+    self.operation.unlock();
+    if (status != 0) return status;
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    while (true) {
+        const elapsed = timer.read() / std.time.ns_per_ms;
+        const remaining: u32 = if (elapsed >= timeout_ms) 0 else timeout_ms - @as(u32, @intCast(elapsed));
+        var frame: c.zc_frame = undefined;
+        const acquire_rc = zc_acquire(p, remaining, &frame);
+        if (acquire_rc != 0) return acquire_rc;
+        const rc = zc_focus_locked_validate(p, id, frame.token, require_focused);
+        if (rc == c.ZC_OK) {
+            out.* = frame;
+            return c.ZC_OK;
+        }
+        const release_rc = zc_release(p, frame.token);
+        if (release_rc != 0) return release_rc;
+        if (rc != c.ZC_TIMEOUT) return rc;
+        if (timer.read() / std.time.ns_per_ms >= timeout_ms) return c.ZC_TIMEOUT;
+    }
 }
 pub export fn zc_autofocus_cancel(p: *c.zc_camera, id: u64) c_int {
     const self = session(p);
@@ -530,10 +660,10 @@ pub export fn zc_autofocus_cancel(p: *c.zc_camera, id: u64) c_int {
     self.mutex.unlock();
     if (terminal) return c.ZC_OK;
     var value: c.zc_control = std.mem.zeroes(c.zc_control);
-    value.id = c.ZC_AF_TRIGGER;
+    value.id = if (self.af_command != null) c.ZC_AF_PAUSE else c.ZC_AF_TRIGGER;
     value.type = c.ZC_INT;
     value.count = 1;
-    value.values[0] = 1;
+    value.values[0] = if (self.af_command != null) @floatFromInt(self.af_restore_pause) else 1;
     var revision: u64 = 0;
     const rc = setControlsLocked(self, (&value)[0..1], &revision);
     if (rc != 0) return rc;
@@ -1008,4 +1138,194 @@ test "failed AF cancellation retains ownership until retry or stop and stale IDs
     try std.testing.expectEqual(c.ZC_OK, zc_stop(p.?));
     try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(p.?, next, 0, &state));
     try std.testing.expectEqual(@as(u32, c.ZC_AF_STOPPED), state);
+}
+
+fn testAFRecycle(camera: *c.zc_camera, id: u64) !u32 {
+    for (0..64) |_| {
+        var state: u32 = 0;
+        const rc = zc_autofocus_wait(camera, id, 0, &state);
+        if (rc == c.ZC_OK) return state;
+        try std.testing.expectEqual(c.ZC_TIMEOUT, rc);
+        var frame: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &frame));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    }
+    return error.TestUnexpectedResult;
+}
+fn testContinuousCamera(buffers: u32) !*c.zc_camera {
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.buffer_count = buffers;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    errdefer _ = zc_close(camera.?);
+    const value = testControl(c.ZC_AF_MODE, c.ZC_INT, &.{2});
+    var revision: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_set_controls(camera.?, (&value)[0..1], 1, &revision));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    return camera.?;
+}
+test "continuous AF deferred pause acknowledges metadata and selects only focused paused leases" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var id: u64 = 0;
+    var other: u64 = 0;
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_autofocus_start(camera, &other));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_autofocus_pause_start(camera, 2, &other));
+    try std.testing.expectEqual(c.ZC_STATE, zc_acquire_focus_locked(camera, id, 1, 0, &frame));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    const revision = session(camera).af.?.revision;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_focus_locked(camera, id, 1, 100, &frame));
+    var metadata: c.zc_metadata = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(camera, frame.token, &metadata));
+    try std.testing.expect(metadata.valid & 32 != 0);
+    try std.testing.expectEqual(@as(i32, 2), metadata.af_pause_state);
+    try std.testing.expectEqual(@as(i32, 2), metadata.af_state);
+    try std.testing.expect(metadata.control_revision >= revision);
+    try std.testing.expectEqual(c.ZC_OK, zc_focus_locked_validate(camera, id, frame.token, 1));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_focus_locked_validate(camera, id, frame.token, 1));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_restore(camera, id, &other));
+    try std.testing.expectEqual(c.ZC_STALE, zc_autofocus_cancel(camera, id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, other));
+    try std.testing.expectEqual(@as(u32, 2), session(camera).pause_command);
+    try std.testing.expectEqual(@as(u64, 0), session(camera).stats.leased);
+}
+test "immediate pause freezes a scan without claiming focus and restoration preserves nested pause intent" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var id: u64 = 0;
+    var next: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 0, &id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_focus_locked(camera, id, 0, 100, &frame));
+    try std.testing.expectEqual(c.ZC_STATE, zc_focus_locked_validate(camera, id, frame.token, 1));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &next));
+    // Repeated pause cannot resume a scan frozen by immediate pause.
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, next));
+    try std.testing.expectEqual(c.ZC_STATE, zc_acquire_focus_locked(camera, next, 1, 100, &frame));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_restore(camera, next, &id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    try std.testing.expectEqual(@as(u32, 0), session(camera).pause_command);
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 2, &next));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, next));
+}
+test "pause cancellation failures retain ownership; stop invalidates locks and wakes waiters" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var id: u64 = 0;
+    var state: u32 = 0;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_autofocus_pause_start(camera, 3, &id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    session(camera).device.?.fail_controls_once = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_autofocus_cancel(camera, id));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_autofocus_wait(camera, id, 0, &state));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(camera, id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(camera, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_CANCELLED), state);
+    try std.testing.expectEqual(@as(u32, 2), session(camera).pause_command);
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(camera));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_wait(camera, id, 0, &state));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_STOPPED), state);
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_STALE, zc_acquire_focus_locked(camera, id, 1, 0, &frame));
+}
+test "missing pause metadata never acknowledges; focus mutation invalidates a completed lock" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var id: u64 = 0;
+    var state: u32 = 0;
+    session(camera).device.?.omit_pause_metadata = true;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 0, &id));
+    for (0..8) |_| {
+        var frame: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera, 0, &frame));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    }
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_autofocus_wait(camera, id, 0, &state));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(camera, id));
+    session(camera).device.?.omit_pause_metadata = false;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 0, &id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    var revision: u64 = 0;
+    const mode = testControl(c.ZC_AF_MODE, c.ZC_INT, &.{0});
+    try std.testing.expectEqual(c.ZC_OK, zc_set_controls(camera, (&mode)[0..1], 1, &revision));
+    var frame: c.zc_frame = undefined;
+    const delivered = session(camera).stats.delivered;
+    try std.testing.expectEqual(c.ZC_STALE, zc_acquire_focus_locked(camera, id, 0, 0, &frame));
+    try std.testing.expectEqual(delivered, session(camera).stats.delivered);
+    try std.testing.expectEqual(c.ZC_STALE, zc_autofocus_pause_restore(camera, id, &id));
+}
+
+test "pause acknowledgement fences stale metadata independently of scan metadata" {
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    var self: Session = .{ .config = cfg, .running = true, .af = .{ .revision = 9 }, .af_command = 1 };
+    self.info.buffer_count = 4;
+    var frame = std.mem.zeroes(c.zc_frame);
+    var metadata = std.mem.zeroes(c.zc_metadata);
+    metadata.valid = 32;
+    metadata.control_revision = 12;
+    metadata.af_pause_state = 1;
+    self.slots[0].state = .queued;
+    completed(&self, 0, &frame, &metadata, 0);
+    metadata.control_revision = 11;
+    metadata.af_pause_state = 2;
+    self.slots[1].state = .queued;
+    completed(&self, 1, &frame, &metadata, 0);
+    try std.testing.expectEqual(@import("home/completion_gate.zig").State.pending, self.af.?.state);
+    metadata.control_revision = 12;
+    self.slots[2].state = .queued;
+    completed(&self, 2, &frame, &metadata, 0);
+    try std.testing.expectEqual(@import("home/completion_gate.zig").State.succeeded, self.af.?.state);
+}
+test "focus selection rejects failed scans and missing AF metadata and never hides rejected-frame sync errors" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    session(camera).device.?.fail_af = true;
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_STATE, zc_acquire_focus_locked(camera, id, 1, 100, &frame));
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_focus_locked(camera, id, 0, 100, &frame));
+    const index = session(camera).leaseIndex(frame.token).?;
+    session(camera).slots[index].metadata.valid &= ~@as(u32, 1);
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_focus_locked_validate(camera, id, frame.token, 1));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+    session(camera).slots[session(camera).ready[session(camera).head]].metadata.valid &= ~@as(u32, 32);
+    session(camera).device.?.fail_sync_end = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_acquire_focus_locked(camera, id, 0, 0, &frame));
+    try std.testing.expectEqual(@as(u64, 0), session(camera).stats.leased);
+}
+test "continuous AF command headroom rejects before mutation and preserves cancellation capacity" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    const control = testControl(c.ZC_AF_MODE, c.ZC_INT, &.{2});
+    var revision: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_restore_controls(camera.?, (&control)[0..1].ptr, 1, std.math.maxInt(u64) - 2, &revision));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_STATE, zc_autofocus_pause_start(camera.?, 0, &id));
+    try std.testing.expectEqual(@as(u64, 0), id);
+    try std.testing.expectEqual(revision, session(camera.?).control_revision);
 }
