@@ -742,3 +742,87 @@ test "native recording barrier retains worker prefixes and later source writes d
     try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_drain_outputs(job.?));
     try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
 }
+
+fn restartStage(job: *c.zc_producer_job, expected: u32) !void {
+    const m = @import("media.zig");
+    var timer = try std.time.Timer.start();
+    var stage: u32 = 0;
+    while (true) {
+        _ = m.zc_producer_job_restart_stage(job, &stage);
+        if (stage == expected) return;
+        if (stage == 4 or timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.sleep(100_000);
+    }
+}
+fn flushSession(rec: *c.zc_recorder) !void {
+    const m = @import("media.zig");
+    var job: ?*c.zc_producer_job = null;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_barrier(rec, 1, &job));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+    try std.testing.expectEqual(c.ZC_OK, try finishProducer(job.?));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+}
+test "restart stages headers, rolls back cancellation and atomically resets media sessions" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    var next_delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    try frameWrite(rec, 0);
+    try flushSession(rec);
+    var cb = packets(&next_delivered);
+    for ([_]bool{ false, true }) |publish| {
+        var job: ?*c.zc_producer_job = null;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_restart(rec, 2, null, &job));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        try restartStage(job.?, 1);
+        var headers: [8192]u8 = undefined;
+        var length: u32 = 0;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_headers(job.?, &headers, headers.len, &length));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_bind(job.?, &cb));
+        try restartStage(job.?, 2);
+        if (publish) {
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_publish(job.?));
+            try std.testing.expectEqual(c.ZC_STATE, m.zc_producer_job_cancel(job.?));
+        } else try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(job.?));
+        try std.testing.expectEqual(if (publish) c.ZC_OK else c.ZC_CANCELLED, try finishProducer(job.?));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        var state: c.zc_session_state = undefined;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_session_state(rec, &state));
+        try std.testing.expectEqual(@as(u64, if (publish) 1 else 0), state.session);
+    }
+    try frameWrite(rec, 0);
+    try flushSession(rec);
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+    try std.testing.expectEqual(@as(usize, 1), next_delivered);
+}
+test "cancelled restart removes only its exclusively created path and preserves replacements" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    try frameWrite(rec, 0);
+    try flushSession(rec);
+    const path = "zig-out/restart-candidate.mkv";
+    try std.fs.cwd().makePath("zig-out");
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+    for ([_]bool{ false, true }) |replace| {
+        var job: ?*c.zc_producer_job = null;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_restart(rec, 1, path, &job));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        try restartStage(job.?, 2);
+        if (replace) {
+            try std.fs.cwd().deleteFile(path);
+            try std.fs.cwd().writeFile(.{ .sub_path = path, .data = "replacement" });
+        }
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(job.?));
+        try std.testing.expectEqual(c.ZC_CANCELLED, try finishProducer(job.?));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        if (replace) {
+            const bytes = try std.fs.cwd().readFileAlloc(A, path, 100);
+            defer A.free(bytes);
+            try std.testing.expectEqualStrings("replacement", bytes);
+        } else try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(path, .{}));
+    }
+}

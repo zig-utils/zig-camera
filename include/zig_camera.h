@@ -488,6 +488,20 @@ int zc_producer_job_start(zc_producer_job *);
  * Retained jobs (including controls) keep recorder close BUSY until job_close. */
 int zc_video_producer_barrier(zc_recorder *,uint32_t flush,zc_producer_job **);
 int zc_producer_job_drain_outputs(zc_producer_job *);
+/* Session phases: 0=open, 1=flushing, 2=flushed, 3=failed. */
+typedef struct {uint64_t session;uint32_t phase;int32_t error_code;} zc_session_state;
+int zc_video_session_state(zc_recorder *,zc_session_state *);
+/* Restart kinds: 0=unattached, 1=fresh exclusive path, 2=callbacks bound later.
+ * Requires terminal flush and released producer/preparation/snapshot handles.
+ * Stage 1 exposes new codec headers; bind callbacks, then stage 2 means the
+ * output is ready. Acknowledge headers externally before publish. Cancellation
+ * before publish discards only the candidate; publication is irreversible. */
+int zc_video_producer_restart(zc_recorder *,uint32_t kind,const char *path,zc_producer_job **);
+int zc_producer_job_restart_io(zc_producer_job *,uint64_t bytes,uint32_t operations,uint64_t wait_ns);
+int zc_producer_job_restart_stage(zc_producer_job *,uint32_t *stage);
+int zc_producer_job_restart_headers(zc_producer_job *,uint8_t *,uint32_t capacity,uint32_t *size);
+int zc_producer_job_restart_bind(zc_producer_job *,const zc_output_callbacks *);
+int zc_producer_job_restart_publish(zc_producer_job *);
 /* Cancellation is cooperative between PCM blocks/frames. An operation already
  * entered finishes; accepted bytes are not rolled back. Always finish+close.
  * Returns STATE after completion or a previous request. A real operation failure

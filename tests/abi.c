@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 _Static_assert(sizeof(zc_producer_stats)==104,"producer stats ABI");
+_Static_assert(sizeof(zc_session_state)==16,"session state ABI");
 _Static_assert(sizeof(zc_producer_handoff)==16,"producer handoff ABI");
 _Static_assert(sizeof(zc_producer_audio_input)==24,"producer PCM input ABI");
 _Static_assert(sizeof(zc_output_event)==48,"output mailbox event ABI");
@@ -422,6 +423,32 @@ int main(void) {
         assert(zc_producer_job_close(barrier)==ZC_OK);
     }
     assert(zc_video_producer_frame(recorder,&producer_frame,320000000,&producer)==ZC_STATE && producer==NULL);
+    zc_session_state session_state;
+    assert(zc_video_session_state(recorder,&session_state)==ZC_OK && session_state.session==0 && session_state.phase==2);
+    zc_producer_job *restart=NULL;
+    assert(zc_video_producer_restart(recorder,0,NULL,&restart)==ZC_OK);
+    assert(zc_producer_job_start(restart)==ZC_OK);
+    uint32_t restart_stage=0;
+    for(unsigned retry=0;retry<10000;retry++) {
+        assert(zc_producer_job_restart_stage(restart,&restart_stage)==ZC_OK);
+        if(restart_stage==2)break;
+        struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+    }
+    assert(restart_stage==2 && zc_producer_job_restart_publish(restart)==ZC_OK);
+    assert(zc_producer_job_cancel(restart)==ZC_STATE);
+    for(unsigned retry=0;retry<10000;retry++) {
+        producer_status=zc_producer_job_finish(restart,&producer_result);
+        if(producer_status!=ZC_TIMEOUT)break;
+        struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+    }
+    assert(producer_status==ZC_OK && producer_result==ZC_OK);
+    assert(zc_producer_job_close(restart)==ZC_OK);
+    assert(zc_video_session_state(recorder,&session_state)==ZC_OK && session_state.session==1 && session_state.phase==0);
+    delivered=0;
+    assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+    assert(zc_acquire(camera,0,&producer_frame)==ZC_OK);
+    assert(zc_video_write(recorder,&producer_frame,0)==ZC_OK);
+    assert(zc_release(camera,producer_frame.token)==ZC_OK);
     assert(zc_video_close(recorder)==ZC_OK);
     for(unsigned i=0;i<32;i++) {
         assert(zc_producer_drain_poll(producer_drains[i])==ZC_OK);

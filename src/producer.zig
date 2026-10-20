@@ -20,7 +20,14 @@ pub const Job = struct {
     frame: c.zc_frame = std.mem.zeroes(c.zc_frame),
     timestamp: u64,
     audio: bool,
-    operation: enum { write, drain, flush } = .write,
+    operation: enum { write, drain, flush, restart } = .write,
+    restart_kind: u32 = 0,
+    restart_stage: std.atomic.Value(u32) = .init(0),
+    restart_candidate: ?*anyopaque = null,
+    restart_callbacks: ?c.zc_output_callbacks = null,
+    restart_io: ?@import("output_io.zig").Config = null,
+    restart_identity: ?[2]i128 = null,
+    restart_published: bool = false,
     drains: [9]?*@import("output_io.zig").Drain = @splat(null),
     started: bool = false,
     released: bool = false,
@@ -93,8 +100,9 @@ pub const Pool = struct {
     pub fn cancel(self: *Pool, job: *Job) c_int {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if ((job.operation == .flush and job.started) or job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+        if ((job.operation == .flush and job.started) or job.restart_published or job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
         job.cancel_requested.store(true, .release);
+        self.changed.broadcast();
         return c.ZC_OK;
     }
     pub fn release(self: *Pool, job: *Job) c_int {

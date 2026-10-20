@@ -119,3 +119,14 @@ sink fences per control job, while Bun combines published/retiring host epochs
 without moving JavaScript callbacks onto native threads. Codec and AAC wrappers
 remain the existing Home implementations; finalization prevents re-entering their
 terminal flush loops during a later close.
+
+The 0.27 audit extends Home recording_policy.Finalization with nextSession.
+It prepares an open candidate after terminal success or failure without mutating
+the old result, and rejects live/running owners and identity exhaustion. Pinned
+and development Zig tests cover preparation, unchanged old results and repeated
+session transitions. The helper and contract were pushed to Home main at
+71f639d7f0f0109d053f0a6e4a46d184952158fc before verbatim camera reuse. Camera code
+uses fresh Home codec/container/PCM/ring instances on its persistent worker;
+it does not reset drained codec flags or concatenate finalized files. Producer
+ownership, native I/O completion fences and host acknowledgement queues retain
+their earlier bounded Home implementations across session publication.

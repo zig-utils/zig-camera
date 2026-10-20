@@ -453,6 +453,38 @@ pub export fn zc_video_producer_barrier(p: *c.zc_recorder, flush: u32, out: *?*c
 pub export fn zc_producer_job_drain_outputs(p: *c.zc_producer_job) c_int {
     return @import("producer.zig").pollOutputs(@ptrCast(@alignCast(p)));
 }
+pub export fn zc_video_session_state(p: *c.zc_recorder, out: *c.zc_session_state) c_int {
+    out.* = @import("std").mem.zeroes(c.zc_session_state);
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").sessionState(p, out);
+}
+pub export fn zc_video_producer_restart(p: *c.zc_recorder, kind: u32, path: ?[*:0]const u8, out: *?*c.zc_producer_job) c_int {
+    return @import("video.zig").producerRestart(p, kind, path, out);
+}
+pub export fn zc_producer_job_restart_stage(p: *c.zc_producer_job, stage: *u32) c_int {
+    const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
+    if (job.operation != .restart) return c.ZC_STATE;
+    stage.* = job.restart_stage.load(.acquire);
+    return c.ZC_OK;
+}
+pub export fn zc_producer_job_restart_io(p: *c.zc_producer_job, bytes: u64, operations: u32, wait_ns: u64) c_int {
+    if (bytes == 0 or bytes > 1024 * 1024 * 1024 or operations == 0 or operations > 65536 or wait_ns > 60_000_000_000) return c.ZC_INVALID;
+    const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.restart_kind != 1 or job.started) return c.ZC_STATE;
+    job.restart_io = .{ .bytes = @intCast(bytes), .items = operations, .wait_ns = wait_ns };
+    return c.ZC_OK;
+}
+pub export fn zc_producer_job_restart_headers(p: *c.zc_producer_job, data: [*]u8, capacity: u32, count: *u32) c_int {
+    return @import("video.zig").restartHeaders(@ptrCast(@alignCast(p)), data, capacity, count);
+}
+pub export fn zc_producer_job_restart_bind(p: *c.zc_producer_job, cb: *const c.zc_output_callbacks) c_int {
+    return @import("video.zig").restartBind(@ptrCast(@alignCast(p)), cb);
+}
+pub export fn zc_producer_job_restart_publish(p: *c.zc_producer_job) c_int {
+    return @import("video.zig").restartPublish(@ptrCast(@alignCast(p)));
+}
 pub export fn zc_video_producer_drain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
     return @import("video.zig").producerDrain(p, out);
 }

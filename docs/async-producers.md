@@ -200,8 +200,8 @@ end, flushes per-output AAC, emits the final MP4 sample and duration/edit patche
 and then waits for all captured native/host output acknowledgements. No stop hook
 runs and no recorder or descriptor is freed. Stop submitting input before flush;
 submissions already queued behind it fail STATE when executed. Submissions after
-native finalization entry reject before copying input. A new recorder is required
-to encode more media.
+native finalization entry reject before copying input. Call restartAsync with a fresh output target to encode another session, or
+create a new recorder.
 
 Terminal flush is irreversible once its native job starts. Queued flushes can be
 cancelled without ending codecs; active cancel returns false and parent close
@@ -237,3 +237,94 @@ must supply their own host acknowledgement fence if they enqueue asynchronous
 work; Bun combines both layers. A retained control job keeps recorder close BUSY
 until job_close releases its fences. Future inputs, control cancellation and
 native handle close remain caller-serialized.
+
+## Reusable recorder sessions and async restart
+
+```ts
+let recording = camera.startRecording(recorder, { audio: firstAudio })
+// ...capture...
+await recording.flushAsync() // Detaches this pump and closes its audio capture.
+await recorder.restartAsync(new MuxedOutput('next-session.mp4'))
+recording = camera.startRecording(recorder, { audio: nextAudio })
+// ...capture again...
+await recording.flushAsync()
+await recorder.close()
+```
+
+`Recording.flushAsync(options?)` stops that camera/audio pump, joins its submitted
+inputs through the producer FIFO and performs the recorder's terminal flush.
+The recorder remains caller-owned. Closing that detached Recording later joins
+its flush but does not close a recorder that may now serve another session.
+Supply a new AudioCapture for the new pump. Camera.startRecording requires an
+open recorder session; await restart before starting capture again. Calling
+Recorder.flushAsync directly does not detach a camera pump.
+
+`Recorder.restartAsync(output = null, options?)` returns BunJob<void> and runs
+on the existing producer worker after earlier FIFO work. The source must have
+finished a terminal flush (success or failure); restarting live media rejects
+STATE. One restart may be pending per Bun recorder. Native restart rejects BUSY
+until other producer inputs/control handles, preparations and owned snapshot
+windows are released. This protects retained handles that belong to the earlier
+session. A restart can be queued immediately behind flushAsync, but await restart
+before submitting further writes, control jobs or lifecycle changes.
+
+A restart prepares fresh video encoders/headers, PCM queues, container/AAC state
+and encoded circular history. Codec/geometry/fps/quality/audio configuration,
+failure isolation, buffer capacities and global delay are preserved. Video/audio
+counts, clocks, history, output layout, output errors, rotation/recovery policies
+and factory registrations begin fresh. Reattach secondary outputs and configure
+session-specific rotation/recovery again. Native path output I/O inherits its
+previous primary's configuration; Bun also applies its configured io limits when
+restarting from a custom sink to a native path.
+
+The Recorder object, native address, worker and byte/count admission limits stay
+stable. Producer counters remain cumulative, including restart jobs. The current
+media statistics describe the new session. `sessionState()` reports its bigint
+id (initially 0), open/flushing/flushed/failed phase and terminal native error.
+Session IDs never wrap. Secondary output IDs are not reused; primary generation
+advances, so old epochs and callbacks cannot fail a new output with the same ID.
+Header/queue reports from previous sessions do not overwrite current telemetry.
+
+Pass a fresh custom output, a fresh path, or null for an unattached session.
+Custom hooks receive the newly created codec headers before binding. Their
+commit hook and owned header writes must finish successfully before native
+publication. Existing media/PTS aliases remain protected while the previous
+session owns them. Restart paths are created exclusively even if ordinary initial
+recording used exclusive:false. Existing files are never truncated by restart.
+Null leaves the recorder ready for openOutput/addOutput without retaining any
+previous attachment or history.
+
+Before publication, cancel, AbortSignal, deadlines, header failures and setup
+errors discard only the candidate. They join native cleanup before retiring its
+hooks with discard:true; the previous flushed session and outputs remain intact
+for inspection or another restart attempt. An uncommitted native path is removed
+only if its inode/device still match the exclusively created file. A replacement
+at that path is preserved. Application-provided outputs own their discard policy.
+Preparation can temporarily retain two bounded session allocations, including two
+history/PCM buffers and codec states. Copied path bytes also count against the
+producer byte budget; at most one candidate is built on this worker.
+
+Publication seals cancellation. The worker exchanges session state and destroys
+the previous native codecs/outputs, then Bun drains/stops old host epochs before
+releasing the producer FIFO. Old delivery errors do not poison the new session.
+A stop-hook error after publication makes restart reject while the new session
+remains open and usable; sessionState identifies the committed session. Such a
+failure cannot roll back an already published output. Parent close cancels an
+unpublished restart and joins outstanding hooks; a published restart is joined
+before close consumes the new session. Arbitrary hooks must eventually return.
+
+Input timestamps may restart at zero because the new video/PCM clocks are fresh.
+A shared PtsStream still requires monotonically increasing source timestamps over
+its own lifetime. Use a new PtsStream when resetting that external observer's
+source clock, or continue absolute source timestamps across sessions. Reusing a
+recorder after close is unsupported; flush/restart is the reusable lifecycle.
+
+The C API creates a bounded producer job with zc_video_producer_restart: kind 0
+is unattached, kind 1 owns a copied exclusive path, kind 2 waits for callbacks.
+After start, stage 1 exposes immutable candidate codec headers; kind 2 binds its
+callbacks through zc_producer_job_restart_bind. Stage 2 means output setup is
+ready. Acknowledge host headers, then call restart_publish to seal publication.
+Finish/close join worker ownership and release admission just like other producer
+jobs. Native callers must keep callback contexts alive through cancellation or
+publication cleanup. Callback output acknowledgement and retirement remain their
+responsibility. zc_video_session_state returns BUSY during worker ownership.

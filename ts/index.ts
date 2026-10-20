@@ -489,6 +489,8 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.recording) throw new CameraError(-4, 'recording active')
+    if (recorder.sessionState().phase !== 'open')
+      throw new CameraError(-2, 'recorder session must be open')
     const info = this.info()
     if (info.width !== recorder.width || info.height !== recorder.height)
       throw new RangeError('recorder geometry mismatch')
@@ -1238,6 +1240,8 @@ export class Recorder {
   private schedulingFactories = false
   private tasks = 0
   private producerTail: Promise<void> = Promise.resolve()
+  private restartPending = false
+  private sessionEpoch = 0n
   private deliveryBridges = new Set<OutputBridge>()
   private deliveryFailure: unknown
   private producerTurn?: Promise<void>
@@ -2110,8 +2114,10 @@ export class Recorder {
     this.objectOutputs.set(id, current)
   }
   private bindBridge(id: bigint, generation: bigint, bridge: OutputBridge) {
+    const session = this.sessionEpoch
     bridge.onRetired = (stats) => {
       this.deliveryBridges.delete(bridge)
+      if (session !== this.sessionEpoch) return
       if (!this.publishedHostOutputs.has(bridge)) return
       const previous = this.hostReports.get(id)
       if (!previous || previous.generation <= generation) {
@@ -2122,6 +2128,7 @@ export class Recorder {
       }
     }
     const report = (error: unknown) => {
+      if (session !== this.sessionEpoch) return
       if (this.publishedHostOutputs.has(bridge)) this.deliveryFailure ??= error
       if (this.producerTurn) {
         this.deferredOutputFailures.add(() => report(error))
@@ -2252,8 +2259,10 @@ export class Recorder {
           job.check()
           check(n.zc_video_hold_output(this.handle, id, 0))
         }
-        this.bindBridge(id, 0n, bridge)
-        this.setHostOutput(id, { bridge, generation: 0n })
+        const current = storage(24)
+        check(n.zc_video_output_state(this.handle, id, ptr(current)))
+        this.bindBridge(id, u64(current), bridge)
+        this.setHostOutput(id, { bridge, generation: u64(current) })
         job.seal()
         return (primary ? undefined : id) as T
       } catch (error) {
@@ -2808,6 +2817,207 @@ export class Recorder {
     if (this.tasks >= 16) throw new CameraError(-4, 'lifecycle queue')
     this.tasks++
   }
+  sessionState() {
+    this.assertOpen()
+    return this.readSessionState()
+  }
+  private readSessionState() {
+    const data = storage(16)
+    check(n.zc_video_session_state(this.handle, ptr(data)))
+    return {
+      id: u64(data),
+      phase: ['open', 'flushing', 'flushed', 'failed'][
+        view(data).getUint32(8, true)
+      ]!,
+      errorCode: view(data).getInt32(12, true),
+    }
+  }
+  /** Prepare and publish a fresh session after flush, retaining this recorder. */
+  restartAsync(
+    output: string | CustomOutput | null = null,
+    options: JobOptions<void> = {},
+  ): BunJob<void> {
+    this.assertOpen(true)
+    if (this.restartPending)
+      throw new CameraError(-4, 'restart already pending')
+    if (typeof output === 'string') guardHostPath(output)
+    const name = typeof output === 'string' ? cstring(output) : undefined
+    const out = outPointer()
+    check(
+      n.zc_video_producer_restart(
+        this.handle,
+        name ? 1 : output ? 2 : 0,
+        name ? ptr(name) : null,
+        ptr(out),
+      ),
+      'restart admission',
+    )
+    const native = handle(out)
+    let owned = true
+    const release = () => {
+      if (owned) {
+        check(n.zc_producer_job_close(native), 'restart cleanup')
+        owned = false
+      }
+    }
+    this.restartPending = true
+    try {
+      if (typeof output === 'string' && this.options.io) {
+        const io = this.options.io
+        check(
+          n.zc_producer_job_restart_io(
+            native,
+            BigInt(uint(io.maxBytes, 1024 ** 3)),
+            uint(io.maxOperations, 65536),
+            nanos(io.waitMs ?? 0),
+          ),
+        )
+      }
+      const lifecycle = this.objectJob<void>(
+        async (job) => {
+          await pause()
+          job.check()
+          this.assertOpen(true)
+          const streams = this.streamInfo()
+          let unlock!: () => void
+          this.producerTurn = new Promise<void>((resolve) => {
+            unlock = resolve
+          })
+          let started = false,
+            finished = false,
+            published = false,
+            committed = false
+          let bridge: OutputBridge | undefined
+          let failure: unknown
+          try {
+            check(n.zc_producer_job_start(native), 'restart start')
+            started = true
+            job.setCancellationGuard(
+              () => n.zc_producer_job_cancel(native) === 0,
+            )
+            const code = new Int32Array(1),
+              stage = new Uint32Array(1)
+            while (true) {
+              const state = n.zc_producer_job_finish(native, ptr(code))
+              if (state !== -3) {
+                check(state, 'restart completion')
+                finished = true
+                if (code[0] === -10) job.check()
+                check(code[0], 'restart preparation')
+                committed = true
+                break
+              }
+              check(n.zc_producer_job_restart_stage(native, ptr(stage)))
+              if (
+                !published &&
+                stage[0] >= 1 &&
+                typeof output !== 'string' &&
+                output &&
+                !bridge
+              ) {
+                job.check()
+                const headers = storage(8192),
+                  count = new Uint32Array(1)
+                check(
+                  n.zc_producer_job_restart_headers(
+                    native,
+                    ptr(headers),
+                    headers.length,
+                    ptr(count),
+                  ),
+                )
+                bridge = this.newBridge(output, { owner: this, id: 0n })
+                await bridge.start({
+                  ...streams,
+                  headers: headers.slice(0, count[0]),
+                })
+                job.check()
+                check(
+                  n.zc_producer_job_restart_bind(native, ptr(bridge.callbacks)),
+                )
+                await bridge.enable()
+              }
+              if (!published && stage[0] === 2) {
+                if (bridge) await bridge.drain()
+                job.check()
+                if (bridge?.error !== undefined) throw bridge.error
+                check(
+                  n.zc_producer_job_restart_publish(native),
+                  'restart publication',
+                )
+                published = true
+                job.seal()
+              }
+              await pause()
+            }
+            this.sessionEpoch = this.readSessionState().id
+            const old = [...this.deliveryBridges]
+            this.objectOutputs.clear()
+            this.deliveryBridges.clear()
+            this.factories.clear()
+            this.outputErrors.clear()
+            this.hostReports.clear()
+            this.deliveryFailure = undefined
+            this.finalStats = undefined
+            if (bridge) {
+              const state = storage(24)
+              check(n.zc_video_output_state(this.handle, 0n, ptr(state)))
+              this.setHostOutput(0n, { bridge, generation: u64(state) })
+            }
+            for (const previous of old) {
+              try {
+                await previous.retire()
+              } catch (error) {
+                if (previous.stopError !== undefined) failure ??= error
+              }
+            }
+            if (failure !== undefined) throw failure
+          } catch (error) {
+            failure = error
+            if (started && !finished) {
+              if (!published) n.zc_producer_job_cancel(native)
+              const code = new Int32Array(1)
+              while (n.zc_producer_job_finish(native, ptr(code)) === -3)
+                await pause()
+              finished = true
+            }
+            if (bridge && !committed) {
+              try {
+                await bridge.retire(true)
+              } catch (cleanup) {
+                if (bridge.stopError !== undefined) failure = cleanup
+              }
+            }
+            throw failure
+          } finally {
+            job.setCancellationGuard(undefined)
+            if (!started || finished) release()
+            this.producerTurn = undefined
+            unlock()
+            const failures = [...this.deferredOutputFailures]
+            this.deferredOutputFailures.clear()
+            for (const fail of failures) fail()
+            this.restartPending = false
+            if (!this.closing) {
+              this.reconcileOutputs()
+              this.scheduleFactories()
+            }
+          }
+        },
+        options,
+        'producer',
+      )
+      void lifecycle.operationDone.then(() => {
+        release()
+        this.restartPending = false
+      })
+      return lifecycle
+    } catch (error) {
+      release()
+      this.restartPending = false
+      throw error
+    }
+  }
   /** Join preceding producers and acknowledge every emitted output prefix. */
   drainRecordingAsync(options: JobOptions<void> = {}): BunJob<void> {
     return this.recordingBarrier(false, options)
@@ -3035,6 +3245,8 @@ export class Recording {
   error: unknown
   private stopped = false
   private closeJob?: Promise<void>
+  private flushJob?: BunJob<void>
+  private retainedRecorder = false
   private pendingAudio?: ReturnType<AudioCapture['read']>
   get closing() {
     return this.stopped
@@ -3091,6 +3303,22 @@ export class Recording {
   split(output: string | CustomOutput, id: bigint | number = 0n) {
     return this.recorder.split(output, id)
   }
+  /** Stop this camera/audio pump and flush, leaving the recorder reusable. */
+  flushAsync(options: JobOptions<void> = {}): BunJob<void> {
+    guardOutputHook()
+    if (this.closeJob) throw new CameraError(-2, 'recording closed')
+    if (
+      this.flushJob &&
+      (!this.flushJob.done || this.flushJob.error === undefined)
+    )
+      return this.flushJob
+    this.stopped = true
+    this.retainedRecorder = true
+    this.camera.detach(this)
+    this.audio?.close()
+    this.pendingAudio = undefined
+    return (this.flushJob = this.recorder.flushAsync(options))
+  }
   close() {
     guardOutputHook()
     if (this.closeJob) return this.closeJob
@@ -3104,7 +3332,8 @@ export class Recording {
         failure ??= error
       }
       try {
-        await this.recorder.close()
+        if (this.retainedRecorder) await this.flushJob?.operationDone
+        else await this.recorder.close()
       } catch (error) {
         failure ??= error
       }

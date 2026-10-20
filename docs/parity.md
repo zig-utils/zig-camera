@@ -1,4 +1,4 @@
-# Feature coverage in 0.26
+# Feature coverage in 0.27
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -18,7 +18,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, owned pre-roll, FileOutput/local PTS and shared PtsStream, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |
 | Async recording preparation | Native bounded workers, held header acceptance, off-capture file/header/AAC/I/O preparation, keyframe splits, retained results, cancellation/close cleanup | PreparationJob, custom lifecycle coordination, per-output async splits/recovery; initial native attachment setup remains synchronous |
 | Rotation and recovery | Exclusive indexed rotation; fresh recovery preparation, lifetime media-clock retry/backoff, inode-safe cleanup | Path patterns or Bun factories, per-output setRotation/setRecovery and observable status; one automation per ID, no retention deletion |
-| Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix output/input cleanup drains, terminal codec/container flush and persistent producer worker | Async lifecycle, host telemetry, copied RGB/PCM/A/V writes, cooperative cancellation, end-to-end recording drains and terminal flush jobs; synchronous attachment/snapshot calls remain fail-fast |
+| Output I/O and lifecycle | Bounded owned queues, acknowledged host mailbox, retired epochs, fixed-prefix drains, terminal flush, transactional session restart and persistent producer worker | Async lifecycle, host telemetry, RGB/PCM/A/V writes, cooperative cancellation, recording drains, flush/restart and camera-pump session reuse; synchronous attachment/snapshot calls remain fail-fast |
 | Mode switching | Stop/lease/reconfiguration guards in the camera ABI | Bounded FIFO BunJob, worker reopen/drop/temporary RGB/metadata/lores/JPEG/DNG, cancellation, rollback and preview recreation; recording/AF/lease coexistence and runtime-control restoration remain unsupported |
 | Multiple cameras | Independent camera indices | Independent Camera objects; no synchronized stereo or tracking/navigation |
 

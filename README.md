@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.26 adds drainRecordingAsync jobs that join earlier producer writes and
-their native/host output acknowledgements. Terminal flushAsync jobs finish video,
-delayed output, AAC and container tails before acknowledging delivery. Home's
-finalization state prevents repeated codec tails or MP4 patches during close.
+Version 0.27 adds restartAsync and reusable recorder sessions after flush.
+Fresh codecs, PCM/history and output containers are prepared before publication;
+cancellation and setup failures preserve the flushed session. Recording.flushAsync
+stops the camera/audio pump while retaining the recorder for another session.
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative

@@ -204,3 +204,11 @@ Home terminal media finalization (0.26):
   tails and container patches. Supersedes recording_policy listed above.
   The Home MIT license applies.
   https://github.com/home-lang/home/commit/3b4b323f3100e513e25e63c2e4679064238ef89b
+
+Home reusable recording sessions (0.27):
+- src/home/recording_policy.zig is verbatim from Home's
+  packages/video/src/core/recording_policy.zig at 71f639d7f0f0109d053f0a6e4a46d184952158fc.
+  nextSession prepares a fresh open state with a nonwrapping identity while
+  preserving the previous terminal result until publication. Supersedes the
+  recording_policy version above. The Home MIT license applies.
+  https://github.com/home-lang/home/commit/71f639d7f0f0109d053f0a6e4a46d184952158fc

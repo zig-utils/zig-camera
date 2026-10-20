@@ -198,3 +198,12 @@ remain cancellable. Both use bounded native producer control slots and release
 retained sink fences before completion callbacks. Home's finalization latch makes
 repeated flush/close idempotent. See the [full contract](async-producers.md#end-to-end-recording-drains-and-terminal-codec-flush)
 for terminal media state, pending-preparation restrictions and C ABI sequencing.
+
+`Recorder.restartAsync(freshOutput?, options?)` prepares a new session after
+terminal flush. New codecs/queues/containers and acknowledged custom headers
+precede irreversible publication. Cancellation before publication discards only
+the candidate; session IDs and output generations protect the replacement from
+stale callbacks. `Recording.flushAsync` stops capture without consuming the
+recorder. See [reusable sessions](async-producers.md#reusable-recorder-sessions-and-async-restart)
+for old-handle restrictions, exclusive path cleanup and ownership after stop-hook
+errors. The native address and producer worker survive publication.

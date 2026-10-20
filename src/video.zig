@@ -394,6 +394,7 @@ const Output = struct {
 const Recorder = struct {
     finalization: @import("home/recording_policy.zig").Finalization = .{},
     accepting: std.atomic.Value(bool) = .init(true),
+    primary_generation: u64 = 0,
     producer: ?*@import("producer.zig").Pool = null,
     preparing: [8]?*Prepared = .{null} ** 8,
     jobs: [8]?*Preparation = .{null} ** 8,
@@ -904,6 +905,7 @@ pub fn openOutput(p: *c.zc_recorder, path: [*:0]const u8) c_int {
     } else .{};
     out.audio_cursor = replayed.end;
     self.audio_written += replayed.frames;
+    out.generation = self.primary_generation;
     self.output = out;
     self.segments += 1;
     return c.ZC_OK;
@@ -922,6 +924,7 @@ pub fn closeOutput(p: *c.zc_recorder) c_int {
         self.failed = true;
         return status(err);
     };
+    self.primary_generation = @max(self.primary_generation, out.generation);
     self.output = null;
     defer out.deinit();
     if (out.worker) |worker| worker.finalize();
@@ -1353,6 +1356,7 @@ pub fn openCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_int 
         out.deinit();
         return status(err);
     } else .{};
+    out.generation = self.primary_generation;
     self.output = out;
     out.audio_cursor = replayed.end;
     self.audio_written += replayed.frames;
@@ -2177,6 +2181,7 @@ pub fn openHeldCallbacks(p: *c.zc_recorder, cb: *const c.zc_output_callbacks) c_
         out.deinit();
         return status(err);
     };
+    out.generation = self.primary_generation;
     self.output = out;
     return c.ZC_OK;
 }
@@ -2451,6 +2456,7 @@ pub fn producerDrain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
 }
 fn applyProducer(ctx: *anyopaque, job: *@import("producer.zig").Job) c_int {
     const p: *c.zc_recorder = @ptrCast(@alignCast(ctx));
+    if (job.operation == .restart) return runRestart(recorder(p), job);
     if (job.operation != .write) {
         const self = recorder(p);
         const result = if (job.operation == .flush) finishMedia(self) else if (self.failed) c.ZC_IO else c.ZC_OK;
@@ -2548,6 +2554,20 @@ pub fn startProducer(p: *c.zc_producer_job) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
     const self: *Recorder = @ptrCast(@alignCast(job.owner.context));
     if (producerBusy(@ptrCast(self))) return c.ZC_BUSY;
+    if (job.operation == .restart) {
+        if (self.finalization.phase != .finished and self.finalization.phase != .failed) return c.ZC_STATE;
+        if (job.owner.count() != 1) return c.ZC_BUSY;
+        for (self.jobs) |slot| if (slot != null) return c.ZC_BUSY;
+        for (self.preparing) |slot| if (slot != null) return c.ZC_BUSY;
+        if (self.next != null) return c.ZC_BUSY;
+        for (self.factory_policies) |slot| if (slot) |factory| if (factory.policy.pending != null) return c.ZC_BUSY;
+        if (self.reservations) |r| {
+            r.mutex.lock();
+            const busy = r.refs != 1;
+            r.mutex.unlock();
+            if (busy) return c.ZC_BUSY;
+        }
+    }
     if (job.operation == .flush) {
         if (self.next != null) return c.ZC_BUSY;
         for (self.outputs.entries) |entry| if (entry.value) |out| if (out.next != null or out.host_hold) return c.ZC_BUSY;
@@ -2574,5 +2594,141 @@ pub fn producerBarrier(p: *c.zc_recorder, flush: u32, result: *?*c.zc_producer_j
     const job = pool.allocate(0, false, 0, 0) catch |err| return status(err);
     job.operation = if (flush == 1) .flush else .drain;
     result.* = @ptrCast(job);
+    return c.ZC_OK;
+}
+
+pub fn producerRestart(p: *c.zc_recorder, kind: u32, path: ?[*:0]const u8, result: *?*c.zc_producer_job) c_int {
+    result.* = null;
+    if (kind > 2 or ((kind == 1) != (path != null))) return c.ZC_INVALID;
+    const name = if (path) |value| std.mem.span(value) else &.{};
+    if (kind == 1 and (name.len == 0 or name.len > 4096)) return c.ZC_INVALID;
+    const pool = producerPool(recorder(p)) catch |err| return status(err);
+    const job = pool.allocate(if (kind == 1) name.len + 1 else 0, false, 0, 0) catch |err| return status(err);
+    job.operation = .restart;
+    job.restart_kind = kind;
+    if (kind == 1) {
+        @memcpy(job.data[0..name.len], name);
+        job.data[name.len] = 0;
+    }
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
+}
+fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
+    const next = self.finalization.nextSession() catch |err| return status(err);
+    const generation = std.math.add(u64, @max(self.primary_generation, if (self.output) |out| out.generation else 0), 1) catch return c.ZC_STATE;
+    const candidate = init(&self.config) catch |err| return status(err);
+    var committed = false;
+    defer {
+        job.owner.mutex.lock();
+        job.restart_candidate = null;
+        job.restart_stage.store(4, .release);
+        job.owner.mutex.unlock();
+        candidate.deinit(); // Candidate on failure, previous session on success.
+        if (!committed and job.restart_identity != null) {
+            const path: [*:0]const u8 = @ptrCast(job.data.ptr);
+            const st = std.posix.fstatat(std.posix.AT.FDCWD, std.mem.span(path), std.posix.AT.SYMLINK_NOFOLLOW) catch null;
+            if (st) |value| if (value.dev == job.restart_identity.?[0] and value.ino == job.restart_identity.?[1]) {
+                std.fs.cwd().deleteFile(std.mem.span(path)) catch {};
+            };
+        }
+    }
+    candidate.finalization = next;
+    candidate.primary_generation = generation;
+    candidate.recording = self.recording;
+    candidate.audio_bitrate = self.audio_bitrate;
+    candidate.isolate = self.isolate;
+    candidate.outputs.next_id = self.outputs.next_id;
+    candidate.factory_issued = self.factory_issued;
+    candidate.delay_ns = self.delay_ns;
+    if (self.ring) |ring| candidate.ring = Ring.init(A, ring.bytes.len, ring.entries.len, ring.duration) catch |err| return status(err);
+    if (self.audio != null) candidate.audio = pcm.Queue.init(A, self.recording.sample_rate, self.recording.channels, self.recording.buffer_frames, self.recording.max_blocks) catch |err| return status(err);
+    job.owner.mutex.lock();
+    job.restart_candidate = candidate;
+    job.restart_stage.store(1, .release);
+    while (job.restart_kind == 2 and job.restart_callbacks == null and !job.cancel_requested.load(.acquire)) job.owner.changed.wait(&job.owner.mutex);
+    const cancelled = job.cancel_requested.load(.acquire);
+    job.owner.mutex.unlock();
+    if (cancelled) return c.ZC_CANCELLED;
+    if (job.restart_kind == 1) {
+        const path: [*:0]const u8 = @ptrCast(job.data.ptr);
+        validate(std.mem.span(path), &candidate.config, candidate.audio != null) catch |err| return status(err);
+        const file = reserveFile(path, true, self.avoid(), self.reservations) catch |err| return status(err);
+        const id = Identity.of(file) catch |err| {
+            file.close();
+            return status(err);
+        };
+        job.restart_identity = .{ id.dev, id.ino };
+        candidate.output = Output.initFile(file, std.mem.endsWith(u8, std.mem.span(path), ".mp4"), &candidate.config, candidate.headers, &candidate.recording, candidate.audio_bitrate) catch |err| {
+            file.close();
+            return status(err);
+        };
+        if (job.restart_io orelse (if (self.output) |old| old.io_config else null)) |config| candidate.output.?.enableIo(config, null) catch |err| return status(err);
+    } else if (job.restart_kind == 2) {
+        const cb = job.restart_callbacks.?;
+        checkCallbacks(self, &cb, true) catch |err| return status(err);
+        candidate.output = Output.initCallbacks(cb, &candidate.config, candidate.headers, &candidate.recording, candidate.audio_bitrate) catch |err| return status(err);
+    }
+    if (candidate.output) |out| {
+        out.generation = generation;
+        candidate.segments = 1;
+    }
+    job.owner.mutex.lock();
+    job.restart_stage.store(2, .release);
+    while (!job.restart_published and !job.cancel_requested.load(.acquire)) job.owner.changed.wait(&job.owner.mutex);
+    if (!job.restart_published) {
+        job.owner.mutex.unlock();
+        return c.ZC_CANCELLED;
+    }
+    job.restart_candidate = null;
+    job.owner.mutex.unlock();
+    // Stable admission/acceptance fields are never overwritten while callers
+    // poll stats or attempt admission. All session fields swap under worker ownership.
+    inline for (std.meta.fields(Recorder)) |field| {
+        if (!std.mem.eql(u8, field.name, "producer") and !std.mem.eql(u8, field.name, "accepting")) {
+            const previous = @field(self, field.name);
+            @field(self, field.name) = @field(candidate, field.name);
+            @field(candidate, field.name) = previous;
+        }
+    }
+    committed = true;
+    self.accepting.store(true, .release);
+    return c.ZC_OK;
+}
+pub fn restartBind(job: *@import("producer.zig").Job, cb: *const c.zc_output_callbacks) c_int {
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.restart_kind != 2 or job.restart_stage.load(.acquire) != 1 or job.restart_callbacks != null or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.format > c.ZC_OUTPUT_MKV or (cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return c.ZC_INVALID;
+    if (cb.format == c.ZC_OUTPUT_MP4 and cb.patch == null) {
+        const self: *Recorder = @ptrCast(@alignCast(job.owner.context));
+        if (self.recording.sample_rate != 0) return c.ZC_UNSUPPORTED;
+    }
+    job.restart_callbacks = cb.*;
+    job.owner.changed.broadcast();
+    return c.ZC_OK;
+}
+pub fn restartHeaders(job: *@import("producer.zig").Job, data: [*]u8, capacity: u32, count: *u32) c_int {
+    count.* = 0;
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.restart_published or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    const candidate: *Recorder = @ptrCast(@alignCast(job.restart_candidate orelse return c.ZC_STATE));
+    if (capacity < candidate.headers.len) return c.ZC_INVALID;
+    @memcpy(data[0..candidate.headers.len], candidate.headers);
+    count.* = @intCast(candidate.headers.len);
+    return c.ZC_OK;
+}
+pub fn restartPublish(job: *@import("producer.zig").Job) c_int {
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.restart_stage.load(.acquire) != 2 or job.restart_published or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    job.restart_published = true;
+    job.restart_stage.store(3, .release);
+    job.owner.changed.broadcast();
+    return c.ZC_OK;
+}
+pub fn sessionState(p: *c.zc_recorder, out: *c.zc_session_state) c_int {
+    const self = recorder(p);
+    out.* = .{ .session = self.finalization.session, .phase = @intFromEnum(self.finalization.phase), .error_code = self.finalization.code };
     return c.ZC_OK;
 }
