@@ -23,6 +23,7 @@ export const native = dlopen(library, {
   zc_producer_job_drain_outputs: { args: [p], returns: i },
   zc_video_session_state: { args: [p, p], returns: i },
   zc_video_producer_restart: { args: [p, u, p, p], returns: i },
+  zc_producer_job_restart_configure: { args: [p, p, p, u], returns: i },
   zc_producer_job_restart_io: { args: [p, n, u, n], returns: i },
   zc_producer_job_restart_stage: { args: [p, p], returns: i },
   zc_producer_job_restart_headers: { args: [p, p, u, p], returns: i },

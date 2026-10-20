@@ -212,3 +212,10 @@ Home reusable recording sessions (0.27):
   preserving the previous terminal result until publication. Supersedes the
   recording_policy version above. The Home MIT license applies.
   https://github.com/home-lang/home/commit/71f639d7f0f0109d053f0a6e4a46d184952158fc
+
+Home immutable session settings (0.28):
+- src/home/session_config.zig is verbatim from Home's
+  packages/video/src/core/session_config.zig at 5d03fefdbc4728ec9479809d6058f3751ceab4e0.
+  Allocation-free video/PCM queue/AAC bitrate validation precedes encoder and
+  output preparation. The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/5d03fefdbc4728ec9479809d6058f3751ceab4e0

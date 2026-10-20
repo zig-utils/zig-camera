@@ -461,6 +461,13 @@ pub export fn zc_video_session_state(p: *c.zc_recorder, out: *c.zc_session_state
 pub export fn zc_video_producer_restart(p: *c.zc_recorder, kind: u32, path: ?[*:0]const u8, out: *?*c.zc_producer_job) c_int {
     return @import("video.zig").producerRestart(p, kind, path, out);
 }
+pub export fn zc_video_session_config(p: *c.zc_recorder, cfg: *c.zc_video_config, opts: *c.zc_recording_options, bitrate: *u32) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").sessionConfig(p, cfg, opts, bitrate);
+}
+pub export fn zc_producer_job_restart_configure(p: *c.zc_producer_job, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32) c_int {
+    return @import("video.zig").restartConfigure(@ptrCast(@alignCast(p)), cfg, opts, bitrate);
+}
 pub export fn zc_producer_job_restart_stage(p: *c.zc_producer_job, stage: *u32) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));
     if (job.operation != .restart) return c.ZC_STATE;

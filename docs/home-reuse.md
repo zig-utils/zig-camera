@@ -130,3 +130,17 @@ uses fresh Home codec/container/PCM/ring instances on its persistent worker;
 it does not reset drained codec flags or concatenate finalized files. Producer
 ownership, native I/O completion fences and host acknowledgement queues retain
 their earlier bounded Home implementations across session publication.
+
+The 0.28 audit adds Home core/session_config, pushed to Home main at
+5d03fefdbc4728ec9479809d6058f3751ceab4e0 and reused verbatim. Its allocation-free
+validator handles codec geometry, frame duration, quality/bitrate/GOP and enabled
+PCM queue/AAC bitrate bounds before any candidate output hook or encoder setup.
+Container/backend/AAC sampling-rate support remains with the existing Home
+adapters. Focused tests pass on pinned Zig 0.15.2 and development Zig; the Home
+packet-output workflow includes the helper. The camera uses the same video
+validation for constructor and restart settings. Reconfiguration retains Home
+Finalization's preparation/publication boundary and fresh native codec/container/
+PCM instances. Candidate-specific callback validation checks the new media format
+while descriptor identity checks still protect the previous session's outputs.
+Bun snapshots media settings at admission and installs them only after native
+publication; queue budgets and lifetime policies remain with the recorder.

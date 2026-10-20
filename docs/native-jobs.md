@@ -207,3 +207,11 @@ stale callbacks. `Recording.flushAsync` stops capture without consuming the
 recorder. See [reusable sessions](async-producers.md#reusable-recorder-sessions-and-async-restart)
 for old-handle restrictions, exclusive path cleanup and ownership after stop-hook
 errors. The native address and producer worker survive publication.
+
+Recorder.reconfigureAsync(settings, output?, options?) shares restart's bounded
+producer job and cancellation boundary. It prepares fresh codecs and audio queues
+from copied session settings, and publishes configuration with the new media
+session only after output setup/acknowledgement. See
+[session settings](async-producers.md#async-recorder-reconfiguration-and-session-settings).
+The C ABI adds zc_producer_job_restart_configure before start and
+zc_video_session_config outside worker ownership.

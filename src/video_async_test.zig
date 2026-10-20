@@ -826,3 +826,56 @@ test "cancelled restart removes only its exclusively created path and preserves 
         } else try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(path, .{}));
     }
 }
+
+test "session reconfiguration copies settings, preserves rollback and publishes geometry atomically" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer _ = v.close(rec);
+    try frameWrite(rec, 0);
+    try flushSession(rec);
+    var cfg: c.zc_video_config = undefined;
+    var opts: c.zc_recording_options = undefined;
+    var bitrate: u32 = undefined;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_session_config(rec, &cfg, &opts, &bitrate));
+    const original = cfg;
+    for ([_]bool{ false, true }) |publish| {
+        var job: ?*c.zc_producer_job = null;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_restart(rec, 0, null, &job));
+        cfg.width = 32;
+        cfg.fps_num = 20;
+        cfg.quality = 40;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_configure(job.?, &cfg, &opts, 0));
+        cfg.width = 0; // Invalid replacement cannot overwrite the copied recipe.
+        try std.testing.expectEqual(c.ZC_INVALID, m.zc_producer_job_restart_configure(job.?, &cfg, &opts, 0));
+        opts.sample_rate = 0;
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        try restartStage(job.?, 2);
+        try std.testing.expectEqual(c.ZC_STATE, m.zc_producer_job_restart_configure(job.?, &original, &opts, 0));
+        try std.testing.expectEqual(c.ZC_BUSY, m.zc_video_session_config(rec, &cfg, &opts, &bitrate));
+        if (publish) {
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_publish(job.?));
+        } else try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(job.?));
+        try std.testing.expectEqual(if (publish) c.ZC_OK else c.ZC_CANCELLED, try finishProducer(job.?));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        try std.testing.expectEqual(c.ZC_OK, m.zc_video_session_config(rec, &cfg, &opts, &bitrate));
+        try std.testing.expectEqual(@as(u32, if (publish) 32 else 16), cfg.width);
+        try std.testing.expectEqual(@as(u32, if (publish) 20 else 25), cfg.fps_num);
+    }
+    var cb = packets(&delivered);
+    try std.testing.expectEqual(c.ZC_OK, v.openCallbacks(rec, &cb));
+    // Old geometry is rejected after successful publication.
+    var pixels: [16 * 16 * 3]u8 = @splat(100);
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 1;
+    frame.main.width = 16;
+    frame.main.height = 16;
+    frame.main.stride = 48;
+    frame.main.plane_count = 1;
+    @memcpy(frame.main.format[0..6], "BGR888");
+    frame.main.planes[0].data = &pixels;
+    frame.main.planes[0].length = pixels.len;
+    frame.main.planes[0].bytes_used = pixels.len;
+    try std.testing.expectEqual(c.ZC_INVALID, v.write(rec, &frame, 0));
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+}

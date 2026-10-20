@@ -494,6 +494,17 @@ export class Camera {
     const info = this.info()
     if (info.width !== recorder.width || info.height !== recorder.height)
       throw new RangeError('recorder geometry mismatch')
+    if (options.audio) {
+      const format = recorder.options.audio
+      if (
+        !format ||
+        options.audio.sampleRate !== format.sampleRate ||
+        options.audio.channels !== format.channels
+      )
+        throw new RangeError(
+          'audio capture format differs from recorder session',
+        )
+    }
     this.start()
     const recording = new Recording(
       this,
@@ -989,6 +1000,77 @@ export interface RecorderOptions {
   asyncWrites?: boolean
   io?: { maxBytes: number; maxOperations: number; waitMs?: number }
 }
+/** Session media settings. Omitted fields retain their value; audio:null disables
+ * audio. Changing codec resets omitted bitrate/GOP to that codec's defaults. */
+export type RecorderSessionOptions = Partial<
+  Pick<
+    RecorderOptions,
+    'width' | 'height' | 'fps' | 'codec' | 'bitrate' | 'quality' | 'gop'
+  >
+> & { audio?: RecorderOptions['audio'] | null }
+function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
+  return Object.freeze({
+    ...options,
+    audio: options.audio && Object.freeze({ ...options.audio }),
+    circular: options.circular && Object.freeze({ ...options.circular }),
+    outputQueue:
+      options.outputQueue && Object.freeze({ ...options.outputQueue }),
+    producerQueue:
+      options.producerQueue && Object.freeze({ ...options.producerQueue }),
+    io: options.io && Object.freeze({ ...options.io }),
+  })
+}
+function sessionFields(options: RecorderOptions) {
+  if (
+    options.audio &&
+    (!Number.isInteger(options.audio.sampleRate) ||
+      options.audio.sampleRate < 8000 ||
+      options.audio.sampleRate > 192000 ||
+      (options.audio.channels !== 1 && options.audio.channels !== 2))
+  )
+    throw new RangeError('invalid recording audio format')
+  if (options.codec !== undefined && !Object.hasOwn(Codec, options.codec))
+    throw new RangeError('invalid recording codec')
+  return {
+    video: fields(32, n.zc_default_video_config, [
+      options.width,
+      options.height,
+      options.fps ?? 30,
+      1,
+      Codec[options.codec ?? 'mjpeg'],
+      options.bitrate,
+      options.quality,
+      options.gop,
+    ]),
+    audio: fields(24, n.zc_default_recording_options, [
+      undefined,
+      options.audio?.sampleRate ?? 0,
+      options.audio?.channels ?? 1,
+      options.audio?.bufferFrames,
+      options.audio?.maxBlocks,
+      options.exclusive ? 1 : 0,
+    ]),
+    bitrate: uint(options.audio?.bitrate ?? 0),
+  }
+}
+function describeStreams(
+  options: RecorderOptions,
+  headers: Uint8Array,
+): OutputStreams {
+  return {
+    width: options.width,
+    height: options.height,
+    fps: options.fps ?? 30,
+    codec: Codec[options.codec ?? 'mjpeg'],
+    headers,
+    audio: options.audio
+      ? {
+          sampleRate: options.audio.sampleRate,
+          channels: options.audio.channels,
+        }
+      : undefined,
+  }
+}
 export interface HostOutputStats extends HostOutputQueueStats {
   id: bigint
   generation: bigint
@@ -1215,10 +1297,19 @@ interface FactoryEntry {
 }
 export class Recorder {
   handle: Pointer
-  readonly width: number
-  readonly height: number
-  readonly fps: number
-  readonly options: RecorderOptions
+  private currentOptions: RecorderOptions
+  get width() {
+    return this.currentOptions.width
+  }
+  get height() {
+    return this.currentOptions.height
+  }
+  get fps() {
+    return this.currentOptions.fps ?? 30
+  }
+  get options() {
+    return this.currentOptions
+  }
   closing = false
   closed?: Promise<void>
   outputErrors = new Map<bigint, unknown>()
@@ -1262,28 +1353,9 @@ export class Recorder {
       : undefined
     if (producerLimits && (!producerLimits.bytes || !producerLimits.jobs))
       throw new RangeError('invalid producer queue bounds')
-    this.options = { ...options }
-    this.width = uint(options.width)
-    this.height = uint(options.height)
-    this.fps = options.fps ?? 30
-    const cfg = fields(32, n.zc_default_video_config, [
-      this.width,
-      this.height,
-      this.fps,
-      1,
-      Codec[options.codec ?? 'mjpeg'],
-      options.bitrate,
-      options.quality,
-      options.gop,
-    ])
-    const opts = fields(24, n.zc_default_recording_options, [
-      undefined,
-      options.audio?.sampleRate ?? 0,
-      options.audio?.channels ?? 1,
-      options.audio?.bufferFrames,
-      options.audio?.maxBlocks,
-      options.exclusive ? 1 : 0,
-    ])
+    options = snapshotRecorderOptions(options)
+    this.currentOptions = options
+    const { video: cfg, audio: opts } = sessionFields(options)
     const out = outPointer()
     if (options.circular) {
       const ring = fields(24, n.zc_default_buffer_config, [
@@ -2059,38 +2131,27 @@ export class Recorder {
           ptr(length),
         ),
       )
-    return {
-      width: this.width,
-      height: this.height,
-      fps: this.fps,
-      codec: Codec[this.options.codec ?? 'mjpeg'],
-      headers,
-      audio: this.options.audio
-        ? {
-            sampleRate: this.options.audio.sampleRate,
-            channels: this.options.audio.channels,
-          }
-        : undefined,
-    }
+    return describeStreams(this.options, headers)
   }
   private newBridge(
     output: CustomOutput,
     scope: OutputScope = { owner: this, id: Symbol() },
+    options: RecorderOptions = this.options,
   ) {
     if (
       (output.format ?? 'packets') === 'mp4' &&
-      this.options.audio &&
+      options.audio &&
       typeof output.patch !== 'function'
     )
       throw new CameraError(-8, 'AAC output requires patch')
     return new OutputBridge(
       output,
-      this.options.outputQueue ??
-        (this.options.io
+      options.outputQueue ??
+        (options.io
           ? {
-              maxBytes: this.options.io.maxBytes,
-              maxOperations: this.options.io.maxOperations,
-              waitMs: this.options.io.waitMs,
+              maxBytes: options.io.maxBytes,
+              maxOperations: options.io.maxOperations,
+              waitMs: options.io.waitMs,
             }
           : {}),
       scope,
@@ -2832,14 +2893,57 @@ export class Recorder {
       errorCode: view(data).getInt32(12, true),
     }
   }
-  /** Prepare and publish a fresh session after flush, retaining this recorder. */
+  /** Prepare and publish a fresh session after flush, retaining media settings. */
   restartAsync(
     output: string | CustomOutput | null = null,
     options: JobOptions<void> = {},
   ): BunJob<void> {
+    return this.restartSession(undefined, output, options)
+  }
+  /** Replace session media settings after flush. Publication is atomic; failed
+   * or cancelled preparation preserves the previous session and its settings. */
+  reconfigureAsync(
+    settings: RecorderSessionOptions,
+    output: string | CustomOutput | null = null,
+    options: JobOptions<void> = {},
+  ): BunJob<void> {
+    return this.restartSession(settings, output, options)
+  }
+  private restartSession(
+    settings: RecorderSessionOptions | undefined,
+    output: string | CustomOutput | null,
+    options: JobOptions<void>,
+  ): BunJob<void> {
     this.assertOpen(true)
     if (this.restartPending)
       throw new CameraError(-4, 'restart already pending')
+    let candidate = this.options
+    if (settings) {
+      const merged = { ...this.options }
+      if (
+        settings.codec !== undefined &&
+        settings.codec !== (this.options.codec ?? 'mjpeg')
+      ) {
+        merged.bitrate = undefined
+        merged.gop = undefined
+      }
+      for (const key of [
+        'width',
+        'height',
+        'fps',
+        'codec',
+        'bitrate',
+        'quality',
+        'gop',
+      ] as const) {
+        if (settings[key] !== undefined)
+          Object.assign(merged, { [key]: settings[key] })
+      }
+      if (settings.audio !== undefined)
+        merged.audio = settings.audio ?? undefined
+      candidate = snapshotRecorderOptions(merged)
+    }
+    const config = settings ? sessionFields(candidate) : undefined
     if (typeof output === 'string') guardHostPath(output)
     const name = typeof output === 'string' ? cstring(output) : undefined
     const out = outPointer()
@@ -2862,6 +2966,16 @@ export class Recorder {
     }
     this.restartPending = true
     try {
+      if (config)
+        check(
+          n.zc_producer_job_restart_configure(
+            native,
+            ptr(config.video),
+            ptr(config.audio),
+            config.bitrate,
+          ),
+          'session settings',
+        )
       if (typeof output === 'string' && this.options.io) {
         const io = this.options.io
         check(
@@ -2878,7 +2992,7 @@ export class Recorder {
           await pause()
           job.check()
           this.assertOpen(true)
-          const streams = this.streamInfo()
+          const streams = describeStreams(candidate, new Uint8Array())
           let unlock!: () => void
           this.producerTurn = new Promise<void>((resolve) => {
             unlock = resolve
@@ -2926,7 +3040,11 @@ export class Recorder {
                     ptr(count),
                   ),
                 )
-                bridge = this.newBridge(output, { owner: this, id: 0n })
+                bridge = this.newBridge(
+                  output,
+                  { owner: this, id: 0n },
+                  candidate,
+                )
                 await bridge.start({
                   ...streams,
                   headers: headers.slice(0, count[0]),
@@ -2950,6 +3068,7 @@ export class Recorder {
               }
               await pause()
             }
+            this.currentOptions = candidate
             this.sessionEpoch = this.readSessionState().id
             const old = [...this.deliveryBridges]
             this.objectOutputs.clear()

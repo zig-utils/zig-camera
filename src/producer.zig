@@ -21,6 +21,7 @@ pub const Job = struct {
     timestamp: u64,
     audio: bool,
     operation: enum { write, drain, flush, restart } = .write,
+    restart_config: ?struct { video: c.zc_video_config, audio: c.zc_recording_options, bitrate: u32 } = null,
     restart_kind: u32 = 0,
     restart_stage: std.atomic.Value(u32) = .init(0),
     restart_candidate: ?*anyopaque = null,

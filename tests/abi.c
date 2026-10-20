@@ -427,6 +427,11 @@ int main(void) {
     assert(zc_video_session_state(recorder,&session_state)==ZC_OK && session_state.session==0 && session_state.phase==2);
     zc_producer_job *restart=NULL;
     assert(zc_video_producer_restart(recorder,0,NULL,&restart)==ZC_OK);
+    zc_video_config session_config=video;
+    session_config.quality=65;session_config.fps_num=20;
+    assert(zc_producer_job_restart_configure(restart,&session_config,&recording,0)==ZC_OK);
+    session_config.width=0;
+    assert(zc_producer_job_restart_configure(restart,&session_config,&recording,0)==ZC_INVALID);
     assert(zc_producer_job_start(restart)==ZC_OK);
     uint32_t restart_stage=0;
     for(unsigned retry=0;retry<10000;retry++) {
@@ -444,6 +449,10 @@ int main(void) {
     assert(producer_status==ZC_OK && producer_result==ZC_OK);
     assert(zc_producer_job_close(restart)==ZC_OK);
     assert(zc_video_session_state(recorder,&session_state)==ZC_OK && session_state.session==1 && session_state.phase==0);
+    uint32_t session_bitrate=99;
+    zc_recording_options session_audio;
+    assert(zc_video_session_config(recorder,&session_config,&session_audio,&session_bitrate)==ZC_OK);
+    assert(session_config.width==video.width && session_config.fps_num==20 && session_config.quality==65 && session_bitrate==0);
     delivered=0;
     assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
     assert(zc_acquire(camera,0,&producer_frame)==ZC_OK);

@@ -269,8 +269,9 @@ session. A restart can be queued immediately behind flushAsync, but await restar
 before submitting further writes, control jobs or lifecycle changes.
 
 A restart prepares fresh video encoders/headers, PCM queues, container/AAC state
-and encoded circular history. Codec/geometry/fps/quality/audio configuration,
-failure isolation, buffer capacities and global delay are preserved. Video/audio
+and encoded circular history. restartAsync preserves codec/geometry/fps/quality/
+audio configuration. reconfigureAsync replaces the specified media settings.
+Failure isolation, buffer capacities and global delay are preserved. Video/audio
 counts, clocks, history, output layout, output errors, rotation/recovery policies
 and factory registrations begin fresh. Reattach secondary outputs and configure
 session-specific rotation/recovery again. Native path output I/O inherits its
@@ -328,3 +329,62 @@ Finish/close join worker ownership and release admission just like other produce
 jobs. Native callers must keep callback contexts alive through cancellation or
 publication cleanup. Callback output acknowledgement and retirement remain their
 responsibility. zc_video_session_state returns BUSY during worker ownership.
+
+## Async recorder reconfiguration and session settings
+
+`Recorder.reconfigureAsync(settings, output = null, jobOptions?)` returns
+BunJob<void> on the same producer FIFO and uses the restart preparation protocol.
+Flush the current session first; reconfiguration can be queued immediately after
+flushAsync. A live recorder rejects STATE. Await the job before writing media or
+starting another camera pump. Only one restart/reconfiguration may be pending.
+
+`RecorderSessionOptions` accepts width, height, integer fps, codec, bitrate,
+quality, gop and audio. Omitted fields retain their current values. Changing codec
+resets omitted bitrate and gop to defaults (zero: quality-based rate control and
+codec-default GOP); quality remains unchanged. MJPEG requires bitrate/gop zero.
+An explicit audio object replaces the whole audio configuration, with sampleRate,
+channels and optional bufferFrames/maxBlocks/bitrate using constructor defaults.
+Use audio:null to disable audio. Omitted audio preserves it. PCM remains signed
+16-bit interleaved. MP4 audio uses Home AAC; MKV audio uses PCM.
+
+```ts
+await recorder.flushAsync()
+await recorder.reconfigureAsync({
+  codec: 'hevc', bitrate: 8_000_000, gop: 30, quality: 90,
+  width: 1920, height: 1080, fps: 30,
+  audio: { sampleRate: 48000, channels: 2, bitrate: 128000 },
+}, new MuxedOutput('next.mp4'))
+// Switch the camera configuration separately if the dimensions changed.
+const nextRecording = camera.startRecording(recorder, {
+  audio: new AudioCapture({ sampleRate: 48000, channels: 2 }),
+})
+```
+
+Settings are copied at admission. Recorder.options and its nested configuration
+objects are immutable snapshots; width/height/fps and options change together
+only after publication. Caller mutations cannot alter an admitted configuration.
+Candidate streams hooks receive the new dimensions/FPS/codec, fresh codec headers
+and new audio format while recorder.options still describes the terminal source.
+Container validation and MP4 patch requirements use the candidate settings;
+descriptor alias checks still protect all old session outputs. Unsupported
+codecs, invalid settings, container mismatch, allocation/setup failure and
+pre-publication cancellation preserve the source settings and session identity.
+A post-publication old-output stop error still rejects the job with the new
+settings installed, as for restartAsync; inspect sessionState after such an error.
+
+Queue budgets, failure isolation, circular capacities, global delay and producer
+counters remain recorder-owned. Circular video/audio history and media clocks
+start empty; no packets from the previous codec/format enter the new container.
+Reattach secondary outputs and rotation/recovery factories. Camera geometry and
+AudioCapture are not mutated by this API; use the new recorder settings when
+starting the next capture session. startRecording rejects mismatched audio
+capture formats before starting the pump. Existing frame leases remain owned by their
+camera, and frames with the previous dimensions reject at producer admission.
+
+For C callers, set a full zc_video_config and zc_recording_options on an unstarted
+restart job with zc_producer_job_restart_configure, including audio bitrate. The
+function copies validated scalar settings; invalid replacement attempts leave
+any previous recipe unchanged. Omit the call to retain the current settings.
+Then start, bind/acknowledge candidate output and publish as usual. Query the
+installed settings with zc_video_session_config outside worker ownership (BUSY
+while active). Neither query nor reconfiguration changes the existing ABI structs.

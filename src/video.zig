@@ -762,14 +762,10 @@ const Recorder = struct {
 };
 fn validate(path: []const u8, cfg: *const c.zc_video_config, audio: bool) !void {
     if (audio and !std.mem.endsWith(u8, path, ".mkv") and !(aac_enabled and std.mem.endsWith(u8, path, ".mp4"))) return error.Unsupported;
+    try @import("home/session_config.zig").validateVideo(cfg.*);
     if (cfg.codec == c.ZC_MJPEG) {
         if (!std.mem.endsWith(u8, path, ".mkv")) return error.Unsupported;
-        if (cfg.bitrate != 0 or cfg.gop != 0) return error.Invalid;
-    } else if (cfg.codec == c.ZC_H264 or cfg.codec == c.ZC_HEVC) {
-        if (!options.codecs or (!audio and !std.mem.endsWith(u8, path, ".mp4"))) return error.Unsupported;
-        if (cfg.width < 16 or cfg.height < 16 or cfg.width > 8192 or cfg.height > 8192 or (cfg.width | cfg.height) & 1 != 0 or cfg.gop > std.math.maxInt(c_int) or (cfg.bitrate != 0 and cfg.bitrate < 1000)) return error.Invalid;
-    } else return error.Unsupported;
-    if (cfg.width == 0 or cfg.height == 0 or cfg.width > 16384 or cfg.height > 16384 or cfg.quality == 0 or cfg.quality > 100 or cfg.fps_num == 0 or cfg.fps_den == 0 or cfg.fps_num > 1000000 or cfg.fps_den > 1000000 or @as(u64, 1000000) * cfg.fps_den / cfg.fps_num == 0 or @as(u64, 1000000) * cfg.fps_den / cfg.fps_num > std.math.maxInt(u32)) return error.Invalid;
+    } else if (!options.codecs or (!audio and !std.mem.endsWith(u8, path, ".mp4"))) return error.Unsupported;
 }
 fn init(cfg: *const c.zc_video_config) !*Recorder {
     try validate(if (cfg.codec == c.ZC_MJPEG) "check.mkv" else "check.mp4", cfg, false);
@@ -1293,10 +1289,13 @@ pub fn formatPts(timestamp: u64, data: [*]u8, capacity: u32, length: *u32) c_int
     return c.ZC_OK;
 }
 fn checkCallbacks(self: *Recorder, cb: *const c.zc_output_callbacks, splitting: bool) !void {
+    return checkSessionCallbacks(self, self, cb, splitting);
+}
+fn checkSessionCallbacks(self: *Recorder, session: *Recorder, cb: *const c.zc_output_callbacks, splitting: bool) !void {
     if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_MKV or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return error.Invalid;
     if ((cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return error.Invalid;
-    if (cb.format == c.ZC_OUTPUT_MP4 and self.audio != null and cb.patch == null) return error.Invalid;
-    if (cb.format != c.ZC_OUTPUT_PACKETS) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &self.config, self.audio != null) catch |err| return err;
+    if (cb.format == c.ZC_OUTPUT_MP4 and session.audio != null and cb.patch == null) return error.Invalid;
+    if (cb.format != c.ZC_OUTPUT_PACKETS) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &session.config, session.audio != null) catch |err| return err;
     var identities: [3]?Identity = .{ null, null, null };
     for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| {
         if (fd < 0) continue;
@@ -2613,10 +2612,23 @@ pub fn producerRestart(p: *c.zc_recorder, kind: u32, path: ?[*:0]const u8, resul
     result.* = @ptrCast(job);
     return c.ZC_OK;
 }
+/// Copied scalar settings; caller may release/mutate its buffers after return.
+pub fn restartConfigure(job: *@import("producer.zig").Job, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32) c_int {
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.started or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    if (opts.struct_size != @sizeOf(c.zc_recording_options) or opts.exclusive > 1) return c.ZC_INVALID;
+    @import("home/session_config.zig").validateVideo(cfg.*) catch |err| return status(err);
+    @import("home/session_config.zig").validateAudio(opts.sample_rate, opts.channels, opts.buffer_frames, opts.max_blocks, bitrate) catch |err| return status(err);
+    if (cfg.codec != c.ZC_MJPEG and !options.codecs) return c.ZC_UNSUPPORTED;
+    job.restart_config = .{ .video = cfg.*, .audio = opts.*, .bitrate = bitrate };
+    return c.ZC_OK;
+}
 fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
     const next = self.finalization.nextSession() catch |err| return status(err);
     const generation = std.math.add(u64, @max(self.primary_generation, if (self.output) |out| out.generation else 0), 1) catch return c.ZC_STATE;
-    const candidate = init(&self.config) catch |err| return status(err);
+    const cfg = if (job.restart_config) |settings| settings.video else self.config;
+    const candidate = init(&cfg) catch |err| return status(err);
     var committed = false;
     defer {
         job.owner.mutex.lock();
@@ -2634,14 +2646,14 @@ fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
     }
     candidate.finalization = next;
     candidate.primary_generation = generation;
-    candidate.recording = self.recording;
-    candidate.audio_bitrate = self.audio_bitrate;
+    candidate.recording = if (job.restart_config) |settings| settings.audio else self.recording;
+    candidate.audio_bitrate = if (job.restart_config) |settings| settings.bitrate else self.audio_bitrate;
     candidate.isolate = self.isolate;
     candidate.outputs.next_id = self.outputs.next_id;
     candidate.factory_issued = self.factory_issued;
     candidate.delay_ns = self.delay_ns;
     if (self.ring) |ring| candidate.ring = Ring.init(A, ring.bytes.len, ring.entries.len, ring.duration) catch |err| return status(err);
-    if (self.audio != null) candidate.audio = pcm.Queue.init(A, self.recording.sample_rate, self.recording.channels, self.recording.buffer_frames, self.recording.max_blocks) catch |err| return status(err);
+    if (candidate.recording.sample_rate != 0) candidate.audio = pcm.Queue.init(A, candidate.recording.sample_rate, candidate.recording.channels, candidate.recording.buffer_frames, candidate.recording.max_blocks) catch |err| return status(err);
     job.owner.mutex.lock();
     job.restart_candidate = candidate;
     job.restart_stage.store(1, .release);
@@ -2665,7 +2677,7 @@ fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
         if (job.restart_io orelse (if (self.output) |old| old.io_config else null)) |config| candidate.output.?.enableIo(config, null) catch |err| return status(err);
     } else if (job.restart_kind == 2) {
         const cb = job.restart_callbacks.?;
-        checkCallbacks(self, &cb, true) catch |err| return status(err);
+        checkSessionCallbacks(self, candidate, &cb, true) catch |err| return status(err);
         candidate.output = Output.initCallbacks(cb, &candidate.config, candidate.headers, &candidate.recording, candidate.audio_bitrate) catch |err| return status(err);
     }
     if (candidate.output) |out| {
@@ -2700,8 +2712,8 @@ pub fn restartBind(job: *@import("producer.zig").Job, cb: *const c.zc_output_cal
     if (job.operation != .restart or job.restart_kind != 2 or job.restart_stage.load(.acquire) != 1 or job.restart_callbacks != null or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
     if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.format > c.ZC_OUTPUT_MKV or (cb.format == c.ZC_OUTPUT_PACKETS and cb.packet == null) or (cb.format != c.ZC_OUTPUT_PACKETS and cb.write == null)) return c.ZC_INVALID;
     if (cb.format == c.ZC_OUTPUT_MP4 and cb.patch == null) {
-        const self: *Recorder = @ptrCast(@alignCast(job.owner.context));
-        if (self.recording.sample_rate != 0) return c.ZC_UNSUPPORTED;
+        const candidate: *Recorder = @ptrCast(@alignCast(job.restart_candidate orelse return c.ZC_STATE));
+        if (candidate.recording.sample_rate != 0) return c.ZC_UNSUPPORTED;
     }
     job.restart_callbacks = cb.*;
     job.owner.changed.broadcast();
@@ -2730,5 +2742,12 @@ pub fn restartPublish(job: *@import("producer.zig").Job) c_int {
 pub fn sessionState(p: *c.zc_recorder, out: *c.zc_session_state) c_int {
     const self = recorder(p);
     out.* = .{ .session = self.finalization.session, .phase = @intFromEnum(self.finalization.phase), .error_code = self.finalization.code };
+    return c.ZC_OK;
+}
+pub fn sessionConfig(p: *c.zc_recorder, cfg: *c.zc_video_config, opts: *c.zc_recording_options, bitrate: *u32) c_int {
+    const self = recorder(p);
+    cfg.* = self.config;
+    opts.* = self.recording;
+    bitrate.* = self.audio_bitrate;
     return c.ZC_OK;
 }
