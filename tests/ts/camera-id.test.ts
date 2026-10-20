@@ -188,8 +188,10 @@ for (const failing of [false, true]) {
       )
       new DataView(initial.config.buffer).setUint32(12, 999, true)
       new DataView(target.config.buffer).setUint32(12, 777, true)
+      const transferred = owned
+      owned = 0 as Pointer
       const response = await worker({
-        handle: owned,
+        handle: transferred,
         ...target,
         cameraId: new TextEncoder().encode('synthetic'),
         previousConfig: initial.config,
@@ -273,6 +275,34 @@ test('native ID copies report exact length, reject short buffers atomically and 
       ).toBe(-1)
       expect(out[0]).toBe(0n)
     }
+  } finally {
+    await c.close()
+  }
+})
+
+test('constructor snapshots getter-based selectors once before acquisition', async () => {
+  let idReads = 0,
+    backendReads = 0
+  const source = {
+    width: 32,
+    height: 24,
+    get cameraId() {
+      return ++idReads === 1 ? 'synthetic' : 'absent'
+    },
+    get simulate() {
+      return ++backendReads === 1
+    },
+  }
+  const c = new Camera(source)
+  try {
+    expect(idReads).toBe(1)
+    expect(backendReads).toBe(1)
+    expect(c.options).toMatchObject({ cameraId: 'synthetic', simulate: true })
+    expect(c.cameraId).toBe('synthetic')
+    await c.switchMode({ width: 64, height: 48 })
+    expect(c.info().cameraId).toBe('synthetic')
+    expect(idReads).toBe(1)
+    expect(backendReads).toBe(1)
   } finally {
     await c.close()
   }

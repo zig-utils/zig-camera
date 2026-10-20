@@ -404,7 +404,11 @@ export class Camera {
   }
   constructor(options: CameraOptions = {}) {
     this.configuration = copyConfiguration(options)
-    const { config: cfg, pipeline, cameraId } = cameraConfiguration(options)
+    const {
+      config: cfg,
+      pipeline,
+      cameraId,
+    } = cameraConfiguration(this.configuration)
     const out = outPointer()
     check(
       cameraId
@@ -439,7 +443,10 @@ export class Camera {
       this.selectedId = new TextDecoder('utf-8', { fatal: true }).decode(
         this.selectedIdBytes,
       )
-      if ((options.simulate ?? false) !== (this.info().backend === 0))
+      if (
+        (this.configuration.simulate ?? false) !==
+        (this.info().backend === 0)
+      )
         throw new CameraError(-8, 'synthetic backend unavailable')
     } catch (error) {
       n.zc_close(this.handle)
