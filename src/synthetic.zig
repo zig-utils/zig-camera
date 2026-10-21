@@ -163,19 +163,11 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requ
                     return c.ZC_NOMEM;
                 };
                 defer Alloc.free(tmp);
-                const yuv = Alloc.alloc(u8, pixels * 3 / 2) catch {
-                    close(h);
-                    return c.ZC_NOMEM;
-                };
-                defer Alloc.free(yuv);
                 for (0..l.height) |y| for (0..l.width) |x| {
                     tmp[(y * l.width + x) * 3 ..][0..3].* = sampleRGB(transform, .{ .width = l.width, .height = l.height }, main_source, x, y, i);
                 };
-                @import("home/rgb_i420.zig").convert(tmp, l.width, l.height, l.width * 3, yuv) catch unreachable;
-                for (0..l.height) |y| @memcpy(buf[y * l.stride ..][0..l.width], yuv[y * l.width ..][0..l.width]);
-                for (0..2) |plane| for (0..l.height / 2) |y| {
-                    @memcpy(buf[@as(usize, l.stride) * l.height + plane * @as(usize, l.stride / 2) * (l.height / 2) + y * (l.stride / 2) ..][0 .. l.width / 2], yuv[pixels + plane * pixels / 4 + y * (l.width / 2) ..][0 .. l.width / 2]);
-                };
+                const ysize = @as(usize, l.stride) * l.height;
+                @import("home/yuv_rgb.zig").encode420(tmp, l.width, l.height, l.width * 3, .{ buf[0..ysize], buf[ysize..][0 .. ysize / 4], buf[ysize + ysize / 4 ..] }, .{ l.stride, l.stride / 2, l.stride / 2 }, @import("home/yuv_rgb.zig").Conversion.init(.bt601, .full)) catch unreachable;
             }
         }
     }
@@ -490,6 +482,13 @@ pub fn sensorModes(_: *Handle, out: ?[*]c.zc_sensor_mode, capacity: u32, count: 
     if (out == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
     if (capacity < modes.len) return c.ZC_INVALID;
     @memcpy(out.?[0..modes.len], &modes);
+    return c.ZC_OK;
+}
+pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
+    if (stream > c.ZC_LORES) return c.ZC_INVALID;
+    if (stream == c.ZC_RAW and h.config.raw == 0 or stream == c.ZC_LORES and h.pipeline.lores.plane_count == 0) return c.ZC_UNSUPPORTED;
+    const raw = stream == c.ZC_RAW;
+    out.* = .{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = if (raw) c.ZC_PRIMARIES_RAW else c.ZC_PRIMARIES_REC709, .transfer = if (raw) c.ZC_TRANSFER_LINEAR else c.ZC_TRANSFER_SRGB, .ycbcr_encoding = if (stream == c.ZC_LORES and h.pipeline.lores.plane_count == 3) c.ZC_YCBCR_REC601 else c.ZC_YCBCR_NONE, .range = c.ZC_RANGE_FULL };
     return c.ZC_OK;
 }
 pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {

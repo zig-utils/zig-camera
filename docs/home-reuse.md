@@ -327,3 +327,19 @@ development compiler. Bun snapshots application options before native admission;
 it adds no AF state machine or frame queue. Single-scan, continuous pause/resume
 and focus-locked jobs share the existing native gates. No Home source change was
 needed for the host option-lifetime fixes.
+
+The 0.44 audit inspects Home pixel_convert, codec rgb_i420 and colorspace filters.
+Home's general converter doubled inverse chroma and halved forward chroma. The
+new core/yuv_rgb.zig helper, published with the public conversion fix at
+98c7e78c6d1a7d508fad3c3d86cd81c480d6d301, is copied verbatim. It checks independent
+I420 strides and all bounds before writes, precomputes fixed point BT.601/709/2020
+full/limited coefficients, and averages four source pixels per encoded chroma
+sample. Tests cover known color vectors, an independent floating reference grid,
+padding, clipping and atomic rejection on pinned/development Zig Debug/ReleaseSafe.
+Home's public RGB24/I420 converters use it and free new frames on conversion errors.
+Existing limited-BT.601 rgb_i420 video encoding remains unchanged. Camera synthetic
+lores now matches real requested full-range sYCC; negotiated native color metadata
+chooses conversion rather than assuming the request survived validation. RGB rows
+stay borrowed, I420 still encoding owns one temporary RGB buffer, and direct RGB
+copy converts straight into the caller's destination. Existing Home image encoders,
+queues, recording codecs and containers remain the shared implementations.

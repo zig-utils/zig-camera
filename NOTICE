@@ -341,3 +341,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+Home checked YCbCr conversion (0.44):
+- src/home/yuv_rgb.zig is verbatim packages/video/src/core/yuv_rgb.zig.
+  Source commit: 98c7e78c6d1a7d508fad3c3d86cd81c480d6d301.
+  The Home MIT license above applies. It shares checked strided RGB24/I420,
+  fixed point matrix/range conversion and actual 2x2 chroma averaging.
+  https://github.com/home-lang/home/commit/98c7e78c6d1a7d508fad3c3d86cd81c480d6d301

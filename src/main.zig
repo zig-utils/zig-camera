@@ -20,6 +20,7 @@ const help =
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
     \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
+    \\  --image-stream NAME      Select main/lores for images, raw for DNG
     \\  --png-compression N --png-filter NAME  zlib 0..9; adaptive/none/sub/up/average/paeth
     \\  --fps N                  Preview/record frame rate (default 30)
     \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
@@ -101,6 +102,7 @@ fn run() !void {
     var timeout_ms: u32 = 5000;
     var image_options = camera.defaultImageOptions();
     var image_format: ?u32 = null;
+    var image_stream: ?u32 = null;
     var rotation: u32 = 0;
     var hflip = false;
     var vflip = false;
@@ -150,6 +152,8 @@ fn run() !void {
         const value = args[i];
         if (eq(key, "--image-format")) {
             image_format = try camera.still.formatFromName(value);
+        } else if (eq(key, "--image-stream")) {
+            image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
         } else if (eq(key, "--png-filter")) {
             image_options.png_filter = @intFromEnum(std.meta.stringToEnum(camera.still.PngFilter, value) orelse return error.InvalidPngFilter);
         } else if (eq(key, "--lores-format")) {
@@ -232,6 +236,8 @@ fn run() !void {
         image_options.format = image_format orelse try camera.still.formatFromPath(output);
         image_options.quality = quality;
         if (!camera.still.valid(&image_options)) return error.InvalidImageOptions;
+        image_stream = image_stream orelse if (image_options.format == camera.c.ZC_IMAGE_DNG) camera.c.ZC_RAW else camera.c.ZC_MAIN;
+        if ((image_options.format == camera.c.ZC_IMAGE_DNG) != (image_stream.? == camera.c.ZC_RAW)) return error.InvalidImageStream;
     }
     if (eq(command, "capture") and image_options.format == camera.c.ZC_IMAGE_DNG) {
         cfg.raw = 1;
@@ -285,7 +291,9 @@ fn run() !void {
     if (eq(command, "capture")) {
         var frame = try cam.acquire(timeout_ms);
         defer frame.release() catch {};
-        try frame.saveImage(output, image_options);
+        const selected_stream = try frame.stream(image_stream.?);
+        const selected_color = try frame.colorSpace(image_stream.?);
+        try frame.saveStreamImage(output, image_stream.?, image_options);
         if (frame.value.raw.plane_count > 0 and image_options.format != camera.c.ZC_IMAGE_DNG) {
             for (0..frame.value.raw.plane_count) |p| {
                 const raw_path = try std.fmt.allocPrint(a, "{s}.raw.{d}", .{ output, p });
@@ -316,7 +324,9 @@ fn run() !void {
         var meta: [4096]u8 = undefined;
         // Names are fixed libcamera pixel-format identifiers, not arbitrary user input.
         const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d},\"sensor_width\":{d},\"sensor_height\":{d},\"sensor_bit_depth\":{d},\"lores_width\":{d},\"lores_height\":{d},\"lores_stride\":{d},\"lores_format\":\"{s}\"}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count, negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, negotiated.lores.stride, std.mem.sliceTo(&negotiated.lores.format, 0) });
-        try meta_file.writeAll(json);
+        try meta_file.writeAll(json[0 .. json.len - 2]);
+        const extra = try std.fmt.bufPrint(&meta, ",\"image_stream\":{d},\"image_width\":{d},\"image_height\":{d},\"source_color_space\":{{\"present\":{d},\"primaries\":{d},\"transfer\":{d},\"ycbcr_encoding\":{d},\"range\":{d}}}}}\n", .{ image_stream.?, selected_stream.width, selected_stream.height, selected_color.present, selected_color.primaries, selected_color.transfer, selected_color.ycbcr_encoding, selected_color.range });
+        try meta_file.writeAll(extra);
         std.debug.print("saved {s} and {s}\n", .{ output, meta_path });
         return;
     }

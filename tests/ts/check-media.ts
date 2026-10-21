@@ -3,6 +3,56 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mkvFrames, mp4, decodeVideo } from './media'
 const dir = process.argv[2] ?? 'zig-out'
+if (process.argv.includes('--stream-images')) {
+  const decoder = process.env.ZC_IMAGE_DECODER
+  assert(decoder)
+  for (const name of ['rgb', 'i420']) {
+    const path = join(dir, `stream-${name}.png`)
+    const meta = JSON.parse(readFileSync(`${path}.json`, 'utf8'))
+    assert.equal(meta.image_stream, 2)
+    assert.equal(meta.image_width, 18)
+    assert.equal(meta.image_height, 10)
+    assert.equal(meta.source_color_space.range, 1)
+    assert.equal(meta.source_color_space.ycbcr_encoding, name === 'rgb' ? 1 : 2)
+    const result: ReturnType<typeof Bun.spawnSync> = Bun.spawnSync([
+      decoder,
+      'png',
+      path,
+    ])
+    assert.equal(result.exitCode, 0)
+    const decoded = Buffer.from(result.stdout!)
+    assert.equal(decoded.readUInt32LE(0), 18)
+    assert.equal(decoded.readUInt32LE(4), 10)
+    if (name === 'rgb') {
+      for (let y = 0; y < 10; y++)
+        for (let x = 0; x < 18; x++) {
+          assert.deepEqual(
+            [...decoded.subarray(8 + (y * 18 + x) * 3, 11 + (y * 18 + x) * 3)],
+            [Math.floor((x * 64) / 18), Math.floor((y * 48) / 10), 0],
+          )
+        }
+    } else {
+      const raw = readFileSync(`${path}.lores.i420`)
+      assert.equal(raw.length, 270)
+      for (let y = 0; y < 10; y++)
+        for (let x = 0; x < 18; x++) {
+          const l = raw[y * 18 + x],
+            cb = raw[180 + Math.floor(y / 2) * 9 + Math.floor(x / 2)] - 128,
+            cr = raw[225 + Math.floor(y / 2) * 9 + Math.floor(x / 2)] - 128,
+            expected = [
+              l + 1.402 * cr,
+              l - 0.3441362862 * cb - 0.7141362862 * cr,
+              l + 1.772 * cb,
+            ].map((v) => Math.min(255, Math.max(0, Math.round(v))))
+          assert.deepEqual(
+            [...decoded.subarray(8 + (y * 18 + x) * 3, 11 + (y * 18 + x) * 3)],
+            expected,
+          )
+        }
+    }
+  }
+  process.exit(0)
+}
 if (process.argv.includes('--still-images')) {
   const decoder = process.env.ZC_IMAGE_DECODER
   assert(decoder)

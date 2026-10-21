@@ -41,6 +41,19 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    const auto absent=portableColorSpace(std::nullopt);
+    assert(absent.struct_size==sizeof(zc_color_space) && !absent.present && !absent.range);
+    const auto sycc=portableColorSpace(ColorSpace::Sycc);
+    assert(sycc.present && sycc.primaries==ZC_PRIMARIES_REC709 && sycc.transfer==ZC_TRANSFER_SRGB);
+    assert(sycc.ycbcr_encoding==ZC_YCBCR_REC601 && sycc.range==ZC_RANGE_FULL);
+    const auto rec709=portableColorSpace(ColorSpace::Rec709);
+    assert(rec709.ycbcr_encoding==ZC_YCBCR_REC709 && rec709.range==ZC_RANGE_LIMITED);
+    const auto rec2020=portableColorSpace(ColorSpace::Rec2020);
+    assert(rec2020.primaries==ZC_PRIMARIES_REC2020 && rec2020.transfer==ZC_TRANSFER_REC709 && rec2020.ycbcr_encoding==ZC_YCBCR_REC2020);
+    const auto raw_color=portableColorSpace(ColorSpace::Raw);
+    assert(raw_color.primaries==ZC_PRIMARIES_RAW && raw_color.transfer==ZC_TRANSFER_LINEAR && raw_color.ycbcr_encoding==ZC_YCBCR_NONE && raw_color.range==ZC_RANGE_FULL);
+    const auto unknown_color=portableColorSpace(ColorSpace(static_cast<ColorSpace::Primaries>(99),static_cast<ColorSpace::TransferFunction>(99),static_cast<ColorSpace::YcbcrEncoding>(99),static_cast<ColorSpace::Range>(99)));
+    assert(unknown_color.present && !unknown_color.primaries && !unknown_color.transfer && !unknown_color.ycbcr_encoding && !unknown_color.range);
     for(uint32_t value=1;value<=8;++value) {
         Orientation orientation=Orientation::Rotate0;
         assert(nativeOrientation(value,orientation));

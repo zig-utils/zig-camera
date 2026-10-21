@@ -35,10 +35,18 @@ import { decodeMetadata } from './metadata'
 import {
   prepareImage,
   encodeNativeImage,
+  imageStreamId,
+  readStreamColorSpace,
+  processedImageStream,
   type PreparedImage,
   type ImageOptions,
 } from './images'
-export type { ImageOptions, ImageFormat, PngFilter } from './images'
+export type {
+  ImageOptions,
+  ImageFormat,
+  PngFilter,
+  StreamColorSpace,
+} from './images'
 import { MappedStream } from './mapping'
 export { MappedStream, type MappedPlane } from './mapping'
 import {
@@ -381,13 +389,35 @@ export class Frame {
   get token() {
     return this.released ? 0n : u64(this.descriptor)
   }
-  copyRGB() {
+  colorSpace(stream: StreamName = 'main') {
     this.open()
-    const data = storage(this.width * this.height * 3)
+    return readStreamColorSpace(this.camera.handle, stream)
+  }
+  copyRGB(stream: 'main' | 'lores' = 'main'): Uint8Array {
+    this.open()
+    processedImageStream(stream)
+    if (stream === 'main') {
+      const data = storage(this.width * this.height * 3)
+      check(
+        n.zc_copy_frame_rgb(
+          this.camera.handle,
+          this.token,
+          ptr(data),
+          BigInt(data.length),
+        ),
+      )
+      return data
+    }
+    const id = imageStreamId(stream),
+      descriptor = storage(208)
+    check(n.zc_get_stream(this.camera.handle, this.token, id, ptr(descriptor)))
+    const d = view(descriptor)
+    const data = storage(d.getUint32(0, true) * d.getUint32(4, true) * 3)
     check(
-      n.zc_copy_frame_rgb(
+      n.zc_copy_stream_rgb(
         this.camera.handle,
         this.token,
+        id,
         ptr(data),
         BigInt(data.length),
       ),
@@ -491,9 +521,10 @@ export class Frame {
   [savePreparedImage](prepared: PreparedImage) {
     this.open()
     check(
-      n.zc_save_image(
+      n.zc_save_stream_image(
         this.camera.handle,
         this.token,
+        prepared.stream,
         ptr(prepared.path!),
         ptr(prepared.options),
       ),
@@ -501,7 +532,12 @@ export class Frame {
   }
   [encodePreparedImage](prepared: PreparedImage) {
     this.open()
-    return encodeNativeImage(this.camera.handle, this.token, prepared.options)
+    return encodeNativeImage(
+      this.camera.handle,
+      this.token,
+      prepared.options,
+      prepared.stream,
+    )
   }
   saveDNG(path: string) {
     this.open()
@@ -789,6 +825,10 @@ export class Camera {
   info() {
     this.assertOpen()
     return this.readInfo()
+  }
+  colorSpace(stream: StreamName = 'main') {
+    this.assertOpen()
+    return readStreamColorSpace(this.handle, stream)
   }
   orientation() {
     this.assertOpen()
@@ -1404,8 +1444,16 @@ export class Camera {
   ) {
     return this.captureFocusLockedStreamsAsync(streams, options).wait()
   }
-  captureFocusLockedRGB(options: FocusLockedOptions<Uint8Array> = {}) {
-    return this.captureFocusLockedAsync((frame) => frame.copyRGB(), options)
+  captureFocusLockedRGB(
+    options: FocusLockedOptions<Uint8Array> & {
+      stream?: 'main' | 'lores'
+    } = {},
+  ) {
+    const stream = processedImageStream(options.stream)
+    return this.captureFocusLockedAsync(
+      (frame) => frame.copyRGB(stream),
+      options,
+    )
   }
   captureFocusLockedMetadata(
     options: FocusLockedOptions<ReturnType<Frame['metadata']>> = {},
@@ -1628,8 +1676,11 @@ export class Camera {
   ) {
     return this.captureBufferAsync(stream, options).wait()
   }
-  captureRGBAsync(options: CaptureOptions<Uint8Array> = {}) {
-    return this.captureAsync((frame) => frame.copyRGB(), options)
+  captureRGBAsync(
+    options: CaptureOptions<Uint8Array> & { stream?: 'main' | 'lores' } = {},
+  ) {
+    const stream = processedImageStream(options.stream)
+    return this.captureAsync((frame) => frame.copyRGB(stream), options)
   }
   captureMetadataAsync(
     options: CaptureOptions<ReturnType<Frame['metadata']>> = {},
@@ -1664,8 +1715,10 @@ export class Camera {
   captureEncodedImage(options: CaptureOptions<Uint8Array> & ImageOptions = {}) {
     return this.captureEncodedImageAsync(options).wait()
   }
-  captureRGB(options?: CaptureOptions<Uint8Array>) {
-    return this.capture((frame) => frame.copyRGB(), options)
+  captureRGB(
+    options: CaptureOptions<Uint8Array> & { stream?: 'main' | 'lores' } = {},
+  ) {
+    return this.captureRGBAsync(options).wait()
   }
   captureMetadata(options?: CaptureOptions<ReturnType<Frame['metadata']>>) {
     return this.capture((frame) => frame.metadata(), options)
@@ -2142,11 +2195,12 @@ export class Camera {
   }
   switchModeAndCaptureRGB(
     options: CameraOptions,
-    jobOptions: ModeJobOptions<Uint8Array> = {},
+    jobOptions: ModeJobOptions<Uint8Array> & { stream?: 'main' | 'lores' } = {},
   ) {
+    const stream = imageStreamId(processedImageStream(jobOptions.stream))
     return this.submitMode(
       options,
-      { kind: 'rgb' },
+      { kind: 'rgb', stream },
       jobOptions,
     ) as BunJob<Uint8Array>
   }
@@ -2190,7 +2244,12 @@ export class Camera {
       prepared.format === 6
         ? { ...options, raw: true, unpackedRaw: true }
         : options,
-      { kind: 'file', path: prepared.path, imageOptions: prepared.options },
+      {
+        kind: 'file',
+        path: prepared.path,
+        imageOptions: prepared.options,
+        stream: prepared.stream,
+      },
       jobOptions,
     ) as BunJob<ReturnType<Frame['metadata']>>
   }
@@ -2203,7 +2262,11 @@ export class Camera {
       prepared.format === 6
         ? { ...options, raw: true, unpackedRaw: true }
         : options,
-      { kind: 'encoded', imageOptions: prepared.options },
+      {
+        kind: 'encoded',
+        imageOptions: prepared.options,
+        stream: prepared.stream,
+      },
       jobOptions,
     ) as BunJob<Uint8Array>
   }

@@ -4,7 +4,9 @@
 await camera.captureFile('trail.png', { compressLevel: 1, pngFilter: 'adaptive' })
 await camera.captureFile('trail.tif')
 await camera.captureFile('trail.bmp')
-const png = await camera.captureEncodedImage({ format: 'png' })
+const png = await camera.captureEncodedImage({ format: 'png', stream: 'lores' })
+const rgb = await camera.captureRGB({ stream: 'lores' })
+const color = camera.colorSpace('lores') // negotiated matrix/range, transfer and primaries
 const focused = await camera.captureFocusLockedEncodedImage({ format: 'JPEG' })
 const fullSize = await camera.switchModeAndCaptureEncodedImage(
   { width: 4056, height: 3040 }, { format: 'png', dropFrames: 4 },
@@ -31,10 +33,23 @@ callback contracts. Encoded-byte APIs return file bytes, not a decoded image
 object. They perform synchronous native encoding on the consuming thread; ordinary
 capture admission is asynchronous, and mode captures encode on their worker.
 
-PNG/BMP/TIFF/PPM store the main RGB8 stream losslessly, omitting row padding.
+The `stream` option defaults to main for processed images and raw for DNG.
+Processed encoders accept main or lores. RGB8 is read directly from leased rows;
+I420 lores is converted using negotiated BT.601/709/2020 YCbCr and full/limited
+range. The conversion uses one explicit temporary RGB24 buffer for encoding;
+`Frame.copyRGB('lores')` and the RGB capture helpers write directly to their
+owned destination. Main RGB copies retain the existing direct path. PNG/BMP/TIFF/
+PPM store the resulting RGB8 values losslessly, omitting row padding. Chroma
+upsampling uses nearest sampling; it does not recover discarded chroma detail.
+Transfer functions and primaries are reported but not transformed. Unknown YCbCr
+encoding/range rejects conversion instead of guessing. Disabled streams reject.
+DNG accepts only raw; processed raw capture requires a future demosaic path.
+Incompatible format/source combinations reject before capture admission.
+
 JPEG is lossy Home baseline 4:4:4; optional system JPEG acceleration remains the
-existing file-save path. Owned JPEG always uses Home. PNG filters and container
-layout are Home Zig code; Home's streaming compression adapter uses system libz.
+existing main-file save path; lores JPEG uses Home. Owned JPEG always uses Home.
+PNG filters and container layout are Home Zig code; Home's streaming compression
+adapter uses system libz.
 PNG encoding retains two row buffers and encoded output rather than a full
 filtered image plus a duplicate compressed buffer. BMP uses padded bottom-up RGB24
 rows. TIFF is uncompressed RGB, with per-component depth, planar/orientation and
@@ -61,11 +76,19 @@ The C ABI adds a 20-byte `zc_image_options`, `zc_encode_image`, immutable owned
 and JPEG/DNG calls are unchanged. Blob copy queries the required size, rejects
 short buffers without writing a prefix, and remains valid after camera close.
 C callers serialize and close each blob once. Zig exposes `defaultImageOptions`,
-`Frame.encodeImage(allocator, options)` and `saveImage(path, options)`.
+`Frame.encodeImage(allocator, options)` and `saveImage(path, options)`. Additive
+`zc_encode_stream_image`/`zc_save_stream_image` select an explicit stream without
+changing the 20-byte options. `zc_copy_stream_rgb` writes checked tight RGB24.
+`zc_get_stream_color_space` returns a separate 24-byte negotiated descriptor with
+explicit portable enums (zero means unknown). Zig exposes `encodeStreamImage`,
+`saveStreamImage`, `copyStreamRgb` and `colorSpace`; Bun exposes camera/request
+`colorSpace(stream)` and carries `stream` through every image and RGB job.
 
 The CLI accepts `.png`, `.bmp`, `.tif`/`.tiff` in addition to existing still formats,
-plus `--image-format`, `--png-compression`, and `--png-filter`. Capture sidecars
-continue to describe the actual selected request and stream configuration.
+plus `--image-format`, `--image-stream`, `--png-compression`, and `--png-filter`.
+Capture sidecars
+include image source/dimensions and its negotiated color metadata as well as the
+actual request and stream configuration.
 
 Tests decode exact RGB pixels using independent ImageIO on macOS and
 libpng/libtiff/SDL on Linux, including all filter policies, compression levels
@@ -73,9 +96,11 @@ libpng/libtiff/SDL on Linux, including all filter policies, compression levels
 also cover blob ownership, short-copy failure, stale leases, mappings, failed
 paths, option snapshots, callbacks, focus restoration and mode rollback. Home's
 Image suite additionally checks 16-bit sample order, palette alpha and decoder
-regressions. Camera PNG/BMP/TIFF currently accepts the main RGB8 stream only.
+regressions. Named-stream tests include edited RGB/I420 lores, independent color
+vectors, padding, source immutability, native allocation failures, callback access,
+recording coexistence and failed-target mode restoration.
 
-GIF/APNG, arbitrary encoder stream selection/conversion, decoded image-object
+GIF/APNG, additional pixel formats and demosaicing, decoded image-object
 conveniences, user Exif/ICC metadata, advanced TIFF options and advanced DNG remain
 on the parity worklist. Hardware throughput and optical quality are unmeasured.
 

@@ -676,6 +676,47 @@ extern "C" int zcd_sensor_modes(Device *device,zc_sensor_mode *modes,uint32_t ca
     if(capacity<*count)return ZC_INVALID;
     std::copy(device->modes.begin(),device->modes.end(),modes);return ZC_OK;
 }
+static zc_color_space portableColorSpace(const std::optional<ColorSpace> &space) {
+    zc_color_space out{};out.struct_size=sizeof(out);
+    if(!space)return out;
+    out.present=1;
+    switch(space->primaries) {
+    case ColorSpace::Primaries::Raw:out.primaries=ZC_PRIMARIES_RAW;break;
+    case ColorSpace::Primaries::Smpte170m:out.primaries=ZC_PRIMARIES_SMPTE170M;break;
+    case ColorSpace::Primaries::Rec709:out.primaries=ZC_PRIMARIES_REC709;break;
+    case ColorSpace::Primaries::Rec2020:out.primaries=ZC_PRIMARIES_REC2020;break;
+    default:break;
+    }
+    switch(space->transferFunction) {
+    case ColorSpace::TransferFunction::Linear:out.transfer=ZC_TRANSFER_LINEAR;break;
+    case ColorSpace::TransferFunction::Srgb:out.transfer=ZC_TRANSFER_SRGB;break;
+    case ColorSpace::TransferFunction::Rec709:out.transfer=ZC_TRANSFER_REC709;break;
+    default:break;
+    }
+    switch(space->ycbcrEncoding) {
+    case ColorSpace::YcbcrEncoding::None:out.ycbcr_encoding=ZC_YCBCR_NONE;break;
+    case ColorSpace::YcbcrEncoding::Rec601:out.ycbcr_encoding=ZC_YCBCR_REC601;break;
+    case ColorSpace::YcbcrEncoding::Rec709:out.ycbcr_encoding=ZC_YCBCR_REC709;break;
+    case ColorSpace::YcbcrEncoding::Rec2020:out.ycbcr_encoding=ZC_YCBCR_REC2020;break;
+    default:break;
+    }
+    switch(space->range) {
+    case ColorSpace::Range::Full:out.range=ZC_RANGE_FULL;break;
+    case ColorSpace::Range::Limited:out.range=ZC_RANGE_LIMITED;break;
+    default:break;
+    }
+    return out;
+}
+extern "C" int zcd_color_space(Device *device,uint32_t stream,zc_color_space *out) {
+    size_t index=0;
+    switch(stream) {
+    case ZC_MAIN:break;
+    case ZC_RAW:if(!device->requested.raw)return ZC_UNSUPPORTED;index=device->raw_index;break;
+    case ZC_LORES:if(!device->has_lores)return ZC_UNSUPPORTED;index=1;break;
+    default:return ZC_INVALID;
+    }
+    *out=portableColorSpace(device->config->at(index).colorSpace);return ZC_OK;
+}
 extern "C" int zcd_lores(Device *device,uint32_t index,zc_stream *out) {
     if(index>=device->slots.size())return ZC_INVALID;
     if(!device->has_lores)return ZC_UNSUPPORTED;

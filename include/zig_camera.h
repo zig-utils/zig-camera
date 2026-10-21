@@ -61,6 +61,15 @@ typedef struct zc_camera zc_camera;
  * Its negotiated size must not exceed main. All three streams share one lease. */
 enum { ZC_MAIN=0, ZC_RAW=1, ZC_LORES=2 };
 enum { ZC_YUV420=0, ZC_RGB24=1 };
+/* Negotiated color values, not configuration defaults. Zero means unknown.
+ * Decoding YCbCr converts encoded R'G'B' values; it does not transform primaries
+ * or transfer functions. present=0 means the pipeline supplied no color space. */
+enum { ZC_PRIMARIES_RAW=1,ZC_PRIMARIES_SMPTE170M=2,ZC_PRIMARIES_REC709=3,ZC_PRIMARIES_REC2020=4 };
+enum { ZC_TRANSFER_LINEAR=1,ZC_TRANSFER_SRGB=2,ZC_TRANSFER_REC709=3 };
+enum { ZC_YCBCR_NONE=1,ZC_YCBCR_REC601=2,ZC_YCBCR_REC709=3,ZC_YCBCR_REC2020=4 };
+enum { ZC_RANGE_FULL=1,ZC_RANGE_LIMITED=2 };
+typedef struct { uint32_t struct_size,present,primaries,transfer,ycbcr_encoding,range; } zc_color_space;
+int zc_get_stream_color_space(zc_camera *,uint32_t stream,zc_color_space *out);
 typedef struct {
     uint32_t struct_size;
     zc_capture_options capture;
@@ -109,6 +118,9 @@ int zc_get_stream(zc_camera *,uint64_t token,uint32_t stream,zc_stream *);
 int zc_enable_writable(zc_camera *);
 int zc_frame_readable(zc_camera *,uint64_t token);
 int zc_copy_frame_rgb(zc_camera *,uint64_t token,uint8_t *out,uint64_t length);
+/* RGB24 main/lores copied or I420 converted into caller-owned tight RGB24.
+ * All planes and destination are validated before writing; raw is unsupported. */
+int zc_copy_stream_rgb(zc_camera *,uint64_t token,uint32_t stream,uint8_t *out,uint64_t length);
 /* Scoped maps retain their own generation-checked frame reference. Read maps
  * share; write maps require writable mode and exactly one external owner. A
  * writer excludes stream reads and retention until close. Metadata remains usable.
@@ -270,12 +282,16 @@ void zc_default_image_options(zc_image_options *);
  * survives frame/camera release and keeps no native buffer. Caller serializes
  * blob operations and closes exactly once. Output is null on encode failure. */
 int zc_encode_image(zc_camera *,uint64_t token,const zc_image_options *,zc_image_blob **out);
+/* Explicit source. Processed formats accept main/lores, DNG accepts raw only.
+ * Disabled streams reject. Existing image option layouts remain unchanged. */
+int zc_encode_stream_image(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,zc_image_blob **out);
 int zc_image_blob_copy(const zc_image_blob *,uint8_t *data,uint64_t capacity,uint64_t *length);
 void zc_image_blob_close(zc_image_blob *);
 /* Atomic file replacement; explicit format does not depend on path extension.
  * JPEG quality 1..100; PNG zlib level 0..9 and one of the filter policies above.
  * DNG requires a supported raw stream and complete calibration. */
 int zc_save_image(zc_camera *,uint64_t token,const char *path,const zc_image_options *);
+int zc_save_stream_image(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *);
 const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */

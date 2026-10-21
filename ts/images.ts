@@ -14,7 +14,45 @@ type LowerImageFormat =
   'jpeg' | 'jpg' | 'png' | 'bmp' | 'tiff' | 'tif' | 'ppm' | 'dng'
 export type ImageFormat = LowerImageFormat | Uppercase<LowerImageFormat>
 export type PngFilter = 'adaptive' | 'none' | 'sub' | 'up' | 'average' | 'paeth'
+export type ImageStream = 'main' | 'raw' | 'lores'
+const streams = { main: 0, raw: 1, lores: 2 } as const
+export function imageStreamId(stream: ImageStream) {
+  if (typeof stream !== 'string' || !Object.hasOwn(streams, stream))
+    throw new RangeError('invalid image stream')
+  return streams[stream]
+}
+export function processedImageStream(stream: 'main' | 'lores' = 'main') {
+  if (imageStreamId(stream) === 1)
+    throw new CameraError(-8, 'raw RGB conversion')
+  return stream
+}
+export function readStreamColorSpace(camera: Pointer, stream: ImageStream) {
+  const data = storage(24)
+  check(n.zc_get_stream_color_space(camera, imageStreamId(stream), ptr(data)))
+  const d = view(data)
+  return {
+    present: !!d.getUint32(4, true),
+    primaries:
+      (['unknown', 'raw', 'smpte170m', 'rec709', 'rec2020'] as const)[
+        d.getUint32(8, true)
+      ] ?? 'unknown',
+    transfer:
+      (['unknown', 'linear', 'srgb', 'rec709'] as const)[
+        d.getUint32(12, true)
+      ] ?? 'unknown',
+    ycbcrEncoding:
+      (['unknown', 'none', 'rec601', 'rec709', 'rec2020'] as const)[
+        d.getUint32(16, true)
+      ] ?? 'unknown',
+    range:
+      (['unknown', 'full', 'limited'] as const)[d.getUint32(20, true)] ??
+      'unknown',
+  }
+}
+export type StreamColorSpace = ReturnType<typeof readStreamColorSpace>
 export interface ImageOptions {
+  /** Defaults to raw for DNG and main for processed images. */
+  stream?: ImageStream
   format?: ImageFormat
   quality?: number
   /** PNG zlib compression level, 0..9; default 1. */
@@ -25,6 +63,7 @@ export interface PreparedImage {
   options: Uint8Array
   path?: Uint8Array
   format: number
+  stream: number
 }
 const formats: Record<LowerImageFormat, number> = {
   jpeg: 1,
@@ -50,7 +89,13 @@ export function prepareImage(
 ): PreparedImage {
   if (!source || typeof source !== 'object' || Array.isArray(source))
     throw new RangeError('invalid image options')
-  const options = { ...source }
+  const options = {
+    format: source.format,
+    stream: source.stream,
+    quality: source.quality,
+    compressLevel: source.compressLevel,
+    pngFilter: source.pngFilter,
+  }
   const requested =
     options.format ??
     (path === undefined
@@ -64,6 +109,11 @@ export function prepareImage(
     quality = options.quality ?? 98,
     compression = options.compressLevel ?? 1,
     filter = options.pngFilter ?? 'adaptive'
+  const stream = imageStreamId(
+    options.stream ?? (format === 6 ? 'raw' : 'main'),
+  )
+  if ((format === 6) !== (stream === 1))
+    throw new CameraError(-8, 'image format/source combination')
   if (
     !Number.isInteger(quality) ||
     quality < 0 ||
@@ -86,15 +136,17 @@ export function prepareImage(
     options: data,
     path: path === undefined ? undefined : cstring(path),
     format,
+    stream,
   }
 }
 export function encodeNativeImage(
   camera: Pointer,
   token: bigint,
   options: Uint8Array,
+  stream = view(options).getUint32(4, true) === 6 ? 1 : 0,
 ): Uint8Array {
   const out = outPointer()
-  check(n.zc_encode_image(camera, token, ptr(options), ptr(out)))
+  check(n.zc_encode_stream_image(camera, token, stream, ptr(options), ptr(out)))
   const blob = handle(out)
   try {
     const length = new BigUint64Array(1)

@@ -7,6 +7,7 @@ import {
   outPointer,
   handle,
   view,
+  CameraError,
   type Pointer,
 } from './ffi'
 export interface ModeRequest {
@@ -69,6 +70,12 @@ declare const self: {
   close: () => void
 }
 self.onmessage = ({ data: request }) => {
+  const status = (error: unknown) =>
+    typeof error === 'number'
+      ? error
+      : error instanceof CameraError
+        ? error.code
+        : -6
   const result: ModeResponse = {
     handle: request.handle,
     code: 0,
@@ -290,13 +297,24 @@ self.onmessage = ({ data: request }) => {
         prepared = true
         const capture = request.capture
         if (capture.kind === 'rgb') {
-          const d = view(frame)
+          const stream = storage(208)
+          check(
+            n.zc_get_stream(
+              result.handle,
+              token,
+              capture.stream ?? 0,
+              ptr(stream),
+            ),
+          )
+          const d = view(stream)
           result.value = storage(
-            d.getUint32(40, true) * d.getUint32(44, true) * 3,
+            d.getUint32(0, true) * d.getUint32(4, true) * 3,
           )
           check(
-            n.zc_copy_rgb(
-              ptr(frame),
+            n.zc_copy_stream_rgb(
+              result.handle,
+              token,
+              capture.stream ?? 0,
               ptr(result.value),
               BigInt(result.value.length),
             ),
@@ -311,13 +329,18 @@ self.onmessage = ({ data: request }) => {
             result.handle,
             token,
             capture.imageOptions!,
+            capture.stream,
           )
         } else if (capture.kind === 'file') {
           check(
             capture.imageOptions
-              ? n.zc_save_image(
+              ? n.zc_save_stream_image(
                   result.handle,
                   token,
+                  capture.stream ??
+                    (view(capture.imageOptions).getUint32(4, true) === 6
+                      ? 1
+                      : 0),
                   ptr(capture.path!),
                   ptr(capture.imageOptions),
                 )
@@ -373,7 +396,7 @@ self.onmessage = ({ data: request }) => {
     }
     if (cancelled()) throw -5
   } catch (code) {
-    result.code = typeof code === 'number' ? code : -6
+    result.code = status(code)
   }
   if (oldConsumed && (request.capture || result.code !== 0)) {
     try {
@@ -387,7 +410,7 @@ self.onmessage = ({ data: request }) => {
       )
       result.target = false
     } catch (code) {
-      result.restoreCode = typeof code === 'number' ? code : -6
+      result.restoreCode = status(code)
     }
   } else if (
     !oldConsumed &&
@@ -399,7 +422,7 @@ self.onmessage = ({ data: request }) => {
       check(n.zc_start(result.handle))
       result.started = true
     } catch (code) {
-      result.restoreCode = typeof code === 'number' ? code : -6
+      result.restoreCode = status(code)
     }
   }
   Atomics.store(new Int32Array(request.cancel), 1, 5)

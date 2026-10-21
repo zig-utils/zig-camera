@@ -28,6 +28,8 @@ pub extern fn zcd_sensor_modes(*Handle, ?[*]c.zc_sensor_mode, u32, *u32) c_int;
 pub extern fn zcd_lores(*Handle, u32, *c.zc_stream) c_int;
 pub const sensorModes = zcd_sensor_modes;
 pub const lores = zcd_lores;
+pub extern fn zcd_color_space(*Handle, u32, *c.zc_color_space) c_int;
+pub const colorSpace = zcd_color_space;
 
 pub extern fn zcd_discover(*const @import("catalog.zig").Sink) c_int;
 pub extern fn zcd_catalog(*Handle, u32, u32, *const @import("catalog.zig").Sink) c_int;

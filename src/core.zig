@@ -310,6 +310,29 @@ pub export fn zc_get_stream(p: *c.zc_camera, token: u64, stream: u32, out: *c.zc
     if (self.slots[i].access.writer) return c.ZC_BUSY;
     return streamLocked(self, i, stream, out);
 }
+pub export fn zc_get_stream_color_space(p: *c.zc_camera, stream: u32, out: *c.zc_color_space) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return driver.colorSpace(self.device.?, stream, out);
+}
+pub export fn zc_copy_stream_rgb(p: *c.zc_camera, token: u64, stream: u32, out: [*c]u8, length: u64) c_int {
+    if (stream > c.ZC_LORES or out == null or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    if (stream == c.ZC_RAW) return c.ZC_UNSUPPORTED;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    var selected: c.zc_stream = undefined;
+    var space: c.zc_color_space = undefined;
+    var rc = streamLocked(self, index, stream, &selected);
+    if (rc != 0) return rc;
+    rc = driver.colorSpace(self.device.?, stream, &space);
+    if (rc != 0) return rc;
+    @import("stream_rgb.zig").copy(selected, space, out[0..@intCast(length)]) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
 fn streamLocked(self: *Session, i: u32, stream: u32, out: *c.zc_stream) c_int {
     if (stream == c.ZC_MAIN) out.* = self.slots[i].frame.main else if (stream == c.ZC_RAW) out.* = self.slots[i].frame.raw else if (stream == c.ZC_LORES) return driver.lores(self.device.?, i, out) else return c.ZC_INVALID;
     return if (out.plane_count == 0) c.ZC_UNSUPPORTED else c.ZC_OK;
@@ -953,20 +976,41 @@ pub export fn zc_default_image_options(out: *c.zc_image_options) void {
     out.* = .{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_JPEG, .quality = 98, .png_compression = 1, .png_filter = c.ZC_PNG_ADAPTIVE };
 }
 pub export fn zc_encode_image(p: *c.zc_camera, token: u64, opts: *const c.zc_image_options, out: *?*c.zc_image_blob) c_int {
+    return zc_encode_stream_image(p, token, if (opts.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, opts, out);
+}
+fn imageStreamStatus(stream: u32, opts: *const c.zc_image_options) c_int {
+    if (stream > c.ZC_LORES or !still.valid(opts)) return c.ZC_INVALID;
+    if ((opts.format == c.ZC_IMAGE_DNG) != (stream == c.ZC_RAW)) return c.ZC_UNSUPPORTED;
+    return c.ZC_OK;
+}
+pub export fn zc_encode_stream_image(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, out: *?*c.zc_image_blob) c_int {
     out.* = null;
-    if (!still.valid(opts)) return c.ZC_INVALID;
+    const source_status = imageStreamStatus(stream, opts);
+    if (source_status != 0) return source_status;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     if (self.slots[index].access.writer) return c.ZC_BUSY;
+    var selected: c.zc_stream = undefined;
+    const stream_rc = streamLocked(self, index, stream, &selected);
+    if (stream_rc != 0) return stream_rc;
     var metadata: c.zc_raw_metadata = undefined;
     if (opts.format == c.ZC_IMAGE_DNG) {
         const rc = driver.metadata(self.device.?, index, &metadata);
         if (rc != 0) return rc;
     }
-    const blob = std.heap.c_allocator.create(still.Blob) catch return c.ZC_NOMEM;
-    blob.bytes = still.encode(std.heap.c_allocator, &self.slots[index].frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
+    const allocator = std.heap.c_allocator;
+    var source = @import("stream_rgb.zig").Selected{ .frame = self.slots[index].frame };
+    if (opts.format != c.ZC_IMAGE_DNG) {
+        var space: c.zc_color_space = undefined;
+        const rc = driver.colorSpace(self.device.?, stream, &space);
+        if (rc != 0) return rc;
+        source = @import("stream_rgb.zig").Selected.init(allocator, source.frame, selected, space) catch |err| return still.status(err);
+    }
+    defer source.deinit(allocator);
+    const blob = allocator.create(still.Blob) catch return c.ZC_NOMEM;
+    blob.bytes = still.encode(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
         std.heap.c_allocator.destroy(blob);
         return still.status(err);
     };
@@ -1062,11 +1106,15 @@ test "image encoding validates options and rejects exclusive mappings or stale f
     try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
 }
 pub export fn zc_save_image(p: *c.zc_camera, token: u64, path: [*:0]const u8, opts: *const c.zc_image_options) c_int {
-    if (!still.valid(opts)) return c.ZC_INVALID;
-    if (opts.format == c.ZC_IMAGE_JPEG) return zc_save_jpeg(p, token, path, opts.quality);
+    return zc_save_stream_image(p, token, if (opts.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, path, opts);
+}
+pub export fn zc_save_stream_image(p: *c.zc_camera, token: u64, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options) c_int {
+    const source_status = imageStreamStatus(stream, opts);
+    if (source_status != 0) return source_status;
+    if (opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN) return zc_save_jpeg(p, token, path, opts.quality);
     if (opts.format == c.ZC_IMAGE_DNG) return zc_save_dng(p, token, path);
     var encoded: ?*c.zc_image_blob = null;
-    const rc = zc_encode_image(p, token, opts, &encoded);
+    const rc = zc_encode_stream_image(p, token, stream, opts, &encoded);
     if (rc != 0) return rc;
     defer zc_image_blob_close(encoded);
     const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));

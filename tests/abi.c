@@ -33,6 +33,7 @@ _Static_assert(sizeof(zc_buffer_stats)==64,"buffer stats ABI");
 _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
 _Static_assert(sizeof(zc_orientation_info)==16,"orientation ABI");
 _Static_assert(sizeof(zc_image_options)==20,"image options ABI");
+_Static_assert(sizeof(zc_color_space)==24,"stream color ABI");
 _Static_assert(sizeof(zc_pipeline_info)==224,"pipeline info ABI");
 _Static_assert(sizeof(zc_sensor_mode)==44,"sensor mode ABI");
 _Static_assert(sizeof(zc_control)==144,"control ABI");
@@ -65,6 +66,26 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    {
+        zc_config cfg;zc_default_config(&cfg);cfg.width=64;cfg.height=48;cfg.policy=ZC_FIFO;
+        zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);pipeline.lores_width=18;pipeline.lores_height=10;
+        zc_camera *camera=NULL;assert(zc_open_pipeline(&cfg,&pipeline,&camera)==ZC_OK);
+        zc_color_space color;assert(zc_get_stream_color_space(camera,ZC_LORES,&color)==ZC_OK);
+        assert(color.struct_size==sizeof(color) && color.present && color.ycbcr_encoding==ZC_YCBCR_REC601 && color.range==ZC_RANGE_FULL);
+        assert(zc_get_stream_color_space(camera,ZC_RAW,&color)==ZC_UNSUPPORTED);
+        assert(zc_get_stream_color_space(camera,99,&color)==ZC_INVALID);
+        assert(zc_start(camera)==ZC_OK);zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        uint8_t rgb[18*10*3];memset(rgb,0xa7,sizeof(rgb));
+        assert(zc_copy_stream_rgb(camera,frame.token,ZC_LORES,rgb,sizeof(rgb)-1)==ZC_INVALID && rgb[0]==0xa7);
+        assert(zc_copy_stream_rgb(camera,frame.token,ZC_LORES,rgb,sizeof(rgb))==ZC_OK && rgb[0]==0);
+        zc_image_options image;zc_default_image_options(&image);image.format=ZC_IMAGE_PPM;
+        zc_image_blob *blob=NULL;assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_OK && blob);zc_image_blob_close(blob);
+        image.format=ZC_IMAGE_DNG;
+        assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_UNSUPPORTED && !blob);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        assert(zc_copy_stream_rgb(camera,frame.token,ZC_LORES,rgb,sizeof(rgb))==ZC_STALE);
+        assert(zc_stop(camera)==ZC_OK && zc_close(camera)==ZC_OK);
+    }
     {
         zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;
         zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK && zc_start(camera)==ZC_OK);

@@ -24,6 +24,7 @@ export interface RequestFrame extends Pick<
   | 'saveDNG'
   | 'saveFile'
   | 'encodeImage'
+  | 'colorSpace'
 > {
   controls(): ReturnType<typeof readCatalog>
   setNativeControls(controls: readonly NativeControl[]): bigint
@@ -88,8 +89,11 @@ class ScopedRequest implements RequestFrame {
   metadataCatalog() {
     return this.current().metadataCatalog()
   }
-  copyRGB() {
-    return this.current().copyRGB()
+  copyRGB(stream: 'main' | 'lores' = 'main') {
+    return this.current().copyRGB(stream)
+  }
+  colorSpace(stream: StreamName = 'main') {
+    return this.current().colorSpace(stream)
   }
   copyStream(stream: StreamName = 'main') {
     return this.current().copyStream(stream)

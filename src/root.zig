@@ -126,6 +126,11 @@ pub const Camera = struct {
         try check(core.zc_get_orientation(self.handle, &result));
         return result;
     }
+    pub fn colorSpace(self: Camera, id: u32) Error!c.zc_color_space {
+        var out: c.zc_color_space = undefined;
+        try check(core.zc_get_stream_color_space(self.handle, id, &out));
+        return out;
+    }
     pub fn properties(self: Camera) Error!Catalog {
         var out: ?*c.zc_catalog = null;
         try check(core.zc_camera_properties(self.handle, &out));
@@ -361,13 +366,19 @@ pub const Frame = struct {
         try check(core.zc_save_jpeg(self.camera.handle, self.value.token, path, quality));
     }
     pub fn saveImage(self: *const Frame, path: [:0]const u8, options: ImageOptions) Error!void {
+        return self.saveStreamImage(path, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
+    }
+    pub fn saveStreamImage(self: *const Frame, path: [:0]const u8, id: u32, options: ImageOptions) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
-        try check(core.zc_save_image(self.camera.handle, self.value.token, path, &options));
+        try check(core.zc_save_stream_image(self.camera.handle, self.value.token, id, path, &options));
     }
     pub fn encodeImage(self: *const Frame, allocator: std.mem.Allocator, options: ImageOptions) Error![]u8 {
+        return self.encodeStreamImage(allocator, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
+    }
+    pub fn encodeStreamImage(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions) Error![]u8 {
         if (self.value.token == 0) return error.StaleFrame;
         var blob: ?*c.zc_image_blob = null;
-        try check(core.zc_encode_image(self.camera.handle, self.value.token, &options, &blob));
+        try check(core.zc_encode_stream_image(self.camera.handle, self.value.token, id, &options, &blob));
         defer core.zc_image_blob_close(blob);
         var length: u64 = 0;
         try check(core.zc_image_blob_copy(blob.?, null, 0, &length));
@@ -376,6 +387,16 @@ pub const Frame = struct {
         errdefer allocator.free(bytes);
         try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &length));
         return bytes;
+    }
+    pub fn colorSpace(self: *const Frame, id: u32) Error!c.zc_color_space {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: c.zc_color_space = undefined;
+        try check(core.zc_get_stream_color_space(self.camera.handle, id, &out));
+        return out;
+    }
+    pub fn copyStreamRgb(self: *const Frame, id: u32, out: []u8) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
+        try check(core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, out.ptr, out.len));
     }
 };
 test {

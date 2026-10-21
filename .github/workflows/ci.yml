@@ -65,6 +65,11 @@ jobs:
             ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --fifo --warmup 0 --png-compression 1 --png-filter paeth --output "zig-out/cli-image.$format"
           done
           bun tests/ts/check-media.ts zig-out --still-images
+          ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --image-stream lores --warmup 0 --output zig-out/stream-i420.png
+          ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --lores-format BGR888 --image-stream lores --warmup 0 --output zig-out/stream-rgb.png
+          bun tests/ts/check-media.ts zig-out --stream-images
+          if ./zig-out/bin/zig-camera capture --simulate --image-stream raw --output zig-out/invalid.png; then exit 1; fi
+          if ./zig-out/bin/zig-camera capture --simulate --image-stream main --output zig-out/invalid.dng; then exit 1; fi
           if ./zig-out/bin/zig-camera capture --simulate --png-compression 10 --output zig-out/invalid.png; then exit 1; fi
           if ./zig-out/bin/zig-camera info --simulate --rotation 45; then exit 1; fi
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
@@ -109,7 +114,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
-          bun test tests/ts/still-images.test.ts
+          bun test tests/ts/still-images.test.ts tests/ts/stream-images.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

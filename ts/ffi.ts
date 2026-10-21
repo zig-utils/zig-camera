@@ -14,6 +14,10 @@ const library =
 export const native = dlopen(library, {
   zc_default_image_options: { args: [p], returns: v },
   zc_encode_image: { args: [p, n, p, p], returns: i },
+  zc_encode_stream_image: { args: [p, n, u, p, p], returns: i },
+  zc_save_stream_image: { args: [p, n, u, p, p], returns: i },
+  zc_get_stream_color_space: { args: [p, u, p], returns: i },
+  zc_copy_stream_rgb: { args: [p, n, u, p, n], returns: i },
   zc_image_blob_copy: { args: [p, p, n, p], returns: i },
   zc_image_blob_close: { args: [p], returns: v },
   zc_save_image: { args: [p, n, p, p], returns: i },
