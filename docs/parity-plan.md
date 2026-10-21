@@ -43,3 +43,8 @@ positive and failure tests, platform coverage and required hardware observations
 Review omitted exports and upstream changes. Distinguish synthetic semantics from
 physical results. All required capabilities and validation remain in scope until
 proven; this worklist must not be reduced to the already implemented subset.
+
+Still-metadata foundation evidence is tracked in still-metadata.md. The shared
+Home ICC profile/curve corrections and independent CMM tests are available;
+public ICC embedding and Exif capture options remain required implementation
+work. A valid profile alone does not establish matching pixels or sensor quality.

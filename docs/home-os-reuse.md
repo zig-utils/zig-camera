@@ -120,3 +120,16 @@ The bitrate follow-up also reads audio_codec.home's AAC/header handling at that
 same revision. It supplies no hosted recording-session encoder recipe to reuse.
 The fix uses the camera's existing native scalar query and Home audio validation;
 no OS bitrate policy or decoder stub is used as encoding evidence.
+
+The still-metadata audit fetches origin/main and confirms HEAD and origin/main
+remain 151269666bc09aa15a271f1c1f4603f681132e65. It reads
+kernel/src/container/image.home, the camera/media stubs, VC7 gamma handling and
+ADR-MC3-media-stdlib.md, and searches for ICC/Exif profile/container metadata.
+The tree supplies no hosted ICC serializer, Exif writer or color-management
+engine to reuse. Display gamma LUT approximations are not ICC image metadata.
+ADR-MC3 assigns media algorithms to Home standard-library image/audio/video
+packages while OS source stays Home. Accordingly the shared ICC correctness and
+ownership fixes land in Home image, then are reused verbatim by camera tests.
+No OS source is changed, no kernel allocator/register path is imported, and no
+hardware or display-calibration result is asserted. Camera ICC embedding and
+Exif capture metadata remain implementation work.

@@ -504,3 +504,30 @@ coverage. Commits 4b7f39b1e063c2314a12e69a558f18247d9d7af0 and
 Four tests pass pinned/development Zig Debug/ReleaseSafe, including independent
 gamut, transfer, matrix and range adjustment checks. Existing yuv_rgb/yuv_remap
 continue to handle pixels; negotiation is not a substitute for a gamut transform.
+
+The still-metadata audit inspects Home image/metadata/icc.zig, exif.zig and
+format_utils.zig at b5c9236c3 before contributing ICC fixes at
+2c0d4c5be72b3c271d2b1e8988757fde1d932f64. The ICC generator used a gamma-2.2
+curve, its v2 text descriptions lacked required tail fields, and malformed
+profiles could produce partial successful parse results. The shared fix adds
+allocation-free bounded tag geometry, supported sampled/parametric curve
+validation/evaluation, owned curve bytes, a conservative copy budget and proper
+UTF-16 description decoding. The v2.4 generator now uses a shared sampled sRGB
+curve, D50 colorants and chromatic adaptation. Those three modules and their
+ownership/CMM tests are copied verbatim into this repository.
+
+Pinned 0.15.2 and development Zig pass 7 direct + 5 separate ownership tests in
+Debug/ReleaseSafe. The full metadata suite passes 15 tests. Independent Little
+CMS tests read all 196,608 channel values and transform 4,913 RGB patches; local
+maximum curve error is 0.000015054 and XYZ-component error 0.000018893. The same
+curve oracle rejects the previous Home generator. This is serialized-profile
+validation, not physical image quality or a general ICC conversion claim.
+Home Actions rejects workflow dispatch with HTTP 422 (repository disabled), so
+local evidence and camera copied-source CI must be distinguished. The dedicated
+camera workflow checks both toolchains and Linux x86/ARM plus macOS.
+
+Existing Home format_utils ICC conversion refers to unavailable profile methods
+and uses approximate white-point scaling. It is not reused as a working CMM.
+Exif parsing/writing also needs further bounds/IFD and capture-field work before
+camera exposure. No camera ICC embedding or Exif public API is claimed by this
+foundation. See still-metadata.md; those integrations remain on the parity plan.

@@ -1,0 +1,44 @@
+name: Home ICC profiles
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+  pull_request:
+    paths: ['src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  profiles:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Independent color management dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install little-cms2 pkgconf
+          else
+            sudo apt-get update
+            sudo apt-get install -y liblcms2-dev pkg-config
+          fi
+      - name: Checked curves, owned parsing and independent CMM
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/metadata/icc.zig
+            zig test -O "$mode" --dep icc -Mroot=tests/home_icc_profile.zig -Micc=src/home/metadata/icc.zig
+          done
+          zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+          cc -std=c11 -Wall -Wextra -Werror tests/home_icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
+          /tmp/home-icc-test
