@@ -13,6 +13,9 @@ const help =
     \\  --sensor-width N --sensor-height N --sensor-depth N   Exact advertised mode
     \\  --lores-width N --lores-height N  Add a paired analysis stream
     \\  --lores-format NAME      YUV420 (default) or BGR888
+    \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
+    \\  --strict-transform       Reject adjusted camera orientation
+    \\  --transpose              Final diagonal transpose after rotation/flips
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
     \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv/.mp4 (default capture.ppm)
@@ -94,9 +97,30 @@ fn run() !void {
     var frames: u32 = 300;
     var quality: u32 = if (eq(command, "record")) 90 else 98;
     var timeout_ms: u32 = 5000;
+    var rotation: u32 = 0;
+    var hflip = false;
+    var vflip = false;
+    var strict_transform = false;
+    var transpose = false;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
         const key = args[i];
+        if (eq(key, "--transpose")) {
+            transpose = true;
+            continue;
+        }
+        if (eq(key, "--hflip")) {
+            hflip = true;
+            continue;
+        }
+        if (eq(key, "--vflip")) {
+            vflip = true;
+            continue;
+        }
+        if (eq(key, "--strict-transform")) {
+            strict_transform = true;
+            continue;
+        }
         if (eq(key, "--simulate")) {
             simulate = true;
             continue;
@@ -144,7 +168,9 @@ fn run() !void {
             cfg.lens_position = try std.fmt.parseFloat(f32, value);
         } else {
             const n = try std.fmt.parseInt(u32, value, 10);
-            if (eq(key, "--sensor-width")) {
+            if (eq(key, "--rotation")) {
+                rotation = n;
+            } else if (eq(key, "--sensor-width")) {
                 pipeline.sensor_width = n;
             } else if (eq(key, "--sensor-height")) {
                 pipeline.sensor_height = n;
@@ -205,7 +231,9 @@ fn run() !void {
     }
     pipeline.capture = capture_opts;
     if (camera_id != null and camera_index_set) return error.AmbiguousCameraSelector;
-    const cam = if (camera_id) |id| try camera.Camera.initPipelineId(cfg, pipeline, id) else try camera.Camera.initPipeline(cfg, pipeline);
+    var transform = try camera.ImageTransform.fromRotation(rotation, hflip, vflip);
+    if (transpose) transform.transpose = !transform.transpose;
+    const cam = if (camera_id) |id| try camera.Camera.initOrientedPipelineId(cfg, pipeline, transform, strict_transform, id) else try camera.Camera.initOrientedPipeline(cfg, pipeline, transform, strict_transform);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
@@ -219,6 +247,8 @@ fn run() !void {
         return;
     }
     if (eq(command, "info")) {
+        const orientation = try cam.orientation();
+        std.debug.print("orientation=requested:{d} actual:{d} adjusted:{d}\n", .{ orientation.requested, orientation.actual, orientation.adjusted });
         std.debug.print("backend={s} camera={s} main={d}x{d} stride={d} buffers={d} raw={s}\n", .{
             if (info.backend == camera.c.ZC_SYNTHETIC) "synthetic" else "libcamera",
             std.mem.sliceTo(&info.camera_id, 0),

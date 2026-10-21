@@ -41,6 +41,25 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    for(uint32_t value=1;value<=8;++value) {
+        Orientation orientation=Orientation::Rotate0;
+        assert(nativeOrientation(value,orientation));
+        uint32_t actual=99;
+        assert(negotiatedOrientation(value,orientation,true,actual)==ZC_OK && actual==value);
+        actual=99;
+        const uint32_t other=value==1 ? 2 : 1;
+        assert(negotiatedOrientation(other,orientation,true,actual)==ZC_UNSUPPORTED && actual==99);
+        assert(negotiatedOrientation(other,orientation,false,actual)==ZC_OK && actual==value);
+    }
+    Orientation invalid=Orientation::Rotate0;
+    assert(!nativeOrientation(0,invalid) && !nativeOrientation(9,invalid));
+    uint32_t untouched=123;
+    assert(negotiatedOrientation(1,static_cast<Orientation>(99),false,untouched)==ZC_UNSUPPORTED && untouched==123);
+    assert(sameBayerLayout("SRGGB12","SBGGR12"));
+    assert(sameBayerLayout("SGRBG10_CSI2P","SGBRG10_CSI2P"));
+    assert(!sameBayerLayout("SRGGB12","SBGGR10"));
+    assert(!sameBayerLayout("SRGGB12","SBGGR12_CSI2P"));
+    assert(!sameBayerLayout("SRGGB12","SFOOO12"));
     Captured out;
     const zcd_catalog_sink sink{&out,record,value,end};
     extraType(sink,out,uint16_t(43210),9);

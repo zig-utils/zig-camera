@@ -31,6 +31,7 @@ _Static_assert(sizeof(zc_output_callbacks)==56,"output callbacks ABI");
 _Static_assert(sizeof(zc_buffer_config)==24,"buffer config ABI");
 _Static_assert(sizeof(zc_buffer_stats)==64,"buffer stats ABI");
 _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
+_Static_assert(sizeof(zc_orientation_info)==16,"orientation ABI");
 _Static_assert(sizeof(zc_pipeline_info)==224,"pipeline info ABI");
 _Static_assert(sizeof(zc_sensor_mode)==44,"sensor mode ABI");
 _Static_assert(sizeof(zc_control)==144,"control ABI");
@@ -63,6 +64,23 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    {
+        zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;
+        zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);
+        uint32_t orientation=99;
+        assert(zc_orientation_from_transform(90,0,0,0,&orientation)==ZC_OK && orientation==ZC_ROTATE90);
+        assert(zc_orientation_from_transform(45,0,0,0,&orientation)==ZC_INVALID && orientation==ZC_ROTATE90);
+        zc_camera *camera=NULL;
+        assert(zc_open_id_oriented_pipeline(&cfg,&pipeline,orientation,1,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
+        zc_orientation_info actual;assert(zc_get_orientation(camera,&actual)==ZC_OK);
+        assert(actual.struct_size==sizeof(actual) && actual.requested==orientation && actual.actual==orientation && !actual.adjusted);
+        assert(zc_start(camera)==ZC_OK);
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(frame.main.planes[0].data[0]==0 && frame.main.planes[0].data[1]==17);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        assert(zc_stop(camera)==ZC_OK && zc_close(camera)==ZC_OK);
+        assert(zc_open_oriented_pipeline(&cfg,&pipeline,9,0,&camera)==ZC_INVALID && !camera);
+    }
     zc_config typed_cfg;zc_default_config(&typed_cfg);typed_cfg.width=16;typed_cfg.height=16;
     zc_camera *typed_camera=NULL;assert(zc_open(&typed_cfg,&typed_camera)==ZC_OK);
     uint8_t typed_packet[96]={0};memcpy(typed_packet,"HCAT",4);

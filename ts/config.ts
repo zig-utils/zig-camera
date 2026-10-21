@@ -1,10 +1,19 @@
-import { native as n, storage, ptr, view, cstring } from './ffi'
+import { native as n, storage, ptr, view, cstring, check } from './ffi'
 import type { CameraOptions } from './index'
 export function copyConfiguration(options: CameraOptions): CameraOptions {
+  const snapshot = { ...options }
+  if (
+    snapshot.transform !== undefined &&
+    (typeof snapshot.transform !== 'object' ||
+      snapshot.transform === null ||
+      Array.isArray(snapshot.transform))
+  )
+    throw new RangeError('invalid camera transform')
   return {
-    ...options,
-    sensor: options.sensor ? { ...options.sensor } : undefined,
-    lores: options.lores ? { ...options.lores } : undefined,
+    ...snapshot,
+    sensor: snapshot.sensor ? { ...snapshot.sensor } : undefined,
+    lores: snapshot.lores ? { ...snapshot.lores } : undefined,
+    transform: snapshot.transform ? { ...snapshot.transform } : undefined,
   }
 }
 export function cameraIdentity(options: CameraOptions) {
@@ -73,5 +82,40 @@ export function cameraConfiguration(options: CameraOptions) {
     put(pipeline, 36, options.lores.height)
     put(pipeline, 40, options.lores.rgb ? 1 : 0)
   }
-  return { config, pipeline, cameraId, writable: options.writable ?? false }
+  const transform = options.transform
+  let orientation = 1
+  if (transform !== undefined) {
+    if (!transform || typeof transform !== 'object' || Array.isArray(transform))
+      throw new RangeError('invalid camera transform')
+    const rotation = transform.rotation ?? 0
+    if (![0, 90, 180, 270].includes(rotation))
+      throw new RangeError('rotation must be 0, 90, 180 or 270')
+    for (const flag of [
+      transform.hflip,
+      transform.vflip,
+      transform.transpose,
+      transform.strict,
+    ])
+      if (flag !== undefined && typeof flag !== 'boolean')
+        throw new RangeError('invalid camera transform flag')
+    const encoded = new Uint32Array(1)
+    check(
+      n.zc_orientation_from_transform(
+        rotation,
+        transform.hflip ? 1 : 0,
+        transform.vflip ? 1 : 0,
+        transform.transpose ? 1 : 0,
+        ptr(encoded),
+      ),
+    )
+    orientation = encoded[0]
+  }
+  return {
+    config,
+    pipeline,
+    cameraId,
+    writable: options.writable ?? false,
+    orientation,
+    strictOrientation: transform?.strict ?? false,
+  }
 }

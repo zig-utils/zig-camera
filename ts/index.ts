@@ -286,7 +286,19 @@ export interface RuntimeControl {
   type: 'bool' | 'int' | 'float' | 'rect'
   values: number[]
 }
+export interface CameraTransform {
+  /** Clockwise rotation followed by flips along the output image axes. */
+  rotation?: 0 | 90 | 180 | 270
+  hflip?: boolean
+  vflip?: boolean
+  /** Final diagonal transposition after rotation and flips. */
+  transpose?: boolean
+  /** Reject pipeline adjustments instead of accepting/reporting them. */
+  strict?: boolean
+}
+export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 export interface CameraOptions {
+  transform?: CameraTransform
   /** Opt in to writable mappings and READ|WRITE DMA fences before first start. */
   writable?: boolean
   simulate?: boolean
@@ -677,18 +689,28 @@ export class Camera {
       pipeline,
       cameraId,
       writable,
+      orientation,
+      strictOrientation,
     } = cameraConfiguration(this.configuration)
     const out = outPointer()
     check(
       cameraId
-        ? n.zc_open_id_pipeline(
+        ? n.zc_open_id_oriented_pipeline(
             ptr(cfg),
             ptr(pipeline),
+            orientation,
+            strictOrientation ? 1 : 0,
             ptr(cameraId),
             cameraId.length,
             ptr(out),
           )
-        : n.zc_open_pipeline(ptr(cfg), ptr(pipeline), ptr(out)),
+        : n.zc_open_oriented_pipeline(
+            ptr(cfg),
+            ptr(pipeline),
+            orientation,
+            strictOrientation ? 1 : 0,
+            ptr(out),
+          ),
       'open camera',
     )
     this.handle = handle(out)
@@ -736,6 +758,17 @@ export class Camera {
   info() {
     this.assertOpen()
     return this.readInfo()
+  }
+  orientation() {
+    this.assertOpen()
+    const data = storage(16)
+    check(n.zc_get_orientation(this.handle, ptr(data)))
+    const v = view(data)
+    return {
+      requested: v.getUint32(4, true) as ImageOrientation,
+      actual: v.getUint32(8, true) as ImageOrientation,
+      adjusted: v.getUint32(12, true) !== 0,
+    }
   }
   private readInfo() {
     const d = storage(680)
@@ -1734,6 +1767,9 @@ export class Camera {
       cameraId: this.configuration.cameraId,
     })
     target.writable ??= this.configuration.writable
+    target.transform ??= this.configuration.transform
+      ? { ...this.configuration.transform }
+      : undefined
     const encoded = cameraConfiguration(target),
       dropFrames = uint(jobOptions.dropFrames ?? 0)
     if (typeof output === 'string') guardHostPath(output)
@@ -1850,6 +1886,8 @@ export class Camera {
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousWritable: old.writable,
+            previousOrientation: old.orientation,
+            previousStrictOrientation: old.strictOrientation,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -1963,6 +2001,8 @@ export class Camera {
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousWritable: encoded.writable,
+                previousOrientation: encoded.orientation,
+                previousStrictOrientation: encoded.strictOrientation,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,
@@ -2150,6 +2190,9 @@ export class Camera {
       cameraId: this.configuration.cameraId,
     })
     target.writable ??= this.configuration.writable
+    target.transform ??= this.configuration.transform
+      ? { ...this.configuration.transform }
+      : undefined
     if (
       (options.simulate !== undefined &&
         options.simulate !== (this.configuration.simulate ?? false)) ||
@@ -2216,6 +2259,8 @@ export class Camera {
             previousConfig: old.config,
             previousPipeline: old.pipeline,
             previousWritable: old.writable,
+            previousOrientation: old.orientation,
+            previousStrictOrientation: old.strictOrientation,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -2292,6 +2337,8 @@ export class Camera {
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
                 previousWritable: encoded.writable,
+                previousOrientation: encoded.orientation,
+                previousStrictOrientation: encoded.strictOrientation,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,

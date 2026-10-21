@@ -1,4 +1,4 @@
-# Feature coverage in 0.41
+# Feature coverage in 0.42
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -11,6 +11,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Request callbacks | Home leases/access gates pin scopes, exclude writers and prevent requeue under live maps; existing native metadata/control APIs | Scoped synchronous pre/copy/post/encode/display order on the main Bun thread; mode-worker warmup/AF/capture handoff; failure isolation, retained owners, map cleanup recovery and ownership reentry guards; arbitrary dispatch remains incomplete |
 | Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata | Camera.discover, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; hotplug watches missing |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
+| Camera orientation | Native orientation configuration, requested/actual result, optional strict negotiation; Home exact transform geometry and CFA phase | Rotation/flip/transpose options, C/Zig/Bun/CLI, mode and recording rollback propagation; all eight synthetic transforms, real capability adjustments reported; hardware chart acceptance pending |
 | Controls and autofocus | Atomic convenience/native/vendor batches; exact typed bounded journals; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls/setNativeControls and both snapshot/restore APIs; cancellable scan and CAF pause/resume jobs; focus-locked retained requests, paired streams and RGB/metadata/lores/JPEG/DNG with joined restoration and discard on failure; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics and sensor-specific timing unvalidated |
 | Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
 | Still images | Home JPEG 4:4:4, PPM; Bayer DNG with metadata/calibration | JPEG/DNG capture; PiSP compressed raw and advanced DNG profiles missing |

@@ -1,7 +1,7 @@
 const c = @import("abi.zig").c;
 pub const Handle = opaque {};
 pub const Callback = *const fn (?*anyopaque, u32, ?*const c.zc_frame, ?*const c.zc_metadata, c_int) callconv(.c) void;
-pub extern fn zcd_open(*const c.zc_config, *const c.zc_pipeline_options, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
+pub extern fn zcd_open(*const c.zc_config, *const c.zc_pipeline_options, u32, bool, *u32, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
 pub extern fn zcd_start(*Handle) c_int;
 pub extern fn zcd_queue(*Handle, u32) c_int;
 pub extern fn zcd_sync(*Handle, u32, bool) c_int;
@@ -34,10 +34,10 @@ pub extern fn zcd_catalog(*Handle, u32, u32, *const @import("catalog.zig").Sink)
 pub const discover = zcd_discover;
 pub const catalog = zcd_catalog;
 
-pub extern fn zcd_open_id(*const c.zc_config, *const c.zc_pipeline_options, [*]const u8, u32, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
+pub extern fn zcd_open_id(*const c.zc_config, *const c.zc_pipeline_options, u32, bool, *u32, [*]const u8, u32, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
 pub extern fn zcd_camera_id(*Handle, ?[*]u8, u64, *u64) c_int;
-pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, negotiated: *c.zc_pipeline_info) c_int {
-    return zcd_open_id(cfg, pipeline, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
+pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, negotiated: *c.zc_pipeline_info) c_int {
+    return zcd_open_id(cfg, pipeline, orientation, strict, actual, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
 }
 pub const cameraId = zcd_camera_id;
 

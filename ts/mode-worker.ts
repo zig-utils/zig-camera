@@ -18,6 +18,10 @@ export interface ModeRequest {
   previousStarted: boolean
   writable?: boolean
   previousWritable?: boolean
+  orientation?: number
+  strictOrientation?: boolean
+  previousOrientation?: number
+  previousStrictOrientation?: boolean
   nativeControls?: Uint8Array
   controls: Uint8Array
   controlCount: number
@@ -89,9 +93,17 @@ self.onmessage = ({ data: request }) => {
     const selected = config.slice()
     view(selected).setUint32(12, 0, true)
     check(
-      n.zc_open_id_pipeline(
+      n.zc_open_id_oriented_pipeline(
         ptr(selected),
         ptr(pipeline),
+        (restoring ? request.previousOrientation : request.orientation) ?? 1,
+        (
+          restoring
+            ? request.previousStrictOrientation
+            : request.strictOrientation
+        )
+          ? 1
+          : 0,
         ptr(request.cameraId),
         request.cameraId.length,
         ptr(out),

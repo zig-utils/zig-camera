@@ -81,6 +81,21 @@ void zc_default_pipeline_options(zc_pipeline_options *);
 int zc_open_id_pipeline(const zc_config *, const zc_pipeline_options *, const uint8_t *id, uint32_t length, zc_camera **out);
 int zc_get_camera_id(zc_camera *, uint8_t *data, uint32_t capacity, uint32_t *length);
 int zc_open_pipeline(const zc_config *,const zc_pipeline_options *,zc_camera **);
+/* libcamera orientation values. Rotations are clockwise. Request rotation first,
+ * then flips along output axes and optional final diagonal transposition with
+ * zc_orientation_from_transform. Already
+ * transformed pixels must not receive the orientation again as an EXIF tag. */
+enum { ZC_ROTATE0=1,ZC_ROTATE0_MIRROR=2,ZC_ROTATE180=3,ZC_ROTATE180_MIRROR=4,
+       ZC_ROTATE90_MIRROR=5,ZC_ROTATE270=6,ZC_ROTATE270_MIRROR=7,ZC_ROTATE90=8 };
+typedef struct { uint32_t struct_size,requested,actual,adjusted; } zc_orientation_info;
+int zc_orientation_from_transform(uint32_t rotation,uint32_t hflip,uint32_t vflip,uint32_t transpose,uint32_t *out);
+/* strict is 0 (accept/report pipeline adjustments) or 1 (require exact orientation).
+ * Existing config/stream layouts remain unchanged; width/height are requested
+ * output dimensions. Sensor dimensions remain physical. Raw CFA order and raw
+ * geometry are negotiated and reported by get_info, never assumed from input. */
+int zc_open_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,zc_camera **out);
+int zc_open_id_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,const uint8_t *id,uint32_t length,zc_camera **out);
+int zc_get_orientation(zc_camera *,zc_orientation_info *out);
 int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
 /* Cached discovery: no reconfiguration or capture interruption. Query with
  * NULL/0 first. count is total; insufficient capacity returns INVALID. Formats

@@ -5,6 +5,7 @@ comptime {
     _ = core;
 }
 pub const raw = @import("raw.zig");
+pub const ImageTransform = @import("home/orientation.zig").Transform;
 pub const dng = @import("dng.zig");
 pub const audio = @import("audio.zig");
 comptime {
@@ -101,6 +102,22 @@ pub const Camera = struct {
         var ptr: ?*c.zc_camera = null;
         try check(core.zc_open_pipeline(&cfg, &opts, &ptr));
         return .{ .handle = ptr.? };
+    }
+    pub fn initOrientedPipeline(cfg: Config, opts: c.zc_pipeline_options, transform: @import("home/orientation.zig").Transform, strict: bool) Error!Camera {
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_oriented_pipeline(&cfg, &opts, transform.orientation(), @intFromBool(strict), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn initOrientedPipelineId(cfg: Config, opts: c.zc_pipeline_options, transform: @import("home/orientation.zig").Transform, strict: bool, id: []const u8) Error!Camera {
+        if (id.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_id_oriented_pipeline(&cfg, &opts, transform.orientation(), @intFromBool(strict), id.ptr, @intCast(id.len), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn orientation(self: Camera) Error!c.zc_orientation_info {
+        var result: c.zc_orientation_info = undefined;
+        try check(core.zc_get_orientation(self.handle, &result));
+        return result;
     }
     pub fn properties(self: Camera) Error!Catalog {
         var out: ?*c.zc_catalog = null;

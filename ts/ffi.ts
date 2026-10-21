@@ -12,6 +12,10 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_orientation_from_transform: { args: [u, u, u, u, p], returns: i },
+  zc_get_orientation: { args: [p, p], returns: i },
+  zc_open_oriented_pipeline: { args: [p, p, u, u, p], returns: i },
+  zc_open_id_oriented_pipeline: { args: [p, p, u, u, p, u, p], returns: i },
   zc_enable_writable: { args: [p], returns: i },
   zc_frame_readable: { args: [p, n], returns: i },
   zc_copy_frame_rgb: { args: [p, n, p, n], returns: i },

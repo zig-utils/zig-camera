@@ -38,6 +38,10 @@ jobs:
           if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi
           if ./zig-out/bin/zig-camera info --simulate --camera-id synthetic --camera 0; then exit 1; fi
           ./zig-out/bin/zig-camera modes --simulate
+          ./zig-out/bin/zig-camera info --simulate --rotation 90 --transpose --strict-transform
+          ./zig-out/bin/zig-camera capture --simulate --width 3 --height 2 --fifo --hflip --strict-transform --warmup 0 --output zig-out/oriented.ppm
+          bun tests/ts/check-media.ts zig-out --orientation
+          if ./zig-out/bin/zig-camera info --simulate --rotation 45; then exit 1; fi
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
           bun tests/ts/check-media.ts zig-out --lores
           ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --warmup 2 --output zig-out/test.ppm

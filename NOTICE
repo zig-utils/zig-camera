@@ -291,6 +291,12 @@ Home frame selection barriers (0.38):
   license above applies.
   https://github.com/home-lang/home/commit/691fd4f5cfef4fd3b7da11342b2c066a50f33471
 
+Home exact image orientation (0.42):
+- src/home/orientation.zig is verbatim packages/image/src/ops/orientation.zig.
+  Source commit: 0f75b12b4aa8f63780ed1adaccd03f1760919557.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/0f75b12b4aa8f63780ed1adaccd03f1760919557
+
 Home autofocus result publication fences (0.41):
 - src/home/completion_gate.zig is verbatim packages/async/src/completion_gate.zig,
   adding success-only result revision validation against the acknowledgement.

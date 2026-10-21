@@ -292,3 +292,16 @@ Bun composes bounded cancellation restoration with the same native gate rather
 than adding a second AF scheduler. Lease pools, media codecs and containers remain
 the existing Home implementations. No camera hardware focus evidence is inferred
 from these synthetic state/ownership checks.
+
+The 0.42 audit inspected Home image/ops/transform.zig and video transform filters.
+Their owned Image/VideoFrame operations are unsuitable for a libcamera buffer
+configuration boundary. It contributes image/ops/orientation.zig at
+0f75b12b4aa8f63780ed1adaccd03f1760919557, copied verbatim and exported by Home's
+existing image transform module. The helper shares exact clockwise/flip geometry,
+inverse coordinates, extents and phase-correct 2x2 tiles without allocating or
+depending on image ownership/types. Pinned/development Zig Debug/ReleaseSafe tests
+exercise every transform, odd/singleton dimensions and maximal coordinates.
+Home's helper workflow includes its paths and standalone tests. Camera Zig uses
+it for C/Bun admission conversion and synthetic RGB/lores/Bayer generation;
+libcamera performs physical transforms and reports negotiated orientation. No
+duplicate codec, container or per-frame software rotation worker is introduced.

@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("abi.zig").c;
 const Alloc = std.heap.c_allocator;
+const orientation = @import("home/orientation.zig");
 pub const model = "zig-camera synthetic";
 pub const black_level: i32 = 1024;
 pub const color_matrix = [9]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
@@ -49,7 +50,13 @@ pub fn enableWritable(h: *Handle) c_int {
     h.writable = true;
     return c.ZC_OK;
 }
-pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+fn sampleRGB(transform: orientation.Transform, output: orientation.Extent, main_source: orientation.Extent, x: usize, y: usize, index: usize) [3]u8 {
+    const source = transform.extent(output);
+    const point = transform.sourcePoint(source, .{ .x = x, .y = y }) catch unreachable;
+    return .{ @truncate(point.x * main_source.width / source.width), @truncate(point.y * main_source.height / source.height), @truncate(index * 37) };
+}
+pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    const transform = orientation.Transform.fromOrientation(requested_orientation) catch return c.ZC_INVALID;
     if (opts.sensor_width != 0) {
         var found = false;
         for (modes) |mode| if (mode.width == opts.sensor_width and mode.height == opts.sensor_height and mode.bit_depth == opts.sensor_bit_depth) {
@@ -61,11 +68,13 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
     const h = Alloc.create(Handle) catch return c.ZC_NOMEM;
     const width = if (config.width == 0) 640 else config.width;
     const height = if (config.height == 0) 480 else config.height;
+    const main_output = orientation.Extent{ .width = width, .height = height };
+    const main_source = transform.extent(main_output);
     const stride = std.mem.alignForward(u32, width * 3, 64);
     h.* = .{ .config = config.*, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
     h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
-    h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else width;
-    h.pipeline.sensor_height = if (opts.sensor_width != 0) opts.sensor_height else height;
+    h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else @intCast(main_source.width);
+    h.pipeline.sensor_height = if (opts.sensor_width != 0) opts.sensor_height else @intCast(main_source.height);
     h.pipeline.sensor_bit_depth = if (opts.sensor_width != 0) opts.sensor_bit_depth else 12;
     if (opts.lores_width > width or opts.lores_height > height) {
         Alloc.destroy(h);
@@ -89,8 +98,9 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
     @memcpy(h.info.main.format[0..6], "BGR888");
     @memcpy(h.info.camera_id[0..9], "synthetic");
     if (config.raw != 0) {
-        h.info.raw.width = if (opts.sensor_width != 0) opts.sensor_width else width;
-        h.info.raw.height = if (opts.sensor_width != 0) opts.sensor_height else height;
+        const raw_output = transform.extent(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height });
+        h.info.raw.width = @intCast(raw_output.width);
+        h.info.raw.height = @intCast(raw_output.height);
         h.info.raw.stride = std.mem.alignForward(u32, h.info.raw.width * 2, 64);
         h.info.raw.plane_count = 1;
         const name = if (config.raw_format[0] == 0) (if (h.pipeline.sensor_bit_depth == 10) "SRGGB10" else "SRGGB12") else std.mem.sliceTo(&config.raw_format, 0);
@@ -102,7 +112,12 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
             Alloc.destroy(h);
             return c.ZC_UNSUPPORTED;
         }
-        @memcpy(h.info.raw.format[0..name.len], name);
+        const cfa = transform.tile(u8, format.pattern.cfa(), .{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }) catch unreachable;
+        var pattern: []const u8 = "";
+        inline for (.{ .{ @import("raw.zig").Pattern.rggb, "RGGB" }, .{ @import("raw.zig").Pattern.bggr, "BGGR" }, .{ @import("raw.zig").Pattern.grbg, "GRBG" }, .{ @import("raw.zig").Pattern.gbrg, "GBRG" } }) |entry| {
+            if (std.mem.eql(u8, &cfa, &entry[0].cfa())) pattern = entry[1];
+        }
+        _ = std.fmt.bufPrint(&h.info.raw.format, "S{s}{s}", .{ pattern, name[5..] }) catch unreachable;
     }
     for (0..config.buffer_count) |i| {
         h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height) catch {
@@ -111,7 +126,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
         };
         @memset(h.buffers[i], 0);
         for (0..height) |y| for (0..width) |x| {
-            h.buffers[i][y * stride + x * 3 ..][0..3].* = .{ @truncate(x), @truncate(y), @truncate(i * 37) };
+            h.buffers[i][y * stride + x * 3 ..][0..3].* = sampleRGB(transform, main_output, main_source, x, y, i);
         };
         if (config.raw != 0) {
             const raw = h.info.raw;
@@ -123,7 +138,8 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
             const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&raw.format, 0)) catch unreachable;
             const black: u32 = @as(u32, 1) << @intCast(format.bits - 6);
             for (0..raw.height) |y| for (0..raw.width) |x| {
-                const value: u16 = @intCast(black + (x * 17 + y * 31 + i * 13) % (format.white() - black));
+                const point = transform.sourcePoint(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }, .{ .x = x, .y = y }) catch unreachable;
+                const value: u16 = @intCast(black + (point.x * 17 + point.y * 31 + i * 13) % (format.white() - black));
                 std.mem.writeInt(u16, h.raw_buffers[i][y * raw.stride + x * 2 ..][0..2], value, .little);
             };
         }
@@ -138,7 +154,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
             @memset(buf, 0);
             if (rgb) {
                 for (0..l.height) |y| for (0..l.width) |x| {
-                    buf[y * l.stride + x * 3 ..][0..3].* = .{ @truncate(x * width / l.width), @truncate(y * height / l.height), @truncate(i * 37) };
+                    buf[y * l.stride + x * 3 ..][0..3].* = sampleRGB(transform, .{ .width = l.width, .height = l.height }, main_source, x, y, i);
                 };
             } else {
                 const pixels = @as(usize, l.width) * l.height;
@@ -153,7 +169,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
                 };
                 defer Alloc.free(yuv);
                 for (0..l.height) |y| for (0..l.width) |x| {
-                    tmp[(y * l.width + x) * 3 ..][0..3].* = .{ @truncate(x * width / l.width), @truncate(y * height / l.height), @truncate(i * 37) };
+                    tmp[(y * l.width + x) * 3 ..][0..3].* = sampleRGB(transform, .{ .width = l.width, .height = l.height }, main_source, x, y, i);
                 };
                 @import("home/rgb_i420.zig").convert(tmp, l.width, l.height, l.width * 3, yuv) catch unreachable;
                 for (0..l.height) |y| @memcpy(buf[y * l.stride ..][0..l.width], yuv[y * l.width ..][0..l.width]);
@@ -186,6 +202,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
     pipeline.* = h.pipeline;
     info.* = h.info;
     out.* = h;
+    actual.* = requested_orientation;
     return c.ZC_OK;
 }
 pub fn start(h: *Handle) c_int {
@@ -507,10 +524,10 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
 }
 
 pub const device_id = "synthetic";
-pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requested_orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
     out.* = null;
     if (!std.mem.eql(u8, id, device_id)) return c.ZC_DEVICE;
-    return open(config, opts, context, callback, out, info, pipeline);
+    return open(config, opts, requested_orientation, strict, actual, context, callback, out, info, pipeline);
 }
 pub fn cameraId(_: *Handle, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     length.* = device_id.len;

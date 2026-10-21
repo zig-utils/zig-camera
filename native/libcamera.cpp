@@ -6,6 +6,7 @@
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
+#include <libcamera/orientation.h>
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -26,6 +27,37 @@
 using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
 namespace {
+bool nativeOrientation(uint32_t value,Orientation &out) {
+    switch(value) {
+    case ZC_ROTATE0:out=Orientation::Rotate0;return true;
+    case ZC_ROTATE0_MIRROR:out=Orientation::Rotate0Mirror;return true;
+    case ZC_ROTATE180:out=Orientation::Rotate180;return true;
+    case ZC_ROTATE180_MIRROR:out=Orientation::Rotate180Mirror;return true;
+    case ZC_ROTATE90_MIRROR:out=Orientation::Rotate90Mirror;return true;
+    case ZC_ROTATE270:out=Orientation::Rotate270;return true;
+    case ZC_ROTATE270_MIRROR:out=Orientation::Rotate270Mirror;return true;
+    case ZC_ROTATE90:out=Orientation::Rotate90;return true;
+    default:return false;
+    }
+}
+int negotiatedOrientation(uint32_t requested,Orientation actual,bool strict,uint32_t &out) {
+    for(uint32_t value=1;value<=8;++value) {
+        Orientation native=Orientation::Rotate0;
+        if(nativeOrientation(value,native) && native==actual) {
+            if(strict && requested!=value)return ZC_UNSUPPORTED;
+            out=value;return ZC_OK;
+        }
+    }
+    return ZC_UNSUPPORTED;
+}
+bool sameBayerLayout(const std::string &requested,const std::string &actual) {
+    const auto bayer=[](const std::string &name) {
+        if(name.size()<6 || name[0]!='S')return false;
+        const auto pattern=name.substr(1,4);
+        return pattern=="RGGB" || pattern=="BGGR" || pattern=="GRBG" || pattern=="GBRG";
+    };
+    return bayer(requested) && bayer(actual) && requested.substr(5)==actual.substr(5);
+}
 int cpuSync(int fd,uint64_t flags) {
     dma_buf_sync value{};value.flags=flags;
     int rc;do {rc=ioctl(fd,DMA_BUF_IOCTL_SYNC,&value);}while(rc<0 && errno==EINTR);
@@ -341,7 +373,8 @@ struct Device {
         }
         return ZC_OK;
     }
-    int init(const zc_config &cfg, const zc_pipeline_options &pipe, void *ctx, Completion complete, const std::string *selected_id=nullptr) {
+    uint32_t actual_orientation=ZC_ROTATE0;
+    int init(const zc_config &cfg, const zc_pipeline_options &pipe, uint32_t orientation,bool strict,void *ctx, Completion complete, const std::string *selected_id=nullptr) {
         const auto &opts=pipe.capture;
         requested = cfg; options = opts; context = ctx; callback = complete;
         const int manager_rc=manager_lease.acquire();
@@ -382,6 +415,7 @@ struct Device {
         if(cfg.raw)roles.push_back(StreamRole::Raw);
         config = camera->generateConfiguration(roles);
         if (!config || config->size() != roles.size()) return ZC_UNSUPPORTED;
+        if(!nativeOrientation(orientation,config->orientation))return ZC_INVALID;
         auto &main_request = config->at(0);
         // libcamera's BGR888 fourcc stores R,G,B bytes on little endian hosts.
         main_request.pixelFormat = formats::BGR888;
@@ -424,10 +458,15 @@ struct Device {
         }
         const auto status = config->validate();
         if (status == CameraConfiguration::Invalid || config->size()!=roles.size()) return ZC_UNSUPPORTED;
+        const int orientation_rc=negotiatedOrientation(orientation,config->orientation,strict,actual_orientation);
+        if(orientation_rc)return orientation_rc;
         const auto &main = config->at(0);
         if (main.pixelFormat != formats::BGR888) return ZC_UNSUPPORTED;
-        if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format)
-            return ZC_UNSUPPORTED;
+        if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format) {
+            // A sensor flip can change CFA phase while preserving depth/packing.
+            // The negotiated descriptor is authoritative for DNG and consumers.
+            if(orientation==ZC_ROTATE0 || !sameBayerLayout(cfg.raw_format,config->at(raw_index).pixelFormat.toString()))return ZC_UNSUPPORTED;
+        }
         if (cfg.raw && opts.unpacked_raw) {
             const auto name = config->at(raw_index).pixelFormat.toString();
             if (name.empty() || name[0] != 'S' || name.find('_') != std::string::npos) return ZC_UNSUPPORTED;
@@ -594,13 +633,13 @@ struct Device {
     }
 };
 }
-extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
+extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts,uint32_t orientation,bool strict,uint32_t *actual, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
     *out = nullptr;
     try {
         auto device = std::make_unique<Device>();
-        const int rc = device->init(*cfg, *opts, ctx, cb);
+        const int rc = device->init(*cfg, *opts,orientation,strict, ctx, cb);
         if (rc) return rc;
-        *info = device->info; *pipeline=device->pipeline; *out = device.release(); return ZC_OK;
+        *info = device->info; *pipeline=device->pipeline;*actual=device->actual_orientation; *out = device.release(); return ZC_OK;
     } catch (const std::bad_alloc &) { return ZC_NOMEM; }
       catch (...) { return ZC_DEVICE; }
 }
@@ -681,14 +720,14 @@ extern "C" int zcd_catalog(Device *device,uint32_t kind,uint32_t index,const zcd
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }
 
-extern "C" int zcd_open_id(const zc_config *cfg,const zc_pipeline_options *opts,const uint8_t *id,uint32_t length,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
+extern "C" int zcd_open_id(const zc_config *cfg,const zc_pipeline_options *opts,uint32_t orientation,bool strict,uint32_t *actual,const uint8_t *id,uint32_t length,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
     *out=nullptr;
     try {
         auto device=std::make_unique<Device>();
         const std::string selected(reinterpret_cast<const char *>(id),length);
-        const int rc=device->init(*cfg,*opts,ctx,cb,&selected);
+        const int rc=device->init(*cfg,*opts,orientation,strict,ctx,cb,&selected);
         if(rc)return rc;
-        *info=device->info;*pipeline=device->pipeline;*out=device.release();return ZC_OK;
+        *info=device->info;*pipeline=device->pipeline;*actual=device->actual_orientation;*out=device.release();return ZC_OK;
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }
 extern "C" int zcd_camera_id(Device *device,uint8_t *data,uint64_t capacity,uint64_t *length) {

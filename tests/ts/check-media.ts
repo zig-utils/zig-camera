@@ -3,6 +3,16 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mkvFrames, mp4, decodeVideo } from './media'
 const dir = process.argv[2] ?? 'zig-out'
+if (process.argv.includes('--orientation')) {
+  const bytes = readFileSync(join(dir, 'oriented.ppm'))
+  const header = Buffer.from('P6\n3 2\n255\n')
+  assert(bytes.subarray(0, header.length).equals(header))
+  assert.deepEqual(
+    [...bytes.subarray(header.length)],
+    [2, 0, 0, 1, 0, 0, 0, 0, 0, 2, 1, 0, 1, 1, 0, 0, 1, 0],
+  )
+  process.exit(0)
+}
 if (process.argv.includes('--lores')) {
   const path = join(dir, 'lores.ppm')
   const meta = JSON.parse(readFileSync(`${path}.json`, 'utf8'))

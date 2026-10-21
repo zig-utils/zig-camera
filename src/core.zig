@@ -21,6 +21,7 @@ const Session = struct {
     restored: bool = false,
     started_once: bool = false,
     writable: bool = false,
+    orientation: c.zc_orientation_info = std.mem.zeroes(c.zc_orientation_info),
     latest: c.zc_metadata = std.mem.zeroes(c.zc_metadata),
     af: ?Gate = null,
     af_id: u64 = 0,
@@ -160,16 +161,34 @@ pub export fn zc_default_pipeline_options(out: *c.zc_pipeline_options) void {
     zc_default_capture_options(&out.capture);
 }
 pub export fn zc_open_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, out: *?*c.zc_camera) c_int {
-    return openPipeline(cfg, pipeline, null, out);
+    return zc_open_oriented_pipeline(cfg, pipeline, c.ZC_ROTATE0, 0, out);
 }
 pub export fn zc_open_id_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
+    return zc_open_id_oriented_pipeline(cfg, pipeline, c.ZC_ROTATE0, 0, id, length, out);
+}
+pub export fn zc_orientation_from_transform(rotation: u32, hflip: u32, vflip: u32, transpose: u32, out: *u32) c_int {
+    if (hflip > 1 or vflip > 1 or transpose > 1) return c.ZC_INVALID;
+    var transform = @import("home/orientation.zig").Transform.fromRotation(rotation, hflip != 0, vflip != 0) catch return c.ZC_INVALID;
+    if (transpose != 0) transform.transpose = !transform.transpose;
+    out.* = transform.orientation();
+    return c.ZC_OK;
+}
+pub export fn zc_get_orientation(camera: *c.zc_camera, out: *c.zc_orientation_info) c_int {
+    out.* = session(camera).orientation;
+    return c.ZC_OK;
+}
+pub export fn zc_open_oriented_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+    return openPipeline(cfg, pipeline, null, orientation, strict, out);
+}
+pub export fn zc_open_id_oriented_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (id == null or length == 0 or length > c.ZC_MAX_CAMERA_ID or cfg.camera_index != 0) return c.ZC_INVALID;
     const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
-    return openPipeline(cfg, pipeline, requested.bytes(), out);
+    return openPipeline(cfg, pipeline, requested.bytes(), orientation, strict, out);
 }
-fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[]const u8, out: *?*c.zc_camera) c_int {
+fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
+    if (orientation < 1 or orientation > 8 or strict > 1) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
         pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
@@ -181,11 +200,18 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.* };
-    const rc = if (id) |selected| driver.openId(cfg, pipeline, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, self, completed, &self.device, &self.info, &self.pipeline);
+    var actual: u32 = 0;
+    const rc = if (id) |selected| driver.openId(cfg, pipeline, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
     }
+    if (actual < 1 or actual > 8 or (strict != 0 and actual != orientation)) {
+        driver.close(self.device.?);
+        std.heap.c_allocator.destroy(self);
+        return c.ZC_UNSUPPORTED;
+    }
+    self.orientation = .{ .struct_size = @sizeOf(c.zc_orientation_info), .requested = orientation, .actual = actual, .adjusted = @intFromBool(actual != orientation) };
     if (self.info.buffer_count < 2 or self.info.buffer_count > c.ZC_MAX_BUFFERS) {
         driver.close(self.device.?);
         std.heap.c_allocator.destroy(self);
@@ -216,6 +242,59 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
 pub export fn zc_get_pipeline_info(p: *c.zc_camera, out: *c.zc_pipeline_info) c_int {
     out.* = session(p).pipeline;
     return c.ZC_OK;
+}
+test "oriented pipeline admission preserves ABI and rejects invalid values atomically" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    var camera: ?*c.zc_camera = undefined;
+    for ([_]u32{ 0, 9, std.math.maxInt(u32) }) |value| {
+        try std.testing.expectEqual(c.ZC_INVALID, zc_open_oriented_pipeline(&cfg, &pipeline, value, 0, &camera));
+        try std.testing.expectEqual(null, camera);
+    }
+    try std.testing.expectEqual(c.ZC_INVALID, zc_open_oriented_pipeline(&cfg, &pipeline, 1, 2, &camera));
+    try std.testing.expectEqual(null, camera);
+    var encoded: u32 = 77;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_orientation_from_transform(45, 0, 0, 0, &encoded));
+    try std.testing.expectEqual(c.ZC_INVALID, zc_orientation_from_transform(0, 2, 0, 0, &encoded));
+    try std.testing.expectEqual(@as(u32, 77), encoded);
+    try std.testing.expectEqual(c.ZC_OK, zc_orientation_from_transform(90, 0, 0, 0, &encoded));
+    try std.testing.expectEqual(@as(u32, c.ZC_ROTATE90), encoded);
+    try std.testing.expectEqual(c.ZC_OK, zc_orientation_from_transform(90, 1, 0, 0, &encoded));
+    try std.testing.expectEqual(@as(u32, c.ZC_ROTATE90_MIRROR), encoded);
+}
+test "all eight orientations expose transformed RGB samples and CFA descriptors" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    cfg.raw = 1;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    const corners = [8][2]u8{ .{ 0, 0 }, .{ 17, 0 }, .{ 17, 9 }, .{ 0, 9 }, .{ 0, 0 }, .{ 9, 0 }, .{ 9, 17 }, .{ 0, 17 } };
+    const patterns = [8][]const u8{ "SRGGB12", "SGRBG12", "SBGGR12", "SGBRG12", "SRGGB12", "SGBRG12", "SBGGR12", "SGRBG12" };
+    for (1..9) |value| {
+        var camera: ?*c.zc_camera = null;
+        try std.testing.expectEqual(c.ZC_OK, zc_open_oriented_pipeline(&cfg, &pipeline, @intCast(value), 1, &camera));
+        defer _ = zc_close(camera.?);
+        var negotiated: c.zc_orientation_info = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_get_orientation(camera.?, &negotiated));
+        try std.testing.expectEqual(@as(u32, 16), negotiated.struct_size);
+        try std.testing.expectEqual(@as(u32, @intCast(value)), negotiated.actual);
+        try std.testing.expectEqual(@as(u32, 0), negotiated.adjusted);
+        try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+        var frame: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+        try std.testing.expectEqualSlices(u8, &corners[value - 1], frame.main.planes[0].data[0..2]);
+        try std.testing.expectEqualStrings(patterns[value - 1], std.mem.sliceTo(&frame.raw.format, 0));
+        try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+        try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    }
 }
 pub export fn zc_get_sensor_modes(p: *c.zc_camera, modes: ?[*]c.zc_sensor_mode, capacity: u32, count: *u32) c_int {
     const self = session(p);

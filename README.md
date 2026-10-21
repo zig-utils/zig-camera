@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.41 strengthens continuous autofocus jobs: cancelled pause/resume commands
-join acknowledgement of restored intent, and focus-locked captures reject buffers
-older than the successful pause acknowledgement. Promise pause/resume facades and
-independent cleanup deadlines complement the existing Bun jobs and request hooks.
+Version 0.42 adds native camera rotation, flips and transpose with requested/actual
+orientation reporting, optional strict negotiation, transformed Bayer descriptors
+and mode-job restoration. Home supplies exact shared transform geometry.
+See [camera orientation](docs/orientation.md).
 See [request callbacks](docs/request-callbacks.md), [mapped streams](docs/mapped-streams.md), [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
 [continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
 [camera selection](docs/camera-selection.md) and the [parity worklist](docs/parity-plan.md).
