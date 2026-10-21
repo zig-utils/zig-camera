@@ -11,6 +11,7 @@
 #include <png.h>
 #include <tiffio.h>
 #include <SDL.h>
+#include "jpeg_pixels.h"
 #endif
 static void put32(uint32_t v) { for(unsigned i=0;i<4;i++) putchar((int)(v>>(8*i)&255)); }
 static int emit(uint32_t width,uint32_t height,const uint8_t *data,size_t stride,unsigned channels) {
@@ -40,6 +41,7 @@ int main(int argc,char **argv) {
     const int rc=emit((uint32_t)w,(uint32_t)h,pixels,w*4,4);
     CGContextRelease(context);CGImageRelease(image);free(pixels);return rc;
 #else
+    if(!strcmp(argv[1],"jpeg"))return decodeJpegPixels(argv[2]);
     if(!strcmp(argv[1],"png")) {
         png_image image;memset(&image,0,sizeof(image));image.version=PNG_IMAGE_VERSION;
         if(!png_image_begin_read_from_file(&image,argv[2]))return 3;

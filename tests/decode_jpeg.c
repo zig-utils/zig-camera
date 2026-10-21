@@ -4,7 +4,10 @@
 #include <stdint.h>
 #include <jpeglib.h>
 #include <assert.h>
+#include <string.h>
+#include "jpeg_pixels.h"
 int main(int argc,char **argv) {
+    if(argc==3&&!strcmp(argv[1],"jpeg"))return decodeJpegPixels(argv[2]);
     assert(argc==4);
     FILE *file=fopen(argv[1],"rb");assert(file);
     struct jpeg_decompress_struct decoder;

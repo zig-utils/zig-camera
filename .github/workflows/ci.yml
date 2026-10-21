@@ -36,7 +36,7 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             cc -Wall -Wextra -Werror tests/decode_images.c -framework CoreGraphics -framework ImageIO -framework CoreFoundation -o zig-out/decode-images
           else
-            cc -Wall -Wextra -Werror tests/decode_images.c $(pkg-config --cflags --libs libpng libtiff-4 sdl2) -o zig-out/decode-images
+            cc -Wall -Wextra -Werror tests/decode_images.c $(pkg-config --cflags --libs libpng libtiff-4 sdl2 libjpeg) -o zig-out/decode-images
           fi
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
