@@ -24,6 +24,17 @@ pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;
 pub const Info = c.zc_info;
 pub const Stats = c.zc_stats;
+pub const CaptureFilter = c.zc_capture_filter;
+pub fn captureClockNs() Error!u64 {
+    var stamp: u64 = 0;
+    try check(@import("capture_filter.zig").zc_capture_clock_ns(&stamp));
+    return stamp;
+}
+pub fn captureFilter(drop_frames: u32, after_ns: ?u64, exposure_guard: bool) Error!CaptureFilter {
+    var filter: CaptureFilter = undefined;
+    try check(@import("capture_filter.zig").zc_capture_filter_init(&filter, drop_frames, (if (after_ns != null) @as(u32, 1) else 0) | (if (after_ns != null and exposure_guard) @as(u32, 2) else 0), after_ns orelse 0));
+    return filter;
+}
 pub const ControlSnapshot = struct {
     values: [c.ZC_MAX_CONTROLS]c.zc_control = undefined,
     count: u32 = 0,
@@ -228,6 +239,11 @@ pub const Camera = struct {
         var f: c.zc_frame = undefined;
         try check(core.zc_acquire(self.handle, timeout_ms, &f));
         return .{ .camera = self, .value = f };
+    }
+    pub fn acquireFiltered(self: Camera, filter: *CaptureFilter, timeout_ms: u32) Error!Frame {
+        var frame: c.zc_frame = undefined;
+        try check(core.zc_acquire_filtered(self.handle, filter, timeout_ms, &frame));
+        return .{ .camera = self, .value = frame };
     }
 };
 /// Linear reference: copying the descriptor does not create another lease.
@@ -512,4 +528,22 @@ test "Zig typed control snapshots preserve i64 and replay before first start" {
         found = true;
     };
     try std.testing.expect(found);
+}
+
+test "Zig capture filters transfer one request after exact frame drops" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch unreachable;
+    const before = try captureClockNs();
+    try camera.start();
+    var filter = try captureFilter(3, null, true);
+    var frame = try camera.acquireFiltered(&filter, 100);
+    defer frame.release() catch unreachable;
+    try std.testing.expectEqual(@as(u64, 3), frame.value.sequence);
+    try std.testing.expect(frame.value.timestamp_ns >= before);
+    try std.testing.expectEqual(@as(u32, 0), filter.remaining);
 }

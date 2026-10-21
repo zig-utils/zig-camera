@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { Camera, Control } from '../../ts'
+import { Camera, Control, captureClockNs } from '../../ts'
 import { decodeCatalog, readCatalog } from '../../ts/catalog'
 import { native as ffi, ptr, outPointer, handle } from '../../ts/ffi'
 const native: {
@@ -153,6 +153,7 @@ test('full metadata owns exact timestamps, arrays and opaque values from one ret
   const c = cam()
   let request: Awaited<ReturnType<Camera['captureRequest']>> | undefined
   try {
+    const before = captureClockNs()
     c.startContinuousAutofocus()
     request = await c.captureRequest()
     const child = request.retain()
@@ -162,7 +163,9 @@ test('full metadata owns exact timestamps, arrays and opaque values from one ret
       metadata = request.metadataCatalog()
     expect(metadata.kind).toBe('metadata')
     expect(current(metadata, 'SensorTimestamp').value).toBe(compact.timestampNs)
-    expect(compact.timestampNs).toBeGreaterThan(9007199254740992n)
+    expect(typeof compact.timestampNs).toBe('bigint')
+    expect(compact.timestampNs).toBeGreaterThanOrEqual(before)
+    expect(compact.timestampNs).toBeLessThanOrEqual(captureClockNs())
     expect(current(metadata, 'ExposureTime').value).toBe(compact.exposureUs)
     expect(current(metadata, 'ColourGains').value).toEqual([
       compact.redGain,

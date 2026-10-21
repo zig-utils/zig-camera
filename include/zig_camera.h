@@ -117,12 +117,29 @@ typedef struct {
  double min[4],max[4],def[4]; uint64_t enum_mask;
 } zc_control_info;
 typedef struct {
- uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8, timestamp BOOTTIME=16, AF pause=32 */
+ uint32_t struct_size,valid; /* AF=1, lens=2, duration=4, crop=8, capture-clock timestamp=16, AF pause=32, exposure=64 */
  uint64_t event_id,sequence,timestamp_ns,control_revision;
  uint32_t exposure_us; int32_t af_state,af_pause_state; uint32_t reserved;
  float analogue_gain,lens_position,red_gain,blue_gain;
  uint64_t frame_duration_us; int32_t crop[4];
 } zc_metadata;
+/* Consumer-owned bounded selection state; initialize once, serialize access and
+ * use within one camera completion timeline. Never edits/recycles a request.
+ * Timestamp is inclusive; EXPOSURE_GUARD subtracts exposure_us*1000, saturating
+ * at zero. Required timing must be explicitly valid, otherwise UNSUPPORTED.
+ * Repeated/out-of-order completion events do not consume more drops. */
+enum { ZC_CAPTURE_TIMESTAMP=1, ZC_CAPTURE_EXPOSURE_GUARD=2 };
+typedef struct {
+ uint32_t struct_size,remaining,flags,observed;
+ uint64_t after_ns,last_event;
+} zc_capture_filter;
+int zc_capture_filter_init(zc_capture_filter *,uint32_t drop_frames,uint32_t flags,uint64_t after_ns);
+/* Linux BOOTTIME, Darwin virtual-camera MONOTONIC; never wall-clock time. */
+int zc_capture_clock_ns(uint64_t *out);
+int zc_capture_filter_accept(zc_camera *,uint64_t token,zc_capture_filter *);
+/* Releases every rejected frame; success transfers one owner. timeout=0 tries
+ * one frame. Filter progress is retained on TIMEOUT; out stays untouched. */
+int zc_acquire_filtered(zc_camera *,zc_capture_filter *,uint32_t timeout_ms,zc_frame *out);
 int zc_get_control_info(zc_camera *,uint32_t id,zc_control_info *);
 /* Copied, sorted persistent requests (AF trigger/pause excluded). Null/zero queries
  * count/revision. Small buffers reject without copying. Revisions are logical

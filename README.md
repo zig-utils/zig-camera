@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.37 adds atomic native/vendor control writes, exact typed replay and
-owned snapshots across mode changes. Native focus controls share the AF job guard;
-pause/trigger commands are excluded from replay. See [native controls](docs/native-controls.md),
+Version 0.38 adds fresh timestamp capture, exact frame-drop barriers and a capture
+clock shared with sensor metadata. Rejected frames continue to recording/preview;
+focus-locked capture combines the same filter with CAF validation and restoration.
+See [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
 [continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
 [camera selection](docs/camera-selection.md) and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).

@@ -69,6 +69,55 @@ export { CameraError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
+export interface CaptureOptions<T = unknown> extends JobOptions<T> {
+  /** true captures the clock at admission; bigint supplies an exact clock-domain threshold. */
+  flush?: boolean | bigint
+  /** Skip this many distinct delivered requests before selecting a result. */
+  dropFrames?: number
+}
+export function captureClockNs(): bigint {
+  const out = new BigUint64Array(1)
+  check(n.zc_capture_clock_ns(ptr(out)), 'capture clock')
+  return out[0]
+}
+function captureSelection<T>(source: CaptureOptions<T>) {
+  const options: JobOptions<T> = {
+    timeoutMs: source.timeoutMs ?? 5000,
+    signal: source.signal,
+    signalFunction: source.signalFunction,
+  }
+  const drop = uint(source.dropFrames ?? 0),
+    flush = source.flush
+  if (
+    flush !== undefined &&
+    typeof flush !== 'boolean' &&
+    typeof flush !== 'bigint'
+  )
+    throw new RangeError('invalid capture flush threshold')
+  const timestamp =
+    typeof flush === 'bigint'
+      ? flush
+      : flush === true
+        ? captureClockNs()
+        : undefined
+  if (
+    timestamp !== undefined &&
+    (timestamp < 0n || timestamp > 0xffffffffffffffffn)
+  )
+    throw new RangeError('invalid capture timestamp')
+  if (timestamp === undefined && drop === 0)
+    return { options, filter: undefined }
+  const filter = storage(32)
+  check(
+    n.zc_capture_filter_init(
+      ptr(filter),
+      drop,
+      timestamp === undefined ? 0 : 3,
+      timestamp ?? 0n,
+    ),
+  )
+  return { options, filter }
+}
 export interface ModeJobOptions<T = unknown> extends JobOptions<T> {
   dropFrames?: number
   /** Resolve the existing scan before transferring camera ownership. Default: cancel. */
@@ -330,7 +379,7 @@ export class Frame {
     this.release()
   }
 }
-export interface FocusLockedOptions<T = unknown> extends JobOptions<T> {
+export interface FocusLockedOptions<T = unknown> extends CaptureOptions<T> {
   immediate?: boolean
   requireFocused?: boolean
   /** Deadline for acknowledgement of restored pause intent; default 5000 ms. */
@@ -835,6 +884,10 @@ export class Camera {
     const restoreTimeout = options.restoreTimeoutMs ?? 5000
     if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
       throw new RangeError('invalid restoration deadline')
+    const selection = captureSelection(options)
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs || this.requests.length)
+      throw new CameraError(-4, 'capture admission changed')
     const owned = this.handle
     const job = new BunJob<T>(
       async (current) => {
@@ -864,13 +917,24 @@ export class Camera {
             value = await new Promise<T>((resolve, reject) => {
               this.requests.push({
                 transfer,
-                accept: (frame) =>
-                  n.zc_focus_locked_validate(
+                accept: (frame) => {
+                  const focused = n.zc_focus_locked_validate(
                     owned,
                     id[0],
                     frame.token,
                     requireFocused ? 1 : 0,
-                  ),
+                  )
+                  return (
+                    focused ||
+                    (selection.filter
+                      ? n.zc_capture_filter_accept(
+                          owned,
+                          frame.token,
+                          ptr(selection.filter),
+                        )
+                      : 0)
+                  )
+                },
                 operation: (frame) => {
                   const result = operation(frame)
                   if (
@@ -974,14 +1038,15 @@ export class Camera {
         }
       },
       () => {},
-      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+      selection.options,
     )
     this.focusProducesValue = true
     this.focusJob = job
     void job.operationDone.then(() => {
       if (this.focusJob === job) this.focusJob = undefined
     })
-    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    if (selection.options.signal?.aborted)
+      job.cancel(selection.options.signal.reason)
     void job.start()
     return job
   }
@@ -1100,19 +1165,19 @@ export class Camera {
   }
   capture<T>(
     operation: (frame: Frame) => T,
-    options: JobOptions<T> = {},
+    options: CaptureOptions<T> = {},
   ): Promise<T> {
     return this.captureAsync(operation, options).wait()
   }
   captureAsync<T>(
     operation: (frame: Frame) => T,
-    options: JobOptions<T> = {},
+    options: CaptureOptions<T> = {},
   ): BunJob<T> {
     return this.submitCapture(operation, options)
   }
   private submitCapture<T>(
     operation: (frame: Frame) => T,
-    options: JobOptions<T>,
+    options: CaptureOptions<T>,
     discard?: (value: T) => void,
     transfer = false,
   ): BunJob<T> {
@@ -1121,6 +1186,17 @@ export class Camera {
     if (this.focusCaptureActive)
       throw new CameraError(-4, 'focus-locked capture active')
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
+    if (typeof operation !== 'function')
+      throw new TypeError('capture operation must be a function')
+    const selection = captureSelection(options)
+    this.assertOpen()
+    if (
+      this.hasPendingModes() ||
+      this.focusCaptureActive ||
+      this.requests.length >= 32
+    )
+      throw new CameraError(-4, 'capture admission changed')
+    const owned = this.handle
     const job = new BunJob<T>(
       async (current) => {
         current.check()
@@ -1131,6 +1207,14 @@ export class Camera {
           value = await new Promise<T>((resolve, reject) => {
             this.requests.push({
               transfer,
+              accept: selection.filter
+                ? (frame) =>
+                    n.zc_capture_filter_accept(
+                      owned,
+                      frame.token,
+                      ptr(selection.filter!),
+                    )
+                : undefined,
               operation: (frame) => {
                 const result = operation(frame)
                 if (
@@ -1170,13 +1254,14 @@ export class Camera {
         }
       },
       () => {},
-      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+      selection.options,
     )
-    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    if (selection.options.signal?.aborted)
+      job.cancel(selection.options.signal.reason)
     void job.start()
     return job
   }
-  captureRequestAsync(options: JobOptions<Frame> = {}) {
+  captureRequestAsync(options: CaptureOptions<Frame> = {}) {
     return this.submitCapture(
       (frame) => frame,
       options,
@@ -1184,46 +1269,46 @@ export class Camera {
       true,
     )
   }
-  captureRequest(options: JobOptions<Frame> = {}) {
+  captureRequest(options: CaptureOptions<Frame> = {}) {
     return this.captureRequestAsync(options).wait()
   }
   captureStreamsAsync(
     streams: readonly StreamName[] = ['main'],
-    options: JobOptions<CapturedStreams> = {},
+    options: CaptureOptions<CapturedStreams> = {},
   ) {
     const names = streamNames(streams)
     return this.captureAsync((frame) => frame.copyStreams(names), options)
   }
   captureStreams(
     streams: readonly StreamName[] = ['main'],
-    options: JobOptions<CapturedStreams> = {},
+    options: CaptureOptions<CapturedStreams> = {},
   ) {
     return this.captureStreamsAsync(streams, options).wait()
   }
   captureBufferAsync(
     stream: StreamName = 'main',
-    options: JobOptions<PackedStream> = {},
+    options: CaptureOptions<PackedStream> = {},
   ) {
     const [name] = streamNames([stream])
     return this.captureAsync((frame) => frame.copyStream(name), options)
   }
   captureBuffer(
     stream: StreamName = 'main',
-    options: JobOptions<PackedStream> = {},
+    options: CaptureOptions<PackedStream> = {},
   ) {
     return this.captureBufferAsync(stream, options).wait()
   }
-  captureRGBAsync(options: JobOptions<Uint8Array> = {}) {
+  captureRGBAsync(options: CaptureOptions<Uint8Array> = {}) {
     return this.captureAsync((frame) => frame.copyRGB(), options)
   }
   captureMetadataAsync(
-    options: JobOptions<ReturnType<Frame['metadata']>> = {},
+    options: CaptureOptions<ReturnType<Frame['metadata']>> = {},
   ) {
     return this.captureAsync((frame) => frame.metadata(), options)
   }
   captureFileAsync(
     path: string,
-    options: JobOptions<ReturnType<Frame['metadata']>> & {
+    options: CaptureOptions<ReturnType<Frame['metadata']>> & {
       quality?: number
     } = {},
   ) {
@@ -1241,17 +1326,42 @@ export class Camera {
   }
   captureFile(
     path: string,
-    options: JobOptions<ReturnType<Frame['metadata']>> & {
+    options: CaptureOptions<ReturnType<Frame['metadata']>> & {
       quality?: number
     } = {},
   ) {
     return this.captureFileAsync(path, options).wait()
   }
-  captureRGB(options?: JobOptions<Uint8Array>) {
+  captureRGB(options?: CaptureOptions<Uint8Array>) {
     return this.capture((frame) => frame.copyRGB(), options)
   }
-  captureMetadata(options?: JobOptions<ReturnType<Frame['metadata']>>) {
+  captureMetadata(options?: CaptureOptions<ReturnType<Frame['metadata']>>) {
     return this.capture((frame) => frame.metadata(), options)
+  }
+  dropFramesAsync(count: number, options: JobOptions<void> = {}): BunJob<void> {
+    const drops = uint(count)
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusCaptureActive)
+      throw new CameraError(-4, 'camera jobs active')
+    if (drops)
+      return this.submitCapture(() => {}, { ...options, dropFrames: drops - 1 })
+    const admitted = captureSelection<void>(options).options
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusCaptureActive)
+      throw new CameraError(-4, 'capture admission changed')
+    const job = new BunJob<void>(
+      async (current) => {
+        current.check()
+      },
+      () => {},
+      admitted,
+    )
+    if (admitted.signal?.aborted) job.cancel(admitted.signal.reason)
+    void job.start()
+    return job
+  }
+  dropFrames(count: number, options: JobOptions<void> = {}) {
+    return this.dropFramesAsync(count, options).wait()
   }
   startPreview(title = 'zig-camera') {
     this.assertOpen()

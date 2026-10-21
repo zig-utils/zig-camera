@@ -245,3 +245,16 @@ matrix includes the helper. Camera Zig owns both replay journals and commits onl
 after backend validation and journal preparation succeed. The C++ bridge owns
 libcamera candidate values; Bun handles typed input encoding and bounded mode
 orchestration without substituting a second journal, codec or media queue.
+
+The 0.38 audit checks Home's PTS clock and completion helpers, then contributes
+video/core/frame_barrier.zig at 691fd4f5cfef4fd3b7da11342b2c066a50f33471, copied
+verbatim. Capture selection is distinct from a PTS rebasing clock or submitted-I/O
+watermark: it counts unique completion identities, skips configured requests and
+compares a matching clock threshold with an optional saturated exposure guard.
+The allocation-free helper retains no frame and owns no thread. Pinned/development
+Zig Debug/ReleaseSafe tests cover exact boundaries, duplicate/out-of-order events,
+missing timing without mutation, maximum counters and immutable acceptance; the
+Home helper workflow includes source/doc triggers and its test. Camera Zig owns
+ABI state, metadata validity and leases; Bun composes capture/CAF jobs and leaves
+rejected-frame recording/preview delivery on the shared pump. Existing Home
+codecs, containers, queues and retained-reference pools remain unchanged.

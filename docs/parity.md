@@ -1,4 +1,4 @@
-# Feature coverage in 0.37
+# Feature coverage in 0.38
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -7,7 +7,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 
 | Capability | Native Zig/C implementation | Bun surface / remaining work |
 | --- | --- | --- |
-| Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs; mapped-array views and synchronized multi-camera requests remain incomplete |
+| Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens; native exact timestamp/drop filters | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs with flush/dropFrames, dropFrames jobs and a matching capture clock; mapped-array views and synchronized multi-camera requests remain incomplete |
 | Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata | Camera.discover, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; hotplug watches missing |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; paired RGB/I420 lores | Constructor selection, sensorModes, copyStream; measured FPS/crop catalog missing |
 | Controls and autofocus | Atomic convenience/native/vendor batches; exact typed bounded journals; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls/setNativeControls and both snapshot/restore APIs; cancellable scan and CAF pause/resume jobs; focus-locked retained requests, paired streams and RGB/metadata/lores/JPEG/DNG with joined restoration and discard on failure; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics and sensor-specific timing unvalidated |

@@ -273,14 +273,14 @@ pub fn queue(h: *Handle, index: u32) c_int {
     f.main.planes[0].fd = -1;
     f.sequence = h.sequence;
     h.sequence += 1;
-    f.timestamp_ns = @intCast(@max(0, std.time.nanoTimestamp()));
+    f.timestamp_ns = @import("capture_filter.zig").clockNs() catch return c.ZC_IO;
     f.exposure_us = @intFromFloat(h.active[c.ZC_EXPOSURE_TIME].values[0]);
     f.analogue_gain = @floatCast(h.active[c.ZC_ANALOGUE_GAIN].values[0]);
     f.red_gain = @floatCast(h.active[c.ZC_COLOUR_GAINS].values[0]);
     f.blue_gain = @floatCast(h.active[c.ZC_COLOUR_GAINS].values[1]);
     var meta = std.mem.zeroes(c.zc_metadata);
     meta.struct_size = @sizeOf(c.zc_metadata);
-    meta.valid = 15;
+    meta.valid = 15 | 16 | 64;
     meta.sequence = f.sequence;
     meta.timestamp_ns = f.timestamp_ns;
     meta.control_revision = h.applied_revision;

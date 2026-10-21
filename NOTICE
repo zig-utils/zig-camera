@@ -282,3 +282,11 @@ Home transactional typed state (0.37):
   revisions and backend ownership. The Home MIT license above applies.
   Source commit: b5ff735d009f3b56c78bc060fdaacf10654480e0.
   https://github.com/home-lang/home/commit/b5ff735d009f3b56c78bc060fdaacf10654480e0
+
+Home frame selection barriers (0.38):
+- src/home/frame_barrier.zig is verbatim packages/video/src/core/frame_barrier.zig.
+  Source commit: 691fd4f5cfef4fd3b7da11342b2c066a50f33471.
+  Exact inclusive thresholds, saturated exposure guards, distinct completion drops
+  and immutable acceptance use no allocation or retained frame. The Home MIT
+  license above applies.
+  https://github.com/home-lang/home/commit/691fd4f5cfef4fd3b7da11342b2c066a50f33471

@@ -9,6 +9,7 @@ const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c
 const Gate = @import("home/completion_gate.zig").Gate;
 const ControlState = @import("home/keyed_state.zig").State(c.zc_control, c.ZC_MAX_CONTROLS);
 const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID);
+const CaptureFilter = @import("capture_filter.zig");
 const Session = struct {
     identity: Identity = .{},
     desired: ControlState = .{},
@@ -94,7 +95,13 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
         self.changed.broadcast();
         return;
     };
-    self.latest.event_id = self.stats.completed + 1;
+    const event = std.math.add(u64, self.stats.completed, 1) catch {
+        self.fatal = c.ZC_STATE;
+        self.stats.errors += 1;
+        self.changed.broadcast();
+        return;
+    };
+    self.latest.event_id = event;
     self.latest.struct_size = @sizeOf(c.zc_metadata);
     self.slots[index] = .{ .state = .ready, .frame = frame.?.*, .metadata = self.latest };
     if (self.af) |*af| {
@@ -110,7 +117,7 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
     }
     self.ready[(self.head + self.count) % c.ZC_MAX_BUFFERS] = index;
     self.count += 1;
-    self.stats.completed += 1;
+    self.stats.completed = event;
     self.changed.broadcast();
 }
 pub export fn zc_abi_version() u32 {
@@ -331,6 +338,34 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
         out.* = slot.frame;
         self.mutex.unlock();
         return c.ZC_OK;
+    }
+}
+pub export fn zc_capture_filter_accept(p: *c.zc_camera, token: u64, filter: *c.zc_capture_filter) c_int {
+    if (!CaptureFilter.valid(filter)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    return CaptureFilter.observe(filter, &self.slots[index].metadata);
+}
+pub export fn zc_acquire_filtered(p: *c.zc_camera, filter: *c.zc_capture_filter, timeout_ms: u32, out: *c.zc_frame) c_int {
+    if (!CaptureFilter.valid(filter)) return c.ZC_INVALID;
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    while (true) {
+        const elapsed = timer.read() / std.time.ns_per_ms;
+        const remaining: u32 = if (elapsed >= timeout_ms) 0 else timeout_ms - @as(u32, @intCast(elapsed));
+        var frame: c.zc_frame = undefined;
+        const acquired = zc_acquire(p, remaining, &frame);
+        if (acquired != 0) return acquired;
+        const rc = zc_capture_filter_accept(p, frame.token, filter);
+        if (rc == c.ZC_OK) {
+            out.* = frame;
+            return c.ZC_OK;
+        }
+        const released = zc_release(p, frame.token);
+        if (released != 0) return released;
+        if (rc != c.ZC_TIMEOUT) return rc;
+        if (timer.read() / std.time.ns_per_ms >= timeout_ms) return c.ZC_TIMEOUT;
     }
 }
 pub export fn zc_retain(p: *c.zc_camera, token: u64, out: *c.zc_frame) c_int {
@@ -1900,4 +1935,113 @@ test "typed preparation errors preserve backend state, journals and revision out
     try std.testing.expectEqual(c.ZC_IO, zc_set_native_controls(camera.?, packet.ptr, packet.len, &revision));
     try std.testing.expect(old == session(camera.?).device.?.vendor_current.?);
     try std.testing.expectEqual(@as(u64, 1), revision);
+}
+
+test "capture barriers count completion identities once across independent references" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    const before = try CaptureFilter.clockNs();
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    const after = try CaptureFilter.clockNs();
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    try std.testing.expect(frame.timestamp_ns >= before and frame.timestamp_ns <= after);
+    var filter: c.zc_capture_filter = undefined;
+    try std.testing.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 2, 0, 0));
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_capture_filter_accept(camera.?, frame.token, &filter));
+    var retained: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_retain(camera.?, frame.token, &retained));
+    const progress = filter;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_capture_filter_accept(camera.?, retained.token, &filter));
+    try std.testing.expectEqualDeep(progress, filter);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_capture_filter_accept(camera.?, frame.token, &filter));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, retained.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_filtered(camera.?, &filter, 100, &frame));
+    try std.testing.expectEqual(@as(u64, 2), frame.sequence);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+}
+test "filtered acquisition retires rejected owners on missing timing and DMA failure" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var filter: c.zc_capture_filter = undefined;
+    try std.testing.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 0, 3, 1));
+    session(camera.?).slots[session(camera.?).ready[session(camera.?).head]].metadata.valid &= ~@as(u32, 64);
+    const before = filter;
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 99;
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_acquire_filtered(camera.?, &filter, 100, &frame));
+    try std.testing.expectEqual(@as(u64, 99), frame.token);
+    try std.testing.expectEqualDeep(before, filter);
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+    try std.testing.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 1, 0, 0));
+    session(camera.?).device.?.fail_sync_end = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_acquire_filtered(camera.?, &filter, 100, &frame));
+    try std.testing.expectEqual(@as(u64, 99), frame.token);
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+}
+test "filtered zero-timeout attempts one request and retains progress without publishing a frame" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var filter: c.zc_capture_filter = undefined;
+    try std.testing.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 1, 0, 0));
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 99;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_acquire_filtered(camera.?, &filter, 0, &frame));
+    try std.testing.expectEqual(@as(u64, 99), frame.token);
+    try std.testing.expectEqual(@as(u32, 0), filter.remaining);
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_filtered(camera.?, &filter, 0, &frame));
+    try std.testing.expectEqual(@as(u64, 1), frame.sequence);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+}
+
+test "completion identities reach maximum once and fail explicitly before wrapping" {
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    var self: Session = .{ .config = cfg, .running = true };
+    self.info.buffer_count = 2;
+    self.stats.completed = std.math.maxInt(u64) - 1;
+    self.slots[0].state = .queued;
+    self.slots[1].state = .queued;
+    const frame = std.mem.zeroes(c.zc_frame);
+    const metadata = std.mem.zeroes(c.zc_metadata);
+    completed(&self, 0, &frame, &metadata, 0);
+    try std.testing.expectEqual(std.math.maxInt(u64), self.slots[0].metadata.event_id);
+    try std.testing.expectEqual(@as(usize, 1), self.count);
+    completed(&self, 1, &frame, &metadata, 0);
+    try std.testing.expectEqual(c.ZC_STATE, self.fatal);
+    try std.testing.expectEqual(std.math.maxInt(u64), self.stats.completed);
+    try std.testing.expectEqual(@as(usize, 1), self.count);
+    try std.testing.expectEqual(@as(u64, 1), self.stats.errors);
 }

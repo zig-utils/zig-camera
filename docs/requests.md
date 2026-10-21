@@ -37,6 +37,13 @@ captureRequest for work that crosses an await. A published request handoff is se
 against cancellation; cancellation before handoff retires the owned reference.
 User completion callbacks do not extend native capture ownership.
 
+CaptureOptions adds flush and dropFrames to these jobs, including the focus-locked
+helpers. flush:true samples the native capture clock at admission; a bigint sets
+an exact threshold. dropFrames skips distinct delivered requests before selection.
+dropFramesAsync/dropFrames discard exactly the requested count. See
+[capture barriers](capture-barriers.md) for clock domains, conservative exposure
+guarding, FIFO/latest behavior, cancellation and recording coexistence.
+
 captureFocusLockedRequestAsync/captureFocusLockedRequest provide the same owned
 handoff after pausing continuous AF, validating a focused frame, and restoring
 prior pause intent. The selected request stays pinned throughout restoration.

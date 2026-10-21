@@ -13,6 +13,7 @@ _Static_assert(sizeof(zc_output_mailbox_stats)==168,"host queue telemetry ABI");
 _Static_assert(sizeof(zc_output_wait_state)==16,"host capacity wait ABI");
 _Static_assert(offsetof(zc_output_mailbox_stats,error_code)==160,"host queue error ABI");
 _Static_assert(sizeof(zc_pts_clock)==24,"shared PTS clock ABI");
+_Static_assert(sizeof(zc_capture_filter)==32,"capture filter ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
 _Static_assert(sizeof(zc_automatic_state)==16,"automatic state ABI");
 _Static_assert(sizeof(zc_factory_config)==56,"factory config ABI");
@@ -580,6 +581,21 @@ int main(void) {
         zc_output_job_close(drains[i]);
     }
     zc_output_job_close(NULL);
+    assert(zc_close(camera)==ZC_OK);
+    config.policy=ZC_FIFO;
+    assert(zc_open(&config,&camera)==ZC_OK);
+    uint64_t capture_clock=0;
+    assert(zc_capture_clock_ns(&capture_clock)==ZC_OK);
+    assert(zc_start(camera)==ZC_OK);
+    zc_capture_filter filter;
+    assert(zc_capture_filter_init(&filter,2,0,0)==ZC_OK);
+    assert(zc_acquire_filtered(camera,&filter,100,&producer_frame)==ZC_OK);
+    assert(producer_frame.sequence==2 && producer_frame.timestamp_ns>=capture_clock);
+    assert(zc_capture_filter_accept(camera,producer_frame.token,&filter)==ZC_OK);
+    assert(zc_get_frame_metadata(camera,producer_frame.token,&controlled_meta)==ZC_OK);
+    assert((controlled_meta.valid&80)==80);
+    assert(zc_release(camera,producer_frame.token)==ZC_OK);
+    assert(zc_capture_filter_accept(camera,producer_frame.token,&filter)==ZC_STALE);
     assert(zc_close(camera)==ZC_OK);
     return 0;
 }
