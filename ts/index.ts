@@ -475,6 +475,13 @@ export class Frame {
     this.release()
   }
 }
+export interface AutofocusCommandOptions extends JobOptions<number> {
+  /** Independent cleanup deadline when a command is cancelled; default 5000 ms. */
+  restoreTimeoutMs?: number
+}
+export interface AutofocusPauseOptions extends AutofocusCommandOptions {
+  immediate?: boolean
+}
 export interface FocusLockedOptions<T = unknown> extends CaptureOptions<T> {
   immediate?: boolean
   requireFocused?: boolean
@@ -1000,21 +1007,36 @@ export class Camera {
     this.start()
     return revision
   }
-  autofocusPauseAsync(
-    options: JobOptions<number> & { immediate?: boolean } = {},
-  ) {
-    if (
-      options.immediate !== undefined &&
-      typeof options.immediate !== 'boolean'
-    )
+  autofocusPauseAsync(options: AutofocusPauseOptions = {}) {
+    const immediate = options.immediate
+    if (immediate !== undefined && typeof immediate !== 'boolean')
       throw new RangeError('invalid immediate option')
-    return this.submitPause(options.immediate ? 0 : 1, options)
+    return this.submitPause(immediate ? 0 : 1, options)
   }
-  autofocusResumeAsync(options: JobOptions<number> = {}) {
+  autofocusPause(options: AutofocusPauseOptions = {}) {
+    return this.autofocusPauseAsync(options).wait()
+  }
+  autofocusResumeAsync(options: AutofocusCommandOptions = {}) {
     return this.submitPause(2, options)
   }
-  private submitPause(command: number, options: JobOptions<number>) {
+  autofocusResume(options: AutofocusCommandOptions = {}) {
+    return this.autofocusResumeAsync(options).wait()
+  }
+  private submitPause(command: number, options: AutofocusCommandOptions) {
     guardRequestCallback()
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs)
+      throw new CameraError(-4, 'camera jobs active')
+    const restoreTimeout = options.restoreTimeoutMs ?? 5000
+    if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
+      throw new RangeError('invalid restoration deadline')
+    const admitted: JobOptions<number> = {
+      timeoutMs: options.timeoutMs ?? 5000,
+      signal: options.signal,
+      signalFunction: options.signalFunction,
+    }
+    // Option accessors may run application code. Capture ownership only after
+    // normalization, then reject lifecycle changes made during that admission.
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs)
       throw new CameraError(-4, 'camera jobs active')
@@ -1023,6 +1045,9 @@ export class Camera {
       async (current) => {
         current.check()
         this.start()
+        // A replacement acknowledgement and its cancellation must remain possible.
+        if (this.readControls().controlRevision > 0xffffffffffffffffn - 3n)
+          throw new CameraError(-2, 'AF restoration revision budget exhausted')
         const id = new BigUint64Array(1)
         check(
           n.zc_autofocus_pause_start(owned, command, ptr(id)),
@@ -1030,25 +1055,83 @@ export class Camera {
         )
         this.ensurePump()
         try {
-          return await this.waitFocus(owned, id[0], current)
-        } finally {
-          check(
-            n.zc_autofocus_cancel(owned, id[0]),
-            'finish continuous AF command',
-          )
+          const state = await this.waitFocus(owned, id[0], current)
+          if (state !== 3)
+            throw new CameraError(-2, 'continuous AF command stopped')
+          // No cancellation may win after acknowledgement is published.
+          current.seal()
+          return state
+        } catch (error) {
+          try {
+            await this.restoreFocus(owned, id[0], restoreTimeout)
+          } catch (restorationError) {
+            throw this.focusRestorationFailure(error, restorationError)
+          }
+          throw error
         }
       },
       () => {},
-      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+      admitted,
     )
     this.focusProducesValue = false
     this.focusJob = job
     void job.operationDone.then(() => {
       if (this.focusJob === job) this.focusJob = undefined
     })
-    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    if (admitted.signal?.aborted) job.cancel(admitted.signal.reason)
     void job.start()
     return job
+  }
+  private focusRestorationFailure(error: unknown, restorationError: unknown) {
+    if (error && typeof error === 'object') {
+      try {
+        return Object.assign(error, { restorationError })
+      } catch {}
+    }
+    return new AggregateError(
+      [error, restorationError],
+      'AF restoration failed',
+    )
+  }
+  private async restoreFocus(owned: Pointer, id: bigint, timeoutMs: number) {
+    let restoreId: bigint | undefined
+    try {
+      const restored = new BigUint64Array(1)
+      check(
+        n.zc_autofocus_pause_restore(owned, id, ptr(restored)),
+        'restore continuous AF intent',
+      )
+      restoreId = restored[0]
+      const state = await this.waitFocus(
+        owned,
+        restoreId,
+        undefined,
+        performance.now() + timeoutMs,
+      )
+      if (state !== 3) throw new CameraError(-2, 'AF restoration stopped')
+    } catch (error) {
+      // Failed submission leaves the original command owned. Retire whichever
+      // command is current, preserving cancellation failures beside the cause.
+      const code = n.zc_autofocus_cancel(owned, restoreId ?? id)
+      if (code) {
+        if (error && typeof error === 'object') {
+          try {
+            Object.assign(error, { restorationCancellationCode: code })
+          } catch {
+            throw new AggregateError(
+              [error, new CameraError(code, 'cancel AF restoration')],
+              'AF restoration cleanup failed',
+            )
+          }
+        } else {
+          throw new AggregateError(
+            [error, new CameraError(code, 'cancel AF restoration')],
+            'AF restoration cleanup failed',
+          )
+        }
+      }
+      throw error
+    }
   }
   private async waitFocus(
     owned: Pointer,
@@ -1175,33 +1258,9 @@ export class Camera {
             failure = error
             failed = true
           }
-          let restoreId: bigint | undefined
           try {
-            const restored = new BigUint64Array(1)
-            check(
-              n.zc_autofocus_pause_restore(owned, id[0], ptr(restored)),
-              'restore continuous AF intent',
-            )
-            restoreId = restored[0]
-            const state = await this.waitFocus(
-              owned,
-              restored[0],
-              undefined,
-              performance.now() + restoreTimeout,
-            )
-            if (state !== 3) throw new CameraError(-2, 'AF restoration stopped')
+            await this.restoreFocus(owned, id[0], restoreTimeout)
           } catch (restorationError) {
-            // A failed restore submission leaves the original command owned.
-            // Retire that command too, rather than stranding an active AF owner.
-            const code = n.zc_autofocus_cancel(owned, restoreId ?? id[0])
-            if (
-              code &&
-              restorationError &&
-              typeof restorationError === 'object'
-            )
-              Object.assign(restorationError, {
-                restorationCancellationCode: code,
-              })
             // Cancellation can arrive while restoration is being joined, after
             // the capture-phase check. Preserve it alongside cleanup failure.
             if (!failed && current.cancelRequested) {
@@ -1209,21 +1268,7 @@ export class Camera {
               failed = true
             }
             if (failed) {
-              if (failure && typeof failure === 'object') {
-                try {
-                  Object.assign(failure, { restorationError })
-                } catch {
-                  failure = new AggregateError(
-                    [failure, restorationError],
-                    'focus capture restoration failed',
-                  )
-                }
-              } else {
-                failure = new AggregateError(
-                  [failure, restorationError],
-                  'focus capture restoration failed',
-                )
-              }
+              failure = this.focusRestorationFailure(failure, restorationError)
             } else {
               failure = restorationError
               failed = true

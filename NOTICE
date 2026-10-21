@@ -291,6 +291,13 @@ Home frame selection barriers (0.38):
   license above applies.
   https://github.com/home-lang/home/commit/691fd4f5cfef4fd3b7da11342b2c066a50f33471
 
+Home autofocus result publication fences (0.41):
+- src/home/completion_gate.zig is verbatim packages/async/src/completion_gate.zig,
+  adding success-only result revision validation against the acknowledgement.
+  Source commit: 795a5d6c29448362cc738394d7bbd1b4f61a267e.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/795a5d6c29448362cc738394d7bbd1b4f61a267e
+
 Home scoped frame access (0.39):
 - src/home/frame_access.zig is verbatim packages/video/src/core/frame_access.zig.
   Source commit: 1e4274a587635602b9b76a5edbacd4fa2557e01a.

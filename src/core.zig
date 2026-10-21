@@ -737,8 +737,8 @@ fn pauseStartLocked(self: *Session, command: u32, replace: bool, job_id: *u64) c
     self.mutex.unlock();
     if (!running or !continuous(self)) return c.ZC_STATE;
     if ((!replace and busy) or self.af_id == std.math.maxInt(u64)) return c.ZC_BUSY;
-    // Leave one revision for restoring accepted pause intent after cancellation.
-    if (!replace and self.control_revision >= std.math.maxInt(u64) - 1) return c.ZC_STATE;
+    // Leave one revision and one command ID for restoring accepted pause intent.
+    if (!replace and (self.control_revision >= std.math.maxInt(u64) - 1 or self.af_id >= std.math.maxInt(u64) - 1)) return c.ZC_STATE;
     const previous = self.pause_command;
     var value = std.mem.zeroes(c.zc_control);
     value.id = c.ZC_AF_PAUSE;
@@ -790,7 +790,7 @@ pub export fn zc_focus_locked_validate(p: *c.zc_camera, id: u64, token: u64, req
     if (status != 0) return status;
     const index = self.leases.resource(token) orelse return c.ZC_STALE;
     const metadata = self.slots[index].metadata;
-    if (metadata.control_revision < self.af.?.revision or metadata.valid & 32 == 0 or metadata.af_pause_state != 2) return c.ZC_TIMEOUT;
+    if (!self.af.?.acceptsResult(metadata.control_revision) or metadata.valid & 32 == 0 or metadata.af_pause_state != 2) return c.ZC_TIMEOUT;
     if (require_focused != 0) {
         if (metadata.valid & 1 == 0) return c.ZC_UNSUPPORTED;
         if (metadata.af_state != 2) return c.ZC_STATE;
@@ -1466,6 +1466,27 @@ test "pause acknowledgement fences stale metadata independently of scan metadata
     completed(&self, 2, &frame, &metadata, 0);
     try std.testing.expectEqual(@import("home/completion_gate.zig").State.succeeded, self.af.?.state);
 }
+test "focus selection fences buffered results older than the successful acknowledgement" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    var id: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, id));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire_focus_locked(camera, id, 1, 100, &frame));
+    const self = session(camera);
+    const index = self.leaseIndex(frame.token).?;
+    // Model out-of-order buffers from the command revision and a later
+    // acknowledgement. Both say focused/paused, but only the latter is proven.
+    const revision = self.af.?.revision;
+    self.af.?.observed_revision = revision + 2;
+    self.slots[index].metadata.control_revision = revision + 1;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, zc_focus_locked_validate(camera, id, frame.token, 1));
+    self.slots[index].metadata.control_revision = revision + 2;
+    try std.testing.expectEqual(c.ZC_OK, zc_focus_locked_validate(camera, id, frame.token, 1));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera, frame.token));
+}
 test "focus selection rejects failed scans and missing AF metadata and never hides rejected-frame sync errors" {
     if (options.libcamera) return error.SkipZigTest;
     const camera = try testContinuousCamera(2);
@@ -1503,6 +1524,27 @@ test "continuous AF command headroom rejects before mutation and preserves cance
     try std.testing.expectEqual(c.ZC_STATE, zc_autofocus_pause_start(camera.?, 0, &id));
     try std.testing.expectEqual(@as(u64, 0), id);
     try std.testing.expectEqual(revision, session(camera.?).control_revision);
+}
+test "continuous AF reserves a replacement command ID before accepting a pause" {
+    if (options.libcamera) return error.SkipZigTest;
+    const camera = try testContinuousCamera(2);
+    defer _ = zc_close(camera);
+    const self = session(camera);
+    const revision = self.control_revision;
+    self.af_id = std.math.maxInt(u64) - 1;
+    var id: u64 = 42;
+    try std.testing.expectEqual(c.ZC_STATE, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(@as(u64, 42), id);
+    try std.testing.expectEqual(revision, self.control_revision);
+    self.af_id = std.math.maxInt(u64) - 2;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(std.math.maxInt(u64) - 1, id);
+    var restored: u64 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_pause_restore(camera, id, &restored));
+    try std.testing.expectEqual(std.math.maxInt(u64), restored);
+    try std.testing.expectEqual(@as(u32, c.ZC_AF_SUCCEEDED), try testAFRecycle(camera, restored));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_autofocus_pause_start(camera, 1, &id));
+    try std.testing.expectEqual(c.ZC_OK, zc_autofocus_cancel(camera, restored));
 }
 
 test "retained request tokens release independently and synchronize only once on final release" {

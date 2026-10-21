@@ -280,3 +280,15 @@ serializes main-thread callback access without running JavaScript on manager or
 codec threads. Mode hooks use the existing typed native-control journal and
 reserve restoration headroom. Home source/provenance remains the existing verbatim
 modules in NOTICE; no codec/container implementation is duplicated or changed.
+
+The 0.41 audit extends Home's async completion gate with `acceptsResult`, published
+at 795a5d6c29448362cc738394d7bbd1b4f61a267e and copied verbatim. Successful
+acknowledgement now fences buffered result revisions as well as completion events;
+a result predating the observation cannot satisfy a focus-locked capture. Home
+tests cover pending/unsuccessful states, newer observations, immutable terminal
+states and the maximum revision on pinned/development Zig Debug/ReleaseSafe.
+Camera validates leases and pause/focus metadata under the existing session lock.
+Bun composes bounded cancellation restoration with the same native gate rather
+than adding a second AF scheduler. Lease pools, media codecs and containers remain
+the existing Home implementations. No camera hardware focus evidence is inferred
+from these synthetic state/ownership checks.

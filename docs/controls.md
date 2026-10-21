@@ -159,6 +159,21 @@ deferred pause lets a running scan finish, including a Failed result. Repeated
 pause commands do not resume an already paused algorithm. Resume acknowledges
 Running and may start a fresh scan; it does not promise preserved focus.
 
+`autofocusPause(options)` and `autofocusResume(options)` are Promise facades.
+The command jobs seal publication after successful acknowledgement: cancellation
+after publication returns false. Cancellation before publication (including after
+native acknowledgement) replaces the command with a fresh job restoring its prior
+accepted pause intent, then waits for that restoration's metadata acknowledgement.
+`operationDone` joins this cleanup. `restoreTimeoutMs` bounds it independently of
+the operation's `timeoutMs`, defaults to 5000 ms, and must be finite/nonnegative.
+Buffer pressure can exhaust that cleanup deadline. The primary failure retains a
+`restorationError`; frozen or primitive reasons use `AggregateError` instead.
+Cleanup submission failure also attempts to retire the original native command;
+a failed cancellation is reported as `restorationCancellationCode`. Handle those
+errors before an explicit resume or stop/restart. Failed cleanup never claims
+that the lens acknowledged restoration. Success leaves the requested pause/resume
+intent in place. Pre-aborted and zero-deadline jobs submit no commands.
+
 The native metadata validMask now reserves bit 5 (32) for AfPauseState, independent
 of bit 0 for AfState. Missing pause metadata never acknowledges a job. libcamera
 and the synthetic driver both populate this flag without changing the ABI layout.
@@ -194,6 +209,9 @@ flowing to recording/preview and cannot satisfy the capture. The ordinary shared
 pump encodes/displays the selected frame too; the capture releases no independent
 recording frame. Every callback and selection failure releases the lease. Async
 callbacks reject because frame storage cannot cross an await boundary.
+The result revision must be at or after the successful acknowledgement's
+observation revision, even when that is newer than the submitted command revision.
+Home's `CompletionGate.acceptsResult` supplies this publication fence.
 Use captureFocusLockedRequestAsync(options) for a BunJob<Frame>, or
 captureFocusLockedRequest(options) for its Promise. The pump transfers its native
 reference without copying pixels or allocating another reference-table entry.
@@ -236,6 +254,9 @@ existing mode-switch wait/cancel/reject policies, including coordinated recordin
 Reopening replays persistent AfMode, but excludes one-shot pause commands: CAF
 starts Running in the new/restored mode. Pause explicitly again if needed.
 Revision headroom is checked before pause/capture commands; overflow never wraps.
+Pause submission also reserves a fresh native command ID for restoration, so ID
+exhaustion rejects before changing focus intent. A final restoration remains
+waitable/cancellable; creating new jobs after ID exhaustion requires reopening.
 
 C/Zig callers can use zc_autofocus_pause_start, the existing AF wait/cancel API,
 zc_autofocus_pause_restore and zc_acquire_focus_locked. The validate variant checks

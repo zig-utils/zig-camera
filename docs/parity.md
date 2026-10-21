@@ -1,4 +1,4 @@
-# Feature coverage in 0.40
+# Feature coverage in 0.41
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
