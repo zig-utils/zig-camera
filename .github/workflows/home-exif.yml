@@ -2,9 +2,9 @@ name: Home Exif metadata
 on:
   push:
     branches: [main]
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
   pull_request:
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -622,3 +622,11 @@ the test facade changes only its raster import path. Production still uses Home
 codecs and zlib, with no independent reader dependency. Camera capture/ABI ownership
 is unchanged; capture-facing Exif options and metadata generation remain required.
 Home Actions remains disabled, so copied-source camera CI supplies platform tests.
+
+The Linux reader matrix found a fixture portability defect: rewinding buffered
+stdio after fread did not guarantee that the descriptor duplicated into libtiff
+was at byte zero. Home's independent reader now flushes and explicitly seeks the
+reader descriptor at 917c796e0b37acc9f018bf802bcc90c3f6a95547; that C fixture is
+copied verbatim here. Both local toolchains' 16 independent cases pass again.
+The production embedding implementation is unchanged. The reader workflow also
+watches the JPEG/raster/zlib sources it exercises, so codec-only changes run it.

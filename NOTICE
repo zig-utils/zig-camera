@@ -450,8 +450,9 @@ Home combined ICC/Exif embedding:
   Home packages/image/src at ee61d81948836c7c2e1943d9fd402f8d178ce674.
 - metadata_embed.zig has only the two existing flat format-module import-path
   adjustments. metadata_test_exports.zig changes only its raster import path.
-- tests/home_metadata_fixture.zig and home_metadata_readers.c are verbatim from
-  Home packages/image/tests/metadata_fixture.zig and metadata_readers.c.
+- tests/home_metadata_fixture.zig is verbatim from Home packages/image/tests/metadata_fixture.zig.
+  home_metadata_readers.c is verbatim from Home packages/image/tests/metadata_readers.c
+  at 917c796e0b37acc9f018bf802bcc90c3f6a95547, including explicit POSIX descriptor seeking.
   Independent container, Exif and CMM libraries remain test-only dependencies.
   https://github.com/home-lang/home/commit/ee61d81948836c7c2e1943d9fd402f8d178ce674
 The Home MIT license and copyright reproduced above apply.
