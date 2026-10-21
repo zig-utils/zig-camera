@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_fanout_state)==72,"capture fanout ABI");
 _Static_assert(sizeof(zc_producer_stats)==104,"producer stats ABI");
 _Static_assert(sizeof(zc_session_state)==16,"session state ABI");
 _Static_assert(sizeof(zc_producer_handoff)==16,"producer handoff ABI");
@@ -66,6 +67,37 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    {
+        zc_fanout *fanout=NULL;assert(zc_fanout_open(&fanout)==ZC_OK && fanout);
+        uint64_t ids[8],frame=0,ticket=0,other=0;zc_fanout_state state;
+        assert(zc_fanout_add(fanout,2,&other)==ZC_INVALID);
+        for(unsigned i=0;i<8;i++)assert(zc_fanout_add(fanout,i?1:0,&ids[i])==ZC_OK);
+        assert(zc_fanout_add(fanout,0,&other)==ZC_BUSY);
+        assert(zc_fanout_close(fanout)==ZC_BUSY);
+        assert(zc_fanout_claim(fanout,ids[0],0,&ticket)==ZC_STALE);
+        assert(zc_fanout_offer(fanout,&frame)==ZC_OK && frame==0);
+        assert(zc_fanout_claim(fanout,ids[0],frame,&ticket)==ZC_OK && ticket);
+        assert(!zc_fanout_ready(fanout));
+        assert(zc_fanout_claim(fanout,ids[1],frame,&other)==ZC_OK && other!=ticket);
+        assert(zc_fanout_finish(fanout,ids[0],ticket+2,0,&state)==ZC_STALE);
+        assert(zc_fanout_finish(fanout,ids[0],ticket,3,&state)==ZC_INVALID);
+        assert(zc_fanout_finish(fanout,ids[0],ticket,2,&state)==ZC_OK && state.cancelled==1 && state.flags==1);
+        assert(zc_fanout_ready(fanout));
+        assert(zc_fanout_offer(fanout,&frame)==ZC_OK && frame==1);
+        assert(zc_fanout_claim(fanout,ids[1],frame,&ticket)==ZC_TIMEOUT && !ticket);
+        assert(zc_fanout_state_get(fanout,ids[1],&state)==ZC_OK && state.skipped==1);
+        assert(zc_fanout_retire(fanout,ids[1],&state)==ZC_OK && (state.flags&10)==10);
+        assert(zc_fanout_add(fanout,0,&ticket)==ZC_BUSY);
+        assert(zc_fanout_finish(fanout,ids[1],other,0,&state)==ZC_OK && state.completed==1 && !(state.flags&2));
+        assert(zc_fanout_state_get(fanout,ids[1],&state)==ZC_STALE);
+        assert(zc_fanout_add(fanout,0,&ticket)==ZC_OK && ticket>ids[7]);
+        assert(zc_fanout_finish(fanout,ids[1],other,1,&state)==ZC_STALE);
+        assert(zc_fanout_fail(fanout,ticket,&state)==ZC_OK && state.failures==1 && state.flags==4);
+        assert(zc_fanout_retire(fanout,ticket,&state)==ZC_OK);
+        for(unsigned i=0;i<8;i++)if(i!=1)assert(zc_fanout_retire(fanout,ids[i],&state)==ZC_OK);
+        assert(zc_fanout_close(fanout)==ZC_OK);
+    }
+
     {
         zc_config cfg;zc_default_config(&cfg);cfg.width=64;cfg.height=48;cfg.policy=ZC_FIFO;
         zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);pipeline.lores_width=18;pipeline.lores_height=10;

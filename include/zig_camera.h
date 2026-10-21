@@ -306,6 +306,24 @@ typedef struct {
     uint32_t width, height, fps_num, fps_den, codec, bitrate, quality, gop;
 } zc_video_config;
 typedef struct zc_recorder zc_recorder;
+/* Caller-serialized, bounded fan-out admission; no camera/recorder/frame pointers
+ * are retained. IDs/tickets never repeat. Retiring an in-flight consumer keeps
+ * its slot until that exact claim completes. Close rejects nonempty registries. */
+typedef struct zc_fanout zc_fanout;
+typedef struct {
+    uint64_t id,submitted,completed,skipped,failures,cancelled,last_frame,ticket;
+    uint32_t flags,reserved; /* active=1,busy=2,failed=4,retiring=8,drop=16 */
+} zc_fanout_state;
+int zc_fanout_open(zc_fanout **);
+int zc_fanout_close(zc_fanout *);
+int zc_fanout_add(zc_fanout *,uint32_t policy /* wait=0,drop=1 */,uint64_t *id);
+int zc_fanout_ready(zc_fanout *); /* boolean; wait consumers gate capture */
+int zc_fanout_offer(zc_fanout *,uint64_t *frame_index);
+int zc_fanout_claim(zc_fanout *,uint64_t id,uint64_t frame_index,uint64_t *ticket); /* TIMEOUT=skipped */
+int zc_fanout_state_get(zc_fanout *,uint64_t id,zc_fanout_state *);
+int zc_fanout_finish(zc_fanout *,uint64_t id,uint64_t ticket,uint32_t outcome /* completed=0,failed=1,cancelled=2 */,zc_fanout_state *);
+int zc_fanout_fail(zc_fanout *fanout, uint64_t id, zc_fanout_state *state);
+int zc_fanout_retire(zc_fanout *,uint64_t id,zc_fanout_state *);
 void zc_default_video_config(zc_video_config *);
 int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
 /* Synchronous bounded conversion/encode; the input lease can be released after

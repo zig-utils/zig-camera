@@ -25,8 +25,10 @@ comptime {
     _ = @import("home/pts_clock.zig");
 }
 pub const media = @import("media.zig");
+pub const fanout = @import("fanout.zig");
 comptime {
     _ = media;
+    _ = fanout;
 }
 pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;

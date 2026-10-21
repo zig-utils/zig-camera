@@ -1,4 +1,10 @@
 import {
+  FrameFanout,
+  type CaptureConsumerStats,
+  type RecordingBackpressure,
+} from './fanout'
+export type { CaptureConsumerStats, RecordingBackpressure } from './fanout'
+import {
   encodeNativeControls,
   encodeNativeSnapshot,
   nativeAppIds,
@@ -104,6 +110,7 @@ import {
 } from './ffi'
 export { CameraError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
+const consumerState = Symbol('consumerState')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
 const readableFrame = Symbol('readableFrame')
@@ -625,7 +632,17 @@ export class Camera {
   private stopJob?: Promise<void>
   private closeJob?: Promise<void>
   private failedRecordings = new Set<Recording>()
-  private recording?: Recording
+  private recordings = new Set<Recording>()
+  private fanout?: FrameFanout
+  private recordingIds = new Map<Recording, bigint>()
+  private recordingAudio = new Map<Recording, AudioCapture>()
+  private producers = new Map<Recording, Promise<void>>()
+  private get recording() {
+    return this.recordings.values().next().value
+  }
+  get activeRecordings(): readonly Recording[] {
+    return Object.freeze([...this.recordings])
+  }
   private previewHandle = 0 as Pointer
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
@@ -1814,46 +1831,87 @@ export class Camera {
   }
   startRecording(
     recorder: Recorder,
-    options: { fps?: number; audio?: AudioCapture } = {},
+    options: {
+      fps?: number
+      audio?: AudioCapture
+      backpressure?: RecordingBackpressure
+    } = {},
   ) {
     guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
-    if (this.recording) throw new CameraError(-4, 'recording active')
+    const audio = options.audio,
+      backpressure = options.backpressure ?? 'wait',
+      fps = uint(options.fps ?? recorder.fps, 1000000)
+    if (!fps) throw new RangeError('invalid recording FPS')
+    if (backpressure !== 'wait' && backpressure !== 'drop')
+      throw new RangeError('invalid recording backpressure')
+    if (audio && backpressure === 'drop')
+      throw new CameraError(
+        -8,
+        'dropping audio recordings requires shared PCM retention',
+      )
+    this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (recorder.sessionState().phase !== 'open')
       throw new CameraError(-2, 'recorder session must be open')
     const info = this.readRecordingInput(recorder.options)
     if (info.width !== recorder.width || info.height !== recorder.height)
       throw new RangeError('recorder geometry mismatch')
-    if (options.audio) {
+    if (audio) {
+      if ([...this.recordingAudio.values()].includes(audio))
+        throw new CameraError(-4, 'audio capture already attached')
       const format = recorder.options.audio
       if (
+        !audio.handle ||
         !format ||
-        options.audio.sampleRate !== format.sampleRate ||
-        options.audio.channels !== format.channels
+        audio.sampleRate !== format.sampleRate ||
+        audio.channels !== format.channels
       )
         throw new RangeError(
           'audio capture format differs from recorder session',
         )
     }
-    recorder[recordingOwner](this)
+    const fanout = (this.fanout ??= new FrameFanout()),
+      id = fanout.add(backpressure)
+    let owned = false
     try {
+      recorder[recordingOwner](this)
+      owned = true
       this.start()
+      const recording = new Recording(this, recorder, audio, fps, backpressure)
+      this.recordingIds.set(recording, id)
+      if (audio) this.recordingAudio.set(recording, audio)
+      this.recordings.add(recording)
+      recording[consumerState] = fanout.state(id)
+      this.ensurePump()
+      return recording
     } catch (error) {
-      recorder[recordingOwner](this, true)
+      fanout.retire(id)
+      if (owned) recorder[recordingOwner](this, true)
       throw error
     }
+  }
+  private attachCoordinatedRecording(
+    recorder: Recorder,
+    audio: AudioCapture | undefined,
+    backpressure: RecordingBackpressure,
+  ) {
+    const fanout = (this.fanout ??= new FrameFanout()),
+      id = fanout.add(backpressure)
     const recording = new Recording(
       this,
       recorder,
-      options.audio,
-      options.fps ?? recorder.fps,
+      audio,
+      recorder.fps,
+      backpressure,
     )
-    this.recording = recording
-    this.ensurePump()
+    this.recordingIds.set(recording, id)
+    if (audio) this.recordingAudio.set(recording, audio)
+    this.recordings.add(recording)
+    recording[consumerState] = fanout.state(id)
     return recording
   }
-
   /** Flush, negotiate camera geometry, prepare a new media session and resume
    * recording as one reserved job. Pre-publication failure restores the camera. */
   switchRecordingModeAsync(
@@ -1877,6 +1935,14 @@ export class Camera {
       throw new CameraError(-4, 'camera jobs active')
     if (this.modeJobs.size + this.requests.length >= 32)
       throw new CameraError(-4, 'mode queue')
+    if (
+      this.recordings.size > 1 ||
+      [...this.producers.keys()].some((r) => !this.recordings.has(r))
+    )
+      throw new CameraError(
+        -4,
+        'mode switch requires other encoders to be stopped',
+      )
     if (this.recording && this.recording.recorder !== recorder)
       throw new CameraError(-4, 'camera records a different recorder')
     if (
@@ -1915,6 +1981,8 @@ export class Camera {
       exact,
     )
     const audio = jobOptions.audio
+    if (audio && this.recording?.backpressure === 'drop')
+      throw new CameraError(-8, 'audio requires wait backpressure')
     if (
       audio &&
       (!audio.handle ||
@@ -1984,8 +2052,11 @@ export class Camera {
           // Camera and media are published together; no user work can enter until
           // the reservation is released. Audio ownership transfers only here.
           recorder[recordingOwner](this, false, true)
-          resumed = new Recording(this, recorder, audio, recorder.fps)
-          this.recording = resumed
+          resumed = this.attachCoordinatedRecording(
+            recorder,
+            audio,
+            initialRecording?.backpressure ?? 'wait',
+          )
         }
         try {
           current.check()
@@ -1993,7 +2064,8 @@ export class Camera {
           check(n.zc_get_stats(this.handle, ptr(stats)))
           if (
             view(stats).getUint32(36, true) ||
-            this.recording !== initialRecording
+            this.recording !== initialRecording ||
+            this.recordings.size > (initialRecording ? 1 : 0)
           )
             throw new CameraError(
               -4,
@@ -2004,6 +2076,15 @@ export class Camera {
             clearTimeout(this.timer)
             this.timer = undefined
           }
+          // Admission may be full with the final copied frame. The coordinator
+          // fences new producers while this job waits for that exact turn.
+          while (initialRecording && this.producers.has(initialRecording)) {
+            current.check()
+            await new Promise<void>((resolve) => setTimeout(resolve, 1))
+          }
+          current.check()
+          if (initialRecording?.error !== undefined)
+            throw initialRecording.error
           const flush = initialRecording
             ? initialRecording[coordinatedFlush](reservation!.flush)
             : reservation!.flush()
@@ -2550,15 +2631,70 @@ export class Camera {
     await Promise.all(jobs.map((job) => job.operationDone))
   }
 
+  recordingState(recording: Recording): CaptureConsumerStats {
+    const id = this.recordingIds.get(recording)
+    if (id !== undefined) recording[consumerState] = this.fanout!.state(id)
+    return { ...recording[consumerState]! }
+  }
+  pendingRecording(recording: Recording) {
+    return this.producers.get(recording) ?? Promise.resolve()
+  }
   detach(recording: Recording) {
-    const detached = this.recording === recording
-    if (detached) this.recording = undefined
-    const failed = this.failedRecordings.delete(recording)
-    if ((detached || failed) && this.recording?.recorder !== recording.recorder)
+    const id = this.recordingIds.get(recording)
+    this.recordings.delete(recording)
+    this.failedRecordings.delete(recording)
+    this.recordingAudio.delete(recording)
+    if (id !== undefined) {
+      recording[consumerState] = this.fanout!.retire(id)
+      this.recordingIds.delete(recording)
       recording.recorder[recordingOwner](this, true)
+      if (!this.closing && !this.stopJob && this.handle) this.ensurePump()
+    }
+  }
+  private failRecording(recording: Recording, error: unknown) {
+    recording.error ??= error
+    this.recordings.delete(recording)
+    const id = this.recordingIds.get(recording)
+    if (id !== undefined) {
+      recording[consumerState] = this.fanout!.fail(id)
+      this.failedRecordings.add(recording)
+    }
+  }
+  private failRecordings(error: unknown) {
+    for (const recording of [...this.recordings])
+      this.failRecording(recording, error)
+  }
+  private completeRecording(
+    recording: Recording,
+    id: bigint,
+    ticket: bigint,
+    error?: unknown,
+  ) {
+    const cancelled =
+      recording.closing && error instanceof CameraError && error.code === -2
+    try {
+      recording[consumerState] = this.fanout!.finish(
+        id,
+        ticket,
+        error === undefined ? 0 : cancelled ? 2 : 1,
+      )
+    } catch (cleanupError) {
+      error =
+        error === undefined
+          ? cleanupError
+          : new AggregateError(
+              [error, cleanupError],
+              'encoder claim cleanup failed',
+            )
+    }
+    if (error !== undefined && !cancelled) this.failRecording(recording, error)
   }
   private ensurePump() {
-    if (this.timer === undefined && !this.pumping)
+    if (
+      this.timer === undefined &&
+      !this.pumping &&
+      (!this.fanout || this.fanout.ready())
+    )
       this.timer = setTimeout(() => this.pump(), 0)
   }
   private async pump() {
@@ -2603,9 +2739,11 @@ export class Camera {
       let frame: Frame | undefined
       let selected: CaptureRequest | undefined, capturedValue: unknown
       let attempted: CaptureRequest | undefined
-      let producer: Promise<void> | undefined, writing: Recording | undefined
+      let offered: bigint | undefined
       try {
+        if (this.fanout && !this.fanout.ready()) return
         frame = this.acquire(0)
+        offered = this.fanout?.offer()
         const callbacks = this.requestCallbacks
         let callbackFailed = false
         try {
@@ -2651,16 +2789,38 @@ export class Camera {
           selected = undefined
         }
         if (!callbackFailed) {
-          if (this.recording) {
+          for (const writing of [...this.recordings]) {
+            const id = this.recordingIds.get(writing)!
+            let ticket: bigint | undefined
             try {
-              writing = this.recording
-              if (writing.recorder.asyncWrites)
-                producer = writing.writeAsync(frame)
-              else writing.write(frame)
+              ticket = this.fanout!.claim(id, offered!)
+              if (ticket === undefined) {
+                writing[consumerState] = this.fanout!.state(id)
+                continue
+              }
+              if (writing.recorder.asyncWrites) {
+                const claim = ticket
+                const pending = writing
+                  .writeAsync(frame, offered)
+                  .then(
+                    () => this.completeRecording(writing, id, claim),
+                    (error) =>
+                      this.completeRecording(writing, id, claim, error),
+                  )
+                  .finally(() => {
+                    this.producers.delete(writing)
+                    if (!this.closing && !this.stopJob && this.handle)
+                      this.ensurePump()
+                  })
+                this.producers.set(writing, pending)
+              } else {
+                writing.write(frame, offered)
+                this.completeRecording(writing, id, ticket)
+              }
             } catch (error) {
-              this.recording.error = error
-              this.failedRecordings.add(this.recording)
-              this.recording = undefined
+              if (ticket !== undefined)
+                this.completeRecording(writing, id, ticket, error)
+              else this.failRecording(writing, error)
             }
           }
           if (this.previewHandle) {
@@ -2678,11 +2838,7 @@ export class Camera {
           selected = undefined
           for (const job of this.requests) job.reject(error)
           this.requests = []
-          if (this.recording) {
-            this.recording.error = error
-            this.failedRecordings.add(this.recording)
-          }
-          this.recording = undefined
+          this.failRecordings(error)
           this.stopPreview()
         }
       } finally {
@@ -2694,35 +2850,13 @@ export class Camera {
           for (const job of this.requests) job.reject(error)
           this.requests = []
           this.focusJob?.cancel(error)
-          if (this.recording) {
-            this.recording.error = error
-            this.failedRecordings.add(this.recording)
-            this.recording = undefined
-          }
+          this.failRecordings(error)
           try {
             this.stopPreviewOwned()
           } catch {}
         }
       }
       selected?.resolve(capturedValue)
-      if (producer) {
-        try {
-          await producer
-        } catch (error) {
-          if (
-            writing &&
-            !(
-              writing.closing &&
-              error instanceof CameraError &&
-              error.code === -2
-            )
-          ) {
-            writing.error = error
-            this.failedRecordings.add(writing)
-            if (this.recording === writing) this.recording = undefined
-          }
-        }
-      }
       if (!this.handle || this.closing || this.stopJob) return
       if (
         this.recording ||
@@ -2731,7 +2865,8 @@ export class Camera {
         this.focusJobs ||
         (this.started && this.hasRequestCallbacks)
       )
-        this.timer = setTimeout(() => this.pump(), 1)
+        if (!this.fanout || this.fanout.ready())
+          this.timer = setTimeout(() => this.pump(), 1)
     } finally {
       this.pumping = false
     }
@@ -2747,10 +2882,15 @@ export class Camera {
   private stopWork(): Promise<void> {
     if (this.stopJob) return this.stopJob
     const coordinated = this.coordinatedRecorder
-    const recordings = [...this.failedRecordings]
-    if (this.coordinatedInitial) recordings.push(this.coordinatedInitial)
-    if (this.recording) recordings.push(this.recording)
-    this.recording = undefined
+    const recordings = [
+      ...new Set([...this.recordings, ...this.failedRecordings]),
+    ]
+    if (
+      this.coordinatedInitial &&
+      !recordings.includes(this.coordinatedInitial)
+    )
+      recordings.push(this.coordinatedInitial)
+    this.recordings.clear()
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
@@ -2777,13 +2917,11 @@ export class Camera {
       } catch (error) {
         failure = error
       }
-      for (const recording of recordings) {
-        try {
-          await recording.close()
-        } catch (error) {
-          failure ??= error
-        }
-      }
+      const closing = await Promise.allSettled(
+        recordings.map((recording) => recording.close()),
+      )
+      for (const result of closing)
+        if (result.status === 'rejected') failure ??= result.reason
       if (coordinated && recordings.some((r) => r.recorder === coordinated)) {
         try {
           await coordinated.close()
@@ -2791,6 +2929,7 @@ export class Camera {
           failure ??= error
         }
       }
+      await Promise.all([...this.producers.values()])
       if (this.started) {
         try {
           check(n.zc_stop(this.handle))
@@ -2809,7 +2948,7 @@ export class Camera {
     guardRequestCallback()
     guardOutputHook()
     if (this.closeJob) return this.closeJob
-    if (!this.handle) return Promise.resolve()
+    if (!this.handle && !this.fanout) return Promise.resolve()
     this.closing = true
     this.closeJob = (async () => {
       let failure: unknown
@@ -2821,12 +2960,14 @@ export class Camera {
       try {
         if (this.handle) check(n.zc_close(this.handle))
         this.handle = 0 as Pointer
+        this.fanout?.close()
+        this.fanout = undefined
       } catch (error) {
         failure ??= error
       }
       if (failure) throw failure
     })().finally(() => {
-      if (this.handle) {
+      if (this.handle || this.fanout) {
         this.closing = false
         this.closeJob = undefined
       }
@@ -5403,6 +5544,11 @@ export class AudioCapture {
   }
 }
 export class Recording {
+  [consumerState]?: CaptureConsumerStats
+  private originFrame?: bigint
+  stats() {
+    return this.camera.recordingState(this)
+  }
   frames = 0
   error: unknown
   private stopped = false
@@ -5418,12 +5564,16 @@ export class Recording {
     readonly recorder: Recorder,
     private audio: AudioCapture | undefined,
     private fps: number,
+    readonly backpressure: RecordingBackpressure = 'wait',
   ) {}
-  private inputs(frame: Frame) {
+  private inputs(frame: Frame, offered?: bigint) {
     if (this.stopped) throw new CameraError(-2, 'recording stopped')
+    if (offered !== undefined) this.originFrame ??= offered
+    const index =
+      offered === undefined ? BigInt(this.frames) : offered - this.originFrame!
     const timestamp =
       this.camera.info().backend === 0
-        ? (BigInt(this.frames) * 1_000_000_000n) / BigInt(this.fps)
+        ? (index * 1_000_000_000n) / BigInt(this.fps)
         : frame.timestampNs
     const blocks: ProducerAudioBlock[] = []
     if (this.audio) {
@@ -5449,15 +5599,15 @@ export class Recording {
     }
     return { timestamp, blocks }
   }
-  write(frame: Frame) {
-    const { timestamp, blocks } = this.inputs(frame)
+  write(frame: Frame, offered?: bigint) {
+    const { timestamp, blocks } = this.inputs(frame, offered)
     for (const block of blocks)
       this.recorder.writeAudio(block.data, block.timestampNs)
     this.recorder.write(frame, timestamp)
     this.frames++
   }
-  writeAsync(frame: Frame): Promise<void> {
-    const { timestamp, blocks } = this.inputs(frame)
+  writeAsync(frame: Frame, offered?: bigint): Promise<void> {
+    const { timestamp, blocks } = this.inputs(frame, offered)
     const job = this.recorder.writeAVAsync(frame, blocks, timestamp)
     this.frames++
     return Promise.resolve(job)
@@ -5524,6 +5674,8 @@ export class Recording {
       } catch (error) {
         failure ??= error
       }
+      await this.camera.pendingRecording(this)
+      failure ??= this.error
       if (failure) throw failure
     })()
     return this.closeJob

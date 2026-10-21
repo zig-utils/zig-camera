@@ -356,3 +356,19 @@ it in its compiler/architecture workflow. Camera Zig owns bounded compact source
 copies and color metadata; it refuses incompatible gamut/transfer instead of
 mislabeling the existing output tags. MJPEG shares Home JPEG and reuses a bounded
 RGB scratch buffer. No alternative codec, packet queue or container is added.
+
+The 0.46 audit also inspects Home OS at 151269666bc09aa15a271f1c1f4603f681132e65;
+see [the source-by-source audit](home-os-reuse.md). Its media ADR places shared
+codec work in Home stdlib; camera/decoder stubs cannot replace working Linux
+paths. Kernel audio, DMA and framebuffer implementations remain hardware-specific
+references. For independent encoders, Home packet_output.Slots is reused by the
+new core/frame_fanout.zig helper at ff51b18e44e5fe82dba14258fa1034fb9aef8cdf,
+copied verbatim. It stores eight camera consumer identities, wait/drop admission,
+exact tickets and saturating counters without pixels, PCM or another queue.
+Retired busy entries hold capacity until exact cleanup; stale completions cannot
+release replacements. Cancellation and external source failure have explicit
+semantics. Pinned/development Zig Debug/ReleaseSafe cover ownership/exhaustion;
+Home exports the helper and includes both optimization modes in its workflow.
+Existing Home compact producers, media codecs, output queues and containers remain
+the byte-owning implementations. Full multi-encoder mode transactions and shared
+PCM fan-out remain work; physical speedups have not been inferred.

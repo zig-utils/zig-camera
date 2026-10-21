@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.45 adds main/lores recording input selection through native, Bun and CLI
-APIs. I420 AVC/HEVC uses Home matrix/range remapping without a full RGB image;
-async inputs own compact copies. Session and mode jobs preserve source selection.
+Version 0.46 adds up to eight independent main/lores encoders per camera, with
+native wait/drop admission, bounded copied producers, isolated failures and
+joined close. See [multiple encoders](docs/multiple-encoders.md) and the
+[Home OS reuse audit](docs/home-os-reuse.md).
 See [recording streams](docs/recording-streams.md), [still images](docs/still-images.md)
 and [camera orientation](docs/orientation.md).
 See [request callbacks](docs/request-callbacks.md), [mapped streams](docs/mapped-streams.md), [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),

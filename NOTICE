@@ -354,3 +354,9 @@ Home direct I420 matrix/range mapping (0.45):
   Source commit: 3659d9ad3115e4f54d46b821ffcc9551ee5e1639.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/3659d9ad3115e4f54d46b821ffcc9551ee5e1639
+
+Home bounded frame consumer admission (0.46):
+- src/home/frame_fanout.zig is verbatim packages/video/src/core/frame_fanout.zig.
+  Source commit: ff51b18e44e5fe82dba14258fa1034fb9aef8cdf.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/ff51b18e44e5fe82dba14258fa1034fb9aef8cdf

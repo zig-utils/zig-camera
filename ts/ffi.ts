@@ -12,6 +12,16 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_fanout_open: { args: [p], returns: i },
+  zc_fanout_close: { args: [p], returns: i },
+  zc_fanout_add: { args: [p, u, p], returns: i },
+  zc_fanout_ready: { args: [p], returns: i },
+  zc_fanout_offer: { args: [p, p], returns: i },
+  zc_fanout_claim: { args: [p, n, n, p], returns: i },
+  zc_fanout_state_get: { args: [p, n, p], returns: i },
+  zc_fanout_finish: { args: [p, n, n, u, p], returns: i },
+  zc_fanout_fail: { args: [p, n, p], returns: i },
+  zc_fanout_retire: { args: [p, n, p], returns: i },
   zc_default_image_options: { args: [p], returns: v },
   zc_encode_image: { args: [p, n, p, p], returns: i },
   zc_encode_stream_image: { args: [p, n, u, p, p], returns: i },
