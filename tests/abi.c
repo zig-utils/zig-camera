@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
 _Static_assert(sizeof(zc_pcm_span)==24,"shared PCM span ABI");
 _Static_assert(sizeof(zc_pcm_batch)==32,"shared PCM batch ABI");
 _Static_assert(sizeof(zc_pcm_consumer_state)==56,"shared PCM consumer ABI");
@@ -72,6 +73,14 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    zc_preview_view display;zc_default_preview_view(&display);
+    assert(display.struct_size==48 && display.flags==1 && display.image_orientation==1 && display.overlay_orientation==1);
+    assert(zc_preview_check_view(64,48,&display)==ZC_OK);
+    display.flags|=8;display.overlay_x=63;display.overlay_width=UINT32_MAX;display.overlay_height=1;
+    assert(zc_preview_check_view(64,48,&display)==ZC_INVALID);
+    display.overlay_width=1;assert(zc_preview_check_view(64,48,&display)==ZC_OK);
+    display.struct_size=0;assert(zc_preview_check_view(64,48,&display)==ZC_INVALID);
+
     zc_preview_overlay *overlay=NULL;
     uint8_t rgba[20]={0};
     assert(zc_preview_overlay_create(NULL,4,1,1,4,&overlay)==ZC_INVALID && !overlay);

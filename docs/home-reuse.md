@@ -417,3 +417,12 @@ immutable RGBA validator remains used for SDL; headless overlay updates validate
 shape but retain no bytes. Home async's general task scheduler and Home OS's
 framebuffer machinery do not replace the hosted request pump. No shared helper
 needed a code change in this cycle; existing provenance and tests remain intact.
+
+The 0.51 audit reuses Home image orientation and the checked region helper fixed at
+9f430f21ae271ba15c44dcad4201fb6c675e61a5. New viewport.Plan combines integer aspect
+fitting, post-transform overlay regions and independent UV maps without pixels,
+allocators or renderers. It was contributed at ac8eef68bd64a601ca72399a19fd3152dc81bba0
+and copied verbatim with region.zig. Eight standalone/dependency tests pass in
+Debug/ReleaseSafe with pinned and development Zig. Camera code validates the
+public scalar ABI in Zig and keeps SDL calls in the existing system bridge;
+window manager requests and display transforms never alter camera frame buffers.

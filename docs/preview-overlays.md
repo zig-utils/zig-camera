@@ -62,5 +62,6 @@ checking bars. Native tests verify copied padding/alpha and source independence;
 Bun tests cover restoration, upload failure, cleanup and unchanged capture data.
 
 [Headless preview](headless-preview.md) validates setOverlay input and ignores it,
-without retaining or uploading pixels. Overlay rectangles/transforms, DRM/KMS, GPU sharing,
+without retaining or uploading pixels. [Display views](preview-views.md) now provide independent overlay transforms and
+rectangles. DRM/KMS, GPU sharing,
 GUI integrations and physical Pi preview latency remain parity/acceptance work.

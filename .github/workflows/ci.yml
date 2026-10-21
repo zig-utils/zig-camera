@@ -98,10 +98,10 @@ jobs:
           ZC_TEST_CODECS: '1'
           ZC_TEST_AAC: '1'
         run: |
-          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/preview.c $(pkg-config --cflags --libs sdl2) -o zig-out/preview-test
-          ./zig-out/preview-test
           zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Daudio=true -Daac=true -Doptimize=ReleaseSafe
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/preview.c -Lzig-out/lib -lzigcamera $(pkg-config --cflags --libs sdl2) -o zig-out/preview-test
+          LD_LIBRARY_PATH=zig-out/lib ./zig-out/preview-test
           c++ -std=c++17 -Wall -Wextra -Werror tests/decode_codecs.cpp -lopenh264 -lde265 -o zig-out/decode-codecs
           cc -std=c11 -Wall -Wextra -Werror tests/decode_aac.c -lfaad -o zig-out/decode-aac
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg

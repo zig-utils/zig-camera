@@ -58,3 +58,10 @@ rendering facilities; importing them would introduce a second display buffer own
 for an operation that needs no display. Headless preview therefore reuses the
 existing bounded libcamera queue/leases and Home job gates. origin/main still
 matches the audited Home OS commit above; no OS code or hardware was executed.
+
+The 0.51 audit inspects compositor.home's rect_intersect/rect_contains_point and
+window/dirty-region geometry. Those signed kernel rectangles and framebuffer
+ownership are not a portable SDL view contract. The hosted implementation reuses
+Home image's checked unsigned regions/orientation and contributes a standalone
+viewport plan for aspect fitting and texture coordinates. No kernel allocator,
+framebuffer copy or device execution is introduced into camera display controls.

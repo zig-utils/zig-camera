@@ -3,7 +3,8 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
-struct zc_preview { SDL_Window *window; SDL_Renderer *renderer; SDL_Texture *texture, *overlay; SDL_threadID thread; uint32_t width, height; };
+struct zc_preview { SDL_Window *window; SDL_Renderer *renderer; SDL_Texture *texture, *overlay; SDL_threadID thread; uint32_t width, height; zc_preview_view view; };
+extern int zcm_preview_geometry(uint32_t,uint32_t,uint32_t,uint32_t,const zc_preview_view *,uint32_t *,float *);
 int zcm_preview_close(zc_preview *p) {
     if (!p || p->thread != SDL_ThreadID()) return ZC_STATE;
     SDL_DestroyTexture(p->overlay); SDL_DestroyTexture(p->texture); SDL_DestroyRenderer(p->renderer); SDL_DestroyWindow(p->window);
@@ -16,6 +17,7 @@ int zcm_preview_open(const char *title, uint32_t w, uint32_t h, zc_preview **out
     zc_preview *p = calloc(1,sizeof(*p));
     if (!p) { SDL_QuitSubSystem(SDL_INIT_VIDEO); return ZC_NOMEM; }
     p->thread = SDL_ThreadID(); p->width = w; p->height = h;
+    p->view=(zc_preview_view){.struct_size=sizeof(zc_preview_view),.flags=1,.image_orientation=1,.overlay_orientation=1};
     int ww = w > 1280 ? 1280 : (int)w, hh = (int)((uint64_t)h * ww / w);
     if (!hh) hh = 1;
     p->window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, hh, SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI);
@@ -36,9 +38,40 @@ int zcm_preview_overlay(zc_preview *p,const uint8_t *rgba,uint32_t w,uint32_t h,
     }
     SDL_DestroyTexture(p->overlay); p->overlay=next; return ZC_OK;
 }
+int zcm_preview_extent(zc_preview *p,uint32_t *w,uint32_t *h) {
+    if (!p || p->thread != SDL_ThreadID()) return ZC_STATE;
+    *w=p->width; *h=p->height; return ZC_OK;
+}
+int zcm_preview_view(zc_preview *p,const zc_preview_view *view) {
+    if (!p || p->thread != SDL_ThreadID()) return ZC_STATE;
+    /* Public Zig entry point validated the complete immutable scalar snapshot. */
+    if(view->flags&2) SDL_SetWindowSize(p->window,(int)view->window_width,(int)view->window_height);
+    if(view->flags&4) SDL_SetWindowPosition(p->window,view->window_x,view->window_y);
+    p->view=*view; return ZC_OK;
+}
+static int zcm_preview_draw(zc_preview *p,SDL_Texture *texture,const uint32_t *rect,const float *uv) {
+    if(!rect[2] || !rect[3]) return ZC_OK;
+    const int transposed=uv[0]==uv[2];
+    SDL_RendererFlip flip=SDL_FLIP_NONE;
+    if(uv[0]==1.0f) flip=(SDL_RendererFlip)(flip|SDL_FLIP_HORIZONTAL);
+    if((!transposed && uv[1]==1.0f)||(transposed && uv[1]==0.0f)) flip=(SDL_RendererFlip)(flip|SDL_FLIP_VERTICAL);
+    SDL_FRect dst={(float)rect[0],(float)rect[1],(float)rect[2],(float)rect[3]};
+    SDL_FPoint pivot={0,0};
+    if(transposed) { dst.x+=(float)rect[2];dst.w=(float)rect[3];dst.h=(float)rect[2]; }
+    /* Integer corner pivot avoids half-pixel loss on odd rectangular textures.
+     * SDL's geometry-to-rectangle optimization does not preserve transposed UVs. */
+    return SDL_RenderCopyExF(p->renderer,texture,NULL,&dst,transposed?90.0:0.0,&pivot,flip)==0 ? ZC_OK : ZC_IO;
+}
 static int zcm_preview_render(zc_preview *p,int present) {
-    if (SDL_SetRenderDrawColor(p->renderer,0,0,0,255) != 0 || SDL_RenderClear(p->renderer) != 0 || SDL_RenderCopy(p->renderer,p->texture,NULL,NULL) != 0) return ZC_IO;
-    if (p->overlay && SDL_RenderCopy(p->renderer,p->overlay,NULL,NULL)!=0) return ZC_IO;
+    int w=0,h=0;
+    if(SDL_GetRendererOutputSize(p->renderer,&w,&h)!=0) return ZC_IO;
+    if(w<=0 || h<=0) return ZC_OK;
+    uint32_t rectangles[8]; float uv[16];
+    int result=zcm_preview_geometry(p->width,p->height,(uint32_t)w,(uint32_t)h,&p->view,rectangles,uv);
+    if(result!=ZC_OK) return result;
+    if (SDL_RenderSetLogicalSize(p->renderer,0,0)!=0 || SDL_SetRenderDrawColor(p->renderer,0,0,0,255)!=0 || SDL_RenderClear(p->renderer)!=0) return ZC_IO;
+    result=zcm_preview_draw(p,p->texture,rectangles,uv); if(result!=ZC_OK) return result;
+    if(p->overlay) { result=zcm_preview_draw(p,p->overlay,rectangles+4,uv+8); if(result!=ZC_OK) return result; }
     if (present) SDL_RenderPresent(p->renderer);
     return ZC_OK;
 }

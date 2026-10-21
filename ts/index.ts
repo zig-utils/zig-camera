@@ -1,3 +1,16 @@
+import {
+  preparePreviewView,
+  validatePreviewView,
+  copyPreviewViewOptions,
+  type PreviewViewOptions,
+  type PreviewConfiguration,
+} from './preview-view'
+export type {
+  PreviewViewOptions,
+  PreviewTransform,
+  PreviewWindow,
+  PreviewRectangle,
+} from './preview-view'
 import { RestartGroup, type GroupRestartMember } from './restart-group'
 import {
   SharedAudio,
@@ -346,11 +359,11 @@ export interface CameraTransform {
   strict?: boolean
 }
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
-export interface PreviewOptions {
+export interface PreviewOptions extends PreviewViewOptions {
   backend?: 'sdl' | 'headless'
   title?: string
 }
-export interface PreviewInfo {
+export interface PreviewInfo extends PreviewViewOptions {
   backend: 'sdl' | 'headless'
   title: string
   suspended: boolean
@@ -688,7 +701,7 @@ export class Camera {
     return Object.freeze([...this.recordings])
   }
   private previewHandle = 0 as Pointer
-  private previewConfiguration?: Readonly<Required<PreviewOptions>>
+  private previewConfiguration?: PreviewConfiguration
   private previewSuspended = false
   private get previewActive() {
     return this.previewConfiguration !== undefined && !this.previewSuspended
@@ -697,7 +710,9 @@ export class Camera {
   previewInfo(): PreviewInfo | undefined {
     return (
       this.previewConfiguration && {
-        ...this.previewConfiguration,
+        backend: this.previewConfiguration.backend,
+        title: this.previewConfiguration.title,
+        ...copyPreviewViewOptions(this.previewConfiguration.view),
         suspended:
           this.previewSuspended ||
           this.modeActive ||
@@ -1881,13 +1896,16 @@ export class Camera {
       throw new RangeError('invalid preview backend')
     if (typeof title !== 'string') throw new TypeError('invalid preview title')
     cstring(title)
+    const preparedView = preparePreviewView(
+      typeof options === 'string' ? {} : options,
+    )
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewConfiguration)
       throw new CameraError(-4, 'preview already active')
     const info = this.info()
     this.openPreviewOwned(
-      Object.freeze({ backend, title }),
+      Object.freeze({ backend, title, view: preparedView }),
       info.width,
       info.height,
     )
@@ -1898,6 +1916,30 @@ export class Camera {
       this.stopPreview()
       throw error
     }
+  }
+  /** Replace display view settings; omitted window fields leave the OS window in place. */
+  setPreviewView(options: PreviewViewOptions = {}) {
+    guardRequestCallback()
+    this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (!this.previewActive) throw new CameraError(-2, 'preview not active')
+    const owner = this.previewConfiguration!,
+      prepared = preparePreviewView(options)
+    this.assertOpen()
+    if (
+      this.hasPendingModes() ||
+      !this.previewActive ||
+      this.previewConfiguration !== owner
+    )
+      throw new CameraError(-4, 'preview changed during view validation')
+    const info = this.readInfo()
+    validatePreviewView(prepared, info.width, info.height)
+    if (owner.backend === 'sdl')
+      check(
+        n.zc_preview_set_view(this.previewHandle, ptr(prepared.data)),
+        'preview view',
+      )
+    this.previewConfiguration = Object.freeze({ ...owner, view: prepared })
   }
   /** Replace or clear the display-only overlay. Does not modify capture/encoding. */
   setOverlay(overlay: PreviewOverlay | null) {
@@ -1949,10 +1991,11 @@ export class Camera {
     this.overlayHandle = candidate
   }
   private openPreviewOwned(
-    configuration: Readonly<Required<PreviewOptions>>,
+    configuration: PreviewConfiguration,
     width: number,
     height: number,
   ) {
+    validatePreviewView(configuration.view, width, height)
     if (configuration.backend === 'headless') {
       this.previewConfiguration = configuration
       this.previewSuspended = false
@@ -1963,6 +2006,11 @@ export class Camera {
     check(n.zc_preview_open(ptr(name), width, height, ptr(out)))
     const candidate = handle(out)
     try {
+      if (configuration.view.customized)
+        check(
+          n.zc_preview_set_view(candidate, ptr(configuration.view.data)),
+          'preview view',
+        )
       if (this.overlayHandle)
         check(n.zc_preview_set_overlay(candidate, this.overlayHandle))
     } catch (error) {

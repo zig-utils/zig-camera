@@ -57,7 +57,9 @@ a later startPreview creates a fresh session with no stale descriptor or overlay
 Headless `setOverlay` retains the public RGBA geometry/extent validation but
 otherwise ignores valid input, like upstream NullPreview. It creates no native
 image or texture, retains no source bytes and does not turn headless processing
-into CPU compositing. Title is retained metadata with no window side effect.
+into CPU compositing. Title is retained metadata with no window side effect. [Display view settings](preview-views.md)
+are also snapshotted/validated and preserved, including target rectangle checks
+during mode changes; headless processing performs no window or transform operation.
 
 ## Reuse and validation
 
@@ -76,6 +78,6 @@ immutable options/observations. Optional SDL tests alternate backends and exerci
 failed display setup recovery. Linux x86/ARM CI also retains real libcamera
 build/load/no-camera checks. No physical Pi scheduling/throughput claim follows.
 
-This implements headless lifecycle, not the remaining preview integrations:
-rectangles/transforms, DRM/KMS, GPU/GUI buffer sharing and physical display
-acceptance stay in the full parity worklist.
+Headless lifecycle and [display view controls](preview-views.md) are implemented.
+Additional display stream/format selection, DRM/KMS, GPU/GUI buffer sharing and
+physical display acceptance stay in the full parity worklist.

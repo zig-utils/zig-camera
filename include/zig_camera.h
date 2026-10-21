@@ -301,6 +301,23 @@ int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);
 int zc_preview_show(zc_preview *, const zc_frame *);
 int zc_preview_close(zc_preview *);
+/* Display-only view. Orientations use zc_orientation_from_transform, not EXIF.
+ * flags: keep aspect=1, request window size=2, request window position=4,
+ * explicit overlay rectangle=8. Unused window/rectangle fields must be zero.
+ * Rectangle units are pixels in the post-transform logical camera image. */
+typedef struct {
+    uint32_t struct_size,flags,image_orientation,overlay_orientation;
+    int32_t window_x,window_y;
+    uint32_t window_width,window_height;
+    uint32_t overlay_x,overlay_y,overlay_width,overlay_height;
+} zc_preview_view;
+void zc_default_preview_view(zc_preview_view *);
+/* Pure validation is available without SDL. Window size is 1..16384 per axis,
+ * requested positions -1000000..1000000. Reject before any view/window changes. */
+int zc_preview_check_view(uint32_t source_width,uint32_t source_height,const zc_preview_view *);
+/* Same UI thread as open/show/close; copies scalars, retains no input pointer.
+ * Window geometry is requested; the window manager can adjust it. */
+int zc_preview_set_view(zc_preview *,const zc_preview_view *);
 /* Immutable owned straight-alpha RGBA8, max 4096x4096 (64 MiB compact).
  * create copies active bytes synchronously; padding is excluded. Caller owns the
  * overlay independently of previews. Serialize use/close; NULL close is safe. */
@@ -309,7 +326,8 @@ int zc_preview_overlay_create(const uint8_t *data,uint64_t length,uint32_t width
 void zc_preview_overlay_close(zc_preview_overlay *);
 /* Upload synchronously on the preview UI thread. NULL clears. Failure preserves
  * the old texture. No overlay pointer is retained; caller can immediately close.
- * Overlay fills the logical camera image, excluding window letter/pillar boxes.
+ * By default overlay fills the logical image excluding window bars; set_view
+ * can place/transform it independently. Existing image pixels are unchanged.
  * Captured/encoded camera pixels are never modified. */
 int zc_preview_set_overlay(zc_preview *,const zc_preview_overlay *);
 enum { ZC_H264=1, ZC_HEVC=2, ZC_MJPEG=3, ZC_FFV1=4 };

@@ -378,3 +378,10 @@ Home checked RGBA overlay rows (0.49):
   Source commit: b8c29c456e2ec001a30dc5d24743b71bd8d6a486.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/b8c29c456e2ec001a30dc5d24743b71bd8d6a486
+
+Home checked display geometry (0.51):
+- src/home/region.zig and viewport.zig are verbatim packages/image/src/ops modules.
+  Source commit: ac8eef68bd64a601ca72399a19fd3152dc81bba0.
+  Existing orientation.zig is unchanged and retains its earlier provenance.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/ac8eef68bd64a601ca72399a19fd3152dc81bba0
