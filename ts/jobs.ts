@@ -4,6 +4,22 @@ export interface JobOptions<T = unknown> {
   signal?: AbortSignal
   signalFunction?: (job: BunJob<T>) => void | Promise<void>
 }
+/** @internal Snapshot application accessors before reserving native ownership. */
+export function snapshotJobOptions<T>(
+  source: JobOptions<T>,
+  defaultTimeoutMs?: number,
+): JobOptions<T> {
+  const suppliedTimeout = source.timeoutMs,
+    timeoutMs =
+      suppliedTimeout === undefined ? defaultTimeoutMs : suppliedTimeout,
+    signal = source.signal,
+    signalFunction = source.signalFunction
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0))
+    throw new RangeError('invalid job deadline')
+  if (signalFunction !== undefined && typeof signalFunction !== 'function')
+    throw new TypeError('invalid job callback')
+  return { timeoutMs, signal, signalFunction }
+}
 export class JobCancelledError extends Error {
   constructor(message = 'job cancelled') {
     super(message)
@@ -33,16 +49,14 @@ export class BunJob<T> implements PromiseLike<T> {
   private releaseOperation!: () => void
   cleanupDone: Promise<void>
   private releaseCleanup!: () => void
+  private readonly options: JobOptions<T>
   constructor(
     operation: (job: BunJob<T>) => Promise<T>,
     private release: () => void,
-    private options: JobOptions<T> = {},
+    options: JobOptions<T> = {},
   ) {
-    if (
-      options.timeoutMs !== undefined &&
-      (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
-    )
-      throw new RangeError('invalid job deadline')
+    this.options = snapshotJobOptions(options)
+    options = this.options
     n.zc_default_preparation_state(ptr(this.gate))
     this.operation = operation
     this.completion = new Promise<T>((resolve, reject) => {
@@ -114,6 +128,10 @@ export class BunJob<T> implements PromiseLike<T> {
     return true
   }
   async start() {
+    if (this.options.signal?.aborted) {
+      this.cancel(this.options.signal.reason ?? new JobCancelledError())
+      return
+    }
     if (this.options.timeoutMs !== undefined && this.options.timeoutMs === 0) {
       this.cancel(new CameraError(-3, 'job deadline'))
       return

@@ -319,3 +319,11 @@ Image suite on development Zig. Camera's independent platform decoders validate
 RGB pixels rather than trusting Home's own round trips. Existing Home JPEG and
 Bayer DNG implementations remain the JPEG/DNG paths; DNG's shared row writer now
 supports owned byte output. No codec/container implementation is duplicated.
+
+The autofocus admission follow-up rechecks Home's async completion_gate and
+preparation_gate and retains those sources verbatim. Their acknowledgement,
+result-revision and cancellation/publication tests pass with pinned Zig and Home's
+development compiler. Bun snapshots application options before native admission;
+it adds no AF state machine or frame queue. Single-scan, continuous pause/resume
+and focus-locked jobs share the existing native gates. No Home source change was
+needed for the host option-lifetime fixes.

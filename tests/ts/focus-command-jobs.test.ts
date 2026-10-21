@@ -230,3 +230,91 @@ test('command options are read once and lifecycle changes during admission canno
     await closing.close()
   }
 })
+
+test('focus lock snapshots booleans once before submitting a command', async () => {
+  const c = camera(),
+    reads = { immediate: 0, focused: 0 }
+  try {
+    c.startContinuousAutofocus()
+    const result = await c.captureFocusLockedMetadata({
+      get immediate() {
+        return ++reads.immediate === 1 ? false : true
+      },
+      get requireFocused() {
+        return ++reads.focused === 1 ? true : false
+      },
+    })
+    expect(reads).toEqual({ immediate: 1, focused: 1 })
+    expect(result.afState).toBe(2)
+    expect(result.afPauseState).toBe(2)
+    expect(c.stats().leased).toBe(0)
+    expect(await c.autofocusResume()).toBe(3)
+  } finally {
+    await c.close()
+  }
+})
+
+test('single-scan admission snapshots a pre-aborted signal before accessors change it', async () => {
+  const c = camera(),
+    controller = new AbortController(),
+    reason = Error('admitted abort')
+  controller.abort(reason)
+  let reads = 0
+  try {
+    const revision = c.controlSnapshot().revision
+    const job = c.autofocusAsync({
+      get signal() {
+        return ++reads === 1 ? controller.signal : undefined
+      },
+    })
+    expect(await failure(job)).toBe(reason)
+    await job.operationDone
+    expect(reads).toBe(1)
+    expect(c.controlSnapshot().revision).toBe(revision)
+    expect(c.stats().leased).toBe(0)
+  } finally {
+    await c.close()
+  }
+})
+
+test('single-scan admission rejects lifecycle changes made by option accessors', async () => {
+  const c = camera()
+  let teardown: Promise<void> | undefined
+  try {
+    expect(() =>
+      c.autofocusAsync({
+        get signalFunction() {
+          teardown = c.close()
+          return undefined
+        },
+      }),
+    ).toThrow()
+    await teardown
+  } finally {
+    await c.close()
+  }
+})
+
+test('invalid capture callbacks and job options reject before changing autofocus intent', async () => {
+  const c = camera()
+  try {
+    c.startContinuousAutofocus()
+    const revision = c.controlSnapshot().revision
+    // @ts-expect-error Validate untyped callers before starting a pause.
+    expect(() => c.captureFocusLockedAsync(null)).toThrow(TypeError)
+    for (const timeoutMs of [NaN, Infinity, -1]) {
+      expect(() => c.autofocusAsync({ timeoutMs })).toThrow(RangeError)
+      expect(() => c.captureFocusLockedMetadata({ timeoutMs })).toThrow(
+        RangeError,
+      )
+    }
+    // @ts-expect-error Validate callback options before taking native ownership.
+    expect(() => c.autofocusPauseAsync({ signalFunction: 42 })).toThrow(
+      TypeError,
+    )
+    expect(c.controlSnapshot().revision).toBe(revision)
+    expect(await c.autofocusPause()).toBe(3)
+  } finally {
+    await c.close()
+  }
+})

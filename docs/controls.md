@@ -174,6 +174,13 @@ errors before an explicit resume or stop/restart. Failed cleanup never claims
 that the lens acknowledged restoration. Success leaves the requested pause/resume
 intent in place. Pre-aborted and zero-deadline jobs submit no commands.
 
+Job admission reads each option once and snapshots deadlines, abort signals and
+completion callbacks. Changing the options object later cannot redirect abort
+handling, change the callback or bypass focused-frame validation. Invalid
+deadlines and callbacks reject before AF commands are submitted. Option accessors
+that close the camera or start conflicting work cause admission to reject before
+capturing a native handle. Single-scan jobs use the same admission rules.
+
 The native metadata validMask now reserves bit 5 (32) for AfPauseState, independent
 of bit 0 for AfState. Missing pause metadata never acknowledges a job. libcamera
 and the synthetic driver both populate this flag without changing the ABI layout.

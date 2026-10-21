@@ -69,7 +69,12 @@ export {
   type HostOutputQueueStats,
   type OutputCapacityOptions,
 } from './outputs'
-import { BunJob, JobCancelledError, type JobOptions } from './jobs'
+import {
+  BunJob,
+  JobCancelledError,
+  snapshotJobOptions,
+  type JobOptions,
+} from './jobs'
 import {
   cameraConfiguration,
   copyConfiguration,
@@ -108,11 +113,7 @@ export function captureClockNs(): bigint {
   return out[0]
 }
 function captureSelection<T>(source: CaptureOptions<T>) {
-  const options: JobOptions<T> = {
-    timeoutMs: source.timeoutMs ?? 5000,
-    signal: source.signal,
-    signalFunction: source.signalFunction,
-  }
+  const options = snapshotJobOptions(source, 5000)
   const drop = uint(source.dropFrames ?? 0),
     flush = source.flush
   if (
@@ -1025,6 +1026,10 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs)
       throw new CameraError(-4, 'camera jobs active')
+    const admitted = snapshotJobOptions(options, 5000)
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusJobs)
+      throw new CameraError(-4, 'camera jobs active')
     const owned = this.handle
     const job = new BunJob<number>(
       async (current) => {
@@ -1047,14 +1052,14 @@ export class Camera {
         }
       },
       () => {},
-      { ...options, timeoutMs: options.timeoutMs ?? 5000 },
+      admitted,
     )
     this.focusProducesValue = false
     this.focusJob = job
     void job.operationDone.then(() => {
       if (this.focusJob === job) this.focusJob = undefined
     })
-    if (options.signal?.aborted) job.cancel(options.signal.reason)
+    if (admitted.signal?.aborted) job.cancel(admitted.signal.reason)
     void job.start()
     return job
   }
@@ -1093,11 +1098,7 @@ export class Camera {
     const restoreTimeout = options.restoreTimeoutMs ?? 5000
     if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
       throw new RangeError('invalid restoration deadline')
-    const admitted: JobOptions<number> = {
-      timeoutMs: options.timeoutMs ?? 5000,
-      signal: options.signal,
-      signalFunction: options.signalFunction,
-    }
+    const admitted = snapshotJobOptions(options, 5000)
     // Option accessors may run application code. Capture ownership only after
     // normalization, then reject lifecycle changes made during that admission.
     this.assertOpen()
@@ -1236,11 +1237,15 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs || this.requests.length)
       throw new CameraError(-4, 'camera jobs active')
-    for (const value of [options.immediate, options.requireFocused])
+    if (typeof operation !== 'function')
+      throw new TypeError('invalid focus capture callback')
+    const immediateOption = options.immediate,
+      focusedOption = options.requireFocused
+    for (const value of [immediateOption, focusedOption])
       if (value !== undefined && typeof value !== 'boolean')
         throw new RangeError('invalid focus-lock option')
-    const immediate = options.immediate ?? false,
-      requireFocused = options.requireFocused ?? true
+    const immediate = immediateOption ?? false,
+      requireFocused = focusedOption ?? true
     const restoreTimeout = options.restoreTimeoutMs ?? 5000
     if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
       throw new RangeError('invalid restoration deadline')
