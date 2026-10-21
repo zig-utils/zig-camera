@@ -51,3 +51,8 @@ implementation work. A valid profile alone does not establish matching pixels
 or sensor quality. Temporary-mode files now use staged publication with
 request-callback/restoration preconditions and joined native disposal; see
 staged-files.md for the implemented claim, cancellation and I/O outcome contract.
+
+The shared Home layer additionally implements combined JPEG/PNG/TIFF ICC/Exif
+embedding with pointer/byte-order relocation and independent reader/decoder checks.
+It is not yet a capture-facing Exif option or capture-derived metadata generator;
+those explicit still-media requirements remain outstanding.

@@ -162,3 +162,12 @@ ADR-MC3 explicitly places media algorithms in Home's shared image/audio/video
 packages. Exif bounds/ownership and typed serialization therefore improve Home
 image, with verbatim reuse in camera. The OS stays unchanged; kernel/device
 allocators and stub return values supply no capture or codec acceptance evidence.
+
+The combined Exif/ICC embedding audit rechecks Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65. camera.home, container/image.home,
+video_decoder.home and ADR-MC3 still supply no hosted JPEG APP1/PNG eXIf writer,
+TIFF metadata merger or independent image-container acceptance path. The shared
+image-library boundary remains applicable: Home image gains combined embedding,
+directory relocation and reader tests; camera reuses those sources. OS/device
+state is neither copied nor executed, and no stub is counted as working capture,
+codec or image-quality evidence.

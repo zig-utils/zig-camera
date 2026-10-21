@@ -108,3 +108,25 @@ work. The shared helper alone changes no capture output or public camera ABI.
 MakerNote internal offsets, complete tag semantics, image conformance and physical
 metadata/quality acceptance remain separate requirements. See the shared
 [Home Exif contract](https://github.com/home-lang/home/blob/05c131f97466cce6cb497aad5607e4dc77ad6ad6/packages/image/docs/exif.md).
+
+## Combined container embedding
+
+The shared Home layer can now embed Exif alongside ICC in one output pass. It
+writes JPEG APP1 and PNG eXIf, preserving unselected metadata and encoded samples.
+For classic TIFF it merges metadata with the existing image structure and
+relocates Exif/GPS/interoperability directories, values and JPEG-thumbnail pointers
+across byte orders. Original strips and page directories retain their offsets.
+Marked reduced JPEG thumbnails are replaced; unmarked original pages remain.
+Opaque MakerNote offsets and unsupported strip/tile thumbnail pointers are not
+silently reinterpreted. Old appended TIFF bytes remain, so this is not redaction.
+
+The helper reuses Home's existing ICC/Exif validators, codecs, raster encoders and
+zlib. The public camera API still exposes ICC embedding; Exif capture options and
+capture-derived fields remain implementation work. Existing ABI layouts and
+staged publication ownership are unchanged. Independent libexif/container readers,
+Little CMS and decoded sample comparisons cover the shared implementation, with
+pinned/master platform matrices. This does not establish hardware metadata
+accuracy, thumbnail-image decoding or complete Exif/Picamera2 conformance.
+
+Shared behavior and limits are documented in
+[Home's embedding contract](https://github.com/home-lang/home/blob/ee61d81948836c7c2e1943d9fd402f8d178ce674/packages/image/docs/metadata-embedding.md).

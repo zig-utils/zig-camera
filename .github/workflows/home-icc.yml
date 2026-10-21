@@ -2,9 +2,9 @@ name: Home ICC profiles
 on:
   push:
     branches: [main]
-    paths: ['src/home/metadata_embed.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+    paths: ['src/home/metadata*.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
   pull_request:
-    paths: ['src/home/metadata_embed.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+    paths: ['src/home/metadata*.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -593,3 +593,32 @@ Linux x86/ARM and macOS coverage. Libexif is a test dependency only. Home Action
 availability remains separate from camera copied-source CI. These primitives do
 not yet expose capture Exif options, embed Exif in images, relocate MakerNotes or
 establish complete Exif/Picamera2 conformance. Those requirements remain in scope.
+
+The combined metadata embedding audit contributes Home image's shared
+metadata_embed.zig and metadata_tiff.zig at ee61d81948836c7c2e1943d9fd402f8d178ce674. ICC and Exif can be
+written together into JPEG/PNG/classic TIFF. JPEG APP1 and PNG eXIf carry bounded
+bare TIFF metadata; TIFF merges primary tags and relocates directories, numeric
+values, next links and JPEG-thumbnail pointers into the image's byte order. It
+keeps original sample bytes/offsets and page directories, replaces marked reduced
+JPEG thumbnails, and rejects protected primary pixel tags and thumbnail pointer
+forms it cannot safely relocate. The selected parser now keeps the first JPEG
+thumbnail, so later image pages cannot overwrite it. Proprietary MakerNote offsets
+and complete TIFF/Exif conformance remain separate work.
+
+The merger reserves metadata-table capacity once; JPEG/PNG reserve output space
+before copying image bytes, PNG writes profile chunk parts directly, and TIFF
+avoids zeroing original pixel data before copying it. Twenty-seven standalone and
+dependency tests pass in Debug/ReleaseSafe with pinned/development Zig, alongside
+eleven separate Exif regressions. Libexif independently creates both byte orders;
+libjpeg/libpng/libtiff extract metadata and decode before/after samples, and Little
+CMS opens embedded profiles. Sixteen format/endian/profile combinations also
+replace thumbnail bytes and metadata byte order; a two-page big-endian TIFF keeps
+its original second-page offset and decoded samples. Thumbnail fixtures are not
+decoded images. These checks establish hosted software behavior, not Pi quality.
+
+metadata_tiff.zig, the selected Exif parser and C/Zig fixtures are copied verbatim.
+metadata_embed.zig changes only the two existing flat format-module import paths;
+the test facade changes only its raster import path. Production still uses Home
+codecs and zlib, with no independent reader dependency. Camera capture/ABI ownership
+is unchanged; capture-facing Exif options and metadata generation remain required.
+Home Actions remains disabled, so copied-source camera CI supplies platform tests.

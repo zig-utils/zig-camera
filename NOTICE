@@ -444,3 +444,14 @@ Home Exif metadata foundation:
   typed serialization. Libexif is an independent test-only reader/writer.
   https://github.com/home-lang/home/commit/05c131f97466cce6cb497aad5607e4dc77ad6ad6
 The Home MIT license and copyright reproduced above apply.
+
+Home combined ICC/Exif embedding:
+- src/home/metadata_tiff.zig and metadata/exif.zig are copied verbatim from
+  Home packages/image/src at ee61d81948836c7c2e1943d9fd402f8d178ce674.
+- metadata_embed.zig has only the two existing flat format-module import-path
+  adjustments. metadata_test_exports.zig changes only its raster import path.
+- tests/home_metadata_fixture.zig and home_metadata_readers.c are verbatim from
+  Home packages/image/tests/metadata_fixture.zig and metadata_readers.c.
+  Independent container, Exif and CMM libraries remain test-only dependencies.
+  https://github.com/home-lang/home/commit/ee61d81948836c7c2e1943d9fd402f8d178ce674
+The Home MIT license and copyright reproduced above apply.

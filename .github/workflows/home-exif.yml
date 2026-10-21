@@ -2,9 +2,9 @@ name: Home Exif metadata
 on:
   push:
     branches: [main]
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
   pull_request:
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,19 +26,24 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = macOS ]; then
-            brew install libexif pkgconf
+            brew install libexif jpeg-turbo libpng libtiff little-cms2 zlib pkgconf
+            echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:$(brew --prefix jpeg-turbo)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
           else
             sudo apt-get update
-            sudo apt-get install -y libexif-dev pkg-config
+            sudo apt-get install -y libexif-dev libjpeg-dev libpng-dev libtiff-dev liblcms2-dev zlib1g-dev pkg-config
           fi
       - name: Bounds, ownership, typed serialization and independent reader
         shell: bash
         run: |
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc $(pkg-config --libs zlib) src/home/metadata_embed.zig
             zig test -O "$mode" src/home/metadata/exif.zig
             zig test -O "$mode" --dep exif -Mroot=tests/home_exif.zig -Mexif=src/home/metadata/exif.zig
           done
           zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep exif -Mroot=tests/home_exif_fixture.zig -Mexif=src/home/metadata/exif.zig -femit-bin=/tmp/home-exif.o
           cc -std=c11 -Wall -Wextra -Werror tests/home_exif_libexif.c /tmp/home-exif.o $(pkg-config --cflags --libs libexif) -lm -o /tmp/home-exif-test
           /tmp/home-exif-test
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep media -Mroot=tests/home_metadata_fixture.zig -Mmedia=src/home/metadata_test_exports.zig -femit-bin=/tmp/home-metadata.o
+          cc -std=c11 -Wall -Wextra -Werror tests/home_metadata_readers.c /tmp/home-metadata.o $(pkg-config --cflags --libs libexif libjpeg libpng libtiff-4 lcms2 zlib) -lm -o /tmp/home-metadata-test
+          /tmp/home-metadata-test
