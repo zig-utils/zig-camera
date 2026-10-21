@@ -39,6 +39,6 @@ jobs:
             zig test -O "$mode" src/home/metadata/icc.zig
             zig test -O "$mode" --dep icc -Mroot=tests/home_icc_profile.zig -Micc=src/home/metadata/icc.zig
           done
-          zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
           cc -std=c11 -Wall -Wextra -Werror tests/home_icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
           /tmp/home-icc-test

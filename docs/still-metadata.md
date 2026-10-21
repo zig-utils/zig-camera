@@ -33,13 +33,15 @@ Run the portable tests from the repository root:
 ```sh
 zig test src/home/metadata/icc.zig
 zig test --dep icc -Mroot=tests/home_icc_profile.zig -Micc=src/home/metadata/icc.zig
-zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
 cc -std=c11 -Wall -Wextra -Werror tests/home_icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
 /tmp/home-icc-test
 ```
 
 The dedicated workflow covers pinned/development Zig, Debug/ReleaseSafe, Linux
 x86/ARM and macOS. Production still encoding has no new runtime dependency.
+The independent C fixture object includes Zig compiler-runtime helpers so the
+system linker resolves x86 stack probes while keeping runtime safety enabled.
 Home's Actions service currently rejects dispatch as disabled, so its local
 validation and the camera's independent copied-source CI are recorded separately.
 
