@@ -21,6 +21,7 @@ const help =
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
     \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
     \\  --image-stream NAME      Select main/lores for images, raw for DNG
+    \\  --record-stream NAME     Select main/lores for video; preview still uses main
     \\  --png-compression N --png-filter NAME  zlib 0..9; adaptive/none/sub/up/average/paeth
     \\  --fps N                  Preview/record frame rate (default 30)
     \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
@@ -103,6 +104,7 @@ fn run() !void {
     var image_options = camera.defaultImageOptions();
     var image_format: ?u32 = null;
     var image_stream: ?u32 = null;
+    var record_stream: u32 = camera.c.ZC_MAIN;
     var rotation: u32 = 0;
     var hflip = false;
     var vflip = false;
@@ -154,6 +156,8 @@ fn run() !void {
             image_format = try camera.still.formatFromName(value);
         } else if (eq(key, "--image-stream")) {
             image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
+        } else if (eq(key, "--record-stream")) {
+            record_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else return error.InvalidRecordingStream;
         } else if (eq(key, "--png-filter")) {
             image_options.png_filter = @intFromEnum(std.meta.stringToEnum(camera.still.PngFilter, value) orelse return error.InvalidPngFilter);
         } else if (eq(key, "--lores-format")) {
@@ -260,6 +264,12 @@ fn run() !void {
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
     if (info.backend != camera.c.ZC_SYNTHETIC and simulate) return error.SimulateRequiresSyntheticBuild;
     const negotiated = cam.pipelineInfo();
+    const video_geometry = if (record_stream == camera.c.ZC_MAIN) info.main else negotiated.lores;
+    if (eq(command, "record") and record_stream == camera.c.ZC_LORES) {
+        if (video_geometry.plane_count == 0) return error.Unsupported;
+        const color = try cam.colorSpace(record_stream);
+        try camera.check(camera.media.zc_video_check_input_color(&color, if (std.mem.eql(u8, std.mem.sliceTo(&video_geometry.format, 0), "YUV420")) camera.c.ZC_YUV420 else camera.c.ZC_RGB24));
+    }
     if (eq(command, "modes")) {
         const modes = try a.alloc(camera.c.zc_sensor_mode, try cam.sensorModes(&.{}));
         defer a.free(modes);
@@ -340,8 +350,8 @@ fn run() !void {
         if (eq(command, "record")) {
             var video_cfg: camera.c.zc_video_config = undefined;
             camera.media.zc_default_video_config(&video_cfg);
-            video_cfg.width = info.main.width;
-            video_cfg.height = info.main.height;
+            video_cfg.width = video_geometry.width;
+            video_cfg.height = video_geometry.height;
             video_cfg.fps_num = fps;
             video_cfg.quality = quality;
             video_cfg.codec = codec;
@@ -374,7 +384,7 @@ fn run() !void {
             }
             if (recorder) |r| {
                 const timestamp = if (info.backend == camera.c.ZC_SYNTHETIC) n * 1_000_000_000 / fps else frame.value.timestamp_ns;
-                try camera.check(camera.media.zc_video_write(r, &frame.value, timestamp));
+                try frame.writeVideo(r, record_stream, timestamp);
             }
         }
         if (recorder) |r| {

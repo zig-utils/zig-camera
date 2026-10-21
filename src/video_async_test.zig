@@ -896,3 +896,60 @@ test "C session resolution preserves settings on geometry or audio failure" {
     try std.testing.expectEqual(@as(u32, 48), cfg.height);
     try std.testing.expectEqual(@as(u32, 80), cfg.quality);
 }
+
+test "selected I420 admission owns compact planes and color and rejects before output mutation" {
+    const m = @import("media.zig");
+    var delivered: usize = 0;
+    const rec = try recorder(&delivered);
+    defer std.testing.expectEqual(c.ZC_OK, m.zc_video_close(rec)) catch unreachable;
+    var y: [316]u8 = @splat(80);
+    var u: [78]u8 = @splat(90);
+    var vplane: [78]u8 = @splat(240);
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.token = 1;
+    frame.main.width = 16;
+    frame.main.height = 16;
+    frame.main.stride = 20;
+    frame.main.plane_count = 3;
+    @memcpy(frame.main.format[0..6], "YUV420");
+    for ([_][]u8{ &y, &u, &vplane }, 0..) |bytes, i| frame.main.planes[i] = .{ .data = bytes.ptr, .length = bytes.len, .bytes_used = bytes.len, .offset = 0, .fd = -1 };
+    var color = c.zc_color_space{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = c.ZC_PRIMARIES_REC709, .transfer = c.ZC_TRANSFER_SRGB, .ycbcr_encoding = c.ZC_YCBCR_REC601, .range = c.ZC_RANGE_FULL };
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_check_input_color(&color, c.ZC_YUV420));
+    var bad = color;
+    bad.transfer = c.ZC_TRANSFER_REC709;
+    var job: ?*c.zc_producer_job = @ptrFromInt(1);
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, m.zc_video_producer_input_av(rec, &frame, &bad, 0, null, 0, &job));
+    try std.testing.expectEqual(null, job);
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, m.zc_video_write_input(rec, &frame, &bad, 0));
+    frame.main.planes[2].bytes_used -= 1;
+    try std.testing.expectEqual(c.ZC_INVALID, m.zc_video_producer_input_av(rec, &frame, &color, 0, null, 0, &job));
+    try std.testing.expectEqual(null, job);
+    frame.main.planes[2].bytes_used += 1;
+    try std.testing.expectEqual(@as(usize, 0), delivered);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_write_input(rec, &frame, &color, 0));
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_set_producer_limits(rec, 384, 1));
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_input_av(rec, &frame, &color, 40_000_000, null, 0, &job));
+    var stats: c.zc_producer_stats = undefined;
+    try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_stats(rec, &stats));
+    try std.testing.expectEqual(@as(u64, 384), stats.owned_bytes);
+    const owned: *@import("producer.zig").Job = @ptrCast(@alignCast(job.?));
+    @memset(&y, 0);
+    @memset(&u, 0);
+    @memset(&vplane, 0);
+    color.transfer = c.ZC_TRANSFER_REC709;
+    try std.testing.expectEqual(@as(u8, 80), owned.data[0]);
+    try std.testing.expectEqual(@as(u8, 90), owned.data[256]);
+    try std.testing.expectEqual(@as(u8, 240), owned.data[320]);
+    try std.testing.expectEqual(@as(u32, c.ZC_TRANSFER_SRGB), owned.input_color.?.transfer);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+    var timer = try std.time.Timer.start();
+    var code: c_int = undefined;
+    while (m.zc_producer_job_finish(job.?, &code) == c.ZC_TIMEOUT) {
+        try std.testing.expect(timer.read() < 5 * std.time.ns_per_s);
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(c.ZC_OK, code);
+    try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+    try std.testing.expectEqual(@as(usize, 2), delivered);
+}

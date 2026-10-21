@@ -8,8 +8,11 @@
 #include <fstream>
 #include <cstdint>
 #include <cmath>
+#include <iterator>
 static void require(bool ok,const char *why) { if(!ok){std::fprintf(stderr,"%s\n",why);std::exit(1);} }
 static int first_index=0;
+static unsigned reference_width=0,reference_height=0;
+static std::vector<uint8_t> reference_i420;
 static std::vector<uint64_t> expected_indices;
 static void picture(const uint8_t *y,int stride,int width,int height,int &count) {
     require(width==128 && height==96,"decoded dimensions differ");
@@ -20,10 +23,36 @@ static void picture(const uint8_t *y,int stride,int width,int height,int &count)
     require(std::abs((int)y[25*stride+60]-expected)<=4,"decoded pixel/order differs");
     count++;
 }
+static void checkFrame(const uint8_t *const planes[3],const int strides[3],int width,int height,int &count) {
+    if(reference_i420.empty()){picture(planes[0],strides[0],width,height,count);return;}
+    require(width==(int)reference_width && height==(int)reference_height,"reference dimensions differ");
+    const size_t pixels=(size_t)width*height,frame_size=pixels+pixels/2;
+    require((size_t)(count+1)<=reference_i420.size()/frame_size,"unexpected reference frame");
+    size_t offset=(size_t)count*frame_size;
+    for(unsigned component=0;component<3;component++) {
+        const unsigned w=component ? reference_width/2 : reference_width,h=component ? reference_height/2 : reference_height;
+        require(planes[component] && strides[component]>=(int)w,"invalid decoded plane");
+        uint64_t error=0;
+        for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++)error+=(unsigned)std::abs((int)planes[component][(size_t)y*strides[component]+x]-(int)reference_i420[offset+(size_t)y*w+x]);
+        require(error<=(uint64_t)w*h*4,"decoded I420 component differs from independent reference");
+        offset+=(size_t)w*h;
+    }
+    count++;
+}
 int main(int argc,char **argv) {
-    require(argc>=3 && argc<=6,"usage: decode-codecs h264|hevc file.aus [frames [first_index [sequence_file]]]");
+    require((argc>=3 && argc<=6)||argc==8,"usage: decode-codecs h264|hevc file.aus [frames [first_index [sequence_file]]]");
     const int expected_count=argc>=4 ? std::atoi(argv[3]) : 12;
-    first_index=argc>=5 ? std::atoi(argv[4]) : 0;
+    const bool reference_mode=argc==8;
+    first_index=!reference_mode && argc>=5 ? std::atoi(argv[4]) : 0;
+    if(reference_mode) {
+        require(!std::strcmp(argv[4],"--i420"),"invalid pixel reference mode");
+        reference_width=(unsigned)std::strtoul(argv[5],nullptr,10);reference_height=(unsigned)std::strtoul(argv[6],nullptr,10);
+        require(reference_width && reference_height && reference_width<=8192 && reference_height<=8192 && !((reference_width|reference_height)&1),"invalid reference geometry");
+        std::ifstream reference(argv[7],std::ios::binary);require(reference.good(),"open pixel reference");
+        reference_i420.assign(std::istreambuf_iterator<char>(reference),std::istreambuf_iterator<char>());
+        require(reference.eof()||reference.good(),"read pixel reference");
+        require(reference_i420.size()==(size_t)reference_width*reference_height*3/2*(size_t)expected_count,"invalid reference size");
+    }
     require(expected_count>0 && first_index>=0,"invalid expected frame range");
     if(argc==6) {
         std::ifstream sequences(argv[5]);require(sequences.good(),"open expected sequences");
@@ -45,7 +74,10 @@ int main(int argc,char **argv) {
     auto drain=[&](){
         while(const de265_image *image=de265_get_next_picture(hevc)) {
             int stride=0;const uint8_t *y=de265_get_image_plane(image,0,&stride);
-            picture(y,stride,de265_get_image_width(image,0),de265_get_image_height(image,0),count);
+            int u_stride=0,v_stride=0;
+            const uint8_t *planes[]={y,de265_get_image_plane(image,1,&u_stride),de265_get_image_plane(image,2,&v_stride)};
+            const int strides[]={stride,u_stride,v_stride};
+            checkFrame(planes,strides,de265_get_image_width(image,0),de265_get_image_height(image,0),count);
         }
     };
     auto decode_hevc=[&](){
@@ -64,7 +96,7 @@ int main(int argc,char **argv) {
         if(avc) {
             unsigned char *planes[3]{};SBufferInfo info{};
             require(avc->DecodeFrameNoDelay(bytes.data(),(int)n,planes,&info)==dsErrorFree,"OpenH264 decode failure");
-            if(info.iBufferStatus==1) picture(planes[0],info.UsrData.sSystemBuffer.iStride[0],info.UsrData.sSystemBuffer.iWidth,info.UsrData.sSystemBuffer.iHeight,count);
+            if(info.iBufferStatus==1) {const uint8_t *decoded[]={planes[0],planes[1],planes[2]};const int strides[]={info.UsrData.sSystemBuffer.iStride[0],info.UsrData.sSystemBuffer.iStride[1],info.UsrData.sSystemBuffer.iStride[1]};checkFrame(decoded,strides,info.UsrData.sSystemBuffer.iWidth,info.UsrData.sSystemBuffer.iHeight,count);}
         } else {
             require(de265_isOK(de265_push_data(hevc,bytes.data(),(int)n,0,nullptr)),"libde265 push failure");
             de265_push_end_of_frame(hevc);decode_hevc();
@@ -72,7 +104,7 @@ int main(int argc,char **argv) {
     }
     if(avc) {
         int remaining=0;avc->GetOption(DECODER_OPTION_NUM_OF_FRAMES_REMAINING_IN_BUFFER,&remaining);
-        while(remaining-->0){unsigned char *planes[3]{};SBufferInfo info{};require(avc->FlushFrame(planes,&info)==dsErrorFree,"OpenH264 flush");if(info.iBufferStatus==1)picture(planes[0],info.UsrData.sSystemBuffer.iStride[0],info.UsrData.sSystemBuffer.iWidth,info.UsrData.sSystemBuffer.iHeight,count);}
+        while(remaining-->0){unsigned char *planes[3]{};SBufferInfo info{};require(avc->FlushFrame(planes,&info)==dsErrorFree,"OpenH264 flush");if(info.iBufferStatus==1){const uint8_t *decoded[]={planes[0],planes[1],planes[2]};const int strides[]={info.UsrData.sSystemBuffer.iStride[0],info.UsrData.sSystemBuffer.iStride[1],info.UsrData.sSystemBuffer.iStride[1]};checkFrame(decoded,strides,info.UsrData.sSystemBuffer.iWidth,info.UsrData.sSystemBuffer.iHeight,count);}}
         avc->Uninitialize();WelsDestroyDecoder(avc);
     } else {require(de265_isOK(de265_flush_data(hevc)),"libde265 flush");decode_hevc();drain();de265_free_decoder(hevc);}
     require(count==expected_count,"missing decoded frames");

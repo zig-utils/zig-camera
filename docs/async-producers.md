@@ -29,10 +29,10 @@ blocks in order before the video frame. This supports exact Home PCM cursors,
 AAC priming/tail edits and MP4 patching across asynchronous segment boundaries.
 
 producerQueue defaults to 64 MiB and eight jobs, with a maximum of 1 GiB/eight.
-The byte limit includes copied RGB, PCM and grouped-audio metadata; fixed job
+The byte limit includes copied RGB24/I420, PCM and grouped-audio metadata; fixed job
 headers are additionally bounded by the job count. Completed retained native
 handles remain charged until cleanup. Admission failure does not allocate an
-unbounded pending queue. Budget enough for the actual RGB size, including large
+unbounded pending queue. Budget enough for the selected stream size, including large
 sensor modes; submission packing/copying still runs synchronously on the caller.
 Every producer job also occupies one of the recorder's 16 Bun lifecycle slots.
 
@@ -394,3 +394,6 @@ Camera.switchRecordingModeAsync to combine flush, camera negotiation, preview
 recreation, recorder preparation and pump restart under one reserved job. See
 [coordinated switching](mode-recording.md#coordinated-camera-and-recorder-switching)
 for cancellation, audio ownership and irreversible flush boundaries.
+
+Recording source selection and compact I420 ownership are described in
+[recording streams](recording-streams.md).

@@ -18,6 +18,7 @@ pub const Job = struct {
     data: []u8,
     parts: []AudioPart = &.{},
     frame: c.zc_frame = std.mem.zeroes(c.zc_frame),
+    input_color: ?c.zc_color_space = null,
     timestamp: u64,
     audio: bool,
     operation: enum { write, drain, flush, restart } = .write,

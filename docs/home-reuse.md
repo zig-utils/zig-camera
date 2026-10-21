@@ -343,3 +343,16 @@ chooses conversion rather than assuming the request survived validation. RGB row
 stay borrowed, I420 still encoding owns one temporary RGB buffer, and direct RGB
 copy converts straight into the caller's destination. Existing Home image encoders,
 queues, recording codecs and containers remain the shared implementations.
+
+The 0.45 audit reuses Home native_encoder's planar I420 interface, plane_pack,
+yuv_rgb and the existing canonical AVC/HEVC/MP4 color tags. It contributes
+video/core/yuv_remap.zig at 3659d9ad3115e4f54d46b821ffcc9551ee5e1639 and copies it
+verbatim. The allocation-free helper remaps matrix/range without an intermediate
+RGB image or an RGB clipping step. The common same-matrix path scales individual
+planes. Independent strides, atomic validation, all 256 identity codes, known
+full/studio vectors and an unclipped floating reference grid pass on pinned and
+Home development Zig in Debug/ReleaseSafe. Home exports the helper and includes
+it in its compiler/architecture workflow. Camera Zig owns bounded compact source
+copies and color metadata; it refuses incompatible gamut/transfer instead of
+mislabeling the existing output tags. MJPEG shares Home JPEG and reuses a bounded
+RGB scratch buffer. No alternative codec, packet queue or container is added.

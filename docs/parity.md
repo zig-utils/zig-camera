@@ -1,4 +1,4 @@
-# Feature coverage in 0.44
+# Feature coverage in 0.45
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -15,7 +15,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Controls and autofocus | Atomic convenience/native/vendor batches; exact typed bounded journals; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls/setNativeControls and both snapshot/restore APIs; cancellable scan and CAF pause/resume jobs; focus-locked retained requests, paired streams and RGB/metadata/lores/JPEG/DNG with joined restoration and discard on failure; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics and sensor-specific timing unvalidated |
 | Preview | SDL aspect-preserving display; borrowed frame input | Asynchronous capture pump on Bun UI thread; no Qt/DRM zero-copy/overlays |
 | Still images | Home JPEG 4:4:4, streaming PNG, BMP, TIFF, PPM; Bayer DNG with metadata/calibration; owned immutable encoded blobs and atomic files | Named main/lores Frame/file/encoded-byte/RGB captures with negotiated YCbCr conversion, focus-locked and temporary-mode images, compression/filter controls and callback access; GIF/APNG, Exif/ICC, decoded image-object conveniences, additional pixel formats/demosaicing, compressed raw and advanced DNG profiles remain |
-| Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Recorder; no hardware encoder or per-output codec settings |
+| Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls | Main/lores Recorder input selection, direct I420 remap and compact producers; no general gamut/transfer conversion, hardware encoder or per-output codec settings |
 | Audio/A/V | ALSA or synthetic PCM, independent sample cursors, PCM MKV / AAC-LC MP4 with priming/tail edits | AudioCapture, manual writeAudio and shared recording pump; physical drift/latency calibration missing |
 | Circular and delayed output | Bounded GOP history, synchronized owned path/custom snapshots, global/per-output delays, tail rules | CircularOutput2 typed Bun recorder, dynamic delay, custom pre-roll and shared PTS; arbitrary upstream signatures remain unsupported |
 | Multiple outputs | Eight stable IDs, shared encoding, separate container/AAC/PCM state, isolation | Path/custom object attachment, owned pre-roll, FileOutput/local PTS and shared PtsStream, MP4/MKV ByteSink, per-output split/recovery; arbitrary upstream signatures remain unsupported |

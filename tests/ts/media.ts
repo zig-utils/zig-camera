@@ -334,3 +334,30 @@ export function mkvFrames(path: string) {
   }
   return frames
 }
+
+/** Independently compare all decoded Y/U/V pixels at caller-selected geometry. */
+export function decodeVideoI420(
+  path: string,
+  video: Track,
+  frames: readonly Uint8Array[],
+) {
+  assert.equal(video.samples.length, frames.length)
+  const decoder = process.env.ZC_INDEPENDENT_DECODER
+  if (!decoder) return
+  const manifest = `${path}.i420`
+  writeFileSync(
+    manifest,
+    Buffer.concat(frames.map((frame) => Buffer.from(frame))),
+  )
+  const result = Bun.spawnSync([
+    decoder,
+    video.codec === 'avc1' ? 'h264' : 'hevc',
+    units(path, video),
+    String(frames.length),
+    '--i420',
+    String(video.width),
+    String(video.height),
+    manifest,
+  ])
+  assert.equal(result.exitCode, 0, new TextDecoder().decode(result.stderr))
+}

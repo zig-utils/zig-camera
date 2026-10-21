@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.44 adds named main/lores sources for still files, encoded bytes and RGB
-copies across frame, focus-locked and temporary-mode captures. Home supplies checked
-I420 conversion using negotiated color metadata. See [still images](docs/still-images.md)
+Version 0.45 adds main/lores recording input selection through native, Bun and CLI
+APIs. I420 AVC/HEVC uses Home matrix/range remapping without a full RGB image;
+async inputs own compact copies. Session and mode jobs preserve source selection.
+See [recording streams](docs/recording-streams.md), [still images](docs/still-images.md)
 and [camera orientation](docs/orientation.md).
 See [request callbacks](docs/request-callbacks.md), [mapped streams](docs/mapped-streams.md), [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
 [continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),

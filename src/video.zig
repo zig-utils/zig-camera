@@ -7,6 +7,7 @@ const mkv = @import("home/mjpeg_stream.zig");
 const mp4 = @import("home/mp4_stream.zig");
 const native = @import("home/native_encoder.zig");
 const rgb = @import("home/rgb_i420.zig");
+const video_input = @import("video_input.zig");
 const Ring = @import("home/packet_ring.zig").Ring;
 const av = @import("home/av_stream.zig");
 const pcm = @import("home/pcm_timeline.zig");
@@ -409,6 +410,7 @@ const Recorder = struct {
     codec: ?native.Encoder = null,
     headers: []u8 = &.{},
     i420: []u8 = &.{},
+    input_rgb: []u8 = &.{},
     config: c.zc_video_config,
     first_ns: u64 = 0,
     last_ns: u64 = 0,
@@ -486,6 +488,7 @@ const Recorder = struct {
         }
         A.free(self.headers);
         A.free(self.i420);
+        A.free(self.input_rgb);
         A.free(self.delay_scratch);
         A.destroy(self);
     }
@@ -781,8 +784,8 @@ fn init(cfg: *const c.zc_video_config) !*Recorder {
 }
 fn status(err: anyerror) c_int {
     return switch (err) {
-        error.Unsupported => c.ZC_UNSUPPORTED,
-        error.Invalid, error.InvalidConfiguration, error.InvalidFrame, error.InvalidGeometry, error.PacketTooLarge, error.InvalidTimestamp, error.InvalidPcm, error.InvalidRate, error.TimestampOverflow => c.ZC_INVALID,
+        error.Unsupported, error.UnsupportedFormat => c.ZC_UNSUPPORTED,
+        error.BufferTooSmall, error.Invalid, error.InvalidConfiguration, error.InvalidFrame, error.InvalidGeometry, error.PacketTooLarge, error.InvalidTimestamp, error.InvalidPcm, error.InvalidRate, error.TimestampOverflow => c.ZC_INVALID,
         error.OutOfMemory => c.ZC_NOMEM,
         error.EmptyBuffer, error.NoOutput, error.InvalidState => c.ZC_STATE,
         error.Busy, error.BufferFull => c.ZC_BUSY,
@@ -815,10 +818,14 @@ pub fn openCircular(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_co
     return c.ZC_OK;
 }
 pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
+    return writeInput(p, f, ts, null);
+}
+pub fn writeInput(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64, color: ?c.zc_color_space) c_int {
     const self = recorder(p);
     if (self.failed or !self.finalization.accepting()) return c.ZC_STATE;
     const s = f.main;
-    if (f.token == 0 or s.width != self.config.width or s.height != self.config.height or s.plane_count != 1 or !std.mem.eql(u8, std.mem.sliceTo(&s.format, 0), "BGR888") or s.stride < @as(u64, s.width) * 3 or s.planes[0].bytes_used > s.planes[0].length or s.planes[0].bytes_used < @as(u64, s.stride) * (s.height - 1) + @as(u64, s.width) * 3) return c.ZC_INVALID;
+    if (f.token == 0 or s.width != self.config.width or s.height != self.config.height) return c.ZC_INVALID;
+    _ = video_input.validate(s, color) catch |err| return status(err);
     if (self.frames != 0 and ts <= self.last_ns) return c.ZC_INVALID;
     const first = if (self.frames == 0) ts else self.first_ns;
     const pts = (ts - first) / 1000;
@@ -829,7 +836,7 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
         self.failed = true;
         return status(err);
     };
-    writeImpl(self, &s, ts - first, pts) catch |err| {
+    writeImpl(self, &s, ts - first, pts, color) catch |err| {
         self.failed = true;
         return status(err);
     };
@@ -839,12 +846,26 @@ pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     scheduleAutomatic(self);
     return c.ZC_OK;
 }
-fn writeImpl(self: *Recorder, s: *const c.zc_stream, ns: u64, pts: u64) !void {
-    const input = s.planes[0].data[0..@intCast(s.planes[0].bytes_used)];
-    if (self.config.codec == c.ZC_MJPEG) try self.packet(try self.encoder.encode(input, s.width, s.height, s.stride, 3, @intCast(self.config.quality)), ns, true) else if (options.codecs) {
-        try rgb.convert(input, s.width, s.height, s.stride, self.i420);
-        const pixels = @as(usize, s.width) * s.height;
-        if (try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ s.width, s.width / 2, s.width / 2 }, s.width, s.height, @intCast(pts))) |packet| try self.encoded(packet);
+fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, color: ?c.zc_color_space) !void {
+    const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
+    if (self.config.codec == c.ZC_MJPEG) {
+        var source = stream.*;
+        if (yuv) {
+            if (self.input_rgb.len == 0) self.input_rgb = try A.alloc(u8, try @import("stream_rgb.zig").size(source));
+            try @import("stream_rgb.zig").copy(source, color.?, self.input_rgb);
+            source.stride = source.width * 3;
+            source.planes[0].data = self.input_rgb.ptr;
+            source.planes[0].bytes_used = self.input_rgb.len;
+        }
+        const data = source.planes[0].data[0..@intCast(source.planes[0].bytes_used)];
+        try self.packet(try self.encoder.encode(data, source.width, source.height, source.stride, 3, @intCast(self.config.quality)), ns, true);
+    } else if (options.codecs) {
+        const pixels = @as(usize, stream.width) * stream.height;
+        if (yuv) {
+            const map = try video_input.remap(color.?);
+            try map.apply(try @import("stream_rgb.zig").i420View(stream.*), .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 });
+        } else try rgb.convert(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, self.i420);
+        if (try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, stream.width, stream.height, @intCast(pts))) |packet| try self.encoded(packet);
     }
 }
 pub fn bufferStats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
@@ -2476,7 +2497,7 @@ fn applyProducer(ctx: *anyopaque, job: *@import("producer.zig").Job) c_int {
         if (code != c.ZC_OK) return code;
     }
     if (job.cancel_requested.load(.acquire)) return c.ZC_CANCELLED;
-    return if (job.audio) writeAudio(p, job.data.ptr, job.data.len, job.timestamp) else write(p, &job.frame, job.timestamp);
+    return if (job.audio) writeAudio(p, job.data.ptr, job.data.len, job.timestamp) else writeInput(p, &job.frame, job.timestamp, job.input_color);
 }
 pub fn setProducerLimits(p: *c.zc_recorder, bytes: u64, jobs: u32) c_int {
     if (bytes == 0 or bytes > 1024 * 1024 * 1024 or jobs == 0 or jobs > 8) return c.ZC_INVALID;
@@ -2500,34 +2521,38 @@ pub fn producerFrame(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, re
     return producerAv(p, f, timestamp, null, 0, result);
 }
 pub fn producerAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, inputs: ?[*]const c.zc_producer_audio_input, count: u32, result: *?*c.zc_producer_job) c_int {
+    return producerInputAv(p, f, timestamp, null, inputs, count, result);
+}
+pub fn producerInputAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, color: ?c.zc_color_space, inputs: ?[*]const c.zc_producer_audio_input, count: u32, result: *?*c.zc_producer_job) c_int {
     result.* = null;
     const self = recorder(p);
     if (!self.accepting.load(.acquire)) return c.ZC_STATE;
     const s = f.main;
-    if (f.token == 0 or s.width != self.config.width or s.height != self.config.height or s.plane_count != 1 or s.planes[0].data == null or s.planes[0].bytes_used > s.planes[0].length or s.planes[0].bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
-    if (!std.mem.eql(u8, std.mem.sliceTo(&s.format, 0), "BGR888")) return c.ZC_UNSUPPORTED;
+    if (f.token == 0 or s.width != self.config.width or s.height != self.config.height) return c.ZC_INVALID;
+    const yuv = video_input.validate(s, color) catch |err| return status(err);
     if (count > 256 or (inputs == null and count != 0)) return c.ZC_INVALID;
     if (count != 0 and self.recording.sample_rate == 0) return c.ZC_STATE;
-    const rgb_size = @as(usize, s.width) * s.height * 3;
-    var total = rgb_size;
+    const pixel_size = video_input.packedSize(s, yuv);
+    var total = pixel_size;
     if (inputs) |blocks| for (blocks[0..count]) |block| {
         if (block.data == null or block.length == 0 or block.length > std.math.maxInt(usize) or block.length % (self.recording.channels * 2) != 0) return c.ZC_INVALID;
         total = std.math.add(usize, total, @intCast(block.length)) catch return c.ZC_INVALID;
     };
     const pool = producerPool(self) catch |err| return status(err);
     const job = pool.allocate(total, false, timestamp, count) catch |err| return if (err == error.PayloadTooLarge) c.ZC_INVALID else status(err);
-    @import("home/plane_pack.zig").rows(s.planes[0].data[0..@intCast(s.planes[0].bytes_used)], s.stride, @as(usize, s.width) * 3, s.height, job.data[0..rgb_size]) catch {
+    video_input.copy(s, yuv, job.data[0..pixel_size]) catch |err| {
         _ = pool.release(job);
-        return c.ZC_INVALID;
+        return status(err);
     };
     job.frame.token = 1;
+    job.input_color = color;
     job.frame.main.width = s.width;
     job.frame.main.height = s.height;
-    job.frame.main.stride = s.width * 3;
+    job.frame.main.stride = s.width * @as(u32, if (yuv) 1 else 3);
     job.frame.main.plane_count = 1;
-    @memcpy(job.frame.main.format[0..6], "BGR888");
-    job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = rgb_size, .bytes_used = rgb_size, .data = job.data.ptr };
-    var offset = rgb_size;
+    job.frame.main.format = s.format;
+    job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = pixel_size, .bytes_used = pixel_size, .data = job.data.ptr };
+    var offset = pixel_size;
     if (inputs) |blocks| for (blocks[0..count], job.parts) |block, *part| {
         const length: usize = @intCast(block.length);
         part.* = .{ .offset = offset, .length = length, .timestamp = block.timestamp_ns };

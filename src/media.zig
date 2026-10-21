@@ -64,6 +64,16 @@ pub export fn zc_video_write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
     return @import("video.zig").write(p, f, ts);
 }
+pub export fn zc_video_write_input(p: *c.zc_recorder, f: *const c.zc_frame, color: *const c.zc_color_space, ts: u64) c_int {
+    if (!options.video) return c.ZC_UNSUPPORTED;
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").writeInput(p, f, ts, color.*);
+}
+pub export fn zc_video_check_input_color(color: *const c.zc_color_space, format: u32) c_int {
+    if (format > c.ZC_RGB24) return c.ZC_INVALID;
+    @import("video_input.zig").validateColor(color.*, format == c.ZC_YUV420) catch return c.ZC_UNSUPPORTED;
+    return c.ZC_OK;
+}
 pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
@@ -553,6 +563,9 @@ pub export fn zc_producer_job_handoffs(p: *c.zc_producer_job, out: [*]c.zc_produ
 }
 pub export fn zc_video_producer_av(p: *c.zc_recorder, frame: *const c.zc_frame, timestamp: u64, inputs: ?[*]const c.zc_producer_audio_input, count: u32, out: *?*c.zc_producer_job) c_int {
     return @import("video.zig").producerAv(p, frame, timestamp, inputs, count, out);
+}
+pub export fn zc_video_producer_input_av(p: *c.zc_recorder, frame: *const c.zc_frame, color: *const c.zc_color_space, timestamp: u64, inputs: ?[*]const c.zc_producer_audio_input, count: u32, out: *?*c.zc_producer_job) c_int {
+    return @import("video.zig").producerInputAv(p, frame, timestamp, color.*, inputs, count, out);
 }
 
 test "raw copies preserve unpacked and CSI2 bytes while removing padding and reject short planes atomically" {

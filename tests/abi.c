@@ -82,9 +82,23 @@ int main(void) {
         zc_image_blob *blob=NULL;assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_OK && blob);zc_image_blob_close(blob);
         image.format=ZC_IMAGE_DNG;
         assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_UNSUPPORTED && !blob);
+        zc_frame selected=frame;assert(zc_get_stream(camera,frame.token,ZC_LORES,&selected.main)==ZC_OK);
+        assert(zc_video_check_input_color(&color,ZC_YUV420)==ZC_OK);
+        zc_video_config video;zc_default_video_config(&video);video.width=18;video.height=10;video.codec=ZC_MJPEG;
+        zc_recording_options options;zc_default_recording_options(&options);
+        zc_recorder *recorder=NULL;assert(zc_video_create(&video,&options,0,&recorder)==ZC_OK);
+        unsigned count=0;zc_output_callbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);callbacks.context=&count;callbacks.packet=packet_sink;callbacks.file_fd=callbacks.pts_fd=callbacks.secondary_pts_fd=-1;
+        assert(zc_video_open_callbacks(recorder,&callbacks)==ZC_OK);
+        assert(zc_video_write_input(recorder,&selected,&color,0)==ZC_OK && count==1);
+        zc_producer_job *job=NULL;assert(zc_video_producer_input_av(recorder,&selected,&color,40000000ULL,NULL,0,&job)==ZC_OK);
         assert(zc_release(camera,frame.token)==ZC_OK);
         assert(zc_copy_stream_rgb(camera,frame.token,ZC_LORES,rgb,sizeof(rgb))==ZC_STALE);
         assert(zc_stop(camera)==ZC_OK && zc_close(camera)==ZC_OK);
+        assert(zc_producer_job_start(job)==ZC_OK);
+        int result=ZC_TIMEOUT;
+        for(unsigned tries=0;zc_producer_job_finish(job,&result)==ZC_TIMEOUT;tries++){assert(tries<5000);struct timespec delay={0,1000000};nanosleep(&delay,NULL);}
+        assert(result==ZC_OK && count==2);
+        assert(zc_producer_job_close(job)==ZC_OK && zc_video_close(recorder)==ZC_OK);
     }
     {
         zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;

@@ -348,3 +348,9 @@ Home checked YCbCr conversion (0.44):
   The Home MIT license above applies. It shares checked strided RGB24/I420,
   fixed point matrix/range conversion and actual 2x2 chroma averaging.
   https://github.com/home-lang/home/commit/98c7e78c6d1a7d508fad3c3d86cd81c480d6d301
+
+Home direct I420 matrix/range mapping (0.45):
+- src/home/yuv_remap.zig is verbatim packages/video/src/core/yuv_remap.zig.
+  Source commit: 3659d9ad3115e4f54d46b821ffcc9551ee5e1639.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/3659d9ad3115e4f54d46b821ffcc9551ee5e1639

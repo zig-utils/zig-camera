@@ -107,6 +107,7 @@ const recordingOwner = Symbol('recordingOwner')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
 const readableFrame = Symbol('readableFrame')
+const recorderInput = Symbol('recorderInput')
 const savePreparedImage = Symbol('savePreparedImage')
 const encodePreparedImage = Symbol('encodePreparedImage')
 export interface CaptureOptions<T = unknown> extends JobOptions<T> {
@@ -373,6 +374,23 @@ export class Frame {
       'frame read access',
     )
     return this.descriptor
+  }
+  [recorderInput](stream: 'main' | 'lores') {
+    const descriptor = this[readableFrame].slice(),
+      selected = storage(208),
+      color = storage(24)
+    const id = imageStreamId(processedImageStream(stream))
+    check(n.zc_get_stream(this.camera.handle, this.token, id, ptr(selected)))
+    check(n.zc_get_stream_color_space(this.camera.handle, id, ptr(color)))
+    const format = text(selected, 16, 32)
+    if (format !== 'BGR888' && format !== 'YUV420')
+      throw new CameraError(-8, 'recording stream format')
+    check(
+      n.zc_video_check_input_color(ptr(color), format === 'YUV420' ? 0 : 1),
+      'recording stream color',
+    )
+    descriptor.set(selected, 40)
+    return { descriptor, color }
   }
   get sequence() {
     return u64(this.descriptor, 8)
@@ -853,6 +871,24 @@ export class Camera {
       stride: v.getUint32(16, true),
       cameraId: this.selectedId,
     }
+  }
+  private readRecordingInput(options: RecorderOptions) {
+    if ((options.stream ?? 'main') === 'main') return this.readInfo()
+    const data = storage(224),
+      color = storage(24)
+    check(n.zc_get_pipeline_info(this.handle, ptr(data)))
+    const d = view(data)
+    if (!d.getUint32(28, true))
+      throw new CameraError(-8, 'lores recording stream disabled')
+    const format = text(data, 32, 32)
+    if (format !== 'BGR888' && format !== 'YUV420')
+      throw new CameraError(-8, 'recording stream format')
+    check(n.zc_get_stream_color_space(this.handle, 2, ptr(color)))
+    check(
+      n.zc_video_check_input_color(ptr(color), format === 'YUV420' ? 0 : 1),
+      'recording stream color',
+    )
+    return { width: d.getUint32(16, true), height: d.getUint32(20, true) }
   }
   stats() {
     this.assertOpen()
@@ -1786,7 +1822,7 @@ export class Camera {
     if (this.recording) throw new CameraError(-4, 'recording active')
     if (recorder.sessionState().phase !== 'open')
       throw new CameraError(-2, 'recorder session must be open')
-    const info = this.info()
+    const info = this.readRecordingInput(recorder.options)
     if (info.width !== recorder.width || info.height !== recorder.height)
       throw new RangeError('recorder geometry mismatch')
     if (options.audio) {
@@ -1869,10 +1905,13 @@ export class Camera {
       (settings.width !== undefined ? 1 : 0) |
       (settings.height !== undefined ? 2 : 0)
     const proposed = mergeSessionOptions(recorder.options, settings)
+    const geometry = proposed.stream === 'lores' ? target.lores : target
+    if (proposed.stream === 'lores' && (!geometry?.width || !geometry?.height))
+      throw new CameraError(-8, 'target lores recording stream disabled')
     const candidate = resolvedSession(
       proposed,
-      target.width ?? proposed.width,
-      target.height ?? proposed.height,
+      geometry?.width ?? proposed.width,
+      geometry?.height ?? proposed.height,
       exact,
     )
     const audio = jobOptions.audio
@@ -2031,7 +2070,7 @@ export class Camera {
           if (response.code === -5 && current.cancelRequested) current.check()
           check(response.code, 'recording camera mode')
           current.check()
-          const info = this.readInfo()
+          const info = this.readRecordingInput(candidate)
           const media = resolvedSession(
             candidate,
             info.width,
@@ -2810,6 +2849,8 @@ export interface RecordingStats {
   rotationDue: boolean
 }
 export interface RecorderOptions {
+  /** Source for manual writes and camera recording pumps; default main. */
+  stream?: 'main' | 'lores'
   width: number
   height: number
   fps?: number
@@ -2842,10 +2883,19 @@ export interface RecorderOptions {
 export type RecorderSessionOptions = Partial<
   Pick<
     RecorderOptions,
-    'width' | 'height' | 'fps' | 'codec' | 'bitrate' | 'quality' | 'gop'
+    | 'width'
+    | 'height'
+    | 'fps'
+    | 'codec'
+    | 'bitrate'
+    | 'quality'
+    | 'gop'
+    | 'stream'
   >
 > & { audio?: RecorderOptions['audio'] | null }
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
+  options = { ...options }
+  options.stream = processedImageStream(options.stream)
   return Object.freeze({
     ...options,
     audio: options.audio && Object.freeze({ ...options.audio }),
@@ -2878,6 +2928,7 @@ function mergeSessionOptions(
     'bitrate',
     'quality',
     'gop',
+    'stream',
   ] as const)
     if (settings[key] !== undefined)
       Object.assign(merged, { [key]: settings[key] })
@@ -3234,6 +3285,7 @@ export class Recorder {
   private finalStats?: RecordingStats
   constructor(path: string | null, options: RecorderOptions) {
     if (path !== null) guardHostPath(path)
+    options = snapshotRecorderOptions(options)
     const producerLimits = options.producerQueue
       ? {
           bytes: uint(options.producerQueue.maxBytes, 1024 ** 3),
@@ -3242,7 +3294,6 @@ export class Recorder {
       : undefined
     if (producerLimits && (!producerLimits.bytes || !producerLimits.jobs))
       throw new RangeError('invalid producer queue bounds')
-    options = snapshotRecorderOptions(options)
     this.currentOptions = options
     const { video: cfg, audio: opts } = sessionFields(options)
     const out = outPointer()
@@ -3395,15 +3446,31 @@ export class Recorder {
     options: JobOptions<void> = {},
   ): BunJob<void> {
     this.assertOpen(true)
+    options = snapshotJobOptions(options)
+    this.assertOpen(true)
     if (!frame.token) throw new CameraError(-5, 'released frame')
+    const source =
+      this.options.stream === 'lores'
+        ? frame[recorderInput]('lores')
+        : undefined
     const out = outPointer()
     check(
-      n.zc_video_producer_frame(
-        this.handle,
-        ptr(frame[readableFrame]),
-        timestampNs,
-        ptr(out),
-      ),
+      source
+        ? n.zc_video_producer_input_av(
+            this.handle,
+            ptr(source.descriptor),
+            ptr(source.color),
+            timestampNs,
+            null,
+            0,
+            ptr(out),
+          )
+        : n.zc_video_producer_frame(
+            this.handle,
+            ptr(frame[readableFrame]),
+            timestampNs,
+            ptr(out),
+          ),
       'producer frame admission',
     )
     return this.queueProducer(handle(out), options)
@@ -3413,6 +3480,8 @@ export class Recorder {
     timestampNs: bigint,
     options: JobOptions<void> = {},
   ): BunJob<void> {
+    this.assertOpen(true)
+    options = snapshotJobOptions(options)
     this.assertOpen(true)
     if (!data.length) throw new RangeError('empty PCM')
     const out = outPointer()
@@ -3435,26 +3504,49 @@ export class Recorder {
     options: JobOptions<void> = {},
   ): BunJob<void> {
     this.assertOpen(true)
+    options = snapshotJobOptions(options)
     if (!frame.token) throw new CameraError(-5, 'released frame')
-    if (audio.length > 256) throw new RangeError('too many PCM blocks')
-    const inputs = storage(audio.length * 24),
+    const blockCount = uint(audio.length, 256)
+    // Resolve application getters before deriving pointers. A later getter may
+    // detach an earlier array or change the camera/recorder lifecycle.
+    const blocks = Array.from({ length: blockCount }, (_, i) => {
+      const block = audio[i]
+      return { data: block.data, timestampNs: block.timestampNs }
+    })
+    const inputs = storage(blockCount * 24),
       d = view(inputs)
-    for (let i = 0; i < audio.length; i++) {
-      if (!audio[i].data.length) throw new RangeError('empty PCM')
-      d.setBigUint64(i * 24, BigInt(ptr(audio[i].data)), true)
-      d.setBigUint64(i * 24 + 8, BigInt(audio[i].data.length), true)
-      d.setBigUint64(i * 24 + 16, audio[i].timestampNs, true)
+    for (let i = 0; i < blockCount; i++) {
+      if (!(blocks[i].data instanceof Uint8Array) || !blocks[i].data.byteLength)
+        throw new RangeError('empty or invalid PCM')
+      d.setBigUint64(i * 24, BigInt(ptr(blocks[i].data)), true)
+      d.setBigUint64(i * 24 + 8, BigInt(blocks[i].data.length), true)
+      d.setBigUint64(i * 24 + 16, blocks[i].timestampNs, true)
     }
+    this.assertOpen(true)
+    const source =
+      this.options.stream === 'lores'
+        ? frame[recorderInput]('lores')
+        : undefined
     const out = outPointer()
     check(
-      n.zc_video_producer_av(
-        this.handle,
-        ptr(frame[readableFrame]),
-        timestampNs,
-        audio.length ? ptr(inputs) : null,
-        audio.length,
-        ptr(out),
-      ),
+      source
+        ? n.zc_video_producer_input_av(
+            this.handle,
+            ptr(source.descriptor),
+            ptr(source.color),
+            timestampNs,
+            blockCount ? ptr(inputs) : null,
+            blockCount,
+            ptr(out),
+          )
+        : n.zc_video_producer_av(
+            this.handle,
+            ptr(frame[readableFrame]),
+            timestampNs,
+            blockCount ? ptr(inputs) : null,
+            blockCount,
+            ptr(out),
+          ),
       'producer A/V admission',
     )
     return this.queueProducer(handle(out), options)
@@ -3599,7 +3691,20 @@ export class Recorder {
   write(frame: Frame, timestampNs = frame.timestampNs) {
     this.assertOpen()
     if (!frame.token) throw new CameraError(-5, 'released frame')
-    check(n.zc_video_write(this.handle, ptr(frame[readableFrame]), timestampNs))
+    const source =
+      this.options.stream === 'lores'
+        ? frame[recorderInput]('lores')
+        : undefined
+    check(
+      source
+        ? n.zc_video_write_input(
+            this.handle,
+            ptr(source.descriptor),
+            ptr(source.color),
+            timestampNs,
+          )
+        : n.zc_video_write(this.handle, ptr(frame[readableFrame]), timestampNs),
+    )
     this.reconcileOutputs()
     this.scheduleFactories()
   }

@@ -3,6 +3,26 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mkvFrames, mp4, decodeVideo } from './media'
 const dir = process.argv[2] ?? 'zig-out'
+if (process.argv.includes('--recording-streams')) {
+  const frames = mkvFrames(join(dir, 'lores-video.mkv'))
+  assert.equal(frames.length, 4)
+  const decoder = process.env.ZC_IMAGE_DECODER
+  assert(decoder)
+  for (let i = 0; i < frames.length; i++) {
+    const path = join(dir, `lores-video-${i}.jpg`)
+    writeFileSync(path, frames[i])
+    const result: ReturnType<typeof Bun.spawnSync> = Bun.spawnSync([
+      decoder,
+      'jpeg',
+      path,
+    ])
+    assert.equal(result.exitCode, 0)
+    const bytes = Buffer.from(result.stdout!)
+    assert.equal(bytes.readUInt32LE(0), 32)
+    assert.equal(bytes.readUInt32LE(4), 24)
+  }
+  process.exit(0)
+}
 if (process.argv.includes('--stream-images')) {
   const decoder = process.env.ZC_IMAGE_DECODER
   assert(decoder)

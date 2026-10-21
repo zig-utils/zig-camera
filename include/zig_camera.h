@@ -319,6 +319,12 @@ int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
  * MP4 timestamps must advance by >=1 microsecond; max gap ~4294 seconds.
  * Codecs/containers unavailable in this build return UNSUPPORTED. */
 int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);
+/* Selected RGB24/I420 input in frame.main; caller retains its source lease.
+ * Color must describe Rec.709 primaries/sRGB transfer. I420 matrix/range are
+ * remapped to the existing limited BT.601 output contract without an RGB image.
+ * Other primaries/transfers reject; no silent color reinterpretation. */
+int zc_video_write_input(zc_recorder *,const zc_frame *,const zc_color_space *,uint64_t timestamp_ns);
+int zc_video_check_input_color(const zc_color_space *,uint32_t format /* ZC_RGB24/ZC_YUV420 */);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
 int zc_video_close(zc_recorder *);
@@ -630,6 +636,9 @@ int zc_video_producer_stats(zc_recorder *,zc_producer_stats *);
 int zc_video_producer_frame(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,zc_producer_job **);
 int zc_video_producer_audio(zc_recorder *,const uint8_t *,uint64_t length,uint64_t timestamp_ns,zc_producer_job **);
 int zc_video_producer_av(zc_recorder *,const zc_frame *,uint64_t timestamp_ns,const zc_producer_audio_input *,uint32_t count,zc_producer_job **);
+/* Same format/color contract; owns tight pixel/color/PCM copies on success.
+ * Queue accounting uses actual RGB24 or I420 input bytes, not expanded RGB. */
+int zc_video_producer_input_av(zc_recorder *,const zc_frame *,const zc_color_space *,uint64_t timestamp_ns,const zc_producer_audio_input *,uint32_t count,zc_producer_job **);
 int zc_producer_job_start(zc_producer_job *);
 /* Bounded FIFO control jobs on the same worker. flush=0 captures all native sink
  * prefixes; flush=1 first terminally flushes video/AAC/container tails. Caller

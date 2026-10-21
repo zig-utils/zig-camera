@@ -68,6 +68,10 @@ jobs:
           ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --image-stream lores --warmup 0 --output zig-out/stream-i420.png
           ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --lores-format BGR888 --image-stream lores --warmup 0 --output zig-out/stream-rgb.png
           bun tests/ts/check-media.ts zig-out --stream-images
+          ./zig-out/bin/zig-camera record --simulate --width 64 --height 48 --lores-width 32 --lores-height 24 --record-stream lores --frames 4 --warmup 0 --output zig-out/lores-video.mkv
+          bun tests/ts/check-media.ts zig-out --recording-streams
+          if ./zig-out/bin/zig-camera record --simulate --record-stream lores --frames 1 --warmup 0 --output zig-out/disabled-video.mkv; then exit 1; fi
+          if ./zig-out/bin/zig-camera record --simulate --record-stream raw --frames 1 --output zig-out/invalid-video.mkv; then exit 1; fi
           if ./zig-out/bin/zig-camera capture --simulate --image-stream raw --output zig-out/invalid.png; then exit 1; fi
           if ./zig-out/bin/zig-camera capture --simulate --image-stream main --output zig-out/invalid.dng; then exit 1; fi
           if ./zig-out/bin/zig-camera capture --simulate --png-compression 10 --output zig-out/invalid.png; then exit 1; fi

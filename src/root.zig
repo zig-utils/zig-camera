@@ -398,6 +398,16 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, out.ptr, out.len));
     }
+    pub fn writeVideo(self: *const Frame, recorder: *c.zc_recorder, id: u32, timestamp_ns: u64) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
+        if (id != c.ZC_MAIN and id != c.ZC_LORES) return error.Unsupported;
+        try check(core.zc_frame_readable(self.camera.handle, self.value.token));
+        if (id == c.ZC_MAIN) return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
+        var selected = self.value;
+        selected.main = try self.stream(id);
+        const color = try self.colorSpace(id);
+        try check(media.zc_video_write_input(recorder, &selected, &color, timestamp_ns));
+    }
 };
 test {
     _ = core;
