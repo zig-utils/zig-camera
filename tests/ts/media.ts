@@ -38,6 +38,7 @@ export type Track = {
   width?: number
   height?: number
   channels?: number
+  bitrate?: number
   startUs?: bigint
   presentedUs?: bigint
   delay?: number
@@ -112,6 +113,7 @@ export function mp4(path: string): Map<number, Track> {
       const es = descriptors(config).get(3)!
       const decoder = descriptors(es.subarray(3)).get(4)!
       assert.equal(decoder[0], 0x40)
+      track.bitrate = decoder.readUInt32BE(9)
       track.config = descriptors(decoder.subarray(13)).get(5)!
       assert.equal(track.config.length, 2)
       assert.equal(track.config[0] >> 3, 2)

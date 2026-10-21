@@ -59,6 +59,13 @@ actual source metadata before publishing media. Group mode changes can use
 independent matrices/ranges, provided every encoder's gamut/transfer matches its
 selected source. General mode rollback rules still apply to flushed sessions.
 
+For unchanged audio sample rate/channels, Bun retains the actual native bitrate
+recipe when no audio bitrate is specified. This includes a file constructor's
+resolved AAC default, which may be absent from requested options. An explicit
+bitrate overrides it; explicit zero selects automatic bitrate. A changed audio
+format uses its codec default unless a bitrate is supplied. Color/quality changes
+therefore do not silently reset an inherited AAC bitrate.
+
 ## Native API and CLI
 
 Existing ABI v1 layouts remain unchanged, including 32-byte `zc_video_config`,

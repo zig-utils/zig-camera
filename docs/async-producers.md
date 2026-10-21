@@ -389,6 +389,11 @@ Then start, bind/acknowledge candidate output and publish as usual. Query the
 installed settings with zc_video_session_config outside worker ownership (BUSY
 while active). Neither query nor reconfiguration changes the existing ABI structs.
 
+Bun reads that native snapshot when a replacement keeps audio sample rate/channels
+and omits bitrate, retaining resolved constructor defaults that are absent from
+requested options. An explicit bitrate overrides it and explicit zero selects
+automatic bitrate. Changed audio formats use codec defaults unless supplied.
+
 For a running camera pump, use Recording.switchModeAsync or
 Camera.switchRecordingModeAsync to combine flush, camera negotiation, preview
 recreation, recorder preparation and pump restart under one reserved job. See

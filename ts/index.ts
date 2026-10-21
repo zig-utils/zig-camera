@@ -6382,6 +6382,33 @@ export class Recorder {
       throw new CameraError(-4, 'restart already pending')
     const candidate = mergeSessionOptions(this.options, settings)
     const config = settings ? sessionFields(candidate) : undefined
+    // Snapshotting caller getters can close the owner or admit another job.
+    this.assertOpen(true)
+    if (this.restartPending)
+      throw new CameraError(-4, 'restart already pending')
+    if (config && candidate.audio && candidate.audio.bitrate === undefined) {
+      // A file constructor may have resolved an implicit AAC default that is
+      // absent from requested options. Preserve the actual recipe for an
+      // unchanged audio format; explicit zero still selects automatic bitrate.
+      const video = storage(32),
+        audio = storage(24),
+        bitrate = new Uint32Array(1)
+      check(
+        n.zc_video_session_config(
+          this.handle,
+          ptr(video),
+          ptr(audio),
+          ptr(bitrate),
+        ),
+        'inherited audio settings',
+      )
+      const previous = view(audio)
+      if (
+        previous.getUint32(4, true) === candidate.audio.sampleRate &&
+        previous.getUint32(8, true) === candidate.audio.channels
+      )
+        config.bitrate = bitrate[0]
+    }
     if (typeof output === 'string') guardHostPath(output)
     const name = typeof output === 'string' ? cstring(output) : undefined
     const out = outPointer()

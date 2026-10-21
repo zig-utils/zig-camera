@@ -72,6 +72,7 @@ export const native = dlopen(library, {
   zc_video_producer_barrier: { args: [p, u, p], returns: i },
   zc_producer_job_drain_outputs: { args: [p], returns: i },
   zc_video_session_state: { args: [p, p], returns: i },
+  zc_video_session_config: { args: [p, p, p, p], returns: i },
   zc_video_producer_restart: { args: [p, u, p, p], returns: i },
   zc_video_resolve_session_config: { args: [p, p, u, u, u, u], returns: i },
   zc_producer_job_restart_configure: { args: [p, p, p, u], returns: i },

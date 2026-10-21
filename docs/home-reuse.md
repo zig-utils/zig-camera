@@ -64,6 +64,13 @@ The repository audit also fetches and fast-forwards to Home main
 TypeScript compiler sources/fixtures; media packages and the copied source pin
 above are unchanged.
 
+The bitrate follow-up reuses the existing camera C scalar session snapshot and
+Home session/audio validation instead of guessing an effective AAC setting from
+requested Bun options. An unchanged audio format inherits its current recipe;
+explicit bitrate/zero and new-format defaults retain their separate semantics.
+Tests compare the native recipe with actual MP4 AAC descriptor bitrates and
+encoded sample presence. No codec/container implementation or ABI layout changes.
+
 The new recording_path module was contributed to Home before being vendored
 verbatim. Its tests cover index zero, the maximum u64, non-truncating padding,
 insufficient destination capacity, malformed/multiple fields, NUL bytes and width

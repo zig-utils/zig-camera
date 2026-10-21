@@ -115,3 +115,8 @@ stdlib boundary remains applicable: reuse Home's tested color descriptions,
 pixel conversion and codecs, with camera-specific lifecycle ownership in Zig.
 No VC7 gamma LUT is used as a substitute for transfer conversion or encoder
 metadata. The OS tree remains unchanged; no physical color result is inferred.
+
+The bitrate follow-up also reads audio_codec.home's AAC/header handling at that
+same revision. It supplies no hosted recording-session encoder recipe to reuse.
+The fix uses the camera's existing native scalar query and Home audio validation;
+no OS bitrate policy or decoder stub is used as encoding evidence.
