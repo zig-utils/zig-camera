@@ -66,3 +66,9 @@ expiry inside callbacks and preview restoration, restoration/worker failures,
 late cancellation versus publication, camera close and completion re-entry.
 Independent decoders check staged RGB/I420 processed images, including the
 optional system-JPEG build. No physical camera/performance result is asserted.
+
+Mode admission is checked again after option accessors run. Scheduling snapshots
+read only job fields, so image/profile getters are not reread by a broad spread.
+A getter that closes the camera or reenters scheduling cannot reserve an output
+or overbook admission. Claimed operations also verify camera availability before
+native lease queries and after waiting for autofocus ownership.

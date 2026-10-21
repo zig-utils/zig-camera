@@ -394,7 +394,7 @@ test('capture and cleanup failures are both reported after the native owner reti
     Object.assign(native, {
       zc_image_file_state_get: (...args: Parameters<typeof get>) => {
         const result = get(...args),
-        bytes = new DataView(toArrayBuffer(args[1] as Pointer, 0, 32))
+          bytes = new DataView(toArrayBuffer(args[1] as Pointer, 0, 32))
         if (
           result === 0 &&
           bytes.getUint32(16, true) &&
@@ -423,6 +423,90 @@ test('capture and cleanup failures are both reported after the native owner reti
     expect(readFileSync(join(dir, 'next.png')).length).toBeGreaterThan(20)
   } finally {
     Object.assign(native, { zc_image_file_state_get: get })
+    await c.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('mode option accessors cannot close the camera between admission and native ownership', async () => {
+  const c = cam(),
+    dir = mkdtempSync(join(tmpdir(), 'zc-stage-accessor-')),
+    path = join(dir, 'photo.png'),
+    create = native.zc_image_file_create
+  let closed: Promise<void> | undefined,
+    created = 0
+  writeFileSync(path, 'keep')
+  try {
+    Object.assign(native, {
+      zc_image_file_create: (...args: Parameters<typeof create>) => {
+        created++
+        return create(...args)
+      },
+    })
+    expect(() =>
+      c.switchModeAndCaptureFile({ width: 32, height: 24 }, path, {
+        get timeoutMs() {
+          closed = c.close()
+          return 5000
+        },
+      }),
+    ).toThrow('camera unavailable')
+    await closed
+    expect(created).toBe(0)
+    expect(readFileSync(path, 'utf8')).toBe('keep')
+    expect(readdirSync(dir)).toEqual(['photo.png'])
+  } finally {
+    Object.assign(native, { zc_image_file_create: create })
+    await c.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+test('mode-file image accessors are snapshotted once without spreading them into scheduling options', async () => {
+  const c = cam(),
+    dir = mkdtempSync(join(tmpdir(), 'zc-stage-accessor-copy-')),
+    path = join(dir, 'photo.png')
+  let reads = 0
+  try {
+    const job = c.switchModeAndCaptureFile({ width: 32, height: 24 }, path, {
+      get iccProfile() {
+        reads++
+        return 'srgb' as const
+      },
+    })
+    expect(reads).toBe(1)
+    await job
+    expect(reads).toBe(1)
+    expect(readFileSync(path).toString('ascii', 37, 41)).toBe('iCCP')
+  } finally {
+    await c.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+test('reentrant scheduling accessors cannot overbook the bounded mode queue', async () => {
+  const c = cam(),
+    dir = mkdtempSync(join(tmpdir(), 'zc-stage-admission-')),
+    path = join(dir, 'photo.png'),
+    queued: ReturnType<Camera['switchMode']>[] = []
+  let reads = 0
+  try {
+    expect(() =>
+      c.switchModeAndCaptureFile({ width: 32, height: 24 }, path, {
+        get timeoutMs() {
+          reads++
+          for (let i = 0; i < 32; i++)
+            queued.push(c.switchMode({ width: 24, height: 16 }))
+          return 5000
+        },
+      }),
+    ).toThrow('mode queue')
+    expect(reads).toBe(1)
+    expect(queued.length).toBe(32)
+    for (const job of queued) job.cancel()
+    await Promise.all(queued.map((job) => fail(job)))
+    expect(readdirSync(dir)).toEqual([])
+    expect(c.info().width).toBe(18)
+  } finally {
+    for (const job of queued) job.cancel()
     await c.close()
     rmSync(dir, { recursive: true, force: true })
   }

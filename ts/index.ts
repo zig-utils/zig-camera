@@ -3329,16 +3329,7 @@ export class Camera {
       jobOptions,
     ) as BunJob<Uint8Array>
   }
-  private submitMode<T>(
-    options: CameraOptions,
-    capture: ModeRequest['capture'],
-    jobOptions: ModeJobOptions<T>,
-  ) {
-    guardRequestCallback()
-    guardOutputHook()
-    cameraIdentity(options)
-    const focusPolicy = this.modeFocusPolicy(jobOptions)
-    const autofocus = jobOptions.autofocus ?? false
+  private checkModeAdmission() {
     if (!this.handle || this.closing || this.stopJob)
       throw new CameraError(-2, 'camera unavailable')
     if (this.modeJobs.size + this.requests.length >= 32)
@@ -3352,6 +3343,18 @@ export class Camera {
       this.requests.length
     )
       throw new CameraError(-4, 'camera jobs active')
+  }
+  private submitMode<T>(
+    options: CameraOptions,
+    capture: ModeRequest['capture'],
+    jobOptions: ModeJobOptions<T>,
+  ) {
+    guardRequestCallback()
+    guardOutputHook()
+    cameraIdentity(options)
+    const focusPolicy = this.modeFocusPolicy(jobOptions)
+    const autofocus = jobOptions.autofocus ?? false
+    this.checkModeAdmission()
     const target = copyConfiguration({
       ...options,
       simulate: this.configuration.simulate,
@@ -3373,8 +3376,9 @@ export class Camera {
       throw new CameraError(-1, 'mode must retain camera/backend')
     const encoded = cameraConfiguration(target),
       dropFrames = uint(jobOptions.dropFrames ?? 0)
-    const effective = { ...jobOptions, timeoutMs: jobOptions.timeoutMs ?? 5000 }
-    const deadline = Date.now() + effective.timeoutMs
+    const effective = snapshotJobOptions(jobOptions, 5000)
+    const deadline = Date.now() + (effective.timeoutMs ?? 5000)
+    this.checkModeAdmission()
     const job = new BunJob<T>(
       (current) =>
         withStagedImageFile(
@@ -3382,9 +3386,11 @@ export class Camera {
           current,
           async (file) => {
             current.check()
+            this.assertOpen()
             this.checkModeLeases()
             await this.settleFocus(focusPolicy, current)
             current.check()
+            this.assertOpen()
             const stats = storage(40)
             check(n.zc_get_stats(this.handle, ptr(stats)))
             if (
