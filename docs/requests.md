@@ -37,6 +37,12 @@ captureRequest for work that crosses an await. A published request handoff is se
 against cancellation; cancellation before handoff retires the owned reference.
 User completion callbacks do not extend native capture ownership.
 
+[Request callbacks](request-callbacks.md) are separate pre/post processing stages
+on each delivered frame. Their borrowed views expire and their maps close before
+consumer progress. retain creates an explicit independent owner for asynchronous
+work. The pump runs pre/capture-copy/post before encoding and preview; an owned
+copy preserves pre edits, while a retained request also sees subsequent post edits.
+
 CaptureOptions adds flush and dropFrames to these jobs, including the focus-locked
 helpers. flush:true samples the native capture clock at admission; a bigint sets
 an exact threshold. dropFrames skips distinct delivered requests before selection.

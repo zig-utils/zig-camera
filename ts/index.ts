@@ -16,6 +16,21 @@ export type {
   CatalogScalar,
   CameraDescriptor,
 } from './catalog'
+import {
+  invokeRequestCallback,
+  guardRequestCallback,
+  RequestCallbackError,
+  type RequestCallback,
+  type RequestCallbacks,
+  type RequestPhase,
+} from './request-hooks'
+export {
+  RequestCallbackError,
+  type RequestFrame,
+  type RequestCallback,
+  type RequestCallbacks,
+  type RequestPhase,
+} from './request-hooks'
 import { decodeMetadata } from './metadata'
 import { MappedStream } from './mapping'
 export { MappedStream, type MappedPlane } from './mapping'
@@ -53,7 +68,7 @@ import {
   copyConfiguration,
   cameraIdentity,
 } from './config'
-import type { ModeRequest, ModeResponse } from './mode-worker'
+import type { ModeRequest, ModeResponse, ModeRequestHook } from './mode-worker'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
   native as n,
@@ -203,7 +218,10 @@ function state(data: Uint8Array) {
   }
 }
 class ModeWorkerFault extends Error {}
-function runModeWorker(request: ModeRequest): Promise<ModeResponse> {
+function runModeWorker(
+  request: ModeRequest,
+  onHook?: (request: ModeRequestHook) => void,
+): Promise<ModeResponse> {
   return new Promise((resolve, reject) => {
     let worker: Worker
     try {
@@ -212,11 +230,45 @@ function runModeWorker(request: ModeRequest): Promise<ModeResponse> {
       reject(error)
       return
     }
+    let settled = false,
+      callbackError: unknown
     worker.onmessage = (event) => {
-      resolve(event.data)
+      if (settled) return
+      if (event.data?.kind === 'request-hook') {
+        const hook = event.data as ModeRequestHook
+        const state =
+          request.requestHooks && new Int32Array(request.requestHooks.control)
+        if (
+          !state ||
+          hook.ticket !== Atomics.load(state, 0) ||
+          Atomics.compareExchange(state, 1, 0, 1) !== 0
+        )
+          return
+        let code = 0
+        try {
+          if (
+            Atomics.load(new Int32Array(request.cancel), 0) ||
+            Date.now() >= request.deadline
+          )
+            code = -5
+          else onHook?.(hook)
+        } catch (error) {
+          callbackError ??= error
+          code = -6
+        } finally {
+          Atomics.store(state, 2, code)
+          Atomics.store(state, 1, 2)
+          Atomics.notify(state, 1)
+        }
+        return
+      }
+      settled = true
+      resolve({ ...event.data, callbackError })
       worker.terminate()
     }
     worker.onerror = (event) => {
+      if (settled) return
+      settled = true
       reject(new ModeWorkerFault(event.message))
       worker.terminate()
     }
@@ -273,10 +325,11 @@ function streamNames(streams: readonly StreamName[]): StreamName[] {
     throw new RangeError('1..3 distinct stream names required')
   return [...streams]
 }
+type FrameSource = { handle: Pointer; assertOpen(): void }
 export class Frame {
   private released = false
   constructor(
-    private camera: Camera,
+    private camera: FrameSource,
     readonly descriptor: Uint8Array,
   ) {}
   private open() {
@@ -473,6 +526,114 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
+  private requestCallbacks: Readonly<RequestCallbacks> = Object.freeze({})
+  private lastRequestCallbackError?: RequestCallbackError
+  private failedRequestMappings = new Set<MappedStream>()
+  get requestCallbackMappings() {
+    for (const map of this.failedRequestMappings)
+      if (map.closed) this.failedRequestMappings.delete(map)
+    return Object.freeze([...this.failedRequestMappings])
+  }
+  retryRequestCallbackCleanup() {
+    guardRequestCallback()
+    this.assertOpen()
+    this.retireRequestMappings()
+  }
+  private retireRequestMappings() {
+    const errors: unknown[] = []
+    for (const map of this.requestCallbackMappings)
+      try {
+        map.close()
+      } catch (error) {
+        errors.push(error)
+      }
+    for (const map of this.failedRequestMappings)
+      if (map.closed) this.failedRequestMappings.delete(map)
+    if (errors.length)
+      throw new AggregateError(
+        errors,
+        'request callback mapping cleanup failed',
+      )
+  }
+  get requestCallbackError() {
+    return this.lastRequestCallbackError
+  }
+  get preCallback() {
+    return this.requestCallbacks.pre
+  }
+  set preCallback(callback: RequestCallback | undefined) {
+    this.setRequestCallbacks({ ...this.requestCallbacks, pre: callback })
+  }
+  get postCallback() {
+    return this.requestCallbacks.post
+  }
+  set postCallback(callback: RequestCallback | undefined) {
+    this.setRequestCallbacks({ ...this.requestCallbacks, post: callback })
+  }
+  setRequestCallbacks(callbacks: RequestCallbacks = {}) {
+    guardRequestCallback()
+    this.assertOpen()
+    const pre = callbacks.pre,
+      post = callbacks.post
+    for (const callback of [pre, post])
+      if (callback !== undefined && typeof callback !== 'function')
+        throw new TypeError('request callback must be a function')
+    this.assertOpen()
+    this.requestCallbacks = Object.freeze({ pre, post })
+    this.lastRequestCallbackError = undefined
+    if (this.started && this.hasRequestCallbacks) this.ensurePump()
+  }
+  private get hasRequestCallbacks() {
+    return !!(this.requestCallbacks.pre || this.requestCallbacks.post)
+  }
+  private invokeHook(
+    phase: RequestPhase,
+    callback: RequestCallback | undefined,
+    frame: Frame,
+    owner = this.handle,
+    reserve = 0n,
+  ) {
+    if (!callback) return
+    try {
+      invokeRequestCallback(callback, phase, frame, owner, reserve)
+    } catch (error) {
+      if (this.requestCallbacks[phase] === callback)
+        this.requestCallbacks = Object.freeze({
+          ...this.requestCallbacks,
+          [phase]: undefined,
+        })
+      this.lastRequestCallbackError = error as RequestCallbackError
+      if (error instanceof RequestCallbackError)
+        for (const map of error.unclosedMappings)
+          this.failedRequestMappings.add(map)
+      throw error
+    }
+  }
+  private runOwnedMode(request: ModeRequest): Promise<ModeResponse> {
+    const callbacks = this.requestCallbacks
+    if (!callbacks.pre && !callbacks.post) return runModeWorker(request)
+    const prepared = {
+      ...request,
+      requestHooks: {
+        pre: !!callbacks.pre,
+        post: !!callbacks.post,
+        control: new SharedArrayBuffer(16),
+      },
+    }
+    return runModeWorker(prepared, (hook) => {
+      const frame = new Frame(
+        { handle: hook.handle, assertOpen: guardOutputHook },
+        hook.frame,
+      )
+      this.invokeHook(
+        hook.phase,
+        callbacks[hook.phase],
+        frame,
+        hook.handle,
+        10n,
+      )
+    })
+  }
   private focusJob?: Pick<
     BunJob<unknown>,
     | 'done'
@@ -610,14 +771,17 @@ export class Camera {
     }))
   }
   start() {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.started) {
       check(n.zc_start(this.handle))
       this.started = true
     }
+    if (this.hasRequestCallbacks) this.ensurePump()
   }
   acquire(timeoutMs = 0) {
+    guardRequestCallback()
     this.assertOpen()
     const data = storage(456)
     check(n.zc_acquire(this.handle, uint(timeoutMs), ptr(data)), 'acquire')
@@ -787,6 +951,7 @@ export class Camera {
     return this.autofocusAsync(options).wait()
   }
   autofocusAsync(options: JobOptions<number> = {}): BunJob<number> {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs)
       throw new CameraError(-4, 'camera jobs active')
@@ -824,6 +989,7 @@ export class Camera {
     return job
   }
   startContinuousAutofocus() {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs)
       throw new CameraError(-4, 'camera jobs active')
@@ -848,6 +1014,7 @@ export class Camera {
     return this.submitPause(2, options)
   }
   private submitPause(command: number, options: JobOptions<number>) {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs)
       throw new CameraError(-4, 'camera jobs active')
@@ -919,6 +1086,7 @@ export class Camera {
     discard?: (value: T) => void,
     transfer = false,
   ): BunJob<T> {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs || this.requests.length)
       throw new CameraError(-4, 'camera jobs active')
@@ -1227,6 +1395,7 @@ export class Camera {
     discard?: (value: T) => void,
     transfer = false,
   ): BunJob<T> {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.focusCaptureActive)
@@ -1385,6 +1554,7 @@ export class Camera {
     return this.capture((frame) => frame.metadata(), options)
   }
   dropFramesAsync(count: number, options: JobOptions<void> = {}): BunJob<void> {
+    guardRequestCallback()
     const drops = uint(count)
     this.assertOpen()
     if (this.hasPendingModes() || this.focusCaptureActive)
@@ -1410,6 +1580,7 @@ export class Camera {
     return this.dropFramesAsync(count, options).wait()
   }
   startPreview(title = 'zig-camera') {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewHandle) throw new CameraError(-4, 'preview already active')
@@ -1423,6 +1594,7 @@ export class Camera {
     this.ensurePump()
   }
   stopPreview() {
+    guardRequestCallback()
     guardOutputHook()
     if (this.modeActive) throw new CameraError(-4, 'mode change active')
     this.stopPreviewOwned()
@@ -1438,6 +1610,7 @@ export class Camera {
     recorder: Recorder,
     options: { fps?: number; audio?: AudioCapture } = {},
   ) {
+    guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.recording) throw new CameraError(-4, 'recording active')
@@ -1484,6 +1657,7 @@ export class Camera {
     output: string | CustomOutput | null = null,
     jobOptions: RecordingModeOptions = {},
   ): BunJob<Recording> {
+    guardRequestCallback()
     this.assertOpen()
     cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
@@ -1624,7 +1798,7 @@ export class Camera {
           await flush
           current.check()
           this.stopPreviewOwned()
-          response = await runModeWorker({
+          response = await this.runOwnedMode({
             handle: this.handle,
             ...encoded,
             cameraId: this.selectedIdBytes,
@@ -1640,6 +1814,12 @@ export class Camera {
           })
           this.handle = response.handle
           this.started = response.started
+          if (response.callbackError !== undefined)
+            throw Object.assign(response.callbackError as object, {
+              restoreCode: response.restoreCode,
+              controlCode: response.controlCode,
+              restoreControlCode: response.restoreControlCode,
+            })
           if (
             response.autofocusState !== undefined &&
             response.code &&
@@ -1731,7 +1911,7 @@ export class Camera {
           if (!published && response?.target && this.handle) {
             try {
               this.stopPreviewOwned()
-              const restored = await runModeWorker({
+              const restored = await this.runOwnedMode({
                 handle: this.handle,
                 ...old,
                 cameraId: this.selectedIdBytes,
@@ -1901,6 +2081,7 @@ export class Camera {
     capture: ModeRequest['capture'],
     jobOptions: ModeJobOptions<T>,
   ) {
+    guardRequestCallback()
     guardOutputHook()
     cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
@@ -1983,7 +2164,7 @@ export class Camera {
         }
         try {
           this.stopPreviewOwned()
-          response = await runModeWorker({
+          response = await this.runOwnedMode({
             handle: this.handle,
             ...encoded,
             cameraId: this.selectedIdBytes,
@@ -2000,6 +2181,12 @@ export class Camera {
           })
           this.handle = response.handle
           this.started = response.started
+          if (response.callbackError !== undefined)
+            throw Object.assign(response.callbackError as object, {
+              restoreCode: response.restoreCode,
+              controlCode: response.controlCode,
+              restoreControlCode: response.restoreControlCode,
+            })
           if (
             response.autofocusState !== undefined &&
             response.code &&
@@ -2053,7 +2240,7 @@ export class Camera {
           }
           if (response?.target && this.handle) {
             try {
-              const restored = await runModeWorker({
+              const restored = await this.runOwnedMode({
                 handle: this.handle,
                 ...old,
                 cameraId: this.selectedIdBytes,
@@ -2099,7 +2286,8 @@ export class Camera {
           }
         } finally {
           this.modeActive = false
-          if (this.previewHandle) this.ensurePump()
+          if (this.previewHandle || (this.started && this.hasRequestCallbacks))
+            this.ensurePump()
         }
         if (failure !== undefined) throw failure
         if (!capture) value = this.info()
@@ -2138,7 +2326,8 @@ export class Camera {
     this.pumping = true
     try {
       this.timer = undefined
-      if (!this.handle || this.closing || this.modeActive) return
+      if (!this.handle || this.closing || this.modeActive || this.stopJob)
+        return
       if (this.coordinatedRecorder) {
         if (this.focusJobs) {
           const frame = storage(456)
@@ -2167,51 +2356,86 @@ export class Camera {
         !this.recording &&
         !this.previewHandle &&
         !this.requests.length &&
-        !this.focusJobs
+        !this.focusJobs &&
+        !(this.started && this.hasRequestCallbacks)
       )
         return
       let frame: Frame | undefined
       let selected: CaptureRequest | undefined, capturedValue: unknown
+      let attempted: CaptureRequest | undefined
       let producer: Promise<void> | undefined, writing: Recording | undefined
       try {
         frame = this.acquire(0)
-        if (this.recording) {
-          try {
-            writing = this.recording
-            if (writing.recorder.asyncWrites)
-              producer = writing.writeAsync(frame)
-            else writing.write(frame)
-          } catch (error) {
-            this.recording.error = error
-            this.failedRecordings.add(this.recording)
-            this.recording = undefined
-          }
-        }
-        if (this.previewHandle) {
-          const code = n.zc_preview_show(
-            this.previewHandle,
-            ptr(frame[readableFrame]),
-          )
-          if (code === 1) this.stopPreview()
-          else check(code)
-        }
-        const job = this.requests[0]
-        if (job) {
-          try {
-            const code = job.accept?.(frame) ?? 0
-            if (code !== -3) {
-              this.requests.shift()
-              check(code, 'focus-locked frame')
-              capturedValue = job.operation(frame)
-              selected = job
+        const callbacks = this.requestCallbacks
+        let callbackFailed = false
+        try {
+          this.invokeHook('pre', callbacks.pre, frame)
+          this.requests = this.requests.filter((job) => {
+            if (!job.signal?.aborted) return true
+            job.reject(job.signal.reason)
+            return false
+          })
+          const job = this.requests[0]
+          attempted = job
+          if (job) {
+            try {
+              const code = job.accept?.(frame) ?? 0
+              if (code !== -3) {
+                this.requests.shift()
+                check(code, 'focus-locked frame')
+                capturedValue = job.operation(frame)
+                selected = job
+              }
+            } catch (error) {
+              if (this.requests[0] === job) this.requests.shift()
+              job.reject(error)
             }
-          } catch (error) {
-            if (this.requests[0] === job) this.requests.shift()
-            job.reject(error)
+          }
+
+          this.invokeHook('post', callbacks.post, frame)
+        } catch (error) {
+          if (!(error instanceof RequestCallbackError)) throw error
+          callbackFailed = true
+          if (selected) selected.reject(error)
+          else if (attempted) {
+            if (this.requests[0] === attempted) this.requests.shift()
+            attempted.reject(error)
+          } else {
+            this.requests = this.requests.filter((job) => {
+              if (!job.signal?.aborted) return true
+              job.reject(job.signal.reason)
+              return false
+            })
+            this.requests.shift()?.reject(error)
+          }
+          selected = undefined
+        }
+        if (!callbackFailed) {
+          if (this.recording) {
+            try {
+              writing = this.recording
+              if (writing.recorder.asyncWrites)
+                producer = writing.writeAsync(frame)
+              else writing.write(frame)
+            } catch (error) {
+              this.recording.error = error
+              this.failedRecordings.add(this.recording)
+              this.recording = undefined
+            }
+          }
+          if (this.previewHandle) {
+            const code = n.zc_preview_show(
+              this.previewHandle,
+              ptr(frame[readableFrame]),
+            )
+            if (code === 1) this.stopPreview()
+            else check(code)
           }
         }
       } catch (error) {
         if (!(error instanceof CameraError && error.code === -3)) {
+          selected?.reject(error)
+          selected = undefined
           for (const job of this.requests) job.reject(error)
           this.requests = []
           if (this.recording) {
@@ -2259,12 +2483,13 @@ export class Camera {
           }
         }
       }
-      if (!this.handle || this.closing) return
+      if (!this.handle || this.closing || this.stopJob) return
       if (
         this.recording ||
         this.previewHandle ||
         this.requests.length ||
-        this.focusJobs
+        this.focusJobs ||
+        (this.started && this.hasRequestCallbacks)
       )
         this.timer = setTimeout(() => this.pump(), 1)
     } finally {
@@ -2272,6 +2497,7 @@ export class Camera {
     }
   }
   stop(): Promise<void> {
+    guardRequestCallback()
     guardOutputHook()
     if (this.stopJob) return this.stopJob
     if (!this.handle || this.closing)
@@ -2300,6 +2526,11 @@ export class Camera {
         focus.cancel(new CameraError(-2, 'camera stopped'))
         await focus.operationDone
         if (focus.error !== focus.cancellationReason) failure = focus.error
+      }
+      try {
+        this.retireRequestMappings()
+      } catch (error) {
+        failure ??= error
       }
       try {
         this.stopPreview()
@@ -2335,6 +2566,7 @@ export class Camera {
     return this.stopJob
   }
   close(): Promise<void> {
+    guardRequestCallback()
     guardOutputHook()
     if (this.closeJob) return this.closeJob
     if (!this.handle) return Promise.resolve()

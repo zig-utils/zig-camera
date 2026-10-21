@@ -68,9 +68,10 @@ Writable policy is captured once at camera admission and inherited by mode jobs
 unless writable:false explicitly opts out. Permanent switches, temporary captures,
 coordinated recorder mode switches and rollback configure permissions before the
 replacement starts. Read-only temporary targets restore the old writable policy.
-This does not add pre/post request hooks; those remain in the parity worklist.
-The existing capture pump still records/displays before its application capture
-callback, so edits there affect later explicit reads, not an already encoded frame.
+Version 0.40 adds [pre/post request callbacks](request-callbacks.md). The pump now
+orders pre edits, capture/copy, post edits, recording input and preview. Post edits
+affect encoded/displayed pixels and retained requests, while an earlier owned copy
+preserves its pre-stage pixels. Hook scopes automatically close their mappings.
 
 Native zc_enable_writable is allowed before the first start. zc_frame_map_open
 takes a frame token, stream and write flag; native read maps may share READ access,

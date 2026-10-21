@@ -269,3 +269,14 @@ retained references and publication; C++ handles mmap permissions and matched DM
 read/write fences. Bun owns no pixel copy for mapped streams and detaches scoped
 views before native retirement. Existing Home plane packing remains the explicit
 owned-copy path; codecs/containers and capture queues continue to reuse Home.
+
+The 0.40 audit reuses Home lease_pool, frame_access and preparation/completion gates
+without adding a second frame queue or a generic task graph. The native worker's
+primary reference pins every callback handoff; scoped mappings retain their own
+reserved, generation-checked owners and enforce exclusive writes. Bun expires
+borrowed request views, retires maps before encode/worker progress and retains any
+failed cleanup owners for retry. One private atomic ticket per mode worker
+serializes main-thread callback access without running JavaScript on manager or
+codec threads. Mode hooks use the existing typed native-control journal and
+reserve restoration headroom. Home source/provenance remains the existing verbatim
+modules in NOTICE; no codec/container implementation is duplicated or changed.

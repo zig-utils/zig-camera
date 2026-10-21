@@ -33,6 +33,14 @@ export interface ModeRequest {
   }
   autofocus?: boolean
   dropFrames: number
+  requestHooks?: { pre: boolean; post: boolean; control: SharedArrayBuffer }
+}
+export interface ModeRequestHook {
+  kind: 'request-hook'
+  ticket: number
+  phase: 'pre' | 'post'
+  handle: Pointer
+  frame: Uint8Array
 }
 export interface ModeResponse {
   handle: Pointer
@@ -46,10 +54,12 @@ export interface ModeResponse {
   started: boolean
   value?: Uint8Array
   stream?: { width: number; height: number; format: string }
+  /** Main-thread-only enrichment; never transported by the worker. */
+  callbackError?: unknown
 }
 declare const self: {
   onmessage: (event: { data: ModeRequest }) => void
-  postMessage: (value: ModeResponse) => void
+  postMessage: (value: ModeResponse | ModeRequestHook) => void
   close: () => void
 }
 self.onmessage = ({ data: request }) => {
@@ -142,6 +152,44 @@ self.onmessage = ({ data: request }) => {
     result.handle = 0 as Pointer
   }
   let focusRevision: bigint | undefined
+  let hookTicket = 0
+  const hook = (phase: 'pre' | 'post', frame: Uint8Array) => {
+    if (!request.requestHooks?.[phase]) return
+    if (cancelled()) throw -5
+    if (hookTicket === 0x7fffffff) throw -2
+    const control = new Int32Array(request.requestHooks.control)
+    Atomics.store(control, 0, ++hookTicket)
+    Atomics.store(control, 2, 0)
+    Atomics.store(control, 1, 0) // pending; main claims 1, retires 2; unclaimed cancellation 3
+    self.postMessage({
+      kind: 'request-hook',
+      ticket: hookTicket,
+      phase,
+      handle: result.handle,
+      frame: frame.slice(),
+    })
+    while (true) {
+      const state = Atomics.load(control, 1)
+      if (state === 2) {
+        check(Atomics.load(control, 2))
+        break
+      }
+      if (state === 3) throw -5
+      // Once claimed, a callback/map scope must retire before any frame release.
+      if (cancelled() && Atomics.compareExchange(control, 1, 0, 3) === 0)
+        throw -5
+      Atomics.wait(control, 1, state, 20)
+    }
+    if (cancelled()) throw -5
+  }
+  const recycle = (frame: Uint8Array) => {
+    try {
+      hook('pre', frame)
+      hook('post', frame)
+    } finally {
+      check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+    }
+  }
   const acquire = () => {
     const frame = storage(456)
     while (true) {
@@ -160,7 +208,7 @@ self.onmessage = ({ data: request }) => {
               m.controlRevision >= focusRevision &&
               m.afState === 2
           } finally {
-            if (!accepted) check(n.zc_release(result.handle, token))
+            if (!accepted) recycle(frame)
           }
           if (!accepted) continue
         }
@@ -180,7 +228,7 @@ self.onmessage = ({ data: request }) => {
     Atomics.store(new Int32Array(request.cancel), 1, 3)
     for (let i = 0; i < request.dropFrames; i++) {
       const frame = acquire()
-      check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+      recycle(frame)
     }
     if (request.autofocus) {
       const id = new BigUint64Array(1),
@@ -197,7 +245,7 @@ self.onmessage = ({ data: request }) => {
           }
           if (code !== -3) throw code
           const frame = acquire()
-          check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+          recycle(frame)
         }
       } finally {
         check(n.zc_autofocus_cancel(result.handle, id[0]))
@@ -216,13 +264,16 @@ self.onmessage = ({ data: request }) => {
       check(n.zc_get_info(result.handle, ptr(info)))
       for (let i = 0; i < view(info).getUint32(4, true); i++) {
         const frame = acquire()
-        check(n.zc_release(result.handle, view(frame).getBigUint64(0, true)))
+        recycle(frame)
       }
     }
     if (request.capture) {
       const frame = acquire(),
         token = view(frame).getBigUint64(0, true)
+      let prepared = false
       try {
+        hook('pre', frame)
+        prepared = true
         const capture = request.capture
         if (capture.kind === 'rgb') {
           const d = view(frame)
@@ -286,7 +337,11 @@ self.onmessage = ({ data: request }) => {
           result.stream = { width, height, format: name }
         }
       } finally {
-        check(n.zc_release(result.handle, token))
+        try {
+          if (prepared) hook('post', frame)
+        } finally {
+          check(n.zc_release(result.handle, token))
+        }
       }
     }
     if (cancelled()) throw -5
