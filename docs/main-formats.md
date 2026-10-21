@@ -48,7 +48,8 @@ and Zig Frame.rgb remain RGB-only; Frame.rgb rejects I420 instead of interpretin
 luma bytes as RGB. Use copyStreamRgb when an owned conversion is needed.
 
 Still capture, encoded images and focus-locked images convert the selected main
-stream through the existing checked image path. DNG continues to use paired raw
+stream through the existing checked image path. JPEG file saves validate/convert
+before choosing Home or optional system JPEG encoding; RGB input stays borrowed. DNG continues to use paired raw
 samples and metadata. SDL preview converts directly into its locked RGB texture;
 headless preview keeps its existing request processing. Display transforms and
 overlays do not modify capture or encoder input.
@@ -78,7 +79,7 @@ Native tests and C ABI checks cover format admission, exact IDs, three-plane I42
 write/read exclusion, stale tokens, short-output preservation and RGB-view rejection.
 Actual SDL readback checks leased main and lores I420 against independent floating
 color calculations. Bun tests verify every RGB pixel against a floating reference,
-independently decoded PNG, paired RGB/raw streams, transforms, focus-locked PNG/DNG,
+independently decoded PNG and JPEG files, paired RGB/raw streams, transforms, focus-locked PNG/DNG,
 format restoration/cancellation, synchronous/asynchronous MJPEG and compact AVC/HEVC
 admission. Linux independently decodes all AVC/HEVC planes and loads the real
 libcamera backend; shared-audio and mode-group tests exercise both formats.

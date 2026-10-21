@@ -465,3 +465,45 @@ for (const asyncWrites of [false, true])
       audio.close()
     }
   })
+test('main I420 JPEG file APIs convert all planes before Home or optional system JPEG encoding', async () => {
+  const c = new Camera({
+      simulate: true,
+      width: 4,
+      height: 2,
+      format: 'YUV420',
+      writable: true,
+    }),
+    dir = mkdtempSync(join(tmpdir(), 'main-yuv-jpeg-'))
+  try {
+    const frame = await c.captureRequest()
+    try {
+      frame.withMappedStream((map) => {
+        for (let y = 0; y < 2; y++) map.row(y).fill(100)
+        map.row(0, 1).fill(64)
+        map.row(0, 2).fill(192)
+      })
+      for (const direct of [false, true]) {
+        const path = join(dir, direct ? 'direct.jpg' : 'file.jpg')
+        if (direct) frame.saveJPEG(path, 100)
+        else frame.saveFile(path, { format: 'jpeg', quality: 100 })
+        const decoder = process.env.ZC_IMAGE_DECODER
+        if (decoder) {
+          const decoded = Bun.spawnSync([decoder, 'jpeg', path])
+          expect(decoded.exitCode).toBe(0)
+          const bytes = Buffer.from(decoded.stdout)
+          expect([bytes.readUInt32LE(0), bytes.readUInt32LE(4)]).toEqual([4, 2])
+          for (let i = 0; i < 24; i++)
+            expect(
+              Math.abs(bytes[8 + i] - rgb(100, 64, 192)[i % 3]),
+            ).toBeLessThanOrEqual(2)
+        }
+      }
+    } finally {
+      frame.release()
+    }
+    expect(c.stats().leased).toBe(0)
+  } finally {
+    await c.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

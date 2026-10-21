@@ -1168,17 +1168,24 @@ pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, qua
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     if (self.slots[index].access.writer) return c.ZC_BUSY;
     const slot = &self.slots[index];
+    var color = std.mem.zeroes(c.zc_color_space);
+    if (!std.mem.eql(u8, std.mem.sliceTo(&slot.frame.main.format, 0), "BGR888")) {
+        const rc = driver.colorSpace(self.device.?, c.ZC_MAIN, &color);
+        if (rc != c.ZC_OK) return rc;
+    }
+    const source = @import("stream_rgb.zig").Selected.init(std.heap.c_allocator, slot.frame, slot.frame.main, color) catch |err| return still.status(err);
+    defer source.deinit(std.heap.c_allocator);
     if (options.jpeg) {
         var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
         defer atom.deinit();
-        const rc = zcd_write_jpeg_fd(&slot.frame, atom.file_writer.file.handle, quality);
+        const rc = zcd_write_jpeg_fd(&source.frame, atom.file_writer.file.handle, quality);
         if (rc != 0) return rc;
         atom.finish() catch return c.ZC_IO;
         return c.ZC_OK;
     }
     var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
     defer encoder.deinit();
-    const m = slot.frame.main;
+    const m = source.frame.main;
     const encoded = encoder.encode(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride, 3, @intCast(quality)) catch return c.ZC_NOMEM;
     var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
     defer atom.deinit();
