@@ -6,9 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.54 adds [color-space requests and negotiation](docs/color-configuration.md):
-presets/custom descriptions, format normalization, strict adjustment policy and
-color restoration through mode jobs. See [main-stream formats](docs/main-formats.md),
+Version 0.55 adds [recording color profiles](docs/recording-color.md): copied
+AVC/HEVC VUI and MP4 nclx settings, matching matrix/range conversion, and propagation
+through splits, snapshots, factories and camera/recorder mode jobs.
+[Camera color requests](docs/color-configuration.md) retain strict negotiation
+and mode restoration. See [main-stream formats](docs/main-formats.md),
 [preview stream selection](docs/preview-streams.md) and [display views](docs/preview-views.md). See [headless preview](docs/headless-preview.md), [RGBA preview overlays](docs/preview-overlays.md), [coordinated recording groups](docs/recording-groups.md),
 [shared microphone audio](docs/shared-audio.md),
 [multiple encoders](docs/multiple-encoders.md) and the

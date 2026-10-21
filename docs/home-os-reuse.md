@@ -107,3 +107,11 @@ stage from encoded sample signaling. ISO mapping, header-checked AVC/HEVC metada
 and MP4 nclx therefore improve Home's shared video package. The new tests inspect
 real encoded headers and container bytes; they do not rely on stub success or
 on architectural claims as conformance evidence. No OS code was changed or run.
+
+The 0.55 integration rechecks camera.home and video_decoder.home at the same
+151269666bc09aa15a271f1c1f4603f681132e65 revision. Their stubs still supply no
+encoded-color session contract or hosted output ownership to import. ADR-MC3's
+stdlib boundary remains applicable: reuse Home's tested color descriptions,
+pixel conversion and codecs, with camera-specific lifecycle ownership in Zig.
+No VC7 gamma LUT is used as a substitute for transfer conversion or encoder
+metadata. The OS tree remains unchanged; no physical color result is inferred.

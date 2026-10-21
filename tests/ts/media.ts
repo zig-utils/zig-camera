@@ -29,6 +29,12 @@ export type Track = {
   rate: number
   duration: bigint
   config: Buffer
+  color?: {
+    primaries: number
+    transfer: number
+    matrix: number
+    fullRange: boolean
+  }
   width?: number
   height?: number
   channels?: number
@@ -124,6 +130,16 @@ export function mp4(path: string): Map<number, Track> {
       assert.equal(data.readInt16BE(roll.start + 16), -1)
     } else {
       assert(['avc1', 'hvc1'].includes(entry.kind))
+      const colr = child(data, { ...entry, start: entry.start + 78 }, 'colr')
+      assert.equal(data.toString('ascii', colr.start, colr.start + 4), 'nclx')
+      assert.equal(colr.end - colr.start, 11)
+      assert.equal(data[colr.start + 10] & 127, 0)
+      track.color = {
+        primaries: data.readUInt16BE(colr.start + 4),
+        transfer: data.readUInt16BE(colr.start + 6),
+        matrix: data.readUInt16BE(colr.start + 8),
+        fullRange: !!(data[colr.start + 10] & 128),
+      }
       track.width = data.readUInt16BE(entry.start + 24)
       track.height = data.readUInt16BE(entry.start + 26)
     }

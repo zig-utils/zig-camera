@@ -4,17 +4,29 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 const streams = @import("stream_rgb.zig");
 pub fn validateColor(space: c.zc_color_space, yuv: bool) !void {
+    return validateColorFor(space, yuv, @import("recording_color.zig").legacy());
+}
+pub fn validateColorFor(space: c.zc_color_space, yuv: bool, target: c.zc_color_space) !void {
     if (space.struct_size != @sizeOf(c.zc_color_space) or space.present != 1) return error.Unsupported;
-    // Existing Home AVC/HEVC + MP4 signal these primaries/transfer. Matrix/range
-    // remapping alone must not mislabel a different transfer function or gamut.
-    if (space.primaries != c.ZC_PRIMARIES_REC709 or space.transfer != c.ZC_TRANSFER_SRGB) return error.Unsupported;
+    _ = try @import("recording_color.zig").description(target);
+    // Matrix/range remapping cannot transform transfer functions or primaries.
+    if (space.primaries != target.primaries or space.transfer != target.transfer) return error.Unsupported;
     if (yuv) {
         _ = streams.conversion(space) catch return error.Unsupported;
     } else if (space.ycbcr_encoding != c.ZC_YCBCR_NONE or space.range != c.ZC_RANGE_FULL) return error.Unsupported;
 }
 pub fn validate(stream: c.zc_stream, color: ?c.zc_color_space) !bool {
+    return validateFor(stream, color, @import("recording_color.zig").legacy());
+}
+pub fn validateFor(stream: c.zc_stream, color: ?c.zc_color_space, target: c.zc_color_space) !bool {
     const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
-    if (color) |space| try validateColor(space, yuv) else if (yuv) return error.Unsupported;
+    if (color) |space| try validateColorFor(space, yuv, target) else {
+        if (yuv) return error.Unsupported;
+        var assumed = @import("recording_color.zig").legacy();
+        assumed.ycbcr_encoding = c.ZC_YCBCR_NONE;
+        assumed.range = c.ZC_RANGE_FULL;
+        try validateColorFor(assumed, false, target);
+    }
     if (yuv) {
         _ = try streams.i420View(stream);
     } else {
@@ -36,12 +48,16 @@ pub fn copy(stream: c.zc_stream, yuv: bool, out: []u8) !void {
     }
 }
 pub fn remap(space: c.zc_color_space) !@import("home/yuv_remap.zig").Remap {
-    try validateColor(space, true);
+    return remapFor(space, @import("recording_color.zig").legacy());
+}
+pub fn remapFor(space: c.zc_color_space, target: c.zc_color_space) !@import("home/yuv_remap.zig").Remap {
+    try validateColorFor(space, true, target);
     const matrix: @import("home/yuv_rgb.zig").Matrix = switch (space.ycbcr_encoding) {
         c.ZC_YCBCR_REC601 => .bt601,
         c.ZC_YCBCR_REC709 => .bt709,
         c.ZC_YCBCR_REC2020 => .bt2020,
         else => return error.Unsupported,
     };
-    return @import("home/yuv_remap.zig").Remap.init(matrix, if (space.range == c.ZC_RANGE_FULL) .full else .limited, .bt601, .limited);
+    const profile = @import("recording_color.zig");
+    return @import("home/yuv_remap.zig").Remap.init(matrix, if (space.range == c.ZC_RANGE_FULL) .full else .limited, try profile.matrix(target), try profile.range(target));
 }

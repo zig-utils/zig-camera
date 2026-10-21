@@ -1,4 +1,9 @@
-import { readColorNegotiation, type ColorSpaceRequest } from './color-config'
+import {
+  readColorNegotiation,
+  encodeColorSpace,
+  snapshotColorSpace,
+  type ColorSpaceRequest,
+} from './color-config'
 export type {
   ColorSpacePreset,
   ColorSpaceDescription,
@@ -81,6 +86,7 @@ import {
   encodeNativeImage,
   imageStreamId,
   readStreamColorSpace,
+  decodeStreamColorSpace,
   processedImageStream,
   type PreparedImage,
   type ImageOptions,
@@ -458,7 +464,7 @@ export class Frame {
     )
     return this.descriptor
   }
-  [recorderInput](stream: 'main' | 'lores') {
+  [recorderInput](stream: 'main' | 'lores', target?: Uint8Array) {
     const descriptor = this[readableFrame].slice(),
       selected = storage(208),
       color = storage(24)
@@ -469,7 +475,11 @@ export class Frame {
     if (format !== 'BGR888' && format !== 'YUV420')
       throw new CameraError(-8, 'recording stream format')
     check(
-      n.zc_video_check_input_color(ptr(color), format === 'YUV420' ? 0 : 1),
+      n.zc_video_check_input_color_for(
+        ptr(color),
+        format === 'YUV420' ? 0 : 1,
+        target ? ptr(target) : null,
+      ),
       'recording stream color',
     )
     descriptor.set(selected, 40)
@@ -1098,17 +1108,29 @@ export class Camera {
     }
   }
   private readRecordingInput(options: RecorderOptions) {
+    const target =
+      options.colorSpace === undefined
+        ? undefined
+        : encodeColorSpace(options.colorSpace)
     if ((options.stream ?? 'main') === 'main') {
       const info = this.readInfo()
       if (info.format !== 'BGR888' && info.format !== 'YUV420')
         throw new CameraError(-8, 'recording stream format')
-      if (info.format === 'BGR888' && !this[legacyRgbInput]())
+      if (
+        info.format === 'BGR888' &&
+        target === undefined &&
+        !this[legacyRgbInput]()
+      )
         throw new CameraError(-8, 'recording stream color')
-      if (info.format === 'YUV420') {
+      if (info.format === 'YUV420' || target !== undefined) {
         const color = storage(24)
         check(n.zc_get_stream_color_space(this.handle, 0, ptr(color)))
         check(
-          n.zc_video_check_input_color(ptr(color), 0),
+          n.zc_video_check_input_color_for(
+            ptr(color),
+            info.format === 'YUV420' ? 0 : 1,
+            target ? ptr(target) : null,
+          ),
           'recording stream color',
         )
       }
@@ -1125,7 +1147,11 @@ export class Camera {
       throw new CameraError(-8, 'recording stream format')
     check(n.zc_get_stream_color_space(this.handle, 2, ptr(color)))
     check(
-      n.zc_video_check_input_color(ptr(color), format === 'YUV420' ? 0 : 1),
+      n.zc_video_check_input_color_for(
+        ptr(color),
+        format === 'YUV420' ? 0 : 1,
+        target ? ptr(target) : null,
+      ),
       'recording stream color',
     )
     return { width: d.getUint32(16, true), height: d.getUint32(20, true) }
@@ -4096,6 +4122,8 @@ export interface RecordingStats {
 export interface RecorderOptions {
   /** Source for manual writes and camera recording pumps; default main. */
   stream?: 'main' | 'lores'
+  /** AVC/HEVC YCbCr output profile. Primaries/transfer must match source pixels. */
+  colorSpace?: ColorSpaceRequest
   width: number
   height: number
   fps?: number
@@ -4137,12 +4165,18 @@ export type RecorderSessionOptions = Partial<
     | 'gop'
     | 'stream'
   >
-> & { audio?: RecorderOptions['audio'] | null }
+> & {
+  audio?: RecorderOptions['audio'] | null
+  colorSpace?: ColorSpaceRequest | null
+}
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   options = { ...options }
   options.stream = processedImageStream(options.stream)
+  const colorSpace = snapshotColorSpace(options.colorSpace)
   return Object.freeze({
     ...options,
+    colorSpace:
+      typeof colorSpace === 'object' ? Object.freeze(colorSpace) : colorSpace,
     audio: options.audio && Object.freeze({ ...options.audio }),
     circular: options.circular && Object.freeze({ ...options.circular }),
     outputQueue:
@@ -4178,6 +4212,8 @@ function mergeSessionOptions(
     if (settings[key] !== undefined)
       Object.assign(merged, { [key]: settings[key] })
   if (settings.audio !== undefined) merged.audio = settings.audio ?? undefined
+  if (settings.colorSpace !== undefined)
+    merged.colorSpace = settings.colorSpace ?? undefined
   return snapshotRecorderOptions(merged)
 }
 function resolvedSession(
@@ -4211,7 +4247,7 @@ function sessionFields(options: RecorderOptions) {
     throw new RangeError('invalid recording audio format')
   if (options.codec !== undefined && !Object.hasOwn(Codec, options.codec))
     throw new RangeError('invalid recording codec')
-  return {
+  const result = {
     video: fields(32, n.zc_default_video_config, [
       options.width,
       options.height,
@@ -4231,7 +4267,19 @@ function sessionFields(options: RecorderOptions) {
       options.exclusive ? 1 : 0,
     ]),
     bitrate: uint(options.audio?.bitrate ?? 0),
+    color:
+      options.colorSpace === undefined
+        ? undefined
+        : encodeColorSpace(options.colorSpace),
   }
+  check(
+    n.zc_video_check_color(
+      ptr(result.video),
+      result.color ? ptr(result.color) : null,
+    ),
+    'recording color configuration',
+  )
+  return result
 }
 function describeStreams(
   options: RecorderOptions,
@@ -4243,6 +4291,10 @@ function describeStreams(
     fps: options.fps ?? 30,
     codec: Codec[options.codec ?? 'mjpeg'],
     headers,
+    colorSpace:
+      options.codec === 'h264' || options.codec === 'hevc'
+        ? describeRecordingColor(options.colorSpace)
+        : undefined,
     audio: options.audio
       ? {
           sampleRate: options.audio.sampleRate,
@@ -4250,6 +4302,12 @@ function describeStreams(
         }
       : undefined,
   }
+}
+function describeRecordingColor(requested?: ColorSpaceRequest) {
+  const color =
+    requested === undefined ? storage(24) : encodeColorSpace(requested)
+  if (requested === undefined) n.zc_default_video_color(ptr(color))
+  return decodeStreamColorSpace(color)
 }
 export interface HostOutputStats extends HostOutputQueueStats {
   id: bigint
@@ -4477,6 +4535,7 @@ interface FactoryEntry {
 }
 export class Recorder {
   handle: Pointer
+  private recordingColorBytes?: Uint8Array
   private currentOptions: RecorderOptions
   get width() {
     return this.currentOptions.width
@@ -4540,7 +4599,9 @@ export class Recorder {
     if (producerLimits && (!producerLimits.bytes || !producerLimits.jobs))
       throw new RangeError('invalid producer queue bounds')
     this.currentOptions = options
-    const { video: cfg, audio: opts } = sessionFields(options)
+    const { video: cfg, audio: opts, color } = sessionFields(options)
+    this.recordingColorBytes = color
+    const coloredPath = path !== null && color !== undefined
     const out = outPointer()
     if (options.circular) {
       const ring = fields(24, n.zc_default_buffer_config, [
@@ -4568,12 +4629,17 @@ export class Recorder {
             )
           : n.zc_video_open_circular(ptr(cfg), ptr(ring), ptr(out)),
       )
-    } else if (path === null)
+    } else if (path === null || coloredPath)
       check(
         n.zc_video_create(
           ptr(cfg),
           ptr(opts),
-          uint(options.audio?.bitrate ?? 0),
+          uint(
+            options.audio?.bitrate ??
+              (coloredPath && options.audio && path!.endsWith('.mp4')
+                ? 128000
+                : 0),
+          ),
           ptr(out),
         ),
       )
@@ -4593,6 +4659,11 @@ export class Recorder {
     }
     this.handle = handle(out)
     try {
+      if (color)
+        check(
+          n.zc_video_set_color(this.handle, ptr(color)),
+          'recording color configuration',
+        )
       if (producerLimits)
         check(
           n.zc_video_set_producer_limits(
@@ -4607,7 +4678,7 @@ export class Recorder {
         check(
           n.zc_video_set_delay(this.handle, nanos(options.circular.delayMs)),
         )
-      if (options.circular && path !== null) {
+      if ((options.circular || coloredPath) && path !== null) {
         const name = cstring(path)
         check(n.zc_video_open_output(this.handle, ptr(name)))
       }
@@ -4629,6 +4700,12 @@ export class Recorder {
       throw new CameraError(-2, 'closed recorder')
     if (this.producerTurn && !allowProducer)
       throw new CameraError(-4, 'async producer owns recorder')
+  }
+  colorSpace() {
+    this.assertOpen()
+    const color = storage(24)
+    check(n.zc_video_get_color(this.handle, ptr(color)), 'recording color')
+    return decodeStreamColorSpace(color)
   }
   get asyncWrites() {
     return (
@@ -4695,8 +4772,13 @@ export class Recorder {
     this.assertOpen(true)
     if (!frame.token) throw new CameraError(-5, 'released frame')
     const source =
-      this.options.stream === 'lores' || !frame[rgbMainFrame]
-        ? frame[recorderInput](this.options.stream ?? 'main')
+      this.options.stream === 'lores' ||
+      this.recordingColorBytes !== undefined ||
+      !frame[rgbMainFrame]
+        ? frame[recorderInput](
+            this.options.stream ?? 'main',
+            this.recordingColorBytes,
+          )
         : undefined
     const out = outPointer()
     check(
@@ -4769,8 +4851,13 @@ export class Recorder {
     }
     this.assertOpen(true)
     const source =
-      this.options.stream === 'lores' || !frame[rgbMainFrame]
-        ? frame[recorderInput](this.options.stream ?? 'main')
+      this.options.stream === 'lores' ||
+      this.recordingColorBytes !== undefined ||
+      !frame[rgbMainFrame]
+        ? frame[recorderInput](
+            this.options.stream ?? 'main',
+            this.recordingColorBytes,
+          )
         : undefined
     const out = outPointer()
     check(
@@ -4819,8 +4906,13 @@ export class Recorder {
       return
     }
     const source =
-        this.options.stream === 'lores' || !frame[rgbMainFrame]
-          ? frame[recorderInput](this.options.stream ?? 'main')
+        this.options.stream === 'lores' ||
+        this.recordingColorBytes !== undefined ||
+        !frame[rgbMainFrame]
+          ? frame[recorderInput](
+              this.options.stream ?? 'main',
+              this.recordingColorBytes,
+            )
           : undefined,
       out = outPointer()
     check(
@@ -4987,8 +5079,13 @@ export class Recorder {
     this.assertOpen()
     if (!frame.token) throw new CameraError(-5, 'released frame')
     const source =
-      this.options.stream === 'lores' || !frame[rgbMainFrame]
-        ? frame[recorderInput](this.options.stream ?? 'main')
+      this.options.stream === 'lores' ||
+      this.recordingColorBytes !== undefined ||
+      !frame[rgbMainFrame]
+        ? frame[recorderInput](
+            this.options.stream ?? 'main',
+            this.recordingColorBytes,
+          )
         : undefined
     check(
       source
@@ -6237,7 +6334,11 @@ export class Recorder {
       ) =>
         enter(() =>
           this.restartSession(
-            { ...settings, audio: settings.audio ?? null },
+            {
+              ...settings,
+              audio: settings.audio ?? null,
+              colorSpace: settings.colorSpace ?? null,
+            },
             output,
             {},
             onPublished,
@@ -6312,6 +6413,14 @@ export class Recorder {
             config.bitrate,
           ),
           'session settings',
+        )
+      if (config)
+        check(
+          n.zc_producer_job_restart_color(
+            native,
+            config.color ? ptr(config.color) : null,
+          ),
+          'session color settings',
         )
       if (typeof output === 'string' && this.options.io) {
         const io = this.options.io
@@ -6418,6 +6527,7 @@ export class Recorder {
             const install = () => {
               try {
                 this.currentOptions = candidate
+                if (config) this.recordingColorBytes = config.color
                 onInstalled?.()
                 this.sessionEpoch = this.readSessionState().id
                 this.objectOutputs.clear()

@@ -39,10 +39,30 @@ nclx for all 54 supported color combinations per codec, both video-only and AAC
 track descriptions. It also checks legacy defaults, ABI sizes, invalid/null C
 recipes and failed-handle clearing. Debug/ReleaseSafe runs pass with pinned and
 Home development Zig; camera CI runs these tests on x86_64/aarch64 Linux. These
-shared primitives do not yet expose a camera/Bun recording color option: session
-recipes, producer validation, pixel matrix/range conversion and every output
-replacement/snapshot must first propagate one consistent description. Gamut and
+shared primitives require the camera owner to propagate one description through
+session recipes, producer validation, pixel matrix/range conversion and every
+output replacement/snapshot; the 0.55 integration below supplies that path. Gamut and
 transfer conversion remains outstanding. No physical color accuracy is inferred.
+
+The 0.55 session integration reuses those same verbatim helpers from Home
+4aeedc1e4a06aaec93201ac8e245e0ee1f0166b3, plus checked `yuv_rgb.encode420` and
+`yuv_remap`. A copied camera-specific recipe now ties input admission, target
+matrix/range conversion, VUI and MP4 nclx together. Legacy RGB rounding remains
+unchanged. Private prepared/snapshot/restart owners copy that recipe; neither
+host metadata hooks nor released request buffers can change it. No second codec,
+container, pixel converter or general scheduler is introduced into Bun.
+
+Tests independently inspect encoded headers/container fields and provide floating
+Y/U/V references to Linux's OpenH264/libde265 decoders. They exercise copied async
+main/lores inputs, AAC snapshots after source close, delayed CircularOutput2,
+splits, rotation/recovery factories, restart/reconfiguration, cancellation and
+coordinated multiple-encoder mode publication. General gamut/transfer conversion
+and physical Pi acceptance remain separate work. Home's source revision is
+unchanged by this integration; the shared implementation already landed upstream.
+The repository audit also fetches and fast-forwards to Home main
+43416467a3b115fcf7a83d23c8eeb57d360a8fac. That intervening revision changes only
+TypeScript compiler sources/fixtures; media packages and the copied source pin
+above are unchanged.
 
 The new recording_path module was contributed to Home before being vendored
 verbatim. Its tests cover index zero, the maximum u64, non-truncating padding,

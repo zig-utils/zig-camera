@@ -68,46 +68,7 @@ export function prepareProcessedOptions(
   n.zc_default_processed_options(ptr(result))
   d.setUint32(4, format, true)
   d.setUint32(8, strict ? 1 : 0, true)
-  if (typeof requested === 'string') {
-    if (!Object.hasOwn(presets, requested))
-      throw new RangeError('invalid color space preset')
-    check(
-      n.zc_color_space_preset(
-        presets[requested as ColorSpacePreset],
-        ptr(result.subarray(12)),
-      ),
-    )
-  } else if (requested !== undefined) {
-    d.setUint32(16, 1, true)
-    d.setUint32(
-      20,
-      code(
-        { smpte170m: 2, rec709: 3, rec2020: 4 },
-        requested.primaries,
-        'primaries',
-      ),
-      true,
-    )
-    d.setUint32(
-      24,
-      code({ linear: 1, srgb: 2, rec709: 3 }, requested.transfer, 'transfer'),
-      true,
-    )
-    d.setUint32(
-      28,
-      code(
-        { none: 1, rec601: 2, rec709: 3, rec2020: 4 },
-        requested.ycbcrEncoding,
-        'matrix',
-      ),
-      true,
-    )
-    d.setUint32(
-      32,
-      code({ full: 1, limited: 2 }, requested.range, 'range'),
-      true,
-    )
-  }
+  if (requested !== undefined) result.set(encodeColorSpace(requested), 12)
   check(
     n.zc_check_processed_options(ptr(result), ptr(pipeline)),
     'processed color configuration',
@@ -140,4 +101,52 @@ export function readColorNegotiation(
       : {}),
     actual: decodeStreamColorSpace(data.subarray(64, 88)),
   }
+}
+
+/** Encode a copied portable description; role-specific policy is checked by the caller. */
+export function encodeColorSpace(requested: ColorSpaceRequest): Uint8Array {
+  const result = storage(24),
+    d = view(result)
+  d.setUint32(0, 24, true)
+  if (typeof requested === 'string') {
+    if (!Object.hasOwn(presets, requested))
+      throw new RangeError('invalid color space preset')
+    check(
+      n.zc_color_space_preset(
+        presets[requested as ColorSpacePreset],
+        ptr(result),
+      ),
+    )
+  } else if (requested !== undefined) {
+    d.setUint32(4, 1, true)
+    d.setUint32(
+      8,
+      code(
+        { smpte170m: 2, rec709: 3, rec2020: 4 },
+        requested.primaries,
+        'primaries',
+      ),
+      true,
+    )
+    d.setUint32(
+      12,
+      code({ linear: 1, srgb: 2, rec709: 3 }, requested.transfer, 'transfer'),
+      true,
+    )
+    d.setUint32(
+      16,
+      code(
+        { none: 1, rec601: 2, rec709: 3, rec2020: 4 },
+        requested.ycbcrEncoding,
+        'matrix',
+      ),
+      true,
+    )
+    d.setUint32(
+      20,
+      code({ full: 1, limited: 2 }, requested.range, 'range'),
+      true,
+    )
+  }
+  return result
 }

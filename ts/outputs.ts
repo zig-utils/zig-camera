@@ -1,3 +1,4 @@
+import type { StreamColorSpace } from './images'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { open, lstat, unlink, type FileHandle } from 'node:fs/promises'
 import { fstatSync, statSync } from 'node:fs'
@@ -22,6 +23,8 @@ export interface OutputPacket {
   annexB: boolean
 }
 export interface OutputStreams {
+  /** Encoded YCbCr description; absent for MJPEG. Header and MP4 tags agree. */
+  colorSpace?: StreamColorSpace
   width: number
   height: number
   fps: number

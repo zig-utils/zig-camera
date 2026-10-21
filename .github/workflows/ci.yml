@@ -116,6 +116,16 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tests/decode_aac.c -lfaad -o zig-out/decode-aac
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
           ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
+          for codec in h264 hevc; do
+            for color in rec709 rec2020 smpte170m; do
+              ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --color-space "$color" --video-color-space "$color" --width 64 --height 48 --fps 25 --codec "$codec" --frames 4 --warmup 0 --output "zig-out/record-color-$codec-$color.mp4"
+              bun tests/ts/check-recording-color.ts "zig-out/record-color-$codec-$color.mp4" "$color"
+            done
+          done
+          ./zig-out/bin/zig-camera record --simulate --fifo --color-space rec2020 --video-color-space rec2020 --width 64 --height 48 --lores-width 32 --lores-height 24 --lores-format BGR888 --record-stream lores --fps 25 --codec hevc --frames 4 --warmup 0 --output zig-out/record-color-lores.mp4
+          bun tests/ts/check-recording-color.ts zig-out/record-color-lores.mp4 rec2020
+          if ./zig-out/bin/zig-camera record --simulate --codec h264 --video-color-space rec709 --frames 1 --warmup 0 --output zig-out/rejected-record-color.mp4; then exit 1; fi
+          test ! -e zig-out/rejected-record-color.mp4
           ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
           ./zig-out/bin/zig-camera preview --simulate --main-format YUV420 --color-space rec709 --strict-color-space --width 64 --height 48 --frames 4 --warmup 0
           ./zig-out/bin/zig-camera capture --simulate --fifo --main-format YUV420 --width 64 --height 48 --warmup 0 --output zig-out/main-i420.png

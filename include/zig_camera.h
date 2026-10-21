@@ -406,11 +406,22 @@ int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
  * Codecs/containers unavailable in this build return UNSUPPORTED. */
 int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);
 /* Selected RGB24/I420 input in frame.main; caller retains its source lease.
- * Color must describe Rec.709 primaries/sRGB transfer. I420 matrix/range are
- * remapped to the existing limited BT.601 output contract without an RGB image.
- * Other primaries/transfers reject; no silent color reinterpretation. */
+ * Input primaries/transfer must match the recording profile. RGB/I420 matrix
+ * and range convert to that profile; no gamut/transfer conversion is implied.
+ * Legacy zc_video_write assumes Rec.709 primaries/sRGB RGB input. */
 int zc_video_write_input(zc_recorder *,const zc_frame *,const zc_color_space *,uint64_t timestamp_ns);
 int zc_video_check_input_color(const zc_color_space *,uint32_t format /* ZC_RGB24/ZC_YUV420 */);
+/* Target-aware admission. Null target uses legacy output defaults. Unknown input
+ * metadata or mismatched primaries/transfer reject before media/PCM mutation. */
+int zc_video_check_input_color_for(const zc_color_space *,uint32_t format,const zc_color_space *target);
+/* Default output is Rec.709 primaries, sRGB transfer, limited BT.601. Explicit
+ * profiles require processed YCbCr and AVC/HEVC. These do not convert gamut/gamma.
+ * Set only before frames/audio, outputs or producer allocation; BUSY otherwise.
+ * Construction is transactional. Null color restores legacy defaults. */
+void zc_default_video_color(zc_color_space *);
+int zc_video_check_color(const zc_video_config *,const zc_color_space *);
+int zc_video_set_color(zc_recorder *,const zc_color_space *);
+int zc_video_get_color(zc_recorder *,zc_color_space *);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
 int zc_video_close(zc_recorder *);
@@ -781,6 +792,9 @@ int zc_video_producer_restart(zc_recorder *,uint32_t kind,const char *path,zc_pr
  * settings preserve any previous recipe and the terminal source configuration.
  * Queue budgets, output policies and circular capacities remain recorder-owned. */
 int zc_producer_job_restart_configure(zc_producer_job *,const zc_video_config *,const zc_recording_options *,uint32_t audio_bitrate);
+/* Copied before start; null selects defaults, omission retains current profile.
+ * Final codec/profile compatibility is checked before candidate construction. */
+int zc_producer_job_restart_color(zc_producer_job *,const zc_color_space *);
 int zc_producer_job_restart_io(zc_producer_job *,uint64_t bytes,uint32_t operations,uint64_t wait_ns);
 int zc_producer_job_restart_stage(zc_producer_job *,uint32_t *stage);
 int zc_producer_job_restart_headers(zc_producer_job *,uint8_t *,uint32_t capacity,uint32_t *size);

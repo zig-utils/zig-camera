@@ -80,6 +80,25 @@ pub export fn zc_video_check_input_color(color: *const c.zc_color_space, format:
     @import("video_input.zig").validateColor(color.*, format == c.ZC_YUV420) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
+pub export fn zc_video_check_input_color_for(color: *const c.zc_color_space, format: u32, target: ?*const c.zc_color_space) c_int {
+    if (format > c.ZC_RGB24) return c.ZC_INVALID;
+    @import("video_input.zig").validateColorFor(color.*, format == c.ZC_YUV420, if (target) |value| value.* else @import("recording_color.zig").legacy()) catch |err| return if (err == error.InvalidConfiguration) c.ZC_INVALID else c.ZC_UNSUPPORTED;
+    return c.ZC_OK;
+}
+pub export fn zc_default_video_color(out: *c.zc_color_space) void {
+    out.* = @import("recording_color.zig").legacy();
+}
+pub export fn zc_video_check_color(cfg: *const c.zc_video_config, color: ?*const c.zc_color_space) c_int {
+    return @import("video.zig").checkColor(cfg, color);
+}
+pub export fn zc_video_set_color(p: *c.zc_recorder, color: ?*const c.zc_color_space) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").setColor(p, color);
+}
+pub export fn zc_video_get_color(p: *c.zc_recorder, color: *c.zc_color_space) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").getColor(p, color);
+}
 pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
@@ -512,6 +531,9 @@ pub export fn zc_video_resolve_session_config(cfg: *c.zc_video_config, opts: *co
 }
 pub export fn zc_producer_job_restart_configure(p: *c.zc_producer_job, cfg: *const c.zc_video_config, opts: *const c.zc_recording_options, bitrate: u32) c_int {
     return @import("video.zig").restartConfigure(@ptrCast(@alignCast(p)), cfg, opts, bitrate);
+}
+pub export fn zc_producer_job_restart_color(p: *c.zc_producer_job, color: ?*const c.zc_color_space) c_int {
+    return @import("video.zig").restartColor(@ptrCast(@alignCast(p)), color);
 }
 pub export fn zc_producer_job_restart_stage(p: *c.zc_producer_job, stage: *u32) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));

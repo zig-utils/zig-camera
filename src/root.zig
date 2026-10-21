@@ -457,11 +457,6 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         if (id != c.ZC_MAIN and id != c.ZC_LORES) return error.Unsupported;
         try check(core.zc_frame_readable(self.camera.handle, self.value.token));
-        if (id == c.ZC_MAIN and std.mem.eql(u8, std.mem.sliceTo(&self.value.main.format, 0), "BGR888")) {
-            const color = try self.colorSpace(id);
-            try check(media.zc_video_check_input_color(&color, c.ZC_RGB24));
-            return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
-        }
         var selected = self.value;
         selected.main = try self.stream(id);
         const color = try self.colorSpace(id);

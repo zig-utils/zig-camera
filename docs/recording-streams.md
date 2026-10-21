@@ -40,13 +40,14 @@ publication. Existing rollback, cancellation, autofocus and callback rules apply
 
 RGB source rows stay borrowed for synchronous writes. I420 AVC/HEVC uses Home's
 checked `yuv_remap` directly into the recorder's reused I420 codec buffer, with no
-full RGB image. Full/studio BT.601/709/2020 encoded matrices map to the existing
-limited BT.601 output; the same-matrix path only rescales planes. Matrix remapping
+full RGB image. Full/studio BT.601/709/2020 encoded matrices map to the configured
+recording profile (limited BT.601 by default); the same-matrix path only rescales planes. Matrix remapping
 does not clamp through RGB or discard chroma detail by re-subsampling. MJPEG uses
 Home's RGB JPEG interface and a reused, explicit RGB conversion buffer.
 
-The existing AVC/HEVC VUI and MP4 `nclx` signal Rec.709 primaries, sRGB transfer,
-limited BT.601 YCbCr. Selected inputs must have these primaries/transfer before
+By default, AVC/HEVC VUI and MP4 `nclx` signal Rec.709 primaries, sRGB transfer,
+limited BT.601 YCbCr. Explicit [recording profiles](recording-color.md) configure these tags and
+conversion together. Selected inputs must match the chosen primaries/transfer before
 matrix/range conversion. Different gamut/gamma or unknown metadata reject
 `UNSUPPORTED`, rather than silently receiving incompatible output tags. This is
 not a general gamut/transfer conversion API. Explicit [camera color requests](color-configuration.md)
@@ -54,8 +55,8 @@ do not bypass this validation. Camera-owned RGB main input verifies actual metad
 before using its legacy fast path; the result is cached per adopted handle and
 invalidated on every mode handoff, including allocator address reuse. Descriptor-only
 legacy C writes assume the existing compatible RGB signal; camera-aware Zig writes
-and colored C input APIs validate actual metadata. Those conversions and configurable
-encoder color metadata remain on the parity worklist.
+and colored C input APIs validate actual metadata. General gamut/transfer
+conversion remains on the parity worklist.
 
 Async submission validates and owns tight pixel, color and PCM copies before
 returning. An I420 producer owns `width * height * 3 / 2` pixel bytes; RGB owns

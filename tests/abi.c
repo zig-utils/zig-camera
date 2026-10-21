@@ -62,6 +62,21 @@ _Static_assert(sizeof(zc_audio_block)==24,"audio block ABI");
 _Static_assert(sizeof(zc_recording_options)==24,"recording options ABI");
 _Static_assert(sizeof(zc_recording_stats)==72,"recording stats ABI");
 _Static_assert(sizeof(zc_audio_buffer_stats)==40,"audio history ABI");
+static void recording_color_contract(void) {
+    zc_video_config cfg;zc_default_video_config(&cfg);
+    zc_color_space legacy;zc_default_video_color(&legacy);
+    assert(legacy.struct_size==24 && legacy.present==1 && legacy.primaries==ZC_PRIMARIES_REC709 && legacy.transfer==ZC_TRANSFER_SRGB && legacy.ycbcr_encoding==ZC_YCBCR_REC601 && legacy.range==ZC_RANGE_LIMITED);
+    cfg.codec=ZC_MJPEG;assert(zc_video_check_color(&cfg,NULL)==ZC_OK);
+    assert(zc_video_check_color(&cfg,&legacy)==ZC_UNSUPPORTED);
+    cfg.codec=ZC_H264;
+    zc_color_space target;assert(zc_color_space_preset(ZC_COLOR_REC2020,&target)==ZC_OK);
+    assert(zc_video_check_color(&cfg,&target)==ZC_OK);
+    zc_color_space rgb=target;rgb.ycbcr_encoding=ZC_YCBCR_NONE;rgb.range=ZC_RANGE_FULL;
+    assert(zc_video_check_input_color_for(&rgb,ZC_RGB24,&target)==ZC_OK);
+    assert(zc_video_check_input_color_for(&rgb,ZC_RGB24,NULL)==ZC_UNSUPPORTED);
+    assert(zc_video_check_color(&cfg,&rgb)==ZC_INVALID);
+    assert(zc_video_check_input_color_for(&rgb,99,&target)==ZC_INVALID);
+}
 static int packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *count=context;
     assert(packet->codec==ZC_MJPEG && packet->flags==1 && packet->length>2);
@@ -136,6 +151,7 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    recording_color_contract();
     color_requests();
     formatted_main();
     assert(zc_preview_check_color(ZC_RGB24,NULL)==ZC_OK);

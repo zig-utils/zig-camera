@@ -66,14 +66,14 @@ display path. Temporary byte/image capture returns its existing value type; use 
 strict target request when that result must follow a known requested profile.
 The configuration/negotiation API does not establish optical color accuracy.
 
-Current Home AVC/HEVC output tags describe Rec.709 primaries, sRGB transfer and
-limited BT.601 YCbCr. Compatible I420 source matrices/ranges are remapped directly
-with Home yuv_remap; incompatible primaries/transfer or unknown metadata reject
-before frame/PCM admission. Standard rec709/smpte170m/rec2020 preset transfers are
-not silently relabeled as sRGB. A custom Rec.709-primaries/sRGB-transfer description
-can select another supported YCbCr matrix/range while retaining compatible gamut
-and gamma. General gamut/transfer conversion and configurable encoder tags remain
-parity work. CLI recording preflights color before constructing an output file.
+AVC/HEVC recordings default to Rec.709 primaries, sRGB transfer and limited
+BT.601 YCbCr. [Recording color profiles](recording-color.md) now select explicit
+VUI/nclx metadata and matching matrix/range conversion, including standard
+rec709/smpte170m/rec2020 profiles and custom descriptions. Input primaries/transfer
+must already match that profile; unknown metadata or incompatible gamut/gamma
+rejects before frame/PCM admission. Selecting a camera profile does not silently
+change an existing recorder's output recipe. General gamut/transfer conversion
+remains parity work. CLI recording preflights color before constructing a file.
 
 RGB main recording verifies actual signal metadata once per adopted camera handle,
 then uses the existing legacy path only when compatible. Handle assignment clears
