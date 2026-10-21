@@ -433,3 +433,14 @@ Home ICC embedding (0.56):
   applies; no second compressor or container implementation is introduced.
   https://github.com/home-lang/home/commit/f310e9345448d909041ad20a3bc332d07b78130f
 The Home MIT license and copyright reproduced above apply.
+
+Home Exif metadata foundation:
+- src/home/metadata/exif.zig, exif_builder.zig and exif_layout.zig are copied
+  verbatim from Home packages/image/src/metadata at
+  05c131f97466cce6cb497aad5607e4dc77ad6ad6. tests/home_exif.zig,
+  home_exif_fixture.zig and home_exif_libexif.c are verbatim copies of Home's
+  packages/image/tests/exif_test.zig, exif_fixture.zig and exif_libexif.c.
+  They supply bounded classic-TIFF directory views, owned selected metadata and
+  typed serialization. Libexif is an independent test-only reader/writer.
+  https://github.com/home-lang/home/commit/05c131f97466cce6cb497aad5607e4dc77ad6ad6
+The Home MIT license and copyright reproduced above apply.

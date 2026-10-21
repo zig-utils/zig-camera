@@ -573,3 +573,23 @@ embedding and RGB/I420 conversions are unchanged. Native cross-thread/identity
 and Bun cancellation/restoration/decoder tests cover the new contract. General
 filesystem crash recovery, hardware acceptance and remaining parity capabilities
 are not established by a successful atomic rename.
+
+The Exif foundation audit starts from Home f310e9345 and contributes shared
+image fixes at 05c131f97466cce6cb497aad5607e4dc77ad6ad6, rebased on current Home
+main's unrelated parser changes. The old Exif parser could read malformed shapes,
+recurse through cyclic pointers, leak replaced strings and lose GPS signs. Its
+writer emitted only four fields. The new bounded layout, owned parser and typed
+builder serialize image/Exif/GPS/interoperability/thumbnail directories, preserving
+selected exposure/ISO/date/lens fields and owned thumbnail bytes. Those three
+source files and the standalone/independent tests are copied verbatim here.
+
+Validation includes every truncated fixture prefix, malformed offsets/types/counts,
+cycles/aliases, duplicate tags, table overlaps, 64 MiB alias ownership budgets,
+GPS total-angle/time limits, unsigned/signed rationals, every allocation failure
+and deterministic mutations. Libexif independently reads actual output fields
+and writes both byte orders back into the Home parser. Local Debug/ReleaseSafe
+checks use pinned and installed development Zig. home-exif.yml adds pinned/master
+Linux x86/ARM and macOS coverage. Libexif is a test dependency only. Home Actions
+availability remains separate from camera copied-source CI. These primitives do
+not yet expose capture Exif options, embed Exif in images, relocate MakerNotes or
+establish complete Exif/Picamera2 conformance. Those requirements remain in scope.

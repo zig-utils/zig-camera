@@ -152,3 +152,13 @@ The camera therefore reuses Home async's preparation gate and its existing
 hosted Zig atomic-file layer, keeping native handles and image/frame ownership
 outside the kernel. No OS code is copied or changed, and no kernel journaling,
 crash-durability or hardware result is asserted.
+
+The Exif foundation audit fetches Home OS main and confirms the same
+151269666bc09aa15a271f1c1f4603f681132e65 revision. It rereads camera.home,
+video_decoder.home, container/image.home and ADR-MC3, then searches for Exif and
+JPEG metadata writers. The capture/decoder stubs and display LUT code offer no
+hosted TIFF-directory serializer or metadata ownership contract to reuse.
+ADR-MC3 explicitly places media algorithms in Home's shared image/audio/video
+packages. Exif bounds/ownership and typed serialization therefore improve Home
+image, with verbatim reuse in camera. The OS stays unchanged; kernel/device
+allocators and stub return values supply no capture or codec acceptance evidence.

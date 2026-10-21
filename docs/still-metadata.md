@@ -80,3 +80,31 @@ dispatch as disabled, so shared-source CI runs through the camera's copied code.
 References: [ICC embedding note](https://archive.color.org/files/technotes/ICC-Technote-ProfileEmbedding.pdf),
 [PNG specification](https://www.w3.org/TR/png-3/),
 [ICC sRGB interpretation](https://registry.color.org/rgb-registry/files/sRGB.pdf).
+
+## Exif shared primitives
+
+Home's selected Exif parser/writer is now bounded and reused verbatim under
+src/home/metadata/exif*.zig. It validates directory graphs before owned reads,
+copies strings/raw values/thumbnail bytes, handles GPS signs and bounded time/angle
+values, and preserves extended ISO independently of entry order. Typed builders
+serialize sorted, aligned image/Exif/GPS/interoperability/thumbnail directories
+with generated pointers and bounded ownership. The legacy selected-field adapter
+writes exposure, ISO, geometry, camera/date/lens and GPS metadata; explicit zero
+values/custom tags use typed builder fields. The raw-tags map lacks original
+field type/IFD identity and is a read-only projection, not a round-trip container.
+
+Four direct and eleven separate regression tests cover malformed/truncated input,
+cycles, alias amplification, duplicate tags, type/count/offset/rational validation,
+GPS signs/limits, copied thumbnail ownership, every allocation failure and 2,048
+deterministic mutations. A test-only libexif reader independently checks actual
+serialized fields and thumbnail bytes, then writes little/big-endian fixtures
+which Home parses. These are selected metadata/layout checks; the thumbnail
+fixture is SOI/EOI-delimited data, not an independently decoded picture. No complete
+Exif conformance or sensor/capture metadata accuracy is inferred. home-exif.yml
+covers pinned/master Zig on Linux x86/ARM and macOS.
+
+Camera-facing Exif options and image-container embedding remain implementation
+work. The shared helper alone changes no capture output or public camera ABI.
+MakerNote internal offsets, complete tag semantics, image conformance and physical
+metadata/quality acceptance remain separate requirements. See the shared
+[Home Exif contract](https://github.com/home-lang/home/blob/05c131f97466cce6cb497aad5607e4dc77ad6ad6/packages/image/docs/exif.md).
