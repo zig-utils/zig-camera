@@ -685,6 +685,7 @@ extern "C" int zcd_camera_id(Device *device,uint8_t *data,uint64_t capacity,uint
 
 // Preparing copies pending/backend replay state and validates everything before
 // publication. Zig can allocate its owned journal before this transaction commits.
+namespace {
 struct PreparedControls {
     Device *owner;
     uint64_t version;
@@ -805,6 +806,7 @@ template<class T> bool expectedVendor(const T *id,const zcd_catalog_record &r) {
     if(!(r.flags&32))return true;
     if constexpr(HasCatalogInfo<T>::value)return id->vendor()==(r.vendor_length?std::string(r.vendor,r.vendor_length):std::string{});
     return r.vendor_length==0;
+}
 }
 extern "C" int zcd_prepare_native_controls(Device *device,const zcd_control_input *inputs,uint32_t count,const zcd_catalog_sink *sink,PreparedControls **out) {
     *out=nullptr;
