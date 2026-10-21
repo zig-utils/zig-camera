@@ -394,6 +394,17 @@ Home shared-chroma I420 decoding (0.52):
   https://github.com/home-lang/home/commit/7ec5214016ca0486b48eb9ad48b2574726fa960a
 The Home MIT license and copyright reproduced above apply.
 
+Home encoder/container color signaling:
+- src/home/color_description.zig, native_encoder.{c,h,zig} and mp4_stream.zig,
+  plus tests/home_color_signal.zig (Home packages/video/tests/color_signal.zig),
+  are copied verbatim from Home at 4aeedc1e4a06aaec93201ac8e245e0ee1f0166b3.
+  They add explicit ISO tag mapping, additive AVC/HEVC VUI and MP4 nclx recipes,
+  and independent emitted-header/container tests while retaining legacy defaults.
+  These primitives do not implement pixel/gamut/transfer conversion or expose
+  camera session color selection on their own.
+  https://github.com/home-lang/home/commit/4aeedc1e4a06aaec93201ac8e245e0ee1f0166b3
+The Home MIT license and copyright reproduced above apply.
+
 Home portable color descriptions and negotiation (0.54):
 - src/home/color_description.zig is copied verbatim from
   packages/video/src/core/color_description.zig at

@@ -98,3 +98,12 @@ The camera stub also supplies no such contract. No LUT or kernel state is import
 into hosted capture policy. Shared description/negotiation policy therefore lands
 in Home video. The audited Home OS revision remains unchanged; no kernel or
 physical display code was executed, and no gamma accuracy claim is made.
+
+The encoder-signaling follow-up fetches origin/main and confirms the same revision
+above. It rereads ADR-MC3, the camera capture stub, decoder stubs and VC7 gamma
+handling for an existing VUI/nclx implementation. The OS tree provides no usable
+encoder/container implementation to import, and its display LUT is a different
+stage from encoded sample signaling. ISO mapping, header-checked AVC/HEVC metadata
+and MP4 nclx therefore improve Home's shared video package. The new tests inspect
+real encoded headers and container bytes; they do not rely on stub success or
+on architectural claims as conformance evidence. No OS code was changed or run.

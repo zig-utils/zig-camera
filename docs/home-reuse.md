@@ -26,6 +26,24 @@ Bun facade are the active implementation and test surfaces.
 | video pts_clock (new in 0.21) | Exact integer source epochs for shared PTS across output replacement |
 | video delivery_fifo (new in 0.20) | Sequence-checked host copy/ack, in-flight accounting and retained completion prefixes |
 
+The color-signaling follow-up contributes explicit `Encoder.initWithColor` and
+`mp4_stream.Writer.initWithColor` / `initAvWithColor` to Home before verbatim reuse
+at 4aeedc1e4a06aaec93201ac8e245e0ee1f0166b3. `Description.signal()` maps portable
+processed YCbCr descriptions to ISO codes rather than confusing enum identities
+with VUI/nclx values. The old 32-byte encoder config and default tags are preserved;
+the additive C color recipe is 20 bytes. Both constructors validate supported
+codes before allocation/output. Pixel conversion remains the owner's job.
+
+The copied standalone test independently reads actual AVC/HEVC SPS/VUI and MP4
+nclx for all 54 supported color combinations per codec, both video-only and AAC
+track descriptions. It also checks legacy defaults, ABI sizes, invalid/null C
+recipes and failed-handle clearing. Debug/ReleaseSafe runs pass with pinned and
+Home development Zig; camera CI runs these tests on x86_64/aarch64 Linux. These
+shared primitives do not yet expose a camera/Bun recording color option: session
+recipes, producer validation, pixel matrix/range conversion and every output
+replacement/snapshot must first propagate one consistent description. Gamut and
+transfer conversion remains outstanding. No physical color accuracy is inferred.
+
 The new recording_path module was contributed to Home before being vendored
 verbatim. Its tests cover index zero, the maximum u64, non-truncating padding,
 insufficient destination capacity, malformed/multiple fields, NUL bytes and width
