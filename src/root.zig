@@ -175,6 +175,9 @@ pub const Camera = struct {
     pub fn start(self: Camera) Error!void {
         try check(core.zc_start(self.handle));
     }
+    pub fn enableWritable(self: Camera) Error!void {
+        try check(core.zc_enable_writable(self.handle));
+    }
     pub fn stop(self: Camera) Error!void {
         try check(core.zc_stop(self.handle));
     }
@@ -246,6 +249,29 @@ pub const Camera = struct {
         return .{ .camera = self, .value = frame };
     }
 };
+pub const FrameMapping = struct {
+    handle: ?*c.zc_frame_map,
+    write: bool,
+    pub fn deinit(self: *FrameMapping) Error!void {
+        const owned = self.handle orelse return;
+        self.handle = null;
+        try check(core.zc_frame_map_close(owned));
+    }
+    pub fn stream(self: FrameMapping) Error!c.zc_stream {
+        var out: c.zc_stream = undefined;
+        try check(core.zc_frame_map_stream(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn plane(self: FrameMapping, index: u32) Error![]const u8 {
+        const value = try self.stream();
+        if (index >= value.plane_count) return error.Invalid;
+        return value.planes[index].data[0..@intCast(value.planes[index].bytes_used)];
+    }
+    pub fn writablePlane(self: FrameMapping, index: u32) Error![]u8 {
+        if (!self.write) return error.Unsupported;
+        return @constCast(try self.plane(index));
+    }
+};
 /// Linear reference: copying the descriptor does not create another lease.
 /// retain creates a distinct reference; mappings expire only on final release.
 /// Views expire on release. DMA-BUF fds are borrowed and must never be closed.
@@ -267,13 +293,22 @@ pub const Frame = struct {
     pub fn release(self: *Frame) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
         const rc = core.zc_release(self.camera.handle, self.value.token);
-        self.value.token = 0;
+        if (rc != c.ZC_BUSY) self.value.token = 0;
         try check(rc);
     }
     pub fn rgb(self: *const Frame) pixels.RgbView.Error!pixels.RgbView {
         if (self.value.token == 0) return error.ReleasedFrame;
+        const access = core.zc_frame_readable(self.camera.handle, self.value.token);
+        if (access == c.ZC_BUSY) return error.BusyFrame;
+        if (access != c.ZC_OK) return error.ReleasedFrame;
         const m = self.value.main;
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
+    }
+    pub fn mapStream(self: *const Frame, id: u32, write: bool) Error!FrameMapping {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_frame_map = null;
+        try check(core.zc_frame_map_open(self.camera.handle, self.value.token, id, @intFromBool(write), &out));
+        return .{ .handle = out.?, .write = write };
     }
     pub fn stream(self: *const Frame, id: u32) Error!c.zc_stream {
         if (self.value.token == 0) return error.StaleFrame;
@@ -546,4 +581,28 @@ test "Zig capture filters transfer one request after exact frame drops" {
     try std.testing.expectEqual(@as(u64, 3), frame.value.sequence);
     try std.testing.expect(frame.value.timestamp_ns >= before);
     try std.testing.expectEqual(@as(u32, 0), filter.remaining);
+}
+
+test "Zig scoped mappings own buffers independently and publish writable pixel edits" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch unreachable;
+    try camera.enableWritable();
+    try camera.start();
+    var frame = try camera.acquire(0);
+    var mapped = try frame.mapStream(c.ZC_MAIN, true);
+    (try mapped.writablePlane(0))[0] = 123;
+    try std.testing.expectError(error.BusyFrame, frame.rgb());
+    try mapped.deinit();
+    try std.testing.expectEqual(@as(u8, 123), (try frame.rgb()).row(0)[0]);
+    var reader = try frame.mapStream(c.ZC_MAIN, false);
+    try frame.release();
+    try std.testing.expectEqual(@as(u8, 123), (try reader.plane(0))[0]);
+    try std.testing.expectError(error.Unsupported, reader.writablePlane(0));
+    try reader.deinit();
+    try reader.deinit();
+    try std.testing.expectEqual(@as(u32, 0), camera.stats().leased);
 }

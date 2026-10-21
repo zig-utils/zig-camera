@@ -11,6 +11,8 @@ pub const open = zcd_open;
 pub const start = zcd_start;
 pub const queue = zcd_queue;
 pub const sync = zcd_sync;
+pub extern fn zcd_enable_writable(*Handle) c_int;
+pub const enableWritable = zcd_enable_writable;
 pub const stop = zcd_stop;
 pub const close = zcd_close;
 

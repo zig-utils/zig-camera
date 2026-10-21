@@ -597,5 +597,23 @@ int main(void) {
     assert(zc_release(camera,producer_frame.token)==ZC_OK);
     assert(zc_capture_filter_accept(camera,producer_frame.token,&filter)==ZC_STALE);
     assert(zc_close(camera)==ZC_OK);
+    assert(zc_open(&config,&camera)==ZC_OK);
+    assert(zc_enable_writable(camera)==ZC_OK);
+    assert(zc_start(camera)==ZC_OK);
+    assert(zc_enable_writable(camera)==ZC_STATE);
+    assert(zc_acquire(camera,0,&producer_frame)==ZC_OK);
+    zc_frame_map *mapped=NULL;
+    assert(zc_frame_map_open(camera,producer_frame.token,ZC_MAIN,1,&mapped)==ZC_OK && mapped);
+    assert(zc_frame_readable(camera,producer_frame.token)==ZC_BUSY);
+    zc_stream mapped_stream;
+    assert(zc_frame_map_stream(mapped,&mapped_stream)==ZC_OK);
+    ((uint8_t *)mapped_stream.planes[0].data)[0]=123;
+    assert(zc_release(camera,producer_frame.token)==ZC_OK);
+    assert(zc_stop(camera)==ZC_OK);
+    assert(zc_close(camera)==ZC_BUSY);
+    assert(mapped_stream.planes[0].data[0]==123);
+    assert(zc_frame_map_close(mapped)==ZC_OK);
+    assert(zc_frame_map_close(NULL)==ZC_OK);
+    assert(zc_close(camera)==ZC_OK);
     return 0;
 }

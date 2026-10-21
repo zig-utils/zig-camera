@@ -3,6 +3,12 @@
 #include "../native/libcamera.cpp"
 #include <cassert>
 namespace {
+std::vector<std::pair<int,uint64_t>> sync_calls;
+int fail_sync_fd=-1;
+int testSync(int fd,uint64_t flags) {
+    sync_calls.emplace_back(fd,flags);
+    return fd==fail_sync_fd ? -1 : 0;
+}
 struct Captured {
     zcd_catalog_record record{};
     zcd_catalog_value value{};
@@ -122,4 +128,32 @@ int main() {
     assert(zcd_commit_native_controls(&fake,prepared,&revision)==ZC_STALE);
     zcd_close_native_controls(prepared);
 
+    // Real mmap permissions and exact DMA direction/cleanup without camera DMA.
+    Device access;
+    access.slots.resize(1);access.sync_call=testSync;
+    auto &slot=access.slots[0];slot.fd_count=2;slot.fds[0]=7;slot.fds[1]=8;
+    assert(access.sync(0,true)==ZC_OK);
+    assert(sync_calls[0].second==(DMA_BUF_SYNC_START|DMA_BUF_SYNC_READ));
+    assert(access.sync(0,false)==ZC_OK);
+    assert(sync_calls[2].second==(DMA_BUF_SYNC_END|DMA_BUF_SYNC_READ));
+    Mapping memory;memory.length=4096;
+    memory.base=mmap(nullptr,memory.length,PROT_READ,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(memory.base!=MAP_FAILED);
+    slot.mappings.push_back(std::move(memory));
+    assert(zcd_enable_writable(&access)==ZC_OK && access.writable);
+    static_cast<uint8_t *>(slot.mappings[0].base)[0]=42;
+    sync_calls.clear();
+    assert(access.sync(0,true)==ZC_OK && access.sync(0,false)==ZC_OK);
+    assert(sync_calls[0].second==(DMA_BUF_SYNC_START|DMA_BUF_SYNC_RW));
+    assert(sync_calls[2].second==(DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW));
+    sync_calls.clear();fail_sync_fd=8;
+    assert(access.sync(0,true)==ZC_IO && sync_calls.size()==3);
+    assert(sync_calls[2].first==7 && sync_calls[2].second==(DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW));
+    sync_calls.clear();fail_sync_fd=7;
+    assert(access.sync(0,false)==ZC_IO && sync_calls.size()==2);
+    fail_sync_fd=-1;
+    Device denied;denied.slots.resize(1);
+    Mapping invalid;invalid.length=4096;
+    denied.slots[0].mappings.push_back(std::move(invalid));
+    assert(zcd_enable_writable(&denied)==ZC_IO && !denied.writable);
 }

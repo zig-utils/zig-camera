@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.38 adds fresh timestamp capture, exact frame-drop barriers and a capture
-clock shared with sensor metadata. Rejected frames continue to recording/preview;
-focus-locked capture combines the same filter with CAF validation and restoration.
-See [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
+Version 0.39 adds scoped writable frame mappings with independent native leases,
+exclusive write access and Bun view detachment on close. Opt in with writable:true;
+default capture retains READ-only DMA access. Writable policy survives mode jobs.
+See [mapped streams](docs/mapped-streams.md), [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
 [continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
 [camera selection](docs/camera-selection.md) and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).

@@ -38,7 +38,17 @@ pub const Handle = struct {
     fail_sync_end: bool = false,
     fail_stop_once: bool = false,
     stop_calls: u32 = 0,
+    writable: bool = false,
+    fail_writable_once: bool = false,
 };
+pub fn enableWritable(h: *Handle) c_int {
+    if (h.fail_writable_once) {
+        h.fail_writable_once = false;
+        return c.ZC_IO;
+    }
+    h.writable = true;
+    return c.ZC_OK;
+}
 pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
     if (opts.sensor_width != 0) {
         var found = false;

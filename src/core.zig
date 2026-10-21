@@ -5,7 +5,7 @@ const c = @import("abi.zig").c;
 const options = @import("options");
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
-const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata) };
+const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata), access: @import("home/frame_access.zig").Gate = .{} };
 const Gate = @import("home/completion_gate.zig").Gate;
 const ControlState = @import("home/keyed_state.zig").State(c.zc_control, c.ZC_MAX_CONTROLS);
 const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID);
@@ -20,6 +20,7 @@ const Session = struct {
     control_base: u64 = 0,
     restored: bool = false,
     started_once: bool = false,
+    writable: bool = false,
     latest: c.zc_metadata = std.mem.zeroes(c.zc_metadata),
     af: ?Gate = null,
     af_id: u64 = 0,
@@ -227,6 +228,10 @@ pub export fn zc_get_stream(p: *c.zc_camera, token: u64, stream: u32, out: *c.zc
     self.operation.lock();
     defer self.operation.unlock();
     const i = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[i].access.writer) return c.ZC_BUSY;
+    return streamLocked(self, i, stream, out);
+}
+fn streamLocked(self: *Session, i: u32, stream: u32, out: *c.zc_stream) c_int {
     if (stream == c.ZC_MAIN) out.* = self.slots[i].frame.main else if (stream == c.ZC_RAW) out.* = self.slots[i].frame.raw else if (stream == c.ZC_LORES) return driver.lores(self.device.?, i, out) else return c.ZC_INVALID;
     return if (out.plane_count == 0) c.ZC_UNSUPPORTED else c.ZC_OK;
 }
@@ -375,6 +380,7 @@ pub export fn zc_retain(p: *c.zc_camera, token: u64, out: *c.zc_frame) c_int {
     self.mutex.lock();
     defer self.mutex.unlock();
     const index = self.leases.resource(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
     // Reserve primary reference capacity for every currently unleased buffer.
     const retained = self.leases.retainReserved(token, self.info.buffer_count - self.stats.leased) catch |err| return if (err == error.SequenceExhausted) c.ZC_STATE else c.ZC_BUSY;
     out.* = self.slots[index].frame;
@@ -392,11 +398,18 @@ pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    return releaseLocked(self, token);
+}
+fn releaseLocked(self: *Session, token: u64) c_int {
     self.mutex.lock();
     const index = self.leases.resource(token) orelse {
         self.mutex.unlock();
         return c.ZC_STALE;
     };
+    if ((self.leases.count(token) catch unreachable) == 1 and (self.slots[index].access.writer or self.slots[index].access.readers != 0)) {
+        self.mutex.unlock();
+        return c.ZC_BUSY;
+    }
     const final = self.leases.release(token) catch unreachable;
     if (!final) {
         self.mutex.unlock();
@@ -417,6 +430,75 @@ pub export fn zc_release(p: *c.zc_camera, token: u64) c_int {
     self.mutex.unlock();
     if (rc != 0) return rc;
     return if (running) self.queue(index) else c.ZC_OK;
+}
+const FrameMap = struct { owner: *Session, token: u64, index: u32, write: bool, stream: c.zc_stream };
+pub export fn zc_enable_writable(p: *c.zc_camera) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.started_once) return c.ZC_STATE;
+    if (self.stats.leased != 0) return c.ZC_BUSY;
+    if (self.writable) return c.ZC_OK;
+    const rc = driver.enableWritable(self.device.?);
+    if (rc == c.ZC_OK) self.writable = true;
+    return rc;
+}
+pub export fn zc_frame_readable(p: *c.zc_camera, token: u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    return if (self.slots[index].access.writer) c.ZC_BUSY else c.ZC_OK;
+}
+pub export fn zc_copy_frame_rgb(p: *c.zc_camera, token: u64, out: [*]u8, length: u64) c_int {
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    return @import("media.zig").zc_copy_rgb(&self.slots[index].frame, out, length);
+}
+pub export fn zc_frame_map_open(p: *c.zc_camera, token: u64, stream: u32, write: u32, out: *?*c.zc_frame_map) c_int {
+    out.* = null;
+    if (write > 1) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (write != 0 and !self.writable) return c.ZC_UNSUPPORTED;
+    const next = self.slots[index].access.beginning(write != 0, self.leases.count(token) catch unreachable) catch return c.ZC_BUSY;
+    var descriptor: c.zc_stream = undefined;
+    const rc = streamLocked(self, index, stream, &descriptor);
+    if (rc != c.ZC_OK) return rc;
+    for (descriptor.planes[0..descriptor.plane_count]) |plane| {
+        if (plane.data == null or plane.length == 0 or plane.bytes_used > plane.length) return c.ZC_INVALID;
+    }
+    const map = std.heap.c_allocator.create(FrameMap) catch return c.ZC_NOMEM;
+    self.mutex.lock();
+    const retained = self.leases.retainReserved(token, self.info.buffer_count - self.stats.leased) catch |err| {
+        self.mutex.unlock();
+        std.heap.c_allocator.destroy(map);
+        return if (err == error.SequenceExhausted) c.ZC_STATE else c.ZC_BUSY;
+    };
+    self.slots[index].access = next;
+    self.mutex.unlock();
+    map.* = .{ .owner = self, .token = retained, .index = index, .write = write != 0, .stream = descriptor };
+    out.* = @ptrCast(map);
+    return c.ZC_OK;
+}
+pub export fn zc_frame_map_stream(p: *const c.zc_frame_map, out: *c.zc_stream) c_int {
+    const map: *const FrameMap = @ptrCast(@alignCast(p));
+    out.* = map.stream;
+    return c.ZC_OK;
+}
+pub export fn zc_frame_map_close(p: ?*c.zc_frame_map) c_int {
+    const map: *FrameMap = @ptrCast(@alignCast(p orelse return c.ZC_OK));
+    const self = map.owner;
+    self.operation.lock();
+    defer self.operation.unlock();
+    defer std.heap.c_allocator.destroy(map);
+    self.slots[map.index].access = self.slots[map.index].access.ending(map.write) catch return c.ZC_STALE;
+    return releaseLocked(self, map.token);
 }
 fn stopLocked(self: *Session) c_int {
     self.mutex.lock();
@@ -793,6 +875,7 @@ pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, qua
     self.operation.lock();
     defer self.operation.unlock();
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
     const slot = &self.slots[index];
     if (options.jpeg) return zcd_save_jpeg(&slot.frame, path, quality);
     var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
@@ -817,6 +900,7 @@ pub export fn zc_save_dng(p: *c.zc_camera, token: u64, path: [*:0]const u8) c_in
     self.operation.lock();
     defer self.operation.unlock();
     if (self.leaseIndex(token)) |i| {
+        if (self.slots[i].access.writer) return c.ZC_BUSY;
         const slot = &self.slots[i];
         {
             var meta: c.zc_raw_metadata = undefined;
@@ -2044,4 +2128,146 @@ test "completion identities reach maximum once and fail explicitly before wrappi
     try std.testing.expectEqual(std.math.maxInt(u64), self.stats.completed);
     try std.testing.expectEqual(@as(usize, 1), self.count);
     try std.testing.expectEqual(@as(u64, 1), self.stats.errors);
+}
+
+test "writable maps pin an exclusive frame, reject pixel aliases and survive source release/stop" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    session(camera.?).device.?.fail_writable_once = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_enable_writable(camera.?));
+    try std.testing.expect(!session(camera.?).writable);
+    try std.testing.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    try std.testing.expectEqual(c.ZC_STATE, zc_enable_writable(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var map: ?*c.zc_frame_map = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, 0, 1, &map));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_frame_readable(camera.?, frame.token));
+    var duplicate = std.mem.zeroes(c.zc_frame);
+    duplicate.token = 99;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_retain(camera.?, frame.token, &duplicate));
+    try std.testing.expectEqual(@as(u64, 99), duplicate.token);
+    var descriptor: c.zc_stream = undefined;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_get_stream(camera.?, frame.token, 0, &descriptor));
+    var bytes: [16 * 16 * 3]u8 = @splat(33);
+    try std.testing.expectEqual(c.ZC_BUSY, zc_copy_frame_rgb(camera.?, frame.token, &bytes, bytes.len));
+    try std.testing.expectEqual(@as(u8, 33), bytes[0]);
+    var metadata: c.zc_metadata = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_get_frame_metadata(camera.?, frame.token, &metadata));
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_stream(map.?, &descriptor));
+    @constCast(descriptor.planes[0].data)[0] = 77;
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(@as(u32, 1), session(camera.?).stats.leased);
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_close(camera.?));
+    try std.testing.expectEqual(@as(u8, 77), descriptor.planes[0].data[0]);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(map.?));
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+}
+test "read maps share bounded references and write admission failures preserve every owner" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var first: ?*c.zc_frame_map = null;
+    var second: ?*c.zc_frame_map = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, 0, 0, &first));
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, 0, 0, &second));
+    var failed = first;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_frame_map_open(camera.?, frame.token, 0, 1, &failed));
+    try std.testing.expect(failed == null);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_readable(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(first.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(second.?));
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_references(camera.?, frame.token, &count));
+    try std.testing.expectEqual(@as(u32, 1), count);
+    session(camera.?).leases.issued = @TypeOf(session(camera.?).leases).max_sequence;
+    try std.testing.expectEqual(c.ZC_STATE, zc_frame_map_open(camera.?, frame.token, 0, 1, &failed));
+    try std.testing.expect(failed == null);
+    try std.testing.expect(!session(camera.?).slots[session(camera.?).leaseIndex(frame.token).?].access.writer);
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+}
+test "map retirement consumes its reference on DMA failure and unsupported writes preserve read capture" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var map: ?*c.zc_frame_map = null;
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_frame_map_open(camera.?, frame.token, 0, 1, &map));
+    try std.testing.expect(map == null);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, 0, 0, &map));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    session(camera.?).device.?.fail_sync_end = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_frame_map_close(map.?));
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(null));
+}
+
+test "mapped readers preserve primary capacity and reject pool saturation without access-state changes" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.buffer_count = 3;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var maps: [c.ZC_MAX_FRAME_REFERENCES]?*c.zc_frame_map = @splat(null);
+    var count: usize = 0;
+    while (true) {
+        var out: ?*c.zc_frame_map = null;
+        const rc = zc_frame_map_open(camera.?, frame.token, 0, 0, &out);
+        if (rc == c.ZC_BUSY) {
+            try std.testing.expect(out == null);
+            break;
+        }
+        try std.testing.expectEqual(c.ZC_OK, rc);
+        maps[count] = out;
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, c.ZC_MAX_FRAME_REFERENCES - 3), count);
+    const index = session(camera.?).leaseIndex(frame.token).?;
+    try std.testing.expectEqual(@as(u32, @intCast(count)), session(camera.?).slots[index].access.readers);
+    var other: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &other));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, other.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    for (maps[0..count]) |map| try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(map.?));
+    try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
 }

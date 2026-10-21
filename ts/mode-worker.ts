@@ -16,6 +16,8 @@ export interface ModeRequest {
   previousConfig: Uint8Array
   previousPipeline: Uint8Array
   previousStarted: boolean
+  writable?: boolean
+  previousWritable?: boolean
   nativeControls?: Uint8Array
   controls: Uint8Array
   controlCount: number
@@ -87,6 +89,8 @@ self.onmessage = ({ data: request }) => {
     )
     result.handle = handle(out)
     result.started = false
+    if (restoring ? request.previousWritable : request.writable)
+      check(n.zc_enable_writable(result.handle))
     const revision = new BigUint64Array(1)
     const replay = n.zc_restore_controls(
       result.handle,

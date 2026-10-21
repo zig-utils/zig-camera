@@ -71,7 +71,7 @@ request would prevent restoring the prior mode until its owner releases it.
 
 The additive C APIs zc_retain, zc_frame_references and zc_stream_copy_size preserve
 ABI v1 layouts. Zig Frame.retain/referenceCount expose the same ownership. Existing
-native mapped plane descriptors remain borrowed; Bun mapped views are outstanding
-parity work. Native tests exercise concurrent retains/releases, DMA failures,
+native mapped plane descriptors remain borrowed. [Scoped mapped streams](mapped-streams.md)
+add independent owners, write exclusivity and Bun view invalidation. Native tests exercise concurrent retains/releases, DMA failures,
 reference pressure and generation exhaustion; C/Bun tests cover parent release,
 recording coexistence, stop/close, cancellation handoff and paired stream copies.

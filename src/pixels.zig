@@ -7,7 +7,7 @@ pub const RgbView = struct {
     width: usize,
     height: usize,
     stride: usize,
-    pub const Error = error{ InvalidGeometry, BufferTooSmall, ReleasedFrame };
+    pub const Error = error{ InvalidGeometry, BufferTooSmall, ReleasedFrame, BusyFrame };
     pub fn init(data: []const u8, width: usize, height: usize, stride: usize) Error!RgbView {
         const row_bytes = std.math.mul(usize, width, 3) catch return error.InvalidGeometry;
         if (width == 0 or height == 0 or stride < row_bytes) return error.InvalidGeometry;

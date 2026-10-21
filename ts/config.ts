@@ -26,6 +26,8 @@ export function cameraIdentity(options: CameraOptions) {
 }
 export function cameraConfiguration(options: CameraOptions) {
   const cameraId = cameraIdentity(options)
+  if (options.writable !== undefined && typeof options.writable !== 'boolean')
+    throw new RangeError('invalid writable buffer option')
   const config = storage(72),
     pipeline = storage(44)
   n.zc_default_config(ptr(config))
@@ -71,5 +73,5 @@ export function cameraConfiguration(options: CameraOptions) {
     put(pipeline, 36, options.lores.height)
     put(pipeline, 40, options.lores.rgb ? 1 : 0)
   }
-  return { config, pipeline, cameraId }
+  return { config, pipeline, cameraId, writable: options.writable ?? false }
 }

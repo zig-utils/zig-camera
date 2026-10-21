@@ -88,6 +88,22 @@ int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
 int zc_get_sensor_modes(zc_camera *,zc_sensor_mode *,uint32_t capacity,uint32_t *count);
 /* Borrowed descriptor valid only for this lease. Disabled stream: UNSUPPORTED. */
 int zc_get_stream(zc_camera *,uint64_t token,uint32_t stream,zc_stream *);
+/* Opt in before the first start. DMA CPU access uses READ|WRITE for this whole
+ * handle and every mapping must permit writes. Default handles remain READ-only.
+ * Failure preserves read capture; never silently substitutes read-only access. */
+int zc_enable_writable(zc_camera *);
+int zc_frame_readable(zc_camera *,uint64_t token);
+int zc_copy_frame_rgb(zc_camera *,uint64_t token,uint8_t *out,uint64_t length);
+/* Scoped maps retain their own generation-checked frame reference. Read maps
+ * share; write maps require writable mode and exactly one external owner. A
+ * writer excludes stream reads and retention until close. Metadata remains usable.
+ * Map count shares the existing bounded reference pool/producer reservation.
+ * Returned stream pointers are borrowed until map close, which consumes even on
+ * DMA/requeue failure. Never access escaped views after close or race CPU access. */
+typedef struct zc_frame_map zc_frame_map;
+int zc_frame_map_open(zc_camera *,uint64_t token,uint32_t stream,uint32_t write,zc_frame_map **out);
+int zc_frame_map_stream(const zc_frame_map *,zc_stream *out);
+int zc_frame_map_close(zc_frame_map *);
 /* Tight owned copies: BGR888 => RGB; YUV420 => I420; Bayer => unchanged
  * unpacked samples or CSI-2 packed rows, with row padding removed. PiSP compressed
  * formats are unsupported. The size query never dereferences plane pointers. */

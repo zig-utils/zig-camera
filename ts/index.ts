@@ -17,6 +17,8 @@ export type {
   CameraDescriptor,
 } from './catalog'
 import { decodeMetadata } from './metadata'
+import { MappedStream } from './mapping'
+export { MappedStream, type MappedPlane } from './mapping'
 import {
   OutputBridge,
   invokeOutputFactory,
@@ -69,6 +71,7 @@ export { CameraError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
+const readableFrame = Symbol('readableFrame')
 export interface CaptureOptions<T = unknown> extends JobOptions<T> {
   /** true captures the clock at admission; bigint supplies an exact clock-domain threshold. */
   flush?: boolean | bigint
@@ -232,6 +235,8 @@ export interface RuntimeControl {
   values: number[]
 }
 export interface CameraOptions {
+  /** Opt in to writable mappings and READ|WRITE DMA fences before first start. */
+  writable?: boolean
   simulate?: boolean
   width?: number
   height?: number
@@ -278,6 +283,14 @@ export class Frame {
     if (this.released) throw new CameraError(-5, 'released frame')
     this.camera.assertOpen()
   }
+  get [readableFrame]() {
+    this.open()
+    check(
+      n.zc_frame_readable(this.camera.handle, this.token),
+      'frame read access',
+    )
+    return this.descriptor
+  }
   get sequence() {
     return u64(this.descriptor, 8)
   }
@@ -296,7 +309,14 @@ export class Frame {
   copyRGB() {
     this.open()
     const data = storage(this.width * this.height * 3)
-    check(n.zc_copy_rgb(ptr(this.descriptor), ptr(data), BigInt(data.length)))
+    check(
+      n.zc_copy_frame_rgb(
+        this.camera.handle,
+        this.token,
+        ptr(data),
+        BigInt(data.length),
+      ),
+    )
     return data
   }
   copyStream(stream: 'main' | 'raw' | 'lores' = 'main') {
@@ -339,6 +359,29 @@ export class Frame {
     )
     return new Frame(this.camera, data)
   }
+  mapStream(stream: StreamName = 'main') {
+    this.open()
+    const [name] = streamNames([stream])
+    return MappedStream.open(
+      this.camera.handle,
+      this.token,
+      { main: 0, raw: 1, lores: 2 }[name],
+    )
+  }
+  withMappedStream<T>(
+    operation: (stream: MappedStream) => T,
+    stream: StreamName = 'main',
+  ): T {
+    using mapped = this.mapStream(stream)
+    const result = operation(mapped)
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      void Promise.resolve(result).catch(() => {})
+      throw new TypeError(
+        'mapped callback must be synchronous; use an owned mapping across awaits',
+      )
+    }
+    return result
+  }
   get referenceCount() {
     this.open()
     const count = new Uint32Array(1)
@@ -372,7 +415,7 @@ export class Frame {
   release() {
     if (this.released) return
     const code = n.zc_release(this.camera.handle, this.token)
-    this.released = true
+    if (code !== -4) this.released = true
     check(code)
   }
   [Symbol.dispose]() {
@@ -465,6 +508,7 @@ export class Camera {
       config: cfg,
       pipeline,
       cameraId,
+      writable,
     } = cameraConfiguration(this.configuration)
     const out = outPointer()
     check(
@@ -481,6 +525,8 @@ export class Camera {
     )
     this.handle = handle(out)
     try {
+      if (writable)
+        check(n.zc_enable_writable(this.handle), 'enable writable buffers')
       const length = new Uint32Array(1)
       check(n.zc_get_camera_id(this.handle, null, 0, ptr(length)), 'camera ID')
       if (!length[0] || length[0] > 4096)
@@ -1468,6 +1514,7 @@ export class Camera {
       cameraIndex: this.configuration.cameraIndex,
       cameraId: this.configuration.cameraId,
     })
+    target.writable ??= this.configuration.writable
     const encoded = cameraConfiguration(target),
       dropFrames = uint(jobOptions.dropFrames ?? 0)
     if (typeof output === 'string') guardHostPath(output)
@@ -1583,6 +1630,7 @@ export class Camera {
             cameraId: this.selectedIdBytes,
             previousConfig: old.config,
             previousPipeline: old.pipeline,
+            previousWritable: old.writable,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -1689,6 +1737,7 @@ export class Camera {
                 cameraId: this.selectedIdBytes,
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
+                previousWritable: encoded.writable,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,
@@ -1874,6 +1923,7 @@ export class Camera {
       cameraIndex: this.configuration.cameraIndex,
       cameraId: this.configuration.cameraId,
     })
+    target.writable ??= this.configuration.writable
     if (
       (options.simulate !== undefined &&
         options.simulate !== (this.configuration.simulate ?? false)) ||
@@ -1939,6 +1989,7 @@ export class Camera {
             cameraId: this.selectedIdBytes,
             previousConfig: old.config,
             previousPipeline: old.pipeline,
+            previousWritable: old.writable,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -2008,6 +2059,7 @@ export class Camera {
                 cameraId: this.selectedIdBytes,
                 previousConfig: encoded.config,
                 previousPipeline: encoded.pipeline,
+                previousWritable: encoded.writable,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,
@@ -2138,7 +2190,7 @@ export class Camera {
         if (this.previewHandle) {
           const code = n.zc_preview_show(
             this.previewHandle,
-            ptr(frame.descriptor),
+            ptr(frame[readableFrame]),
           )
           if (code === 1) this.stopPreview()
           else check(code)
@@ -2915,7 +2967,7 @@ export class Recorder {
     check(
       n.zc_video_producer_frame(
         this.handle,
-        ptr(frame.descriptor),
+        ptr(frame[readableFrame]),
         timestampNs,
         ptr(out),
       ),
@@ -2964,7 +3016,7 @@ export class Recorder {
     check(
       n.zc_video_producer_av(
         this.handle,
-        ptr(frame.descriptor),
+        ptr(frame[readableFrame]),
         timestampNs,
         audio.length ? ptr(inputs) : null,
         audio.length,
@@ -3114,7 +3166,7 @@ export class Recorder {
   write(frame: Frame, timestampNs = frame.timestampNs) {
     this.assertOpen()
     if (!frame.token) throw new CameraError(-5, 'released frame')
-    check(n.zc_video_write(this.handle, ptr(frame.descriptor), timestampNs))
+    check(n.zc_video_write(this.handle, ptr(frame[readableFrame]), timestampNs))
     this.reconcileOutputs()
     this.scheduleFactories()
   }

@@ -1,5 +1,5 @@
 // A narrow C++ boundary: discovery, negotiation, reusable libcamera requests,
-// persistent read-only plane mappings and mandatory DMA-BUF CPU synchronization.
+// persistent plane mappings and mandatory DMA-BUF CPU synchronization.
 // Ownership, ready queues, leases and consumer policy live in Zig.
 #include "zig_camera.h"
 #include "zig_camera_catalog_bridge.h"
@@ -26,6 +26,11 @@
 using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
 namespace {
+int cpuSync(int fd,uint64_t flags) {
+    dma_buf_sync value{};value.flags=flags;
+    int rc;do {rc=ioctl(fd,DMA_BUF_IOCTL_SYNC,&value);}while(rc<0 && errno==EINTR);
+    return rc;
+}
 struct Mapping {
     void *base = MAP_FAILED;
     size_t length = 0;
@@ -235,6 +240,8 @@ struct Device {
     ControlList pending;
     ControlList desired;
     uint64_t control_revision=0;
+    bool writable=false;
+    int (*sync_call)(int,uint64_t)=cpuSync;
     const ControlId *controlId(uint32_t id) const {
         if(id==0 || id>=sizeof(controlNames)/sizeof(*controlNames))return nullptr;
         for(const auto &entry:camera->controls())if(entry.first->name()==controlNames[id])return entry.first;
@@ -559,17 +566,13 @@ struct Device {
     int sync(uint32_t index, bool begin) {
         auto &slot = slots[index];
         int result = ZC_OK;
+        const uint64_t access=writable ? DMA_BUF_SYNC_RW : DMA_BUF_SYNC_READ;
         for (size_t i = 0; i < slot.fd_count; ++i) {
-            dma_buf_sync sync{};
-            sync.flags = (begin ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) | DMA_BUF_SYNC_READ;
-            int rc;
-            do { rc = ioctl(slot.fds[i], DMA_BUF_IOCTL_SYNC, &sync); } while (rc < 0 && errno == EINTR);
+            const int rc=sync_call(slot.fds[i],(begin ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END)|access);
             if (rc < 0) {
                 if (begin) {
                     for (size_t j = 0; j < i; ++j) {
-                        dma_buf_sync undo{}; undo.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-                        int undo_rc;
-                        do { undo_rc = ioctl(slot.fds[j], DMA_BUF_IOCTL_SYNC, &undo); } while (undo_rc < 0 && errno == EINTR);
+                        (void)sync_call(slot.fds[j],DMA_BUF_SYNC_END|access);
                     }
                 }
                 if (begin) return ZC_IO;
@@ -578,6 +581,16 @@ struct Device {
             }
         }
         return result;
+    }
+    int enableWritable() {
+        if(started)return ZC_STATE;
+        for(auto &slot:slots)for(auto &map:slot.mappings) {
+            // Partial permission upgrades are harmless on failure: writable
+            // access remains disabled and all public read pointers stay const.
+            if(mprotect(map.base,map.length,PROT_READ|PROT_WRITE)<0)
+                return errno==EACCES || errno==EPERM ? ZC_UNSUPPORTED : ZC_IO;
+        }
+        writable=true;return ZC_OK;
     }
 };
 }
@@ -594,6 +607,7 @@ extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts, v
 extern "C" int zcd_start(Device *device) { try { return device->start(); } catch (...) { return ZC_DEVICE; } }
 extern "C" int zcd_queue(Device *device, uint32_t index) { try { return device->queue(index); } catch (...) { return ZC_DEVICE; } }
 extern "C" int zcd_sync(Device *device, uint32_t index, bool begin) { return device->sync(index, begin); }
+extern "C" int zcd_enable_writable(Device *device) { return device->enableWritable(); }
 extern "C" int zcd_stop(Device *device) {
     if (!device->started) {device->pending.clear();return ZC_OK;}
     const int rc = device->camera->stop();

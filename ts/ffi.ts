@@ -1,4 +1,5 @@
 import { dlopen, FFIType as t, suffix, ptr, type Pointer } from 'bun:ffi'
+export { toArrayBuffer } from 'bun:ffi'
 import { resolve } from 'node:path'
 export { ptr }
 export type { Pointer }
@@ -11,6 +12,12 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_enable_writable: { args: [p], returns: i },
+  zc_frame_readable: { args: [p, n], returns: i },
+  zc_copy_frame_rgb: { args: [p, n, p, n], returns: i },
+  zc_frame_map_open: { args: [p, n, u, u, p], returns: i },
+  zc_frame_map_stream: { args: [p, p], returns: i },
+  zc_frame_map_close: { args: [p], returns: i },
   zc_capture_clock_ns: { args: [p], returns: i },
   zc_capture_filter_init: { args: [p, u, u, n], returns: i },
   zc_capture_filter_accept: { args: [p, n, p], returns: i },

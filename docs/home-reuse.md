@@ -258,3 +258,14 @@ Home helper workflow includes source/doc triggers and its test. Camera Zig owns
 ABI state, metadata validity and leases; Bun composes capture/CAF jobs and leaves
 rejected-frame recording/preview delivery on the shared pump. Existing Home
 codecs, containers, queues and retained-reference pools remain unchanged.
+
+The 0.39 audit reuses lease_pool for map owners and contributes
+video/core/frame_access.zig at 1e4274a587635602b9b76a5edbacd4fa2557e01a, copied
+verbatim. Its pure staged gates permit shared readers and require a sole external
+owner for writes. Stale modes, exhausted counters and conflicting access reject
+without mutation on pinned/development Zig Debug/ReleaseSafe. The Home helper
+matrix includes source/doc triggers and tests. Camera Zig owns native map handles,
+retained references and publication; C++ handles mmap permissions and matched DMA
+read/write fences. Bun owns no pixel copy for mapped streams and detaches scoped
+views before native retirement. Existing Home plane packing remains the explicit
+owned-copy path; codecs/containers and capture queues continue to reuse Home.
