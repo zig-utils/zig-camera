@@ -2,9 +2,9 @@ name: Home ICC profiles
 on:
   push:
     branches: [main]
-    paths: ['src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+    paths: ['src/home/metadata_embed.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
   pull_request:
-    paths: ['src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
+    paths: ['src/home/metadata_embed.zig', 'src/home/zlib_stream.zig', 'src/home/raster_encoder.zig', 'src/home/metadata/icc*', 'tests/home_icc*', '.github/workflows/home-icc.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,10 +26,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = macOS ]; then
-            brew install little-cms2 pkgconf
+            brew install little-cms2 pkgconf zlib
+            echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
           else
             sudo apt-get update
-            sudo apt-get install -y liblcms2-dev pkg-config
+            sudo apt-get install -y liblcms2-dev zlib1g-dev pkg-config
           fi
       - name: Checked curves, owned parsing and independent CMM
         shell: bash
@@ -37,6 +38,7 @@ jobs:
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" src/home/metadata/icc.zig
+            zig test -O "$mode" -lc $(pkg-config --libs zlib) src/home/metadata_embed.zig
             zig test -O "$mode" --dep icc -Mroot=tests/home_icc_profile.zig -Micc=src/home/metadata/icc.zig
           done
           zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o

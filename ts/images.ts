@@ -15,6 +15,7 @@ type LowerImageFormat =
 export type ImageFormat = LowerImageFormat | Uppercase<LowerImageFormat>
 export type PngFilter = 'adaptive' | 'none' | 'sub' | 'up' | 'average' | 'paeth'
 export type ImageStream = 'main' | 'raw' | 'lores'
+export type ImageProfile = 'srgb' | Uint8Array
 const streams = { main: 0, raw: 1, lores: 2 } as const
 export function imageStreamId(stream: ImageStream) {
   if (typeof stream !== 'string' || !Object.hasOwn(streams, stream))
@@ -61,12 +62,17 @@ export interface ImageOptions {
   /** PNG zlib compression level, 0..9; default 1. */
   compressLevel?: number
   pngFilter?: PngFilter
+  /** Embed without converting pixels. Bytes are copied when submitting a job.
+   * Built-in sRGB requires matching source primaries/transfer; custom RGB ICC
+   * bytes are structurally checked and their pixel match is caller-owned. */
+  iccProfile?: ImageProfile
 }
 export interface PreparedImage {
   options: Uint8Array
   path?: Uint8Array
   format: number
   stream: number
+  profile?: ImageProfile
 }
 const formats: Record<LowerImageFormat, number> = {
   jpeg: 1,
@@ -98,6 +104,7 @@ export function prepareImage(
     quality: source.quality,
     compressLevel: source.compressLevel,
     pngFilter: source.pngFilter,
+    iccProfile: source.iccProfile,
   }
   const requested =
     options.format ??
@@ -135,21 +142,83 @@ export function prepareImage(
   v.setUint32(8, quality, true)
   v.setUint32(12, compression, true)
   v.setUint32(16, filters[filter as PngFilter], true)
+  const profile = options.iccProfile
+  if (
+    profile !== undefined &&
+    profile !== 'srgb' &&
+    !(profile instanceof Uint8Array)
+  )
+    throw new TypeError('ICC profile must be srgb or Uint8Array')
+  if (
+    profile instanceof Uint8Array &&
+    (profile.byteLength === 0 || profile.byteLength > 16 * 1024 * 1024)
+  )
+    throw new RangeError('ICC profile size must be 1..16 MiB')
+  const ownedProfile =
+    profile instanceof Uint8Array ? new Uint8Array(profile) : profile
+  const descriptor = imageProfileDescriptor(ownedProfile)
+  check(
+    n.zc_check_image_profile(ptr(data), descriptor ? ptr(descriptor) : null),
+  )
   return {
     options: data,
     path: path === undefined ? undefined : cstring(path),
     format,
     stream,
+    profile: ownedProfile,
   }
+}
+function imageProfileDescriptor(profile?: ImageProfile) {
+  if (profile === undefined) return undefined
+  const data = storage(24),
+    d = view(data)
+  d.setUint32(0, 24, true)
+  if (profile === 'srgb') d.setUint32(4, 1, true)
+  else {
+    d.setBigUint64(8, BigInt(ptr(profile)), true)
+    d.setBigUint64(16, BigInt(profile.byteLength), true)
+  }
+  return data
+}
+export function saveNativeImage(
+  camera: Pointer,
+  token: bigint,
+  options: Uint8Array,
+  stream: number,
+  path: Uint8Array,
+  profile?: ImageProfile,
+) {
+  const descriptor = imageProfileDescriptor(profile)
+  check(
+    n.zc_save_stream_image_profile(
+      camera,
+      token,
+      stream,
+      ptr(path),
+      ptr(options),
+      descriptor ? ptr(descriptor) : null,
+    ),
+  )
 }
 export function encodeNativeImage(
   camera: Pointer,
   token: bigint,
   options: Uint8Array,
   stream = view(options).getUint32(4, true) === 6 ? 1 : 0,
+  profile?: ImageProfile,
 ): Uint8Array {
   const out = outPointer()
-  check(n.zc_encode_stream_image(camera, token, stream, ptr(options), ptr(out)))
+  const descriptor = imageProfileDescriptor(profile)
+  check(
+    n.zc_encode_stream_image_profile(
+      camera,
+      token,
+      stream,
+      ptr(options),
+      descriptor ? ptr(descriptor) : null,
+      ptr(out),
+    ),
+  )
   const blob = handle(out)
   try {
     const length = new BigUint64Array(1)

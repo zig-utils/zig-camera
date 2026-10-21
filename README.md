@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.56 adds [still-image ICC profiles](docs/still-metadata.md): copied custom
+profiles or checked built-in sRGB for JPEG/PNG/TIFF, including async, focus-locked
+and temporary-mode captures. Exif options remain in progress.
+
 Version 0.55 adds [recording color profiles](docs/recording-color.md): copied
 AVC/HEVC VUI and MP4 nclx settings, matching matrix/range conversion, and propagation
 through splits, snapshots, factories and camera/recorder mode jobs.

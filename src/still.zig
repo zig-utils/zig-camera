@@ -4,6 +4,32 @@ const c = @import("abi.zig").c;
 const raster = @import("home/raster_encoder.zig");
 pub const PngFilter = raster.Filter;
 pub const Blob = struct { bytes: []u8 };
+pub fn checkProfile(options: *const c.zc_image_options, profile: ?*const c.zc_image_profile) !void {
+    if (!valid(options)) return error.InvalidOptions;
+    const p = profile orelse return;
+    if (options.format != c.ZC_IMAGE_JPEG and options.format != c.ZC_IMAGE_PNG and options.format != c.ZC_IMAGE_TIFF) return error.UnsupportedFormat;
+    if (p.struct_size != @sizeOf(c.zc_image_profile)) return error.InvalidOptions;
+    if (p.flags == c.ZC_IMAGE_PROFILE_SRGB) {
+        if (p.data != null or p.length != 0) return error.InvalidOptions;
+    } else if (p.flags == 0) {
+        if (p.data == null or p.length == 0 or p.length > @import("home/metadata/icc_layout.zig").max_bytes) return error.InvalidOptions;
+        if (options.format == c.ZC_IMAGE_JPEG and p.length > 65519 * 255) return error.MetadataTooLarge;
+        _ = try @import("home/metadata/icc_layout.zig").validateRgb(p.data[0..@intCast(p.length)]);
+    } else return error.InvalidOptions;
+}
+pub fn checkProfileSource(profile: ?*const c.zc_image_profile, space: c.zc_color_space) !void {
+    if (profile) |p| if (p.flags == c.ZC_IMAGE_PROFILE_SRGB and (space.present != 1 or space.primaries != c.ZC_PRIMARIES_REC709 or space.transfer != c.ZC_TRANSFER_SRGB)) return error.UnsupportedProfile;
+}
+pub fn embedProfile(allocator: std.mem.Allocator, options: *const c.zc_image_options, profile: *const c.zc_image_profile, bytes: []const u8) ![]u8 {
+    const generated = if (profile.flags == c.ZC_IMAGE_PROFILE_SRGB) try @import("home/metadata/icc.zig").createSRGBProfile(allocator) else null;
+    defer if (generated) |data| allocator.free(data);
+    return @import("home/metadata_embed.zig").embed(allocator, switch (options.format) {
+        c.ZC_IMAGE_JPEG => .jpeg,
+        c.ZC_IMAGE_PNG => .png,
+        c.ZC_IMAGE_TIFF => .tiff,
+        else => return error.UnsupportedFormat,
+    }, bytes, generated orelse profile.data[0..@intCast(profile.length)]);
+}
 pub fn formatFromName(name: []const u8) !u32 {
     inline for (.{ .{ "jpg", c.ZC_IMAGE_JPEG }, .{ "jpeg", c.ZC_IMAGE_JPEG }, .{ "png", c.ZC_IMAGE_PNG }, .{ "bmp", c.ZC_IMAGE_BMP }, .{ "tif", c.ZC_IMAGE_TIFF }, .{ "tiff", c.ZC_IMAGE_TIFF }, .{ "ppm", c.ZC_IMAGE_PPM }, .{ "dng", c.ZC_IMAGE_DNG } }) |entry| {
         if (std.ascii.eqlIgnoreCase(name, entry[0])) return entry[1];
@@ -20,7 +46,7 @@ pub fn valid(options: *const c.zc_image_options) bool {
 pub fn status(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => c.ZC_NOMEM,
-        error.UnsupportedFormat, error.MissingCalibration => c.ZC_UNSUPPORTED,
+        error.UnsupportedFormat, error.MissingCalibration, error.UnsupportedProfile => c.ZC_UNSUPPORTED,
         error.CompressionFailed => c.ZC_IO,
         else => c.ZC_INVALID,
     };

@@ -1,6 +1,6 @@
 .{
     .name = .zig_camera,
-    .version = "0.55.0",
+    .version = "0.56.0",
     .fingerprint = 0x774c3582060c5787,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},

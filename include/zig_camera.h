@@ -300,6 +300,12 @@ int zc_save_jpeg(zc_camera *, uint64_t token, const char *path, uint32_t quality
 enum { ZC_IMAGE_JPEG=1,ZC_IMAGE_PNG=2,ZC_IMAGE_BMP=3,ZC_IMAGE_TIFF=4,ZC_IMAGE_PPM=5,ZC_IMAGE_DNG=6 };
 enum { ZC_PNG_ADAPTIVE=0,ZC_PNG_NONE=1,ZC_PNG_SUB=2,ZC_PNG_UP=3,ZC_PNG_AVERAGE=4,ZC_PNG_PAETH=5 };
 typedef struct { uint32_t struct_size,format,quality,png_compression,png_filter; } zc_image_options;
+enum { ZC_IMAGE_PROFILE_SRGB=1 };
+/* Bytes remain immutable/live for each synchronous call. flags=0 supplies RGB ICC bytes (<=16MiB);
+ * SRGB requires null data/zero length and an actual Rec709/sRGB source.
+ * Embedding describes samples; it never transforms their gamut or transfer. */
+typedef struct { uint32_t struct_size,flags; const uint8_t *data; uint64_t length; } zc_image_profile;
+int zc_check_image_profile(const zc_image_options *,const zc_image_profile *);
 typedef struct zc_image_blob zc_image_blob;
 void zc_default_image_options(zc_image_options *);
 /* Synchronous encode of an owned readable lease. Blob owns its encoded bytes,
@@ -309,6 +315,7 @@ int zc_encode_image(zc_camera *,uint64_t token,const zc_image_options *,zc_image
 /* Explicit source. Processed formats accept main/lores, DNG accepts raw only.
  * Disabled streams reject. Existing image option layouts remain unchanged. */
 int zc_encode_stream_image(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,zc_image_blob **out);
+int zc_encode_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,zc_image_blob **out);
 int zc_image_blob_copy(const zc_image_blob *,uint8_t *data,uint64_t capacity,uint64_t *length);
 void zc_image_blob_close(zc_image_blob *);
 /* Atomic file replacement; explicit format does not depend on path extension.
@@ -316,6 +323,7 @@ void zc_image_blob_close(zc_image_blob *);
  * DNG requires a supported raw stream and complete calibration. */
 int zc_save_image(zc_camera *,uint64_t token,const char *path,const zc_image_options *);
 int zc_save_stream_image(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *);
+int zc_save_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *,const zc_image_profile *);
 const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */

@@ -1,5 +1,5 @@
 import { decodeMetadata } from './metadata'
-import { encodeNativeImage } from './images'
+import { encodeNativeImage, saveNativeImage, type ImageProfile } from './images'
 import {
   native as n,
   ptr,
@@ -37,6 +37,7 @@ export interface ModeRequest {
   capture?: {
     kind: 'rgb' | 'stream' | 'metadata' | 'file' | 'encoded'
     imageOptions?: Uint8Array
+    imageProfile?: ImageProfile
     stream?: number
     path?: Uint8Array
     dng?: boolean
@@ -374,21 +375,22 @@ self.onmessage = ({ data: request }) => {
             token,
             capture.imageOptions!,
             capture.stream,
+            capture.imageProfile,
           )
         } else if (capture.kind === 'file') {
-          check(
-            capture.imageOptions
-              ? n.zc_save_stream_image(
-                  result.handle,
-                  token,
-                  capture.stream ??
-                    (view(capture.imageOptions).getUint32(4, true) === 6
-                      ? 1
-                      : 0),
-                  ptr(capture.path!),
-                  ptr(capture.imageOptions),
-                )
-              : capture.dng
+          if (capture.imageOptions)
+            saveNativeImage(
+              result.handle,
+              token,
+              capture.imageOptions,
+              capture.stream ??
+                (view(capture.imageOptions).getUint32(4, true) === 6 ? 1 : 0),
+              capture.path!,
+              capture.imageProfile,
+            )
+          else
+            check(
+              capture.dng
                 ? n.zc_save_dng(result.handle, token, ptr(capture.path!))
                 : n.zc_save_jpeg(
                     result.handle,
@@ -396,7 +398,7 @@ self.onmessage = ({ data: request }) => {
                     ptr(capture.path!),
                     capture.quality ?? 98,
                   ),
-          )
+            )
           result.value = storage(96)
           check(
             n.zc_get_frame_metadata(result.handle, token, ptr(result.value)),

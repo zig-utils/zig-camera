@@ -531,3 +531,25 @@ and uses approximate white-point scaling. It is not reused as a working CMM.
 Exif parsing/writing also needs further bounds/IFD and capture-field work before
 camera exposure. No camera ICC embedding or Exif public API is claimed by this
 foundation. See still-metadata.md; those integrations remain on the parity plan.
+
+The 0.56 audit rechecks Home JPEG APP2/PNG iCCP markers and TIFF handling after
+the ICC foundation. Existing format enums do not implement profile embedding.
+Home image now supplies metadata_embed.zig, exported as IccEmbedding and published
+at f310e9345448d909041ad20a3bc332d07b78130f. The camera reuses it with only two
+import-path adjustments to existing flat Home raster/zlib modules. zlib_stream
+also gains an owner cleanup on C initialization failure and is copied verbatim.
+The helper preserves JPEG scans/PNG IDAT/TIFF strips, replaces active profiles,
+checks container metadata geometry and PNG CRCs, supports both classic TIFF byte
+orders, and keeps next-IFD links. Seventeen standalone/dependency tests pass in
+Debug/ReleaseSafe with pinned and local development Zig, including allocation
+failure sweeps. No encoder, deflater or pixel conversion is duplicated in Bun.
+
+Native code owns the public ABI, source-color preflight, scoped lease read,
+encoded blob and atomic destination. Bun copies custom profile bytes before job
+admission and rebuilds borrowed descriptors inside mode workers. Independent
+container libraries extract embedded bytes and Little CMS opens them; platform
+image readers compare profile/unprofiled decoded samples. The shared validator
+and embedding helper do not implement arbitrary gamut/transfer transformation,
+complete JPEG scan/TIFF page decoding or Exif fields. Those parity requirements
+remain in scope. Home Actions remains disabled; copied-source camera CI supplies
+Linux x86/ARM and macOS coverage separately from the local Home results.

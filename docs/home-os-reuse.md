@@ -133,3 +133,12 @@ ownership fixes land in Home image, then are reused verbatim by camera tests.
 No OS source is changed, no kernel allocator/register path is imported, and no
 hardware or display-calibration result is asserted. Camera ICC embedding and
 Exif capture metadata remain implementation work.
+
+The 0.56 audit again fetches origin/main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches media/camera and ADR-MC3
+for ICC/Exif embedding. The camera/decoder stubs and display gamma LUTs supply
+no hosted profile container implementation. The shared image-library ownership
+specified by ADR-MC3 remains the applicable boundary: JPEG/PNG/TIFF ICC embedding
+and the zlib owner cleanup are contributed to Home image and reused in camera.
+No kernel state or device pointer is imported; the OS stays unchanged. Independent
+hosted container/image checks do not establish Pi display/sensor calibration.

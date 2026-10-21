@@ -84,6 +84,7 @@ import { decodeMetadata } from './metadata'
 import {
   prepareImage,
   encodeNativeImage,
+  saveNativeImage,
   imageStreamId,
   readStreamColorSpace,
   decodeStreamColorSpace,
@@ -93,6 +94,7 @@ import {
 } from './images'
 export type {
   ImageOptions,
+  ImageProfile,
   ImageFormat,
   PngFilter,
   StreamColorSpace,
@@ -649,14 +651,13 @@ export class Frame {
   }
   [savePreparedImage](prepared: PreparedImage) {
     this.open()
-    check(
-      n.zc_save_stream_image(
-        this.camera.handle,
-        this.token,
-        prepared.stream,
-        ptr(prepared.path!),
-        ptr(prepared.options),
-      ),
+    saveNativeImage(
+      this.camera.handle,
+      this.token,
+      prepared.options,
+      prepared.stream,
+      prepared.path!,
+      prepared.profile,
     )
   }
   [encodePreparedImage](prepared: PreparedImage) {
@@ -666,6 +667,7 @@ export class Frame {
       this.token,
       prepared.options,
       prepared.stream,
+      prepared.profile,
     )
   }
   saveDNG(path: string) {
@@ -3302,6 +3304,7 @@ export class Camera {
         kind: 'file',
         path: prepared.path,
         imageOptions: prepared.options,
+        imageProfile: prepared.profile,
         stream: prepared.stream,
       },
       jobOptions,
@@ -3319,6 +3322,7 @@ export class Camera {
       {
         kind: 'encoded',
         imageOptions: prepared.options,
+        imageProfile: prepared.profile,
         stream: prepared.stream,
       },
       jobOptions,

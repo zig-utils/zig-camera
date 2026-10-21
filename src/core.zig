@@ -1063,9 +1063,18 @@ fn imageStreamStatus(stream: u32, opts: *const c.zc_image_options) c_int {
     return c.ZC_OK;
 }
 pub export fn zc_encode_stream_image(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, out: *?*c.zc_image_blob) c_int {
+    return zc_encode_stream_image_profile(p, token, stream, opts, null, out);
+}
+pub export fn zc_check_image_profile(opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
+    still.checkProfile(opts, profile) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
+pub export fn zc_encode_stream_image_profile(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, out: *?*c.zc_image_blob) c_int {
     out.* = null;
     const source_status = imageStreamStatus(stream, opts);
     if (source_status != 0) return source_status;
+    const profile_status = zc_check_image_profile(opts, profile);
+    if (profile_status != 0) return profile_status;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
@@ -1085,14 +1094,22 @@ pub export fn zc_encode_stream_image(p: *c.zc_camera, token: u64, stream: u32, o
         var space: c.zc_color_space = undefined;
         const rc = driver.colorSpace(self.device.?, stream, &space);
         if (rc != 0) return rc;
+        still.checkProfileSource(profile, space) catch |err| return still.status(err);
         source = @import("stream_rgb.zig").Selected.init(allocator, source.frame, selected, space) catch |err| return still.status(err);
     }
     defer source.deinit(allocator);
     const blob = allocator.create(still.Blob) catch return c.ZC_NOMEM;
-    blob.bytes = still.encode(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
+    const bytes = still.encode(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
         std.heap.c_allocator.destroy(blob);
         return still.status(err);
     };
+    if (profile) |value| {
+        defer allocator.free(bytes);
+        blob.bytes = still.embedProfile(allocator, opts, value, bytes) catch |err| {
+            allocator.destroy(blob);
+            return still.status(err);
+        };
+    } else blob.bytes = bytes;
     out.* = @ptrCast(blob);
     return c.ZC_OK;
 }
@@ -1188,12 +1205,17 @@ pub export fn zc_save_image(p: *c.zc_camera, token: u64, path: [*:0]const u8, op
     return zc_save_stream_image(p, token, if (opts.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, path, opts);
 }
 pub export fn zc_save_stream_image(p: *c.zc_camera, token: u64, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options) c_int {
+    return zc_save_stream_image_profile(p, token, stream, path, opts, null);
+}
+pub export fn zc_save_stream_image_profile(p: *c.zc_camera, token: u64, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
     const source_status = imageStreamStatus(stream, opts);
     if (source_status != 0) return source_status;
-    if (opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN) return zc_save_jpeg(p, token, path, opts.quality);
+    const profile_status = zc_check_image_profile(opts, profile);
+    if (profile_status != 0) return profile_status;
+    if (profile == null and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN) return zc_save_jpeg(p, token, path, opts.quality);
     if (opts.format == c.ZC_IMAGE_DNG) return zc_save_dng(p, token, path);
     var encoded: ?*c.zc_image_blob = null;
-    const rc = zc_encode_stream_image(p, token, stream, opts, &encoded);
+    const rc = zc_encode_stream_image_profile(p, token, stream, opts, profile, &encoded);
     if (rc != 0) return rc;
     defer zc_image_blob_close(encoded);
     const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));

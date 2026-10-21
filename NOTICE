@@ -423,3 +423,13 @@ Home portable color descriptions and negotiation (0.54):
   It performs no pixel or gamut/gamma conversion.
   https://github.com/home-lang/home/commit/3c3c3a8814d822de8df0d0085fbb94d9c1a242cf
 The Home MIT license and copyright reproduced above apply.
+
+Home ICC embedding (0.56):
+- src/home/metadata_embed.zig reuses packages/image/src/metadata_embed.zig at
+  f310e9345448d909041ad20a3bc332d07b78130f. Only its two format-module import
+  paths change to the camera's existing flat Home directory. Inline tests remain.
+- src/home/zlib_stream.zig is verbatim from the same commit, including cleanup
+  of its owner when C stream initialization fails. Existing Home/Bun attribution
+  applies; no second compressor or container implementation is introduced.
+  https://github.com/home-lang/home/commit/f310e9345448d909041ad20a3bc332d07b78130f
+The Home MIT license and copyright reproduced above apply.

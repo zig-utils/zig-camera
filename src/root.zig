@@ -8,6 +8,13 @@ pub const raw = @import("raw.zig");
 pub const ImageTransform = @import("home/orientation.zig").Transform;
 pub const still = @import("still.zig");
 pub const ImageOptions = c.zc_image_options;
+pub const ImageProfile = c.zc_image_profile;
+pub fn srgbImageProfile() ImageProfile {
+    return .{ .struct_size = @sizeOf(ImageProfile), .flags = c.ZC_IMAGE_PROFILE_SRGB, .data = null, .length = 0 };
+}
+pub fn customImageProfile(bytes: []const u8) ImageProfile {
+    return .{ .struct_size = @sizeOf(ImageProfile), .flags = 0, .data = bytes.ptr, .length = bytes.len };
+}
 pub fn defaultImageOptions() ImageOptions {
     var out: ImageOptions = undefined;
     core.zc_default_image_options(&out);
@@ -424,16 +431,22 @@ pub const Frame = struct {
         return self.saveStreamImage(path, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
     }
     pub fn saveStreamImage(self: *const Frame, path: [:0]const u8, id: u32, options: ImageOptions) Error!void {
+        return self.saveStreamImageProfile(path, id, options, null);
+    }
+    pub fn saveStreamImageProfile(self: *const Frame, path: [:0]const u8, id: u32, options: ImageOptions, profile: ?*const ImageProfile) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
-        try check(core.zc_save_stream_image(self.camera.handle, self.value.token, id, path, &options));
+        try check(core.zc_save_stream_image_profile(self.camera.handle, self.value.token, id, path, &options, profile));
     }
     pub fn encodeImage(self: *const Frame, allocator: std.mem.Allocator, options: ImageOptions) Error![]u8 {
         return self.encodeStreamImage(allocator, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
     }
     pub fn encodeStreamImage(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions) Error![]u8 {
+        return self.encodeStreamImageProfile(allocator, id, options, null);
+    }
+    pub fn encodeStreamImageProfile(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions, profile: ?*const ImageProfile) Error![]u8 {
         if (self.value.token == 0) return error.StaleFrame;
         var blob: ?*c.zc_image_blob = null;
-        try check(core.zc_encode_stream_image(self.camera.handle, self.value.token, id, &options, &blob));
+        try check(core.zc_encode_stream_image_profile(self.camera.handle, self.value.token, id, &options, profile, &blob));
         defer core.zc_image_blob_close(blob);
         var length: u64 = 0;
         try check(core.zc_image_blob_copy(blob.?, null, 0, &length));
@@ -790,4 +803,33 @@ test "formatted main I420 admission preserves legacy layouts and never exposes l
     try mapped.deinit();
     try std.testing.expectEqual(c.ZC_OK, core.zc_copy_frame_rgb(cam.handle, frame.value.token, &rgb, rgb.len));
     for (0..8) |i| try std.testing.expectEqualSlices(u8, &.{ 190, 76, 0 }, rgb[i * 3 ..][0..3]);
+}
+
+test "Zig ICC image profiles retain owned blobs and reject mismatched or invalid descriptors" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(ImageProfile));
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch {};
+    try camera.start();
+    defer camera.stop() catch {};
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var opts = defaultImageOptions();
+    opts.format = c.ZC_IMAGE_TIFF;
+    var profile = srgbImageProfile();
+    const bytes = try frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualSlices(u8, "II", bytes[0..2]);
+    profile.struct_size = 0;
+    try std.testing.expectError(error.Invalid, frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile));
+    profile = customImageProfile("broken");
+    try std.testing.expectError(error.Invalid, frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile));
+    profile = srgbImageProfile();
+    const color = try colorSpacePreset(c.ZC_COLOR_REC2020);
+    try std.testing.expectError(error.UnsupportedProfile, still.checkProfileSource(&profile, color));
+    try frame.release();
+    try std.testing.expectError(error.StaleFrame, frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile));
 }

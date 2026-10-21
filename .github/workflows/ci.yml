@@ -23,7 +23,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev liblcms2-dev
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
         run: |
@@ -37,6 +37,8 @@ jobs:
             cc -Wall -Wextra -Werror tests/decode_images.c -framework CoreGraphics -framework ImageIO -framework CoreFoundation -o zig-out/decode-images
           else
             cc -Wall -Wextra -Werror tests/decode_images.c $(pkg-config --cflags --libs libpng libtiff-4 sdl2 libjpeg) -o zig-out/decode-images
+            cc -std=c11 -Wall -Wextra -Werror tests/read_image_icc.c $(pkg-config --cflags --libs libpng libtiff-4 libjpeg lcms2) -o zig-out/read-image-icc
+            echo "ZC_ICC_READER=$PWD/zig-out/read-image-icc" >> "$GITHUB_ENV"
           fi
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
@@ -71,6 +73,20 @@ jobs:
             ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --fifo --warmup 0 --png-compression 1 --png-filter paeth --output "zig-out/cli-image.$format"
           done
           bun tests/ts/check-media.ts zig-out --still-images
+          for format in jpeg png tiff; do
+            ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --icc-profile srgb --output "zig-out/cli-icc.$format"
+            if [ "$RUNNER_OS" = Linux ]; then
+              ./zig-out/read-image-icc "$format" "zig-out/cli-icc.$format" > "zig-out/cli-$format.icc"
+            fi
+          done
+          bun tests/ts/check-image-profile.ts zig-out/cli-icc.png zig-out/cli-srgb.icc
+          ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --icc-profile zig-out/cli-srgb.icc --output zig-out/cli-custom-icc.png
+          bun tests/ts/check-image-profile.ts zig-out/cli-custom-icc.png zig-out/cli-copy.icc
+          cmp zig-out/cli-srgb.icc zig-out/cli-copy.icc
+          if ./zig-out/bin/zig-camera capture --simulate --icc-profile srgb --output zig-out/rejected-icc.bmp; then exit 1; fi
+          test ! -e zig-out/rejected-icc.bmp
+          if ./zig-out/bin/zig-camera capture --simulate --color-space rec2020 --warmup 0 --icc-profile srgb --output zig-out/rejected-icc.png; then exit 1; fi
+          test ! -e zig-out/rejected-icc.png
           ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --image-stream lores --warmup 0 --output zig-out/stream-i420.png
           ./zig-out/bin/zig-camera capture --simulate --width 64 --height 48 --fifo --lores-width 18 --lores-height 10 --lores-format BGR888 --image-stream lores --warmup 0 --output zig-out/stream-rgb.png
           bun tests/ts/check-media.ts zig-out --stream-images
@@ -152,7 +168,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
-          bun test tests/ts/still-images.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
+          bun test tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

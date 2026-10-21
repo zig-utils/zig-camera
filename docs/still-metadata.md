@@ -1,55 +1,81 @@
-# Still-image metadata work
+# Still-image ICC profiles
 
-The shared ICC profile foundation is implemented and independently tested.
-Camera-facing ICC embedding and Exif capture options are still outstanding;
-existing encoded still-image behavior is unchanged by this foundation commit.
+Version 0.56 adds optional ICC embedding in JPEG, PNG and classic TIFF through
+Zig/C, Bun and the CLI. Main and lores RGB/I420 captures use the same encoding
+path, including async, focus-locked and temporary-mode file/encoded captures.
+Exif capture metadata/options remain outstanding on the parity plan.
 
-Home's `createSRGBProfile` now writes a deterministic ICC v2.4 RGB matrix/TRC
-profile with D50-adapted colorants, chromatic adaptation, complete description
-and copyright tags, and a shared 4096-sample piecewise sRGB curve. The old
-generator used gamma 2.2. Parsed profiles own their curve bytes and preserve
-sampled/parametric curves rather than reducing them to that approximation.
-
-The camera keeps the canonical Home modules verbatim under `src/home/metadata`.
-Their structural validator checks complete declared size, tag-table bounds,
-unique signatures, alignment, shared-body versus partial overlap, supported
-curve payloads and localized-text geometry before allocation. Validation bounds
-input to 16 MiB / 1024 tags. Owned parsing applies a conservative 64 MiB budget
-so shared wire bodies cannot amplify copies arbitrarily. Unknown tag types are
-retained without interpretation. This is not a complete ICC conformance checker
-or a general LUT-based color-management engine.
-
-`tests/home_icc_profile.zig` covers every truncated prefix, allocation failures,
-shared-body amplification, ownership after source mutation, Unicode, malformed
-curves and inverse behavior at flat endpoints. `tests/home_icc_lcms.c` reads the
-serialized profile with Little CMS, tests 196,608 channel values and transforms
-4,913 RGB patches against independent piecewise-transfer and D50 references.
-The same curve check fails against Home's previous generator. Little CMS is only
-a test dependency. This establishes serialized-profile behavior, not sensor,
-display, optical, physical chart or Pi performance acceptance.
-
-Run the portable tests from the repository root:
-
-```sh
-zig test src/home/metadata/icc.zig
-zig test --dep icc -Mroot=tests/home_icc_profile.zig -Micc=src/home/metadata/icc.zig
-zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=tests/home_icc_fixture.zig -Micc=src/home/metadata/icc.zig -femit-bin=/tmp/home-icc.o
-cc -std=c11 -Wall -Wextra -Werror tests/home_icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
-/tmp/home-icc-test
+```ts
+await camera.captureFile('photo.jpg', { iccProfile: 'srgb' })
+const bytes = await camera.captureEncodedImage({
+  format: 'png', stream: 'lores', iccProfile: customRgbProfileBytes,
+})
 ```
 
-The dedicated workflow covers pinned/development Zig, Debug/ReleaseSafe, Linux
-x86/ARM and macOS. Production still encoding has no new runtime dependency.
-The independent C fixture object includes Zig compiler-runtime helpers so the
-system linker resolves x86 stack probes while keeping runtime safety enabled.
-Home's Actions service currently rejects dispatch as disabled, so its local
-validation and the camera's independent copied-source CI are recorded separately.
+`iccProfile: 'srgb'` uses Home's independently tested deterministic ICC v2.4
+profile. It requires the actual selected source to have Rec709 primaries and
+sRGB transfer. YUV matrix/range are converted by the existing Home converter;
+gamut and transfer are preserved. Rec709 transfer, Rec2020 primaries, unknown
+metadata and other mismatches reject before creating/replacing a destination.
+Embedding describes the samples; it never changes their gamut or transfer.
 
-Next integration requirements remain: bounded copied profile options for queued
-captures, JPEG APP2/PNG iCCP/TIFF tag embedding with independent extraction and
-pixel-decode checks, rejection of a built-in profile that mismatches the source
-gamut/transfer, and hardened Exif writing with actual capture metadata. Attaching
-an ICC profile must never be presented as transforming image pixels.
+Custom `Uint8Array` RGB ICC bytes are copied and validated at submission, so
+later mutations do not affect queued or worker-mode captures. Inputs are bounded
+to 16 MiB / 1024 tags, and JPEG additionally has a 255-part APP2 limit. Invalid
+profile sizes, tag geometry, duplicate signatures, overlaps and supported curve
+payloads reject before queuing. RGB with XYZ/Lab PCS is required. The validator
+is not a complete ICC conformance checker or LUT engine; the caller must ensure
+a custom profile matches the source. BMP/PPM/DNG embedding is unsupported.
+Omitting the option retains existing behavior and unprofiled JPEG fast paths.
+Profiled JPEG uses Home's owned JPEG encoder before embedding.
 
-References: [Home shared implementation](https://github.com/home-lang/home/commit/2c0d4c5be72b3c271d2b1e8988757fde1d932f64),
+```sh
+zig-camera capture --icc-profile srgb --output photo.jpg
+zig-camera capture --icc-profile ./camera-rgb.icc --output photo.png
+```
+
+The native ABI adds a separate 24-byte `zc_image_profile` descriptor; the existing
+20-byte `zc_image_options` remains unchanged. Flags `ZC_IMAGE_PROFILE_SRGB` use
+null data/zero length. Flags zero supply borrowed raw bytes/length for the
+synchronous call. `zc_check_image_profile` checks options/profile structure;
+`zc_encode_stream_image_profile` and `zc_save_stream_image_profile` also check
+actual source compatibility and lease access. Native returned blobs own their
+encoded bytes and survive request/camera disposal. Zig exposes
+`srgbImageProfile`, `customImageProfile`, `Frame.encodeStreamImageProfile` and
+`Frame.saveStreamImageProfile`. Callers retain custom bytes until the call ends.
+File writes use the existing atomic replacement and preserve prior files on
+profile, source or encoding failure. Cancellation before a queued capture runs
+leaves the destination untouched. A running temporary-mode worker can commit a
+file before cancellation or a later callback/restoration error is reported;
+coordinating that file commit with job publication remains parity work.
+
+Home's shared embedding helper preserves encoded pixel payloads. JPEG profiles
+are split into numbered APP2 segments after APP0, replacing prior pre-scan ICC
+markers. PNG inserts compressed iCCP after IHDR and removes conflicting iCCP,
+sRGB/gAMA/cHRM, cICP and HDR-signaling chunks while preserving IDAT bytes. TIFF
+appends a sorted primary IFD with tag 34675 and repoints the header, preserving
+strip data/offsets and the next-page link. Both TIFF byte orders are supported;
+BigTIFF is unsupported. Unreachable old TIFF metadata remains in the file.
+JPEG entropy/scans and TIFF page chains are not fully decoded by this helper.
+
+The shared ICC generator preserves the sRGB toe with one shared 4096-sample
+curve, D50 colorants and chromatic adaptation. Owned parsing retains sampled
+and parametric curves and Unicode descriptions. Little CMS independently tests
+196,608 channel values and 4,913 RGB-to-XYZ patches. The embedding tests cover
+allocation failures, multi-segment JPEG, PNG CRCs/decompression, TIFF byte orders,
+sorting/replacement and retained next-IFD pointers. Bun tests cover owned and
+atomic outputs, custom-profile copying across queues/workers, mode rollback,
+color rejection, cancellation and focus-locked capture. Independent libjpeg,
+libpng and libtiff extract profiles which Little CMS opens; platform image
+decoders compare profiled/unprofiled samples. These are software/container
+checks, not sensor/color-chart or physical image-quality acceptance.
+
+`home-icc.yml` covers pinned/development Zig in Debug/ReleaseSafe on Linux
+x86/ARM and macOS. Full camera CI additionally covers the optional system-JPEG
+build and the real Linux backend build/load/no-camera smoke test. Little CMS and
+the independent image readers are test-only dependencies. Home Actions rejects
+dispatch as disabled, so shared-source CI runs through the camera's copied code.
+
+References: [ICC embedding note](https://archive.color.org/files/technotes/ICC-Technote-ProfileEmbedding.pdf),
+[PNG specification](https://www.w3.org/TR/png-3/),
 [ICC sRGB interpretation](https://registry.color.org/rgb-registry/files/sRGB.pdf).
