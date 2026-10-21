@@ -59,7 +59,31 @@ static int packet_sink(void *context,const zc_output_packet *packet) {
 static int failing_packet_sink(void *context,const zc_output_packet *packet) {
     unsigned *calls=context;assert(packet->length>0);(*calls)++;return ZC_IO;
 }
+static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
+static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    zc_config typed_cfg;zc_default_config(&typed_cfg);typed_cfg.width=16;typed_cfg.height=16;
+    zc_camera *typed_camera=NULL;assert(zc_open(&typed_cfg,&typed_camera)==ZC_OK);
+    uint8_t typed_packet[96]={0};memcpy(typed_packet,"HCAT",4);
+    typed_put32(typed_packet+4,1);typed_put32(typed_packet+8,ZC_CATALOG_CONTROL_UPDATE);typed_put32(typed_packet+12,1);
+    typed_put32(typed_packet+16,80);typed_put32(typed_packet+24,0x10001);typed_put32(typed_packet+44,4);typed_put32(typed_packet+56,1);
+    typed_put32(typed_packet+60,36);typed_put32(typed_packet+68,4);typed_put32(typed_packet+76,2);typed_put32(typed_packet+80,1);
+    const uint64_t exact_native=9007199254740993ULL;
+    for(unsigned i=0;i<8;i++)typed_packet[88+i]=(uint8_t)(exact_native>>(i*8));
+    uint64_t typed_revision=0;
+    assert(zc_set_native_controls(typed_camera,typed_packet,sizeof(typed_packet),&typed_revision)==ZC_OK && typed_revision==1);
+    zc_catalog *typed_state=NULL;
+    assert(zc_get_native_controls(typed_camera,&typed_state,&typed_revision)==ZC_OK);
+    assert(zc_close(typed_camera)==ZC_OK);
+    uint64_t typed_length=0;assert(zc_catalog_copy(typed_state,NULL,0,&typed_length)==ZC_OK);
+    uint8_t *typed_bytes=malloc(typed_length);assert(typed_bytes);
+    assert(zc_catalog_copy(typed_state,typed_bytes,typed_length,&typed_length)==ZC_OK);
+    assert(typed_get32(typed_bytes+8)==ZC_CATALOG_CONTROL_STATE && typed_get32(typed_bytes+12)==1);
+    const uint32_t typed_value_offset=16+44+typed_get32(typed_bytes+48)+typed_get32(typed_bytes+52);
+    assert(typed_value_offset+36<=typed_length && typed_get32(typed_bytes+typed_value_offset+8)==4);
+    uint64_t typed_exact=0;for(unsigned i=0;i<8;i++)typed_exact|=(uint64_t)typed_bytes[typed_value_offset+28+i]<<(i*8);
+    assert(typed_exact==exact_native);free(typed_bytes);zc_catalog_close(typed_state);
+
     zc_config identity_cfg;zc_default_config(&identity_cfg);
     identity_cfg.width=16;identity_cfg.height=16;
     zc_pipeline_options identity_pipeline;zc_default_pipeline_options(&identity_pipeline);

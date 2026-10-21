@@ -5,7 +5,7 @@ const api = @import("catalog.zig");
 const Sink = api.Sink;
 const b = api.bridge;
 const synthetic = @import("synthetic.zig");
-const names = [_][]const u8{ "", "AeEnable", "ExposureTime", "AnalogueGain", "ExposureValue", "AwbEnable", "ColourGains", "Brightness", "Contrast", "Saturation", "Sharpness", "FrameDurationLimits", "LensPosition", "AfMode", "AfTrigger", "AfRange", "AfSpeed", "AfMetering", "AfWindows", "ScalerCrop", "NoiseReductionMode", "AeMeteringMode", "AeExposureMode", "AwbMode", "ExposureTimeMode", "AnalogueGainMode", "AfPause", "AeConstraintMode", "ColourTemperature", "AeFlickerMode", "AeFlickerPeriod" };
+pub const names = [_][]const u8{ "", "AeEnable", "ExposureTime", "AnalogueGain", "ExposureValue", "AwbEnable", "ColourGains", "Brightness", "Contrast", "Saturation", "Sharpness", "FrameDurationLimits", "LensPosition", "AfMode", "AfTrigger", "AfRange", "AfSpeed", "AfMetering", "AfWindows", "ScalerCrop", "NoiseReductionMode", "AeMeteringMode", "AeExposureMode", "AwbMode", "ExposureTimeMode", "AnalogueGainMode", "AfPause", "AeConstraintMode", "ColourTemperature", "AeFlickerMode", "AeFlickerPeriod" };
 fn begin(s: *const Sink, group: u32, id: u32, name: []const u8, kind: u32, app_id: u32, flags: u32, extent: u32) c_int {
     const vendor = "synthetic";
     const r: b.zcd_catalog_record = .{ .group = group, .id = id, .app_id = app_id, .native_type = kind, .kind = kind, .flags = flags | 32, .extent = extent, .name = name.ptr, .name_length = name.len, .vendor = vendor.ptr, .vendor_length = vendor.len };
@@ -76,7 +76,7 @@ pub fn controls(h: *@import("synthetic.zig").Handle, s: *const Sink) c_int {
         rc = s.end.?(s.context);
         if (rc != 0) return rc;
     }
-    return c.ZC_OK;
+    return @import("typed_synthetic.zig").capabilities(h, s);
 }
 pub fn metadata(s: *const Sink, m: c.zc_metadata) c_int {
     const timestamp: i64 = @intCast(m.timestamp_ns);

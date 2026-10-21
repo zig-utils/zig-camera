@@ -38,3 +38,11 @@ pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, i
     return zcd_open_id(cfg, pipeline, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
 }
 pub const cameraId = zcd_camera_id;
+
+pub const PreparedControls = opaque {};
+pub extern fn zcd_prepare_native_controls(*Handle, [*]const @import("native_controls.zig").Input, u32, *const @import("catalog.zig").Sink, *?*PreparedControls) c_int;
+pub extern fn zcd_commit_native_controls(*Handle, *PreparedControls, *u64) c_int;
+pub extern fn zcd_close_native_controls(*PreparedControls) void;
+pub const prepareNative = zcd_prepare_native_controls;
+pub const commitNative = zcd_commit_native_controls;
+pub const closeNative = zcd_close_native_controls;

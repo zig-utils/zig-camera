@@ -57,9 +57,9 @@ Newer headers advertise vendor, input/output direction, declared array extent an
 enumerator support. Older headers lack some of these APIs; the corresponding
 properties are undefined instead of fabricated. Dynamic extent is null, fixed
 extent is a number, scalar extent is zero. Input/output flags describe libcamera's
-native declaration, not whether zig-camera currently exposes a setter. Existing
-setControls still accepts its bounded convenience IDs/types; generic native/vendor
-control writes and full typed persistent replay remain outstanding work.
+native declaration. setControls accepts bounded convenience IDs/types;
+[setNativeControls](native-controls.md) accepts native IDs and portable typed
+values, including vendor controls. Opaque/none writes remain unsupported.
 
 metadataCatalog snapshots a leased request's native metadata on the consumer
 thread, including arrays/tensors and fields absent from compact metadata(). It
@@ -92,8 +92,8 @@ serialization never runs inside the camera-manager completion callback.
 The HCAT v1 framing and validation come verbatim from Home typed_catalog at
 f313dc5a6b0472b7f6837fd314f7ef5575c546b9. See Home's typed-catalog documentation for
 header/value layout. Application catalog kinds are discovery=1, properties=2,
-controls=3, metadata=4. Record flags: input=1, output=2, array=4, directionKnown=8,
-extentKnown=16, vendorKnown=32, enumeratorsKnown=64. Value flags: array=1,
+controls=3, metadata=4, control-state=5, control-update=6. Record flags: input=1, output=2, array=4, directionKnown=8,
+extentKnown=16, vendorKnown=32, enumeratorsKnown=64, noReplay=128. Value flags: array=1,
 littleEndian=2. Roles: current=0, minimum=1, maximum=2, default=3, choice=4,
 enumerator=5. All wire headers are little-endian, independent of payload byte order.
 

@@ -233,3 +233,15 @@ strict matching. Camera core copies the actual selected ID once after acquisitio
 Bun workers use it for target and rollback opens regardless of stale enumeration
 indices. Home owns no camera-manager lease or thread. Existing Home control journals,
 AF gates, catalog, media queues, codecs and containers remain in use.
+
+The 0.37 audit reuses typed_catalog and keyed_state and contributes
+video/core/catalog_state.zig to Home at 1122b859f9bdb72c0e522f73ff134f836f53ff12,
+with additional invalid-key coverage at b5ff735d009f3b56c78bc060fdaacf10654480e0.
+The latter source is copied verbatim. It stages sorted bounded replacements with
+exact payload ownership, duplicate/key validation and removals before explicit
+updates, leaving inputs unchanged on allocation/capacity failure. Focused tests
+pass on pinned and development Zig in Debug/ReleaseSafe; Home's packet-output
+matrix includes the helper. Camera Zig owns both replay journals and commits only
+after backend validation and journal preparation succeed. The C++ bridge owns
+libcamera candidate values; Bun handles typed input encoding and bounded mode
+orchestration without substituting a second journal, codec or media queue.

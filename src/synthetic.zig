@@ -21,6 +21,10 @@ pub const Handle = struct {
     applied_revision: u64 = 0,
     active: [31]c.zc_control = @splat(std.mem.zeroes(c.zc_control)),
     pending: [31]?c.zc_control = @splat(null),
+    saved: [31]?c.zc_control = @splat(null),
+    vendor_current: ?*@import("typed_synthetic.zig").Ref = null,
+    vendor_saved: ?*@import("typed_synthetic.zig").Ref = null,
+    vendor_frames: [c.ZC_MAX_BUFFERS]?*@import("typed_synthetic.zig").Ref = @splat(null),
     af_steps: u32 = 0,
     af_state: i32 = 0,
     af_pause_state: i32 = 0,
@@ -166,12 +170,18 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, cont
         h.active[c.ZC_LENS_POSITION].values[0] = config.lens_position;
         h.active[c.ZC_AF_MODE].values[0] = 0;
     }
+    for (1..31) |id| if (id != c.ZC_AF_TRIGGER and id != c.ZC_AF_PAUSE) {
+        h.saved[id] = h.active[id];
+    };
     pipeline.* = h.pipeline;
     info.* = h.info;
     out.* = h;
     return c.ZC_OK;
 }
 pub fn start(h: *Handle) c_int {
+    for (h.saved, 0..) |value, id| if (h.pending[id] == null) {
+        h.pending[id] = value;
+    };
     h.af_pause_state = 0;
     if (h.active[c.ZC_AF_MODE].values[0] == 2) {
         h.af_state = 1;
@@ -185,14 +195,21 @@ pub fn stop(h: *Handle) c_int {
         h.fail_stop_once = false;
         return c.ZC_IO;
     }
-    h.pending[c.ZC_AF_TRIGGER] = null;
-    h.pending[c.ZC_AF_PAUSE] = null;
+    h.pending = @splat(null);
+    const refs = @import("typed_synthetic.zig").Ref;
+    const saved = refs.retain(h.vendor_saved);
+    refs.release(h.vendor_current);
+    h.vendor_current = saved;
     h.af_steps = 0;
     h.af_state = 0;
     h.af_pause_state = 0;
     return c.ZC_OK;
 }
 pub fn close(h: *Handle) void {
+    const refs = @import("typed_synthetic.zig").Ref;
+    refs.release(h.vendor_current);
+    refs.release(h.vendor_saved);
+    for (h.vendor_frames) |p| refs.release(p);
     for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     for (h.lores_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
@@ -237,6 +254,9 @@ pub fn queue(h: *Handle, index: u32) c_int {
             entry.* = null;
         }
     }
+    const refs = @import("typed_synthetic.zig").Ref;
+    refs.release(h.vendor_frames[index]);
+    h.vendor_frames[index] = refs.retain(h.vendor_current);
     h.applied_revision = h.revision;
     var f = std.mem.zeroes(c.zc_frame);
     f.main = h.info.main;
@@ -416,7 +436,18 @@ pub fn setControls(h: *Handle, values: [*]const c.zc_control, count: u32, revisi
         return c.ZC_IO;
     }
     if (h.revision == std.math.maxInt(u64)) return c.ZC_STATE;
-    for (values[0..count]) |value| h.pending[value.id] = value;
+    for (values[0..count]) |value| if (value.id == c.ZC_AE_ENABLE) {
+        for ([_]u32{ c.ZC_EXPOSURE_TIME_MODE, c.ZC_ANALOGUE_GAIN_MODE }) |app| {
+            var mode = h.saved[app].?;
+            mode.values[0] = if (value.values[0] != 0) 0 else 1;
+            h.pending[app] = mode;
+            h.saved[app] = mode;
+        }
+    };
+    for (values[0..count]) |value| {
+        h.pending[value.id] = value;
+        if (value.id != c.ZC_AF_TRIGGER and value.id != c.ZC_AF_PAUSE) h.saved[value.id] = value;
+    }
     h.revision += 1;
     revision.* = h.revision;
     return c.ZC_OK;
@@ -456,7 +487,11 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
     return switch (kind) {
         2 => implementation.properties(sink, 0),
         3 => implementation.controls(h, sink),
-        4 => if (index < h.info.buffer_count) implementation.metadata(sink, h.catalog_metadata[index]) else c.ZC_INVALID,
+        4 => blk: {
+            if (index >= h.info.buffer_count) break :blk c.ZC_INVALID;
+            const rc = implementation.metadata(sink, h.catalog_metadata[index]);
+            break :blk if (rc != 0) rc else @import("typed_synthetic.zig").metadata(h, index, sink);
+        },
         else => c.ZC_INVALID,
     };
 }
@@ -474,3 +509,8 @@ pub fn cameraId(_: *Handle, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     @memcpy(data.?[0..device_id.len], device_id);
     return c.ZC_OK;
 }
+
+pub const PreparedControls = @import("typed_synthetic.zig").Prepared;
+pub const prepareNative = @import("typed_synthetic.zig").prepare;
+pub const commitNative = @import("typed_synthetic.zig").commit;
+pub const closeNative = @import("typed_synthetic.zig").close;

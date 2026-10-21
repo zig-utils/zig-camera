@@ -12,6 +12,9 @@ const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID
 const Session = struct {
     identity: Identity = .{},
     desired: ControlState = .{},
+    native_desired: ?@import("catalog.zig").wire.Writer = null,
+    native_restored: bool = false,
+    accepted_af_mode: ?f64 = null,
     control_revision: u64 = 0,
     control_base: u64 = 0,
     restored: bool = false,
@@ -385,6 +388,10 @@ fn stopLocked(self: *Session) c_int {
     self.running = false;
     self.af_lock_valid = false;
     self.pause_command = 2;
+    self.accepted_af_mode = null;
+    for (self.desired.values()) |value| if (value.id == c.ZC_AF_MODE) {
+        self.accepted_af_mode = value.values[0];
+    };
     if (self.af) |*af| af.stop();
     self.changed.broadcast();
     self.mutex.unlock();
@@ -420,6 +427,7 @@ pub export fn zc_close(p: *c.zc_camera) c_int {
         return rc;
     }
     driver.close(self.device.?);
+    if (self.native_desired) |*writer| writer.deinit();
     self.operation.unlock();
     std.heap.c_allocator.destroy(self);
     return c.ZC_OK;
@@ -463,6 +471,8 @@ fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u6
     // older explicit overrides; explicit modes in THIS batch still win.
     const removed: []const u32 = if (ae) &.{ c.ZC_EXPOSURE_TIME_MODE, c.ZC_ANALOGUE_GAIN_MODE } else &.{};
     const next = self.desired.updated(kept[0..count], removed) catch return c.ZC_INVALID;
+    var staged_native = stageLegacyOverwrite(self, values) catch |e| return catalogs.status(e);
+    defer if (staged_native) |*writer| writer.deinit();
     var native_revision: u64 = 0;
     const rc = driver.setControls(self.device.?, values.ptr, @intCast(values.len), &native_revision);
     if (rc != 0) return rc;
@@ -473,15 +483,15 @@ fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u6
     for (values) |value| {
         if (value.id >= c.ZC_LENS_POSITION and value.id <= c.ZC_AF_WINDOWS or value.id == c.ZC_AF_PAUSE) self.af_lock_valid = false;
         if (value.id == c.ZC_AF_MODE) {
-            const previous = for (self.desired.values()) |old| {
-                if (old.id == c.ZC_AF_MODE) break old.values[0];
-            } else @as(f64, if (self.config.lens_position >= 0) 0 else 2);
+            const previous = self.accepted_af_mode orelse @as(f64, if (self.config.lens_position >= 0) 0 else 2);
             if (previous != value.values[0]) self.pause_command = 2;
+            self.accepted_af_mode = value.values[0];
         }
         if (value.id == c.ZC_AF_PAUSE) pause = @intFromFloat(value.values[0]);
     }
     // Backends process mode before pause regardless of caller batch order.
     if (pause) |command| self.pause_command = command;
+    publishNative(self, &staged_native);
     self.desired = next;
     self.control_revision = logical;
     revision.* = logical;
@@ -599,8 +609,7 @@ pub export fn zc_autofocus_start(p: *c.zc_camera, job_id: *u64) c_int {
     return c.ZC_OK;
 }
 fn continuous(self: *Session) bool {
-    for (self.desired.values()) |value| if (value.id == c.ZC_AF_MODE) return value.values[0] == 2;
-    return false;
+    return self.accepted_af_mode != null and self.accepted_af_mode.? == 2;
 }
 // operation held. Replacing an owned pause command is explicit and returns a fresh ID.
 fn pauseStartLocked(self: *Session, command: u32, replace: bool, job_id: *u64) c_int {
@@ -1653,4 +1662,242 @@ test "full camera ID copies preserve identifiers beyond legacy info storage" {
     try std.testing.expectEqual(c.ZC_OK, zc_get_camera_id(self.ptr(), &output, output.len, &length));
     try std.testing.expectEqualSlices(u8, &source, output[0..length]);
     try std.testing.expectEqual(@as(u8, 0xaa), output[length]);
+}
+
+const typed = @import("native_controls.zig");
+const CatalogState = @import("home/catalog_state.zig");
+fn nativeReader(self: *Session) !?catalogs.wire.Reader {
+    if (self.native_desired) |*writer| return try catalogs.wire.Reader.init(try writer.finish());
+    return null;
+}
+fn stageLegacyOverwrite(self: *Session, values: []const c.zc_control) !?catalogs.wire.Writer {
+    const source = (try nativeReader(self)) orelse return null;
+    var removed: [typed.max_controls]u32 = undefined;
+    var count: usize = 0;
+    var records = source.records();
+    while (try records.next()) |record| {
+        for (values) |value| {
+            if (value.id == c.ZC_AF_TRIGGER or value.id == c.ZC_AF_PAUSE) continue;
+            if (record.info.app_id == value.id or (value.id == c.ZC_AE_ENABLE and (record.info.app_id == c.ZC_EXPOSURE_TIME_MODE or record.info.app_id == c.ZC_ANALOGUE_GAIN_MODE))) {
+                removed[count] = record.info.id;
+                count += 1;
+                break;
+            }
+        }
+    }
+    if (count == 0) return null;
+    var empty = try catalogs.wire.Writer.init(std.heap.c_allocator, typed.update_kind, catalogs.limit);
+    defer empty.deinit();
+    return try CatalogState.updated(std.heap.c_allocator, source, try catalogs.wire.Reader.init(try empty.finish()), removed[0..count], typed.state_kind, typed.max_controls, catalogs.limit);
+}
+fn publishNative(self: *Session, staged: *?catalogs.wire.Writer) void {
+    if (staged.*) |writer| {
+        if (self.native_desired) |*old| old.deinit();
+        self.native_desired = writer;
+        staged.* = null;
+    }
+}
+fn applyTypedLocked(self: *Session, input_reader: catalogs.wire.Reader, revision: *u64, restoring: bool) c_int {
+    if (input_reader.count == 0 or input_reader.count > typed.max_controls) return c.ZC_INVALID;
+    if (self.control_revision == std.math.maxInt(u64)) return c.ZC_STATE;
+    var entries: [typed.max_controls]typed.Input = undefined;
+    var index: usize = 0;
+    var records = input_reader.records();
+    while (records.next() catch return c.ZC_INVALID) |record| {
+        entries[index] = typed.input(record) catch return if (record.info.kind == .unknown or record.info.kind == .none) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+        index += 1;
+    }
+    const normalized = catalogs.Catalog.create(typed.update_kind) catch |e| return catalogs.status(e);
+    defer normalized.destroy();
+    const sink = normalized.sink();
+    var prepared: ?*driver.PreparedControls = null;
+    const prepare_rc = driver.prepareNative(self.device.?, &entries, @intCast(index), &sink, &prepared);
+    if (prepare_rc != 0) return prepare_rc;
+    defer driver.closeNative(prepared.?);
+    const normalized_reader = catalogs.wire.Reader.init(normalized.writer.finish() catch return c.ZC_DEVICE) catch return c.ZC_DEVICE;
+    var persistent = catalogs.wire.Writer.init(std.heap.c_allocator, typed.update_kind, catalogs.limit) catch return c.ZC_NOMEM;
+    defer persistent.deinit();
+    var kept: [c.ZC_MAX_CONTROLS]c.zc_control = undefined;
+    var removed_apps: [c.ZC_MAX_CONTROLS]u32 = undefined;
+    var kept_count: usize = 0;
+    var removed_count: usize = 0;
+    var ae = false;
+    var focus = false;
+    records = normalized_reader.records();
+    while (records.next() catch return c.ZC_DEVICE) |record| {
+        const app = record.info.app_id;
+        if (restoring and !typed.persistent(record)) return c.ZC_INVALID;
+        if (app >= c.ZC_LENS_POSITION and app <= c.ZC_AF_WINDOWS or app == c.ZC_AF_PAUSE) focus = true;
+        if (!typed.persistent(record)) continue;
+        persistent.begin(record.info) catch |e| return catalogs.status(e);
+        var values = record.values();
+        while (values.next() catch return c.ZC_DEVICE) |value| persistent.append(value) catch |e| return catalogs.status(e);
+        persistent.end() catch |e| return catalogs.status(e);
+        if (app != 0) {
+            if (removed_count == removed_apps.len) return c.ZC_INVALID;
+            removed_apps[removed_count] = app;
+            removed_count += 1;
+            if (typed.legacy(record)) |value| {
+                kept[kept_count] = value;
+                kept_count += 1;
+            }
+            if (app == c.ZC_AE_ENABLE) ae = true;
+        }
+    }
+    self.mutex.lock();
+    const busy = if (self.af) |af| !af.terminal() else false;
+    self.mutex.unlock();
+    if (focus and busy) return c.ZC_BUSY;
+    if (ae) {
+        // Dependency removals precede explicit updates in this batch.
+        for ([_]u32{ c.ZC_EXPOSURE_TIME_MODE, c.ZC_ANALOGUE_GAIN_MODE }) |app| {
+            var present = false;
+            for (removed_apps[0..removed_count]) |existing| if (existing == app) {
+                present = true;
+            };
+            if (!present) {
+                removed_apps[removed_count] = app;
+                removed_count += 1;
+            }
+        }
+    }
+    const cache = self.desired.updated(kept[0..kept_count], removed_apps[0..removed_count]) catch return c.ZC_INVALID;
+    var removed_native: [typed.max_controls]u32 = undefined;
+    var removed_native_count: usize = 0;
+    const source = nativeReader(self) catch return c.ZC_DEVICE;
+    if (ae) if (source) |reader| {
+        var old = reader.records();
+        while (old.next() catch return c.ZC_DEVICE) |record| {
+            if (record.info.app_id == c.ZC_EXPOSURE_TIME_MODE or record.info.app_id == c.ZC_ANALOGUE_GAIN_MODE) {
+                removed_native[removed_native_count] = record.info.id;
+                removed_native_count += 1;
+            }
+        }
+    };
+    var staged: ?catalogs.wire.Writer = null;
+    defer if (staged) |*writer| writer.deinit();
+    if (persistent.count != 0 or removed_native_count != 0) staged = CatalogState.updated(std.heap.c_allocator, source, catalogs.wire.Reader.init(persistent.finish() catch return c.ZC_DEVICE) catch return c.ZC_DEVICE, removed_native[0..removed_native_count], typed.state_kind, typed.max_controls, catalogs.limit) catch |e| return if (e == error.StateFull) c.ZC_BUSY else catalogs.status(e);
+    var native_revision: u64 = 0;
+    const rc = driver.commitNative(self.device.?, prepared.?, &native_revision);
+    if (rc != 0) return rc;
+    const logical = std.math.add(u64, self.control_base, native_revision) catch return c.ZC_DEVICE;
+    records = normalized_reader.records();
+    var pause: ?u32 = null;
+    while (records.next() catch unreachable) |record| {
+        const app = record.info.app_id;
+        if (app >= c.ZC_LENS_POSITION and app <= c.ZC_AF_WINDOWS or app == c.ZC_AF_PAUSE) self.af_lock_valid = false;
+        const value = typed.legacy(record);
+        if (app == c.ZC_AF_MODE) {
+            if (value != null and value.?.type == c.ZC_INT and value.?.count == 1) {
+                const current = value.?.values[0];
+                if (current != (self.accepted_af_mode orelse @as(f64, if (self.config.lens_position >= 0) 0 else 2))) self.pause_command = 2;
+                self.accepted_af_mode = current;
+            } else {
+                self.accepted_af_mode = null;
+                self.pause_command = 2;
+            }
+        }
+        if (app == c.ZC_AF_PAUSE and value != null and value.?.type == c.ZC_INT and value.?.count == 1 and value.?.values[0] >= 0 and value.?.values[0] <= 2) pause = @intFromFloat(value.?.values[0]);
+    }
+    if (pause) |command| self.pause_command = command;
+    publishNative(self, &staged);
+    self.desired = cache;
+    self.control_revision = logical;
+    revision.* = logical;
+    return c.ZC_OK;
+}
+pub export fn zc_set_native_controls(p: *c.zc_camera, data: ?[*]const u8, length: u64, revision: *u64) c_int {
+    if (data == null or length > catalogs.limit or length < 16) return c.ZC_INVALID;
+    const reader = typed.reader(data.?[0..@intCast(length)], typed.update_kind) catch return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return applyTypedLocked(self, reader, revision, false);
+}
+pub export fn zc_get_native_controls(p: *c.zc_camera, out: *?*c.zc_catalog, revision: *u64) c_int {
+    out.* = null;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const result = catalogs.Catalog.create(typed.state_kind) catch return c.ZC_NOMEM;
+    var success = false;
+    defer if (!success) result.destroy();
+    if (nativeReader(self) catch return c.ZC_DEVICE) |reader| {
+        const sink = result.sink();
+        var records = reader.records();
+        while (records.next() catch return c.ZC_DEVICE) |record| {
+            const rc = typed.emit(&sink, record);
+            if (rc != 0) return rc;
+        }
+    }
+    revision.* = self.control_revision;
+    out.* = result.ptr();
+    success = true;
+    return c.ZC_OK;
+}
+pub export fn zc_restore_native_controls(p: *c.zc_camera, data: ?[*]const u8, length: u64, base: u64, revision: *u64) c_int {
+    if (data == null or length > catalogs.limit or length < 16) return c.ZC_INVALID;
+    const reader = typed.reader(data.?[0..@intCast(length)], typed.state_kind) catch return c.ZC_INVALID;
+    var records = reader.records();
+    while (records.next() catch return c.ZC_INVALID) |record| if (!typed.persistent(record)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    if (self.started_once or self.native_restored or (self.native_desired != null and self.native_desired.?.count != 0)) return c.ZC_STATE;
+    const seeded = self.restored;
+    if (seeded) {
+        if (base != self.control_revision) return c.ZC_STATE;
+    } else {
+        if (self.control_revision != 0 or self.desired.count != 0) return c.ZC_STATE;
+        self.control_base = base;
+        self.control_revision = base;
+    }
+    if (reader.count != 0) {
+        const rc = applyTypedLocked(self, reader, revision, true);
+        if (rc != 0) {
+            if (!seeded) {
+                self.control_base = 0;
+                self.control_revision = 0;
+            }
+            return rc;
+        }
+    } else revision.* = base;
+    self.native_restored = true;
+    self.restored = true;
+    return c.ZC_OK;
+}
+
+test "typed preparation errors preserve backend state, journals and revision outputs" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    var writer = try catalogs.wire.Writer.init(std.testing.allocator, typed.update_kind, 1024);
+    defer writer.deinit();
+    try writer.begin(.{ .id = 0x10001, .kind = .i64, .name = "" });
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(i64, &bytes, 9007199254740993, .little);
+    try writer.append(.{ .kind = .i64, .data = &bytes });
+    try writer.end();
+    const packet = try writer.finish();
+    var revision: u64 = 77;
+    session(camera.?).device.?.fail_controls_once = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_set_native_controls(camera.?, packet.ptr, packet.len, &revision));
+    try std.testing.expectEqual(@as(u64, 77), revision);
+    try std.testing.expectEqual(@as(u64, 0), session(camera.?).control_revision);
+    try std.testing.expect(session(camera.?).native_desired == null);
+    try std.testing.expect(session(camera.?).device.?.vendor_current == null);
+    try std.testing.expectEqual(c.ZC_OK, zc_set_native_controls(camera.?, packet.ptr, packet.len, &revision));
+    try std.testing.expectEqual(@as(u64, 1), revision);
+    const old = session(camera.?).device.?.vendor_current.?;
+    session(camera.?).device.?.fail_controls_once = true;
+    try std.testing.expectEqual(c.ZC_IO, zc_set_native_controls(camera.?, packet.ptr, packet.len, &revision));
+    try std.testing.expect(old == session(camera.?).device.?.vendor_current.?);
+    try std.testing.expectEqual(@as(u64, 1), revision);
 }

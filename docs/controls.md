@@ -2,9 +2,11 @@
 
 The Zig/C ABI exports typed control discovery and atomic batches. Bun exposes
 Control IDs and setControls with bool/int/float/rect values. A metadata control
-revision means request submission; sensor pipeline latency remains. Unsupported
-vendor controls fail explicitly. autofocus returns a Promise driven by native
-metadata jobs and the shared capture pump; timeout/AbortSignal cancels the job.
+revision means request submission; sensor pipeline latency remains.
+[setNativeControls](native-controls.md) adds exact native/vendor values and a
+separate typed replay journal. Unsupported controls fail explicitly. autofocus
+returns a Promise driven by native metadata jobs and the shared capture pump;
+timeout/AbortSignal cancels the job.
 startPreview/stopPreview create/show/close SDL on the same Bun UI thread and use
 that pump alongside capture and recording. There is no Qt/DRM backend or overlay.
 Physical focus, display and exposure validation remains required.
@@ -18,8 +20,9 @@ Every permanent switch, temporary RGB/metadata/lores/JPEG/DNG capture and
 coordinated recording switch copies the native desired runtime state when the
 job claims the camera. Queued jobs therefore include successful controls submitted
 before claim, including pending settings not yet visible in sensor metadata.
-The snapshot is replayed atomically after camera configuration and **before**
-start, warmup, capture, preview recreation or recorder publication. Restoration
+Both compatibility and native typed snapshots are validated and replayed after
+camera configuration and **before** start, warmup, capture, preview recreation or
+recorder publication. A partially replayed candidate cannot publish. Restoration
 also runs on the previous mode after temporary capture, cancellation, worker
 rollback or failed recorder/output preparation.
 
@@ -35,7 +38,9 @@ await camera.switchMode({ width: 1920, height: 1080, role: 'video' })
 ```
 
 The native journal retains only the latest accepted value for each ID, in sorted
-order, within ZC_MAX_CONTROLS (32) slots. Invalid or unsupported batches and driver
+order, within ZC_MAX_CONTROLS (32) slots for the convenience projection. Native-only
+values use the separate bounded typed journal described in [native controls](native-controls.md).
+Invalid or unsupported batches and driver
 failures preserve it. Returned snapshot arrays and scalar values are copies;
 caller mutation cannot alter native state. This records explicit desired settings,
 not inferred automatic exposure/white-balance/lens results. Constructor settings

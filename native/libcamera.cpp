@@ -113,10 +113,10 @@ uint32_t appControl(const std::string &name) {
     for(size_t i=1;i<sizeof(controlNames)/sizeof(*controlNames);i++)if(name==controlNames[i])return i;
     return 0;
 }
-template<class T> int beginCatalog(const zcd_catalog_sink &s, const T *id, uint32_t group, uint32_t fallback, ControlType type) {
+template<class T> int beginCatalog(const zcd_catalog_sink &s, const T *id, uint32_t group, uint32_t fallback, ControlType type, uint32_t extra_flags=0, uint32_t app_override=UINT32_MAX) {
     const std::string name=id ? id->name() : "#"+std::to_string(fallback);
     zcd_catalog_record r{};r.group=group;r.id=id ? id->id() : fallback;
-    r.app_id=appControl(name);r.native_type=type;r.kind=portableType(type);
+    r.app_id=app_override==UINT32_MAX?appControl(name):app_override;r.native_type=type;r.kind=portableType(type);
     r.name=name.data();r.name_length=name.size();
     if constexpr (HasCatalogInfo<T>::value) {
         if(id) {
@@ -126,6 +126,7 @@ template<class T> int beginCatalog(const zcd_catalog_sink &s, const T *id, uint3
         }
     }
     if constexpr (HasEnumerators<T>::value) if(id)r.flags|=64;
+    r.flags|=extra_flags;
     return s.begin(s.context,&r);
 }
 template<class T> void component(std::vector<uint8_t> &data, T field) {
@@ -681,3 +682,174 @@ extern "C" int zcd_camera_id(Device *device,uint8_t *data,uint64_t capacity,uint
     if(capacity<id.size())return ZC_INVALID;
     std::memcpy(data,id.data(),id.size());return ZC_OK;
 }
+
+// Preparing copies pending/backend replay state and validates everything before
+// publication. Zig can allocate its owned journal before this transaction commits.
+struct PreparedControls {
+    Device *owner;
+    uint64_t version;
+    ControlList pending, desired;
+    bool committed=false;
+    explicit PreparedControls(Device *d):owner(d),version(d->control_revision),pending(d->pending),desired(d->desired){}
+};
+size_t elementWidth(uint32_t kind) {
+    switch(kind){case 1:case 2:case 6:return 1;case 9:return 2;case 3:case 5:case 10:return 4;case 4:case 8:case 11:return 8;case 7:return 16;default:return 0;}
+}
+template<class T> T inputNumber(const zcd_catalog_value &v,size_t element) {
+    T out{};auto *bytes=reinterpret_cast<uint8_t *>(&out);
+    const uint16_t endian=1;const bool same=bool(v.flags&2)==bool(*reinterpret_cast<const uint8_t *>(&endian));
+    for(size_t i=0;i<sizeof(T);i++)bytes[i]=v.data[element*sizeof(T)+(same ? i : sizeof(T)-1-i)];
+    return out;
+}
+template<class T> int makeGeometry(const zcd_catalog_value &v,ControlValue &out) {
+    if constexpr(std::is_constructible_v<ControlValue,T>) {
+        std::vector<T> items;items.reserve(v.count);
+        for(size_t i=0;i<v.count;i++) {
+            if constexpr(std::is_same_v<T,Rectangle>) items.emplace_back(inputNumber<int32_t>(v,i*4),inputNumber<int32_t>(v,i*4+1),inputNumber<uint32_t>(v,i*4+2),inputNumber<uint32_t>(v,i*4+3));
+            else if constexpr(std::is_same_v<T,Size>)items.emplace_back(inputNumber<uint32_t>(v,i*2),inputNumber<uint32_t>(v,i*2+1));
+            else items.emplace_back(inputNumber<int32_t>(v,i*2),inputNumber<int32_t>(v,i*2+1));
+        }
+        out=v.flags&1 ? ControlValue(Span<const T>(items.data(),items.size())) : ControlValue(items[0]);return ZC_OK;
+    }
+    return ZC_UNSUPPORTED;
+}
+int inputValue(const ControlId *id,const zcd_catalog_value &v,ControlValue &out) {
+    const uint32_t type=portableType(id->type());
+    if(type==0 || type==255)return ZC_UNSUPPORTED;
+    if(v.kind!=type)return ZC_INVALID;
+    const size_t width=elementWidth(type);
+    if(v.length>4*1024*1024 || v.length!=uint64_t(v.count)*width || (!(v.flags&1) && type!=6 && v.count!=1))return ZC_INVALID;
+    if(type==7)return makeGeometry<Rectangle>(v,out);
+    if(type==8)return makeGeometry<Size>(v,out);
+    if(type==11)return makeGeometry<Point>(v,out);
+    out.reserve(id->type(),bool(v.flags&1)||type==6,v.count);
+    auto data=out.data();if(data.size()!=v.length)return ZC_INVALID;
+    const uint16_t endian=1;const bool same=bool(v.flags&2)==bool(*reinterpret_cast<const uint8_t *>(&endian));
+    for(size_t i=0;i<v.count;i++)for(size_t j=0;j<width;j++)data[i*width+j]=v.data[i*width+(same ? j : width-1-j)];
+    if(type==1)for(const auto b:data)if(b>1)return ZC_INVALID;
+    if(type==5)for(size_t i=0;i<v.count;i++){float f;std::memcpy(&f,data.data()+i*4,4);if(!std::isfinite(f))return ZC_INVALID;}
+    return ZC_OK;
+}
+template<class T> bool numericRange(const ControlValue &v,const ControlValue &bound,bool minimum) {
+    if(bound.isNone())return true;
+    if(v.type()!=bound.type() || (bound.numElements()!=1 && bound.numElements()!=v.numElements()))return false;
+    const auto data=v.data(),limits=bound.data();
+    for(size_t i=0;i<v.numElements();i++) {
+        T number,edge;std::memcpy(&number,data.data()+i*sizeof(T),sizeof(T));
+        std::memcpy(&edge,limits.data()+(bound.numElements()==1?0:i)*sizeof(T),sizeof(T));
+        if(minimum ? number<edge : number>edge)return false;
+    }
+    return true;
+}
+template<class T> bool geometryRange(const ControlValue &v,const ControlInfo &range) {
+    if constexpr(std::is_constructible_v<ControlValue,T>) {
+        const auto &lo=range.min(),&hi=range.max();
+        for(const auto *bound:{&lo,&hi})if(!bound->isNone() && (bound->type()!=v.type() || (bound->numElements()!=1 && bound->numElements()!=v.numElements())))return false;
+        auto element=[](const ControlValue &value,size_t i){return value.isArray()?value.get<Span<const T>>()[value.numElements()==1?0:i]:value.get<T>();};
+        for(size_t i=0;i<v.numElements();i++) {
+            const auto value=element(v,i);
+            if(!lo.isNone()) {
+                const auto bound=element(lo,i);
+                if constexpr(std::is_same_v<T,Rectangle>) {if(value.x<bound.x||value.y<bound.y||value.width<bound.width||value.height<bound.height)return false;}
+                else if constexpr(std::is_same_v<T,Size>) {if(value.width<bound.width||value.height<bound.height)return false;}
+                else if(value.x<bound.x||value.y<bound.y)return false;
+            }
+            if(!hi.isNone()) {
+                const auto bound=element(hi,i);
+                if constexpr(std::is_same_v<T,Rectangle>) {if(int64_t(value.x)+value.width>int64_t(bound.x)+bound.width||int64_t(value.y)+value.height>int64_t(bound.y)+bound.height)return false;}
+                else if constexpr(std::is_same_v<T,Size>) {if(value.width>bound.width||value.height>bound.height)return false;}
+                else if(value.x>bound.x||value.y>bound.y)return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+bool rangeValue(const ControlValue &v,const ControlInfo &range) {
+    const uint32_t type=portableType(v.type());
+    auto both=[&](auto value){using T=decltype(value);return numericRange<T>(v,range.min(),true)&&numericRange<T>(v,range.max(),false);};
+    switch(type) {
+    case 1:case 2:if(!both(uint8_t{}))return false;break;
+    case 3:if(!both(int32_t{}))return false;break;
+    case 4:if(!both(int64_t{}))return false;break;
+    case 5:if(!both(float{}))return false;break;
+    case 9:if(!both(uint16_t{}))return false;break;
+    case 10:if(!both(uint32_t{}))return false;break;
+    case 7:if(!geometryRange<Rectangle>(v,range))return false;break;
+    case 8:if(!geometryRange<Size>(v,range))return false;break;
+    case 11:if(!geometryRange<Point>(v,range))return false;break;
+    default:break;
+    }
+    if(!range.values().empty()) {
+        if(!v.isArray() || type==6){for(const auto &choice:range.values())if(v==choice)return true;return false;}
+        for(const auto &choice:range.values())if(v==choice)return true;
+        const auto data=v.data();const auto width=elementWidth(type);
+        for(size_t i=0;i<v.numElements();i++) {
+            bool found=false;
+            for(const auto &choice:range.values())if(!choice.isArray() && choice.type()==v.type() && choice.data().size()==width && std::memcmp(data.data()+i*width,choice.data().data(),width)==0){found=true;break;}
+            if(!found)return false;
+        }
+    }
+    return true;
+}
+template<class T> int writableShape(const T *id,const ControlValue &v) {
+    if constexpr(HasCatalogInfo<T>::value) {
+        if(!id->isInput())return ZC_UNSUPPORTED;
+        if(v.type()!=ControlTypeString && id->isArray()!=v.isArray())return ZC_INVALID;
+        if(id->isArray() && id->size()!=std::numeric_limits<size_t>::max() && id->size()!=v.numElements())return ZC_INVALID;
+    }
+    return ZC_OK;
+}
+template<class T> bool expectedVendor(const T *id,const zcd_catalog_record &r) {
+    if(!(r.flags&32))return true;
+    if constexpr(HasCatalogInfo<T>::value)return id->vendor()==(r.vendor_length?std::string(r.vendor,r.vendor_length):std::string{});
+    return r.vendor_length==0;
+}
+extern "C" int zcd_prepare_native_controls(Device *device,const zcd_control_input *inputs,uint32_t count,const zcd_catalog_sink *sink,PreparedControls **out) {
+    *out=nullptr;
+    try {
+        if(device->control_revision==UINT64_MAX)return ZC_STATE;
+        auto staged=std::make_unique<PreparedControls>(device);
+        struct Value {const ControlId *id;ControlValue value;bool persistent;uint32_t app;};
+        std::vector<Value> values;values.reserve(count);
+        for(uint32_t i=0;i<count;i++) {
+            const auto &r=inputs[i].record;const auto found=device->camera->controls().find(r.id);
+            if(found==device->camera->controls().end())return ZC_UNSUPPORTED;
+            const auto *id=found->first;
+            if((r.name_length && id->name()!=std::string(r.name,r.name_length))||!expectedVendor(id,r))return ZC_UNSUPPORTED;
+            ControlValue value;int rc=inputValue(id,inputs[i].value,value);if(rc)return rc;
+            rc=writableShape(id,value);if(rc)return rc;
+            if(!rangeValue(value,found->second))return ZC_INVALID;
+            for(const auto &previous:values)if(previous.id==id)return ZC_INVALID;
+            const auto named=appControl(id->name());
+            const uint32_t app=named && device->controlId(named)==id ? named : 0;
+            if(app==ZC_AE_ENABLE && (value.type()!=ControlTypeBool || value.isArray()))return ZC_INVALID;
+            if(app==ZC_COLOUR_GAINS && (!value.isArray()||value.numElements()!=2))return ZC_INVALID;
+            if(app==ZC_AF_WINDOWS && !value.isArray())return ZC_INVALID;
+            if(app==ZC_SCALER_CROP && value.isArray())return ZC_INVALID;
+            if(app==ZC_FRAME_DURATION_LIMITS && value.type()==ControlTypeInteger64){if(!value.isArray())return ZC_INVALID;const auto limits=value.get<Span<const int64_t>>();if(limits.size()!=2||limits[0]>limits[1])return ZC_INVALID;}
+            values.push_back({id,std::move(value),!(r.flags&128)&&app!=ZC_AF_TRIGGER&&app!=ZC_AF_PAUSE,app});
+        }
+        for(const auto &v:values)if(v.app==ZC_AE_ENABLE) {
+            const int32_t mode=v.value.get<bool>()?0:1;
+            setMode(staged->pending,device->camera,"ExposureTimeMode",mode);setMode(staged->pending,device->camera,"AnalogueGainMode",mode);
+            if(v.persistent){setMode(staged->desired,device->camera,"ExposureTimeMode",mode);setMode(staged->desired,device->camera,"AnalogueGainMode",mode);}
+        }
+        for(const auto &v:values) {
+            staged->pending.set(v.id->id(),v.value);
+            if(v.persistent)staged->desired.set(v.id->id(),v.value);
+            int rc=beginCatalog(*sink,v.id,0,v.id->id(),v.id->type(),v.persistent?0:128,v.app);if(rc)return rc;
+            rc=catalogValue(*sink,0,v.value);if(rc)return rc;
+            rc=sink->end(sink->context);if(rc)return rc;
+        }
+        *out=staged.release();return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+extern "C" int zcd_commit_native_controls(Device *device,PreparedControls *p,uint64_t *revision) {
+    if(p->owner!=device || p->committed || p->version!=device->control_revision)return ZC_STALE;
+    if(device->control_revision==UINT64_MAX)return ZC_STATE;
+    device->pending=std::move(p->pending);device->desired=std::move(p->desired);
+    *revision=++device->control_revision;p->committed=true;return ZC_OK;
+}
+extern "C" void zcd_close_native_controls(PreparedControls *p){delete p;}

@@ -1,3 +1,11 @@
+import {
+  encodeNativeControls,
+  encodeNativeSnapshot,
+  nativeAppIds,
+  type NativeControl,
+  type NativeControlSnapshot,
+} from './control-values'
+export type { NativeControl, NativeControlSnapshot } from './control-values'
 import { readCatalog, cameraDescriptors } from './catalog'
 export type {
   TypedCatalog,
@@ -561,17 +569,90 @@ export class Camera {
       controlRevision: revision[0],
     }
   }
+  private readNativeControls() {
+    const revision = new BigUint64Array(1)
+    const controls = readCatalog((out) =>
+      n.zc_get_native_controls(this.handle, out, ptr(revision)),
+    )
+    return { revision: revision[0], controls }
+  }
+  nativeControlSnapshot(): NativeControlSnapshot {
+    this.assertOpen()
+    return this.readNativeControls()
+  }
+  setNativeControls(controls: readonly NativeControl[]) {
+    this.assertOpen()
+    if (this.focusCaptureActive)
+      throw new CameraError(-4, 'focus-locked capture active')
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    const bytes = encodeNativeControls(controls),
+      revision = new BigUint64Array(1)
+    this.assertOpen()
+    if (this.focusCaptureActive || this.hasPendingModes())
+      throw new CameraError(-4, 'camera jobs active')
+    check(
+      n.zc_set_native_controls(
+        this.handle,
+        ptr(bytes),
+        BigInt(bytes.length),
+        ptr(revision),
+      ),
+      'set native controls',
+    )
+    return revision[0]
+  }
+  restoreNativeControls(snapshot: NativeControlSnapshot) {
+    this.assertOpen()
+    if (this.focusJobs || this.focusCaptureActive || this.hasPendingModes())
+      throw new CameraError(-4, 'camera jobs active')
+    const admitted = {
+      revision: snapshot.revision,
+      controls: snapshot.controls,
+    }
+    const bytes = encodeNativeSnapshot(admitted),
+      revision = new BigUint64Array(1)
+    this.assertOpen()
+    if (this.focusJobs || this.focusCaptureActive || this.hasPendingModes())
+      throw new CameraError(-4, 'camera jobs active')
+    check(
+      n.zc_restore_native_controls(
+        this.handle,
+        ptr(bytes),
+        BigInt(bytes.length),
+        admitted.revision,
+        ptr(revision),
+      ),
+      'restore native controls',
+    )
+    return revision[0]
+  }
   private readModeControls(extra = 0n) {
-    const snapshot = this.readControls()
-    // One target replay plus up to three rollback/fallback replays must fit before
-    // any camera ownership is consumed. Extra headroom covers fresh AF start/cancel;
-    // zero-control snapshots only seed a base.
+    const legacy = this.readControls(),
+      native = this.readNativeControls()
+    if (native.revision !== legacy.controlRevision)
+      throw new CameraError(-4, 'controls changed during snapshot')
+    const owned = nativeAppIds(native.controls),
+      kept: Uint8Array[] = []
+    const v = view(legacy.controls)
+    for (let i = 0; i < legacy.controlCount; i++)
+      if (!owned.has(v.getUint32(i * 144, true)))
+        kept.push(legacy.controls.slice(i * 144, (i + 1) * 144))
+    const controls = new Uint8Array(kept.length * 144)
+    kept.forEach((entry, i) => controls.set(entry, i * 144))
+    const count = native.controls.records.length,
+      passes = (kept.length ? 1 : 0) + (count ? 1 : 0)
     if (
-      (snapshot.controlCount || extra) &&
-      snapshot.controlRevision > 0xffffffffffffffffn - 4n - extra
+      (passes || extra) &&
+      native.revision >
+        0xffffffffffffffffn - 4n * BigInt(Math.max(1, passes)) - extra
     )
       throw new CameraError(-2, 'control revision budget exhausted')
-    return snapshot
+    return {
+      controls,
+      controlCount: kept.length,
+      controlRevision: native.revision,
+      nativeControls: encodeNativeSnapshot(native),
+    }
   }
   setControls(controls: RuntimeControl[]) {
     this.assertOpen()
@@ -601,9 +682,10 @@ export class Camera {
       )
     })
     const revision = new BigUint64Array(1)
-    check(
-      n.zc_set_controls(this.handle, ptr(d), controls.length, ptr(revision)),
-    )
+    this.assertOpen()
+    if (this.focusCaptureActive)
+      throw new CameraError(-4, 'focus-locked capture active')
+    check(n.zc_set_controls(this.handle, ptr(d), d.length / 144, ptr(revision)))
     return revision[0]
   }
   async autofocus(options: JobOptions<number> = {}): Promise<number> {

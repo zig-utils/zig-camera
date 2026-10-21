@@ -120,6 +120,22 @@ pub const Camera = struct {
         try check(core.zc_get_camera_id(self.handle, bytes.ptr, @intCast(bytes.len), &length));
         return bytes;
     }
+    pub fn setNativeControls(self: Camera, bytes: []const u8) Error!u64 {
+        var revision: u64 = 0;
+        try check(core.zc_set_native_controls(self.handle, bytes.ptr, bytes.len, &revision));
+        return revision;
+    }
+    pub fn nativeControlSnapshot(self: Camera) Error!struct { catalog: Catalog, revision: u64 } {
+        var out: ?*c.zc_catalog = null;
+        var revision: u64 = 0;
+        try check(core.zc_get_native_controls(self.handle, &out, &revision));
+        return .{ .catalog = .{ .handle = out.? }, .revision = revision };
+    }
+    pub fn restoreNativeControls(self: Camera, bytes: []const u8, base: u64) Error!u64 {
+        var revision: u64 = 0;
+        try check(core.zc_restore_native_controls(self.handle, bytes.ptr, bytes.len, base, &revision));
+        return revision;
+    }
     pub fn pipelineInfo(self: Camera) c.zc_pipeline_info {
         var out: c.zc_pipeline_info = undefined;
         check(core.zc_get_pipeline_info(self.handle, &out)) catch unreachable;
@@ -453,4 +469,47 @@ test "Zig exact camera IDs survive open close and preserve the old index API" {
     try std.testing.expectEqualSlices(u8, id, copy);
     try std.testing.expectError(error.Device, Camera.initId(cfg, "missing"));
     try std.testing.expectError(error.Invalid, Camera.initId(cfg, "bad\x00id"));
+}
+
+test "Zig typed control snapshots preserve i64 and replay before first start" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const cam = try Camera.init(cfg);
+    var writer = try catalog_format.Writer.init(std.testing.allocator, 6, 1024);
+    defer writer.deinit();
+    try writer.begin(.{ .id = 0x10001, .kind = .i64, .name = "" });
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(i64, &bytes, 9007199254740993, .little);
+    try writer.append(.{ .kind = .i64, .data = &bytes });
+    try writer.end();
+    const revision = try cam.setNativeControls(try writer.finish());
+    var snapshot = try cam.nativeControlSnapshot();
+    defer snapshot.catalog.deinit();
+    try std.testing.expectEqual(revision, snapshot.revision);
+    try cam.deinit();
+    const state = try snapshot.catalog.copy(std.testing.allocator);
+    defer std.testing.allocator.free(state);
+    const target = try Camera.init(cfg);
+    defer target.deinit() catch unreachable;
+    const restored = try target.restoreNativeControls(state, snapshot.revision);
+    try std.testing.expect(restored > snapshot.revision);
+    try target.start();
+    var frame = try target.acquire(0);
+    defer frame.release() catch unreachable;
+    try std.testing.expectEqual(restored, (try frame.metadata()).control_revision);
+    var metadata = try frame.metadataCatalog();
+    defer metadata.deinit();
+    const data = try metadata.copy(std.testing.allocator);
+    defer std.testing.allocator.free(data);
+    var records = (try catalog_format.Reader.init(data)).records();
+    var found = false;
+    while (try records.next()) |record| if (record.info.id == 0x10001) {
+        var values = record.values();
+        const value = (try values.next()).?;
+        try std.testing.expectEqual(@as(i64, 9007199254740993), std.mem.readInt(i64, value.data[0..8], if (value.flags & 2 != 0) .little else .big));
+        found = true;
+    };
+    try std.testing.expect(found);
 }

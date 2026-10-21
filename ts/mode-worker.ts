@@ -16,6 +16,7 @@ export interface ModeRequest {
   previousConfig: Uint8Array
   previousPipeline: Uint8Array
   previousStarted: boolean
+  nativeControls?: Uint8Array
   controls: Uint8Array
   controlCount: number
   controlRevision: bigint
@@ -100,6 +101,24 @@ self.onmessage = ({ data: request }) => {
       check(replay)
     }
     result.controlRevision = revision[0]
+    if (
+      request.nativeControls &&
+      view(request.nativeControls).getUint32(12, true)
+    ) {
+      const replay = n.zc_restore_native_controls(
+        result.handle,
+        ptr(request.nativeControls),
+        BigInt(request.nativeControls.length),
+        result.controlRevision,
+        ptr(revision),
+      )
+      if (replay !== 0) {
+        if (restoring) result.restoreControlCode = replay
+        else result.controlCode = replay
+        check(replay)
+      }
+      result.controlRevision = revision[0]
+    }
     if (start) {
       check(n.zc_start(result.handle))
       result.started = true

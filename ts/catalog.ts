@@ -7,7 +7,13 @@ import {
   type Pointer,
 } from './ffi'
 
-export type CatalogKind = 'discovery' | 'properties' | 'controls' | 'metadata'
+export type CatalogKind =
+  | 'discovery'
+  | 'properties'
+  | 'controls'
+  | 'metadata'
+  | 'control-state'
+  | 'control-update'
 export type ValueKind =
   | 'none'
   | 'boolean'
@@ -108,6 +114,8 @@ const catalogKinds = [
   'properties',
   'controls',
   'metadata',
+  'control-state',
+  'control-update',
 ] as const
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 const text = new TextDecoder()

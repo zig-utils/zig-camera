@@ -274,3 +274,11 @@ Home owned device identities (0.36):
   Source commit: ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801
+
+Home transactional typed state (0.37):
+- src/home/catalog_state.zig is verbatim packages/video/src/core/catalog_state.zig.
+  It prepares sorted owned replacements, removal-before-update precedence and
+  bounded rejection before external publication; the camera supplies validation,
+  revisions and backend ownership. The Home MIT license above applies.
+  Source commit: b5ff735d009f3b56c78bc060fdaacf10654480e0.
+  https://github.com/home-lang/home/commit/b5ff735d009f3b56c78bc060fdaacf10654480e0

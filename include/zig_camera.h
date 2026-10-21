@@ -165,14 +165,22 @@ int zc_autofocus_wait(zc_camera *,uint64_t job_id,uint32_t timeout_ms,uint32_t *
  * null/zero obtains size; too-small destinations remain untouched. Close after
  * use; snapshots outlive camera/frame close. Unknown backend types retain bytes.
  * backend: ZC_LIBCAMERA=1 or ZC_SYNTHETIC=0, never implicit fallback. */
-enum { ZC_CATALOG_DISCOVERY=1, ZC_CATALOG_PROPERTIES=2, ZC_CATALOG_CONTROLS=3, ZC_CATALOG_METADATA=4 };
+enum { ZC_CATALOG_DISCOVERY=1, ZC_CATALOG_PROPERTIES=2, ZC_CATALOG_CONTROLS=3, ZC_CATALOG_METADATA=4, ZC_CATALOG_CONTROL_STATE=5, ZC_CATALOG_CONTROL_UPDATE=6 };
 enum { ZC_CATALOG_INPUT=1, ZC_CATALOG_OUTPUT=2, ZC_CATALOG_ARRAY=4,
        ZC_CATALOG_DIRECTION_KNOWN=8, ZC_CATALOG_EXTENT_KNOWN=16,
        ZC_CATALOG_VENDOR_KNOWN=32, ZC_CATALOG_ENUMERATORS_KNOWN=64 };
+enum { ZC_CONTROL_NO_REPLAY=128, ZC_MAX_NATIVE_CONTROLS=256 };
 enum { ZC_CATALOG_CURRENT=0, ZC_CATALOG_MINIMUM=1, ZC_CATALOG_MAXIMUM=2,
        ZC_CATALOG_DEFAULT=3, ZC_CATALOG_CHOICE=4, ZC_CATALOG_ENUMERATOR=5 };
 typedef struct zc_catalog zc_catalog;
 int zc_discover(uint32_t backend, zc_catalog **out);
+/* HCAT control-update (6) inputs, control-state (5) snapshots. One current value
+ * per record, native IDs, <=256 records / 4 MiB. Flag 128 excludes replay. Native
+ * and convenience controls share revisions; typed state is owned by Zig. Restore
+ * is pre-start only; optional convenience restore must precede typed restore. */
+int zc_set_native_controls(zc_camera *,const uint8_t *,uint64_t,uint64_t *revision);
+int zc_get_native_controls(zc_camera *,zc_catalog **out,uint64_t *revision);
+int zc_restore_native_controls(zc_camera *,const uint8_t *,uint64_t,uint64_t base,uint64_t *revision);
 int zc_camera_properties(zc_camera *, zc_catalog **out);
 int zc_camera_controls(zc_camera *, zc_catalog **out);
 int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);

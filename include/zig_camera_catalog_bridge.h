@@ -24,4 +24,8 @@ typedef struct {
     int (*value)(void *, const zcd_catalog_value *);
     int (*end)(void *);
 } zcd_catalog_sink;
+typedef struct {
+    zcd_catalog_record record;
+    zcd_catalog_value value;
+} zcd_control_input;
 #endif

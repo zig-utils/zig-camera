@@ -83,4 +83,43 @@ int main() {
     out.failure=ZC_BUSY;
     assert(catalogList(sink,list)==ZC_BUSY);
     assert(catalogValue(sink,0,ControlValue(exact))==ZC_BUSY);
+    // Raw typed input conversion uses exact payload widths and byte order.
+    const uint8_t big_integer[8]={0,0x20,0,0,0,0,0,1};
+    zcd_catalog_value typed{};typed.kind=4;typed.count=1;typed.data=big_integer;typed.length=8;
+    ControlValue converted;
+    assert(inputValue(&controls::SensorTimestamp,typed,converted)==ZC_OK);
+    assert(converted.get<int64_t>()==9007199254740993LL);
+    const ControlInfo precise(ControlValue(int64_t(0)),ControlValue(int64_t(9007199254740992LL)));
+    assert(!rangeValue(converted,precise));
+    typed.length=7;
+    assert(inputValue(&controls::SensorTimestamp,typed,converted)==ZC_INVALID);
+    const uint8_t bad_boolean[1]={2};typed.kind=1;typed.count=1;typed.data=bad_boolean;typed.length=1;
+    assert(inputValue(&controls::AeEnable,typed,converted)==ZC_INVALID);
+    const uint8_t not_finite[4]={0,0,0x80,0x7f};typed.kind=5;typed.flags=2;typed.data=not_finite;typed.length=4;
+    assert(inputValue(&controls::Brightness,typed,converted)==ZC_INVALID);
+    const auto rect=ControlValue(Rectangle(5,6,10,11));
+    assert(rangeValue(rect,ControlInfo(ControlValue(Rectangle(0,0,1,1)),ControlValue(Rectangle(0,0,20,20)))));
+    assert(!rangeValue(ControlValue(Rectangle(15,6,10,11)),ControlInfo(ControlValue(Rectangle(0,0,1,1)),ControlValue(Rectangle(0,0,20,20)))));
+    const auto sizes=std::array<Size,2>{Size(5,6),Size(5,200)};
+    assert(!rangeValue(ControlValue(Span<const Size>(sizes.data(),sizes.size())),ControlInfo(ControlValue(Size(1,1)),ControlValue(Size(100,100)))));
+    const std::array<ControlValue,2> choices{ControlValue(int32_t(0)),ControlValue(int32_t(2))};
+    const ControlInfo choice_range(Span<const ControlValue>(choices.data(),choices.size()));
+    assert(rangeValue(ControlValue(int32_t(2)),choice_range));
+    assert(!rangeValue(ControlValue(int32_t(1)),choice_range));
+    // Commit is one publication boundary; a retired or stale preparation cannot
+    // publish twice. These ControlLists are real libcamera containers.
+    Device fake;
+    fake.pending=ControlList(controls::controls);fake.desired=ControlList(controls::controls);
+    auto prepared=new PreparedControls(&fake);
+    prepared->pending.set(controls::ExposureTime,int32_t(1234));
+    prepared->desired.set(controls::ExposureTime,int32_t(1234));
+    uint64_t revision=0;
+    assert(zcd_commit_native_controls(&fake,prepared,&revision)==ZC_OK && revision==1);
+    assert(fake.pending.get(controls::ExposureTime).value()==1234);
+    assert(zcd_commit_native_controls(&fake,prepared,&revision)==ZC_STALE);
+    zcd_close_native_controls(prepared);
+    prepared=new PreparedControls(&fake);++fake.control_revision;
+    assert(zcd_commit_native_controls(&fake,prepared,&revision)==ZC_STALE);
+    zcd_close_native_controls(prepared);
+
 }

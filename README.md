@@ -6,11 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.36 adds exact camera ID selection and pins the selected ID across mode
-switches, temporary captures, recorder reconfiguration and rollback. Full IDs are
-owned independently of legacy fixed-width fields, with no index fallback.
-See [camera selection](docs/camera-selection.md), [discovery and catalogs](docs/catalogs.md)
-and the [parity worklist](docs/parity-plan.md).
+Version 0.37 adds atomic native/vendor control writes, exact typed replay and
+owned snapshots across mode changes. Native focus controls share the AF job guard;
+pause/trigger commands are excluded from replay. See [native controls](docs/native-controls.md),
+[continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
+[camera selection](docs/camera-selection.md) and the [parity worklist](docs/parity-plan.md).
 See [async producers](docs/async-producers.md).
 
 The former Python facade has been removed. This is a feature-oriented alternative
