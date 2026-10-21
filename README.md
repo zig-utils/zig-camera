@@ -6,9 +6,9 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.49 adds [display-only RGBA preview overlays](docs/preview-overlays.md)
-with bounded native ownership, SDL alpha composition and restoration across
-camera and recorder mode jobs. See [coordinated recording groups](docs/recording-groups.md),
+Version 0.50 adds [headless preview](docs/headless-preview.md), explicit preview
+state and joined restoration across camera and recorder modes, without requiring
+SDL. See [RGBA preview overlays](docs/preview-overlays.md), [coordinated recording groups](docs/recording-groups.md),
 [shared microphone audio](docs/shared-audio.md),
 [multiple encoders](docs/multiple-encoders.md) and the
 [Home OS reuse audit](docs/home-os-reuse.md).

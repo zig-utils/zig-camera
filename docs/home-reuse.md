@@ -409,3 +409,11 @@ Debug/ReleaseSafe tests pass with Zig 0.15.2 and development Zig. Zig retains
 immutable overlay bytes across mode changes; no renderer/codec dependency is
 introduced into the Home helper. Existing Home OS compositor code remains a
 kernel-only design reference, not a hosted SDL texture or camera lease owner.
+
+The 0.50 audit reuses the existing Home preparation_gate-backed Bun jobs and
+native lease_pool/frame_access ownership for headless preview. It needs no
+additional native payload queue, task runtime or allocator. The existing
+immutable RGBA validator remains used for SDL; headless overlay updates validate
+shape but retain no bytes. Home async's general task scheduler and Home OS's
+framebuffer machinery do not replace the hosted request pump. No shared helper
+needed a code change in this cycle; existing provenance and tests remain intact.

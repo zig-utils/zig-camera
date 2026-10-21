@@ -61,5 +61,6 @@ clips to its current viewport; the test resets that viewport after drawing when
 checking bars. Native tests verify copied padding/alpha and source independence;
 Bun tests cover restoration, upload failure, cleanup and unchanged capture data.
 
-Overlay rectangles/transforms, headless preview lifecycle, DRM/KMS, GPU sharing,
+[Headless preview](headless-preview.md) validates setOverlay input and ignores it,
+without retaining or uploading pixels. Overlay rectangles/transforms, DRM/KMS, GPU sharing,
 GUI integrations and physical Pi preview latency remain parity/acceptance work.

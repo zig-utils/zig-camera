@@ -346,6 +346,15 @@ export interface CameraTransform {
   strict?: boolean
 }
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+export interface PreviewOptions {
+  backend?: 'sdl' | 'headless'
+  title?: string
+}
+export interface PreviewInfo {
+  backend: 'sdl' | 'headless'
+  title: string
+  suspended: boolean
+}
 /** Straight-alpha RGBA8. Active rows are copied into bounded native ownership. */
 export interface PreviewOverlay {
   data: Uint8Array
@@ -679,6 +688,24 @@ export class Camera {
     return Object.freeze([...this.recordings])
   }
   private previewHandle = 0 as Pointer
+  private previewConfiguration?: Readonly<Required<PreviewOptions>>
+  private previewSuspended = false
+  private get previewActive() {
+    return this.previewConfiguration !== undefined && !this.previewSuspended
+  }
+  /** Owned observation; mode jobs can temporarily suspend the configured preview. */
+  previewInfo(): PreviewInfo | undefined {
+    return (
+      this.previewConfiguration && {
+        ...this.previewConfiguration,
+        suspended:
+          this.previewSuspended ||
+          this.modeActive ||
+          !!this.coordinatedRecorder ||
+          !!this.coordinatedGroup,
+      }
+    )
+  }
   private overlayHandle = 0 as Pointer
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
@@ -817,7 +844,6 @@ export class Camera {
     operationDone: Promise<void>
   }>()
   private modeTail: Promise<void> = Promise.resolve()
-  private previewTitle?: string
   get options() {
     return copyConfiguration(this.configuration)
   }
@@ -1839,18 +1865,37 @@ export class Camera {
   dropFrames(count: number, options: JobOptions<void> = {}) {
     return this.dropFramesAsync(count, options).wait()
   }
-  startPreview(title = 'zig-camera') {
+  startPreview(options: string | PreviewOptions = 'zig-camera') {
     guardRequestCallback()
     this.assertOpen()
+    if (
+      options === null ||
+      (typeof options !== 'string' && typeof options !== 'object')
+    )
+      throw new TypeError('invalid preview options')
+    const backend =
+        typeof options === 'string' ? 'sdl' : (options.backend ?? 'sdl'),
+      title =
+        typeof options === 'string' ? options : (options.title ?? 'zig-camera')
+    if (backend !== 'sdl' && backend !== 'headless')
+      throw new RangeError('invalid preview backend')
+    if (typeof title !== 'string') throw new TypeError('invalid preview title')
+    cstring(title)
+    this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
-    if (this.previewHandle) throw new CameraError(-4, 'preview already active')
+    if (this.previewConfiguration)
+      throw new CameraError(-4, 'preview already active')
     const info = this.info()
-    this.openPreviewOwned(title, info.width, info.height)
+    this.openPreviewOwned(
+      Object.freeze({ backend, title }),
+      info.width,
+      info.height,
+    )
     try {
       this.start()
       this.ensurePump()
     } catch (error) {
-      this.stopPreviewOwned()
+      this.stopPreview()
       throw error
     }
   }
@@ -1860,7 +1905,7 @@ export class Camera {
     guardOutputHook()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
-    if (!this.previewHandle) throw new CameraError(-2, 'preview not active')
+    if (!this.previewActive) throw new CameraError(-2, 'preview not active')
     let candidate = 0 as Pointer
     if (overlay !== null) {
       const data = overlay.data,
@@ -1877,8 +1922,9 @@ export class Camera {
         throw new RangeError('invalid RGBA preview overlay')
       // Application accessors can reenter; recheck before reserving native data.
       this.assertOpen()
-      if (this.hasPendingModes() || !this.previewHandle)
+      if (this.hasPendingModes() || !this.previewActive)
         throw new CameraError(-4, 'preview changed during overlay validation')
+      if (this.previewConfiguration!.backend === 'headless') return
       const out = outPointer()
       check(
         n.zc_preview_overlay_create(
@@ -1892,6 +1938,7 @@ export class Camera {
       )
       candidate = handle(out)
     }
+    if (this.previewConfiguration!.backend === 'headless') return
     try {
       check(n.zc_preview_set_overlay(this.previewHandle, candidate))
     } catch (error) {
@@ -1901,8 +1948,17 @@ export class Camera {
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = candidate
   }
-  private openPreviewOwned(title: string, width: number, height: number) {
-    const name = cstring(title),
+  private openPreviewOwned(
+    configuration: Readonly<Required<PreviewOptions>>,
+    width: number,
+    height: number,
+  ) {
+    if (configuration.backend === 'headless') {
+      this.previewConfiguration = configuration
+      this.previewSuspended = false
+      return
+    }
+    const name = cstring(configuration.title),
       out = outPointer()
     check(n.zc_preview_open(ptr(name), width, height, ptr(out)))
     const candidate = handle(out)
@@ -1914,7 +1970,8 @@ export class Camera {
       throw error
     }
     this.previewHandle = candidate
-    this.previewTitle = title
+    this.previewConfiguration = configuration
+    this.previewSuspended = false
   }
   stopPreview() {
     guardRequestCallback()
@@ -1923,13 +1980,15 @@ export class Camera {
     this.stopPreviewOwned()
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = 0 as Pointer
+    this.previewConfiguration = undefined
+    this.previewSuspended = false
   }
   private stopPreviewOwned() {
     if (this.previewHandle) {
       check(n.zc_preview_close(this.previewHandle))
       this.previewHandle = 0 as Pointer
-      this.previewTitle = undefined
     }
+    if (this.previewConfiguration) this.previewSuspended = true
   }
   startRecording(
     recorder: Recorder,
@@ -2124,7 +2183,7 @@ export class Camera {
       if (
         !this.closing &&
         !this.stopJob &&
-        (this.previewHandle || this.recording)
+        (this.previewActive || this.recording)
       )
         this.ensurePump()
     }
@@ -2138,7 +2197,7 @@ export class Camera {
         const previous = this.options,
           old = cameraConfiguration(previous)
         const started = this.started,
-          title = this.previewTitle,
+          previewConfig = this.previewConfiguration,
           controls = this.readModeControls(autofocus ? 2n : 0n)
         let response: ModeResponse | undefined,
           published = false,
@@ -2146,14 +2205,14 @@ export class Camera {
         let failure: unknown
         const preview = () => {
           if (
-            title === undefined ||
+            previewConfig === undefined ||
             !this.handle ||
             this.closing ||
             this.stopJob
           )
             return
           const info = this.readInfo()
-          this.openPreviewOwned(title, info.width, info.height)
+          this.openPreviewOwned(previewConfig, info.width, info.height)
         }
         let attachmentAttempted = false
         const attach = () => {
@@ -2333,7 +2392,7 @@ export class Camera {
                 )
             }
           }
-          if (!published && !this.previewHandle) {
+          if (!published && !this.previewActive) {
             try {
               preview()
             } catch (previewError) {
@@ -2577,7 +2636,7 @@ export class Camera {
       if (
         !this.closing &&
         !this.stopJob &&
-        (this.previewHandle || this.recordings.size)
+        (this.previewActive || this.recordings.size)
       )
         this.ensurePump()
     }
@@ -2600,18 +2659,18 @@ export class Camera {
         const previous = this.options,
           old = cameraConfiguration(previous),
           started = this.started,
-          title = this.previewTitle,
+          previewConfig = this.previewConfiguration,
           controls = this.readModeControls(autofocus ? 2n : 0n)
         const preview = () => {
           if (
-            title === undefined ||
+            previewConfig === undefined ||
             !this.handle ||
             this.closing ||
             this.stopJob
           )
             return
           const info = this.readInfo()
-          this.openPreviewOwned(title, info.width, info.height)
+          this.openPreviewOwned(previewConfig, info.width, info.height)
         }
         current.signal.addEventListener('abort', abortChildren, { once: true })
         try {
@@ -2823,7 +2882,7 @@ export class Camera {
               )
             }
           }
-          if (!group?.published && !this.previewHandle) {
+          if (!group?.published && !this.previewActive) {
             try {
               preview()
             } catch (previewError) {
@@ -3046,7 +3105,7 @@ export class Camera {
         const previous = this.options,
           old = cameraConfiguration(previous),
           started = this.started,
-          title = this.previewTitle,
+          previewConfig = this.previewConfiguration,
           controls = this.readModeControls(autofocus ? 2n : 0n)
         this.modeActive = true
         if (this.timer !== undefined) {
@@ -3058,7 +3117,7 @@ export class Camera {
         let failure: unknown
         const preview = () => {
           if (
-            title === undefined ||
+            previewConfig === undefined ||
             !this.handle ||
             this.closing ||
             this.stopJob
@@ -3067,7 +3126,7 @@ export class Camera {
           const info = storage(680)
           check(n.zc_get_info(this.handle, ptr(info)))
           this.openPreviewOwned(
-            title,
+            previewConfig,
             view(info).getUint32(8, true),
             view(info).getUint32(12, true),
           )
@@ -3190,7 +3249,7 @@ export class Camera {
                 )
             }
           }
-          if (!this.previewHandle) {
+          if (!this.previewActive) {
             try {
               preview()
             } catch (restorationError) {
@@ -3200,7 +3259,7 @@ export class Camera {
           }
         } finally {
           this.modeActive = false
-          if (this.previewHandle || (this.started && this.hasRequestCallbacks))
+          if (this.previewActive || (this.started && this.hasRequestCallbacks))
             this.ensurePump()
         }
         if (failure !== undefined) throw failure
@@ -3484,7 +3543,7 @@ export class Camera {
       })
       if (
         !this.recording &&
-        !this.previewHandle &&
+        !this.previewActive &&
         !this.requests.length &&
         !this.focusJobs &&
         !(this.started && this.hasRequestCallbacks)
@@ -3615,7 +3674,7 @@ export class Camera {
       if (!this.handle || this.closing || this.stopJob) return
       if (
         this.recording ||
-        this.previewHandle ||
+        this.previewActive ||
         this.requests.length ||
         this.focusJobs ||
         (this.started && this.hasRequestCallbacks)
@@ -3717,7 +3776,7 @@ export class Camera {
     if (
       !this.handle &&
       !this.fanout &&
-      !this.previewHandle &&
+      !this.previewConfiguration &&
       !this.overlayHandle
     )
       return Promise.resolve()

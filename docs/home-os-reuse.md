@@ -51,3 +51,10 @@ preview. Preview keeps its hosted renderer and camera lease boundary, and improv
 Home image with reusable checked RGBA row validation/copying. The overlay is a
 separate uploaded texture, preserving captured pixels. No HomeOS kernel code was
 copied, executed or treated as evidence of Pi display performance.
+
+The 0.50 follow-up rechecks framebuffer_double.home's buffer-state/display cadence
+and compositor ownership against headless request processing. Both remain kernel
+rendering facilities; importing them would introduce a second display buffer owner
+for an operation that needs no display. Headless preview therefore reuses the
+existing bounded libcamera queue/leases and Home job gates. origin/main still
+matches the audited Home OS commit above; no OS code or hardware was executed.
