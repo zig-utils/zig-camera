@@ -32,6 +32,13 @@ export {
   type RequestPhase,
 } from './request-hooks'
 import { decodeMetadata } from './metadata'
+import {
+  prepareImage,
+  encodeNativeImage,
+  type PreparedImage,
+  type ImageOptions,
+} from './images'
+export type { ImageOptions, ImageFormat, PngFilter } from './images'
 import { MappedStream } from './mapping'
 export { MappedStream, type MappedPlane } from './mapping'
 import {
@@ -87,6 +94,8 @@ const recordingOwner = Symbol('recordingOwner')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
 const readableFrame = Symbol('readableFrame')
+const savePreparedImage = Symbol('savePreparedImage')
+const encodePreparedImage = Symbol('encodePreparedImage')
 export interface CaptureOptions<T = unknown> extends JobOptions<T> {
   /** true captures the clock at admission; bigint supplies an exact clock-domain threshold. */
   flush?: boolean | bigint
@@ -471,6 +480,27 @@ export class Frame {
     check(
       n.zc_save_jpeg(this.camera.handle, this.token, ptr(name), uint(quality)),
     )
+  }
+  saveFile(path: string, options: ImageOptions = {}) {
+    this[savePreparedImage](prepareImage(options, path))
+  }
+  encodeImage(options: ImageOptions = {}) {
+    return this[encodePreparedImage](prepareImage(options))
+  }
+  [savePreparedImage](prepared: PreparedImage) {
+    this.open()
+    check(
+      n.zc_save_image(
+        this.camera.handle,
+        this.token,
+        ptr(prepared.path!),
+        ptr(prepared.options),
+      ),
+    )
+  }
+  [encodePreparedImage](prepared: PreparedImage) {
+    this.open()
+    return encodeNativeImage(this.camera.handle, this.token, prepared.options)
   }
   saveDNG(path: string) {
     this.open()
@@ -1388,21 +1418,23 @@ export class Camera {
   }
   captureFocusLockedFile(
     path: string,
-    options: FocusLockedOptions<ReturnType<Frame['metadata']>> & {
-      quality?: number
-    } = {},
+    options: FocusLockedOptions<ReturnType<Frame['metadata']>> &
+      ImageOptions = {},
   ) {
-    const dng = path.toLowerCase().endsWith('.dng'),
-      quality = uint(options.quality ?? 98)
-    if (!dng && !/\.jpe?g$/i.test(path))
-      throw new CameraError(-8, 'focus capture file format')
-    if (!dng && (quality < 1 || quality > 100))
-      throw new RangeError('invalid JPEG quality')
+    const prepared = prepareImage(options, path)
     return this.captureFocusLockedAsync((frame) => {
-      if (dng) frame.saveDNG(path)
-      else frame.saveJPEG(path, quality)
+      frame[savePreparedImage](prepared)
       return frame.metadata()
     }, options)
+  }
+  captureFocusLockedEncodedImage(
+    options: FocusLockedOptions<Uint8Array> & ImageOptions = {},
+  ) {
+    const prepared = prepareImage(options)
+    return this.captureFocusLockedAsync(
+      (frame) => frame[encodePreparedImage](prepared),
+      options,
+    )
   }
   private modeFocusPolicy<T>(options: ModeJobOptions<T>) {
     const policy = options.autofocusPolicy ?? 'cancel'
@@ -1601,29 +1633,31 @@ export class Camera {
   }
   captureFileAsync(
     path: string,
-    options: CaptureOptions<ReturnType<Frame['metadata']>> & {
-      quality?: number
-    } = {},
+    options: CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions = {},
   ) {
-    const dng = path.toLowerCase().endsWith('.dng'),
-      quality = uint(options.quality ?? 98)
-    if (!dng && !/\.jpe?g$/i.test(path))
-      throw new CameraError(-8, 'capture file format')
-    if (!dng && (quality < 1 || quality > 100))
-      throw new RangeError('invalid JPEG quality')
+    const prepared = prepareImage(options, path)
     return this.captureAsync((frame) => {
-      if (dng) frame.saveDNG(path)
-      else frame.saveJPEG(path, quality)
+      frame[savePreparedImage](prepared)
       return frame.metadata()
     }, options)
   }
   captureFile(
     path: string,
-    options: CaptureOptions<ReturnType<Frame['metadata']>> & {
-      quality?: number
-    } = {},
+    options: CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions = {},
   ) {
     return this.captureFileAsync(path, options).wait()
+  }
+  captureEncodedImageAsync(
+    options: CaptureOptions<Uint8Array> & ImageOptions = {},
+  ) {
+    const prepared = prepareImage(options)
+    return this.captureAsync(
+      (frame) => frame[encodePreparedImage](prepared),
+      options,
+    )
+  }
+  captureEncodedImage(options: CaptureOptions<Uint8Array> & ImageOptions = {}) {
+    return this.captureEncodedImageAsync(options).wait()
   }
   captureRGB(options?: CaptureOptions<Uint8Array>) {
     return this.capture((frame) => frame.copyRGB(), options)
@@ -2143,23 +2177,30 @@ export class Camera {
   switchModeAndCaptureFile(
     options: CameraOptions,
     path: string,
-    jobOptions: ModeJobOptions<ReturnType<Frame['metadata']>> & {
-      quality?: number
-    } = {},
+    jobOptions: ModeJobOptions<ReturnType<Frame['metadata']>> &
+      ImageOptions = {},
   ) {
-    const dng = path.toLowerCase().endsWith('.dng')
-    if (!dng && !/\.jpe?g$/i.test(path))
-      throw new CameraError(-8, 'mode capture file format')
+    const prepared = prepareImage(jobOptions, path)
     return this.submitMode(
-      dng ? { ...options, raw: true, unpackedRaw: true } : options,
-      {
-        kind: 'file',
-        path: cstring(path),
-        dng,
-        quality: uint(jobOptions.quality ?? 98),
-      },
+      prepared.format === 6
+        ? { ...options, raw: true, unpackedRaw: true }
+        : options,
+      { kind: 'file', path: prepared.path, imageOptions: prepared.options },
       jobOptions,
     ) as BunJob<ReturnType<Frame['metadata']>>
+  }
+  switchModeAndCaptureEncodedImage(
+    options: CameraOptions,
+    jobOptions: ModeJobOptions<Uint8Array> & ImageOptions = {},
+  ) {
+    const prepared = prepareImage(jobOptions)
+    return this.submitMode(
+      prepared.format === 6
+        ? { ...options, raw: true, unpackedRaw: true }
+        : options,
+      { kind: 'encoded', imageOptions: prepared.options },
+      jobOptions,
+    ) as BunJob<Uint8Array>
   }
   private submitMode<T>(
     options: CameraOptions,

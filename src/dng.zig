@@ -91,6 +91,12 @@ fn rational(out: *[8]u8, v: f64, den: u32, signed: bool) !void {
     std.mem.writeInt(u32, out[4..8], den, .little);
 }
 pub fn save(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, path: []const u8) !void {
+    var atom = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &.{} });
+    defer atom.deinit();
+    try write(allocator, frame, meta, atom.file_writer.file);
+    try atom.finish();
+}
+pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, sink: anytype) !void {
     if (meta.valid & 7 != 7) return error.MissingCalibration;
     const stream = frame.raw;
     if (stream.plane_count != 1) return error.UnsupportedFormat;
@@ -160,14 +166,11 @@ pub fn save(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const
     std.mem.writeInt(u32, dir.bytes[10 + strip_entry * 12 + 8 ..][0..4], @intCast(dir.end), .little);
     const scratch = try allocator.alloc(u8, @as(usize, stream.width) * 2);
     defer allocator.free(scratch);
-    var atom = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &.{} });
-    defer atom.deinit();
-    try atom.file_writer.file.writeAll(dir.bytes[0..dir.end]);
+    try sink.writeAll(dir.bytes[0..dir.end]);
     for (0..stream.height) |y| {
         try view.row(y, scratch);
-        try atom.file_writer.file.writeAll(scratch);
+        try sink.writeAll(scratch);
     }
-    try atom.finish();
 }
 test "colour calibration rejects singular and invalid transforms" {
     try std.testing.expectError(error.InvalidCalibration, colorMatrix(@splat(0), 1, 1));

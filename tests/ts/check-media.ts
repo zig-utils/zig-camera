@@ -3,6 +3,28 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mkvFrames, mp4, decodeVideo } from './media'
 const dir = process.argv[2] ?? 'zig-out'
+if (process.argv.includes('--still-images')) {
+  const decoder = process.env.ZC_IMAGE_DECODER
+  assert(decoder)
+  const expected = Buffer.from(
+    Array.from({ length: 9 }, (_, y) =>
+      Array.from({ length: 17 }, (_, x) => [x, y, 0]).flat(),
+    ).flat(),
+  )
+  for (const format of ['png', 'bmp', 'tiff']) {
+    const result: ReturnType<typeof Bun.spawnSync> = Bun.spawnSync([
+      decoder,
+      format,
+      join(dir, `cli-image.${format}`),
+    ])
+    assert.equal(result.exitCode, 0)
+    const bytes = Buffer.from(result.stdout!)
+    assert.equal(bytes.readUInt32LE(0), 17)
+    assert.equal(bytes.readUInt32LE(4), 9)
+    assert(bytes.subarray(8).equals(expected))
+  }
+  process.exit(0)
+}
 if (process.argv.includes('--orientation')) {
   const bytes = readFileSync(join(dir, 'oriented.ppm'))
   const header = Buffer.from('P6\n3 2\n255\n')

@@ -1,4 +1,5 @@
 import { decodeMetadata } from './metadata'
+import { encodeNativeImage } from './images'
 import {
   native as n,
   ptr,
@@ -29,7 +30,8 @@ export interface ModeRequest {
   cancel: SharedArrayBuffer
   deadline: number
   capture?: {
-    kind: 'rgb' | 'stream' | 'metadata' | 'file'
+    kind: 'rgb' | 'stream' | 'metadata' | 'file' | 'encoded'
+    imageOptions?: Uint8Array
     stream?: number
     path?: Uint8Array
     dng?: boolean
@@ -304,16 +306,29 @@ self.onmessage = ({ data: request }) => {
           check(
             n.zc_get_frame_metadata(result.handle, token, ptr(result.value)),
           )
+        } else if (capture.kind === 'encoded') {
+          result.value = encodeNativeImage(
+            result.handle,
+            token,
+            capture.imageOptions!,
+          )
         } else if (capture.kind === 'file') {
           check(
-            capture.dng
-              ? n.zc_save_dng(result.handle, token, ptr(capture.path!))
-              : n.zc_save_jpeg(
+            capture.imageOptions
+              ? n.zc_save_image(
                   result.handle,
                   token,
                   ptr(capture.path!),
-                  capture.quality ?? 98,
-                ),
+                  ptr(capture.imageOptions),
+                )
+              : capture.dng
+                ? n.zc_save_dng(result.handle, token, ptr(capture.path!))
+                : n.zc_save_jpeg(
+                    result.handle,
+                    token,
+                    ptr(capture.path!),
+                    capture.quality ?? 98,
+                  ),
           )
           result.value = storage(96)
           check(

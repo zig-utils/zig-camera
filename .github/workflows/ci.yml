@@ -19,6 +19,26 @@ jobs:
         run: |
           curl -fsSL https://bun.sh/install | bash -s 'bun-v1.4.3'
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Linux dependencies and independent decoders
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev
+      - name: macOS image compression dependency
+        if: runner.os == 'macOS'
+        run: |
+          brew install zlib pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+      - name: Build independent image decoder
+        shell: bash
+        run: |
+          mkdir -p zig-out
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cc -Wall -Wextra -Werror tests/decode_images.c -framework CoreGraphics -framework ImageIO -framework CoreFoundation -o zig-out/decode-images
+          else
+            cc -Wall -Wextra -Werror tests/decode_images.c $(pkg-config --cflags --libs libpng libtiff-4 sdl2) -o zig-out/decode-images
+          fi
+          echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: zig fmt --check build.zig src bench
@@ -41,6 +61,11 @@ jobs:
           ./zig-out/bin/zig-camera info --simulate --rotation 90 --transpose --strict-transform
           ./zig-out/bin/zig-camera capture --simulate --width 3 --height 2 --fifo --hflip --strict-transform --warmup 0 --output zig-out/oriented.ppm
           bun tests/ts/check-media.ts zig-out --orientation
+          for format in png bmp tiff; do
+            ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --fifo --warmup 0 --png-compression 1 --png-filter paeth --output "zig-out/cli-image.$format"
+          done
+          bun tests/ts/check-media.ts zig-out --still-images
+          if ./zig-out/bin/zig-camera capture --simulate --png-compression 10 --output zig-out/invalid.png; then exit 1; fi
           if ./zig-out/bin/zig-camera info --simulate --rotation 45; then exit 1; fi
           ./zig-out/bin/zig-camera capture --simulate --width 66 --height 34 --sensor-width 640 --sensor-height 480 --sensor-depth 12 --lores-width 18 --lores-height 10 --warmup 0 --output zig-out/lores.ppm
           bun tests/ts/check-media.ts zig-out --lores
@@ -48,11 +73,6 @@ jobs:
           ./zig-out/bin/zig-camera bench --simulate --width 640 --height 480 --frames 100 --warmup 2
           ./zig-out/bin/zig-camera record --simulate --width 32 --height 24 --frames 40 --warmup 0 --rotate-pattern 'zig-out/rotation-{index:03}.mkv' --rotate-ms 100
           bun tests/ts/check-media.ts zig-out --rotation
-      - name: Linux dependencies and independent decoders
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev
       - name: Build pinned standalone AAC codec
         if: runner.os == 'Linux'
         run: |
@@ -89,6 +109,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
+          bun test tests/ts/still-images.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

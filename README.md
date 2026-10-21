@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.42 adds native camera rotation, flips and transpose with requested/actual
-orientation reporting, optional strict negotiation, transformed Bayer descriptors
-and mode-job restoration. Home supplies exact shared transform geometry.
-See [camera orientation](docs/orientation.md).
+Version 0.43 adds Home PNG/BMP/TIFF files and owned encoded JPEG/PNG/BMP/TIFF/PPM/DNG
+bytes across frame, capture, focus-locked and temporary mode APIs. PNG uses
+streaming row filters and zlib compression. See [still images](docs/still-images.md)
+and [camera orientation](docs/orientation.md).
 See [request callbacks](docs/request-callbacks.md), [mapped streams](docs/mapped-streams.md), [capture barriers](docs/capture-barriers.md), [native controls](docs/native-controls.md),
 [continuous AF and focus-locked capture](docs/controls.md#continuous-autofocus-and-focus-locked-capture),
 [camera selection](docs/camera-selection.md) and the [parity worklist](docs/parity-plan.md).
@@ -25,7 +25,7 @@ Use **Zig 0.15.2** and **Bun 1.4.3**. On 64-bit Raspberry Pi OS:
 
 ```sh
 sudo apt update
-sudo apt install build-essential libcamera-dev libsdl2-dev libx264-dev libx265-dev pkg-config
+sudo apt install build-essential libcamera-dev libsdl2-dev libx264-dev libx265-dev zlib1g-dev pkg-config
 zig build -Dpreview=true -Dcodecs=true -Doptimize=ReleaseSafe
 bun install --frozen-lockfile
 ./zig-out/bin/zig-camera info

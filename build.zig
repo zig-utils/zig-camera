@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("options", options);
     mod.addIncludePath(b.path("include"));
     mod.addIncludePath(b.path("src/home"));
+    mod.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
     if (aac) {
         mod.addCSourceFile(.{ .file = b.path("src/home/native_aac.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
         mod.linkSystemLibrary("fdk-aac", .{ .use_pkg_config = .force });

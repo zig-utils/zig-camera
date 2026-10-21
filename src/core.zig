@@ -947,7 +947,135 @@ pub export fn zc_autofocus_wait(p: *c.zc_camera, id: u64, timeout_ms: u32, state
         self.changed.timedWait(&self.mutex, limit - elapsed) catch {};
     }
 }
-extern fn zcd_save_jpeg(*const c.zc_frame, [*:0]const u8, u32) c_int;
+extern fn zcd_write_jpeg_fd(*const c.zc_frame, c_int, u32) c_int;
+const still = @import("still.zig");
+pub export fn zc_default_image_options(out: *c.zc_image_options) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_JPEG, .quality = 98, .png_compression = 1, .png_filter = c.ZC_PNG_ADAPTIVE };
+}
+pub export fn zc_encode_image(p: *c.zc_camera, token: u64, opts: *const c.zc_image_options, out: *?*c.zc_image_blob) c_int {
+    out.* = null;
+    if (!still.valid(opts)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    var metadata: c.zc_raw_metadata = undefined;
+    if (opts.format == c.ZC_IMAGE_DNG) {
+        const rc = driver.metadata(self.device.?, index, &metadata);
+        if (rc != 0) return rc;
+    }
+    const blob = std.heap.c_allocator.create(still.Blob) catch return c.ZC_NOMEM;
+    blob.bytes = still.encode(std.heap.c_allocator, &self.slots[index].frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
+        std.heap.c_allocator.destroy(blob);
+        return still.status(err);
+    };
+    out.* = @ptrCast(blob);
+    return c.ZC_OK;
+}
+pub export fn zc_image_blob_copy(p: *const c.zc_image_blob, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    const blob: *const still.Blob = @ptrCast(@alignCast(p));
+    length.* = blob.bytes.len;
+    if (data == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < blob.bytes.len) return c.ZC_INVALID;
+    @memcpy(data.?[0..blob.bytes.len], blob.bytes);
+    return c.ZC_OK;
+}
+pub export fn zc_image_blob_close(p: ?*c.zc_image_blob) void {
+    const blob: *still.Blob = @ptrCast(@alignCast(p orelse return));
+    std.heap.c_allocator.free(blob.bytes);
+    std.heap.c_allocator.destroy(blob);
+}
+test "encoded image blobs own all formats after frame and camera release and never copy prefixes" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    cfg.raw = 1;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer if (camera) |p| {
+        _ = zc_stop(p);
+        _ = zc_close(p);
+    };
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var blobs: [6]?*c.zc_image_blob = @splat(null);
+    defer for (blobs) |blob| zc_image_blob_close(blob);
+    var opts: c.zc_image_options = undefined;
+    zc_default_image_options(&opts);
+    for (&blobs, 1..) |*blob, format| {
+        opts.format = @intCast(format);
+        try std.testing.expectEqual(c.ZC_OK, zc_encode_image(camera.?, frame.token, &opts, blob));
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_close(camera.?));
+    camera = null;
+    const signatures = [6][]const u8{ &.{ 255, 216 }, &.{ 137, 80, 78, 71, 13, 10, 26, 10 }, "BM", "II", "P6\n", "II" };
+    for (blobs, signatures) |blob, signature| {
+        var length: u64 = 0;
+        try std.testing.expectEqual(c.ZC_OK, zc_image_blob_copy(blob.?, null, 0, &length));
+        try std.testing.expect(length > signature.len and length < 8192);
+        var out: [8192]u8 = @splat(0xa7);
+        try std.testing.expectEqual(c.ZC_INVALID, zc_image_blob_copy(blob.?, &out, 1, &length));
+        try std.testing.expectEqual(@as(u8, 0xa7), out[0]);
+        try std.testing.expectEqual(c.ZC_OK, zc_image_blob_copy(blob.?, &out, out.len, &length));
+        try std.testing.expectEqualSlices(u8, signature, out[0..signature.len]);
+        try std.testing.expectEqual(@as(u8, 0xa7), out[@intCast(length)]);
+    }
+}
+test "image encoding validates options and rejects exclusive mappings or stale frames without publishing" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    try std.testing.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var opts: c.zc_image_options = undefined;
+    zc_default_image_options(&opts);
+    var blob: ?*c.zc_image_blob = undefined;
+    opts.png_compression = 10;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_encode_image(camera.?, frame.token, &opts, &blob));
+    try std.testing.expectEqual(null, blob);
+    zc_default_image_options(&opts);
+    opts.format = c.ZC_IMAGE_DNG;
+    try std.testing.expectEqual(c.ZC_UNSUPPORTED, zc_encode_image(camera.?, frame.token, &opts, &blob));
+    try std.testing.expectEqual(null, blob);
+    opts.format = c.ZC_IMAGE_PNG;
+    var mapping: ?*c.zc_frame_map = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, c.ZC_MAIN, 1, &mapping));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_encode_image(camera.?, frame.token, &opts, &blob));
+    try std.testing.expectEqual(null, blob);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(mapping));
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_STALE, zc_encode_image(camera.?, frame.token, &opts, &blob));
+    try std.testing.expectEqual(null, blob);
+    try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
+}
+pub export fn zc_save_image(p: *c.zc_camera, token: u64, path: [*:0]const u8, opts: *const c.zc_image_options) c_int {
+    if (!still.valid(opts)) return c.ZC_INVALID;
+    if (opts.format == c.ZC_IMAGE_JPEG) return zc_save_jpeg(p, token, path, opts.quality);
+    if (opts.format == c.ZC_IMAGE_DNG) return zc_save_dng(p, token, path);
+    var encoded: ?*c.zc_image_blob = null;
+    const rc = zc_encode_image(p, token, opts, &encoded);
+    if (rc != 0) return rc;
+    defer zc_image_blob_close(encoded);
+    const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));
+    var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+    defer atom.deinit();
+    atom.file_writer.file.writeAll(blob.bytes) catch return c.ZC_IO;
+    atom.finish() catch return c.ZC_IO;
+    return c.ZC_OK;
+}
 pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, quality: u32) c_int {
     if (quality < 1 or quality > 100) return c.ZC_INVALID;
     const self = session(p);
@@ -956,7 +1084,14 @@ pub export fn zc_save_jpeg(p: *c.zc_camera, token: u64, path: [*:0]const u8, qua
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     if (self.slots[index].access.writer) return c.ZC_BUSY;
     const slot = &self.slots[index];
-    if (options.jpeg) return zcd_save_jpeg(&slot.frame, path, quality);
+    if (options.jpeg) {
+        var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+        defer atom.deinit();
+        const rc = zcd_write_jpeg_fd(&slot.frame, atom.file_writer.file.handle, quality);
+        if (rc != 0) return rc;
+        atom.finish() catch return c.ZC_IO;
+        return c.ZC_OK;
+    }
     var encoder = @import("home/jpeg_encoder.zig").Encoder.init(std.heap.c_allocator);
     defer encoder.deinit();
     const m = slot.frame.main;

@@ -1,5 +1,6 @@
 import type { Frame, StreamName } from './index'
 import type { MappedStream } from './mapping'
+import type { ImageOptions } from './images'
 import { readCatalog } from './catalog'
 import { encodeNativeControls, type NativeControl } from './control-values'
 import { native as n, ptr, check, CameraError, type Pointer } from './ffi'
@@ -21,6 +22,8 @@ export interface RequestFrame extends Pick<
   | 'withMappedStream'
   | 'saveJPEG'
   | 'saveDNG'
+  | 'saveFile'
+  | 'encodeImage'
 > {
   controls(): ReturnType<typeof readCatalog>
   setNativeControls(controls: readonly NativeControl[]): bigint
@@ -102,6 +105,12 @@ class ScopedRequest implements RequestFrame {
   }
   saveDNG(path: string) {
     this.current().saveDNG(path)
+  }
+  saveFile(path: string, options: ImageOptions = {}) {
+    this.current().saveFile(path, options)
+  }
+  encodeImage(options: ImageOptions = {}) {
+    return this.current().encodeImage(options)
   }
   controls() {
     this.current()

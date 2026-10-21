@@ -6,6 +6,13 @@ comptime {
 }
 pub const raw = @import("raw.zig");
 pub const ImageTransform = @import("home/orientation.zig").Transform;
+pub const still = @import("still.zig");
+pub const ImageOptions = c.zc_image_options;
+pub fn defaultImageOptions() ImageOptions {
+    var out: ImageOptions = undefined;
+    core.zc_default_image_options(&out);
+    return out;
+}
 pub const dng = @import("dng.zig");
 pub const audio = @import("audio.zig");
 comptime {
@@ -353,6 +360,23 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_save_jpeg(self.camera.handle, self.value.token, path, quality));
     }
+    pub fn saveImage(self: *const Frame, path: [:0]const u8, options: ImageOptions) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
+        try check(core.zc_save_image(self.camera.handle, self.value.token, path, &options));
+    }
+    pub fn encodeImage(self: *const Frame, allocator: std.mem.Allocator, options: ImageOptions) Error![]u8 {
+        if (self.value.token == 0) return error.StaleFrame;
+        var blob: ?*c.zc_image_blob = null;
+        try check(core.zc_encode_image(self.camera.handle, self.value.token, &options, &blob));
+        defer core.zc_image_blob_close(blob);
+        var length: u64 = 0;
+        try check(core.zc_image_blob_copy(blob.?, null, 0, &length));
+        if (length > std.math.maxInt(usize)) return error.Invalid;
+        const bytes = try allocator.alloc(u8, @intCast(length));
+        errdefer allocator.free(bytes);
+        try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &length));
+        return bytes;
+    }
 };
 test {
     _ = core;
@@ -441,6 +465,26 @@ test "released Zig references reject locally after their camera is destroyed" {
     try std.testing.expectError(error.StaleFrame, frame.metadata());
     try std.testing.expectError(error.StaleFrame, frame.saveDng("never-created.dng"));
     try std.testing.expectError(error.StaleFrame, frame.saveJpeg("never-created.jpg", 90));
+    try std.testing.expectError(error.StaleFrame, frame.encodeImage(std.testing.allocator, defaultImageOptions()));
+    try std.testing.expectError(error.StaleFrame, frame.saveImage("never-created.png", defaultImageOptions()));
+}
+test "Zig owned encoded images survive frame and camera disposal" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 2;
+    cfg.height = 1;
+    cfg.policy = c.ZC_FIFO;
+    const camera = try Camera.init(cfg);
+    try camera.start();
+    var frame = try camera.acquire(0);
+    var image_options = defaultImageOptions();
+    image_options.format = c.ZC_IMAGE_PPM;
+    const encoded = try frame.encodeImage(std.testing.allocator, image_options);
+    defer std.testing.allocator.free(encoded);
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    try std.testing.expectEqualSlices(u8, "P6\n2 1\n255\n" ++ [_]u8{ 0, 0, 0, 1, 0, 0 }, encoded);
 }
 
 test "Zig catalogs own snapshots and copy/read independently after camera close" {

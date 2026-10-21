@@ -261,6 +261,21 @@ int zc_close(zc_camera *);
 int zc_get_stats(zc_camera *, zc_stats *out);
 /* quality 1..100, 4:4:4 sampling; operates on an outstanding lease, no RGB copy. */
 int zc_save_jpeg(zc_camera *, uint64_t token, const char *path, uint32_t quality);
+enum { ZC_IMAGE_JPEG=1,ZC_IMAGE_PNG=2,ZC_IMAGE_BMP=3,ZC_IMAGE_TIFF=4,ZC_IMAGE_PPM=5,ZC_IMAGE_DNG=6 };
+enum { ZC_PNG_ADAPTIVE=0,ZC_PNG_NONE=1,ZC_PNG_SUB=2,ZC_PNG_UP=3,ZC_PNG_AVERAGE=4,ZC_PNG_PAETH=5 };
+typedef struct { uint32_t struct_size,format,quality,png_compression,png_filter; } zc_image_options;
+typedef struct zc_image_blob zc_image_blob;
+void zc_default_image_options(zc_image_options *);
+/* Synchronous encode of an owned readable lease. Blob owns its encoded bytes,
+ * survives frame/camera release and keeps no native buffer. Caller serializes
+ * blob operations and closes exactly once. Output is null on encode failure. */
+int zc_encode_image(zc_camera *,uint64_t token,const zc_image_options *,zc_image_blob **out);
+int zc_image_blob_copy(const zc_image_blob *,uint8_t *data,uint64_t capacity,uint64_t *length);
+void zc_image_blob_close(zc_image_blob *);
+/* Atomic file replacement; explicit format does not depend on path extension.
+ * JPEG quality 1..100; PNG zlib level 0..9 and one of the filter policies above.
+ * DNG requires a supported raw stream and complete calibration. */
+int zc_save_image(zc_camera *,uint64_t token,const char *path,const zc_image_options *);
 const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */

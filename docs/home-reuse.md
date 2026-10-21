@@ -305,3 +305,17 @@ Home's helper workflow includes its paths and standalone tests. Camera Zig uses
 it for C/Bun admission conversion and synthetic RGB/lores/Bayer generation;
 libcamera performs physical transforms and reports negotiated orientation. No
 duplicate codec, container or per-frame software rotation worker is introduced.
+
+The 0.43 audit reuses Home PNG/BMP/TIFF layout code and contributes shared
+formats/raster_encoder.zig and zlib_stream.zig at
+4899b5c3b7c727e3811cf87d77fa78f757709333, copied verbatim. Home Image's public
+encoders use the same checked strided view. PNG streams filtered rows directly
+into IDAT chunks with pinned-address system-zlib state; it avoids a second whole
+filtered/compressed image. BMP alpha masks, TIFF per-sample tags, 16-bit byte
+order and palette expansion are corrected. PNG/TIFF decoders select 16-bit high
+bytes correctly; unsupported TIFF compression cannot free borrowed data.
+Home validates the helper on pinned/development Zig and its complete 106-test
+Image suite on development Zig. Camera's independent platform decoders validate
+RGB pixels rather than trusting Home's own round trips. Existing Home JPEG and
+Bayer DNG implementations remain the JPEG/DNG paths; DNG's shared row writer now
+supports owned byte output. No codec/container implementation is duplicated.

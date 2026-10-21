@@ -18,7 +18,9 @@ const help =
     \\  --transpose              Final diagonal transpose after rotation/flips
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
-    \\  --output PATH            capture: .ppm, .jpg/.jpeg, .dng; record: .mkv/.mp4 (default capture.ppm)
+    \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
+    \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
+    \\  --png-compression N --png-filter NAME  zlib 0..9; adaptive/none/sub/up/average/paeth
     \\  --fps N                  Preview/record frame rate (default 30)
     \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
     \\  --bitrate N --gop N       AVC/HEVC bits/sec (0 CRF) and keyframe interval
@@ -97,6 +99,8 @@ fn run() !void {
     var frames: u32 = 300;
     var quality: u32 = if (eq(command, "record")) 90 else 98;
     var timeout_ms: u32 = 5000;
+    var image_options = camera.defaultImageOptions();
+    var image_format: ?u32 = null;
     var rotation: u32 = 0;
     var hflip = false;
     var vflip = false;
@@ -144,7 +148,11 @@ fn run() !void {
         i += 1;
         if (i >= args.len) return error.MissingOptionValue;
         const value = args[i];
-        if (eq(key, "--lores-format")) {
+        if (eq(key, "--image-format")) {
+            image_format = try camera.still.formatFromName(value);
+        } else if (eq(key, "--png-filter")) {
+            image_options.png_filter = @intFromEnum(std.meta.stringToEnum(camera.still.PngFilter, value) orelse return error.InvalidPngFilter);
+        } else if (eq(key, "--lores-format")) {
             pipeline.lores_format = if (eq(value, "YUV420")) camera.c.ZC_YUV420 else if (eq(value, "BGR888")) camera.c.ZC_RGB24 else return error.InvalidLoresFormat;
         } else if (eq(key, "--camera-id")) {
             camera_id = value;
@@ -168,7 +176,9 @@ fn run() !void {
             cfg.lens_position = try std.fmt.parseFloat(f32, value);
         } else {
             const n = try std.fmt.parseInt(u32, value, 10);
-            if (eq(key, "--rotation")) {
+            if (eq(key, "--png-compression")) {
+                image_options.png_compression = n;
+            } else if (eq(key, "--rotation")) {
                 rotation = n;
             } else if (eq(key, "--sensor-width")) {
                 pipeline.sensor_width = n;
@@ -218,7 +228,12 @@ fn run() !void {
         output = try (try @import("camera").recording_path.Pattern.init(pattern)).format(&rotation_name, 0);
     } else if (rotate_ns != 0 or rotate_bytes != 0) return error.MissingRotationPattern;
     if ((frames == 0 and !eq(command, "preview")) or quality == 0 or quality > 100 or fps == 0 or fps > 1000) return error.InvalidArgument;
-    if (std.mem.endsWith(u8, output, ".dng")) {
+    if (eq(command, "capture")) {
+        image_options.format = image_format orelse try camera.still.formatFromPath(output);
+        image_options.quality = quality;
+        if (!camera.still.valid(&image_options)) return error.InvalidImageOptions;
+    }
+    if (eq(command, "capture") and image_options.format == camera.c.ZC_IMAGE_DNG) {
         cfg.raw = 1;
         capture_opts.unpacked_raw = 1;
     }
@@ -270,16 +285,8 @@ fn run() !void {
     if (eq(command, "capture")) {
         var frame = try cam.acquire(timeout_ms);
         defer frame.release() catch {};
-        if (std.mem.endsWith(u8, output, ".dng")) {
-            try frame.saveDng(output);
-        } else if (std.mem.endsWith(u8, output, ".ppm")) {
-            const file = try std.fs.cwd().createFile(output, .{});
-            defer file.close();
-            try (try frame.rgb()).savePpm(file);
-        } else if (std.mem.endsWith(u8, output, ".jpg") or std.mem.endsWith(u8, output, ".jpeg")) {
-            try frame.saveJpeg(output, quality);
-        } else return error.UnsupportedOutputExtension;
-        if (frame.value.raw.plane_count > 0 and !std.mem.endsWith(u8, output, ".dng")) {
+        try frame.saveImage(output, image_options);
+        if (frame.value.raw.plane_count > 0 and image_options.format != camera.c.ZC_IMAGE_DNG) {
             for (0..frame.value.raw.plane_count) |p| {
                 const raw_path = try std.fmt.allocPrint(a, "{s}.raw.{d}", .{ output, p });
                 defer a.free(raw_path);
