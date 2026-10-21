@@ -399,3 +399,13 @@ Zig 0.15.2 and Home development Zig. Native shared PCM holds compose the existin
 Home stable slots; no second capture cursor or codec implementation is introduced.
 Home OS filesystem journaling and architecture-specific spinlocks do not provide
 a portable hosted multi-recorder publication primitive; see the OS audit.
+
+The 0.49 audit inspects Home image blend/composite/Porter-Duff code. Preview uses
+SDL's separate straight-alpha texture rather than adding CPU camera-frame blends.
+Home image now exports a standalone checked RgbaView for borrowed padded RGBA8,
+compact copying, overflow/truncation and overlap rejection. It was contributed
+at b8c29c456e2ec001a30dc5d24743b71bd8d6a486 and reused verbatim. Standalone
+Debug/ReleaseSafe tests pass with Zig 0.15.2 and development Zig. Zig retains
+immutable overlay bytes across mode changes; no renderer/codec dependency is
+introduced into the Home helper. Existing Home OS compositor code remains a
+kernel-only design reference, not a hosted SDL texture or camera lease owner.

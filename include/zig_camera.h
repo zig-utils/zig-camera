@@ -301,6 +301,17 @@ int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);
 int zc_preview_show(zc_preview *, const zc_frame *);
 int zc_preview_close(zc_preview *);
+/* Immutable owned straight-alpha RGBA8, max 4096x4096 (64 MiB compact).
+ * create copies active bytes synchronously; padding is excluded. Caller owns the
+ * overlay independently of previews. Serialize use/close; NULL close is safe. */
+typedef struct zc_preview_overlay zc_preview_overlay;
+int zc_preview_overlay_create(const uint8_t *data,uint64_t length,uint32_t width,uint32_t height,uint32_t stride,zc_preview_overlay **out);
+void zc_preview_overlay_close(zc_preview_overlay *);
+/* Upload synchronously on the preview UI thread. NULL clears. Failure preserves
+ * the old texture. No overlay pointer is retained; caller can immediately close.
+ * Overlay fills the logical camera image, excluding window letter/pillar boxes.
+ * Captured/encoded camera pixels are never modified. */
+int zc_preview_set_overlay(zc_preview *,const zc_preview_overlay *);
 enum { ZC_H264=1, ZC_HEVC=2, ZC_MJPEG=3, ZC_FFV1=4 };
 typedef struct {
     uint32_t width, height, fps_num, fps_den, codec, bitrate, quality, gop;

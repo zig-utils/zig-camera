@@ -72,6 +72,14 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    zc_preview_overlay *overlay=NULL;
+    uint8_t rgba[20]={0};
+    assert(zc_preview_overlay_create(NULL,4,1,1,4,&overlay)==ZC_INVALID && !overlay);
+    assert(zc_preview_overlay_create(rgba,19,2,2,12,&overlay)==ZC_INVALID && !overlay);
+    assert(zc_preview_overlay_create(rgba,20,2,2,12,&overlay)==ZC_OK && overlay);
+    memset(rgba,255,sizeof(rgba));
+    zc_preview_overlay_close(overlay); zc_preview_overlay_close(NULL);
+
     {
         zc_producer_job *invalid[1]={NULL};
         assert(zc_producer_jobs_restart_publish(invalid,0)==ZC_INVALID);

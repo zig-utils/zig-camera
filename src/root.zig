@@ -24,6 +24,10 @@ comptime {
     _ = output_mailbox;
     _ = @import("home/pts_clock.zig");
 }
+pub const preview_overlay = @import("preview_overlay.zig");
+comptime {
+    _ = preview_overlay;
+}
 pub const media = @import("media.zig");
 pub const fanout = @import("fanout.zig");
 comptime {

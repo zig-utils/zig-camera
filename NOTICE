@@ -372,3 +372,9 @@ Home shared publication preflight (0.48):
   Source commit: 854d00fb613fd06b5739764b5aca9bdaf009ddb7.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/854d00fb613fd06b5739764b5aca9bdaf009ddb7
+
+Home checked RGBA overlay rows (0.49):
+- src/home/rgba_view.zig is verbatim packages/image/src/ops/rgba_view.zig.
+  Source commit: b8c29c456e2ec001a30dc5d24743b71bd8d6a486.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/b8c29c456e2ec001a30dc5d24743b71bd8d6a486

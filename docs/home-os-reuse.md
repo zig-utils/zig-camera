@@ -43,3 +43,11 @@ make arbitrary output hooks transactional. Shared publication therefore improves
 Home stdlib async with bounded ordering/readiness preflight, while the camera
 keeps its existing userspace mutexes, owned producer workers and joined cleanup.
 No OS implementation was copied or modified for this feature.
+
+The 0.49 audit inspects kernel/src/video/compositor.home, including color_blend
+and per-window source alpha/opacity handling. Its packed framebuffer colors,
+kernel window buffers and GPU imports cannot directly supply a Linux/macOS SDL
+preview. Preview keeps its hosted renderer and camera lease boundary, and improves
+Home image with reusable checked RGBA row validation/copying. The overlay is a
+separate uploaded texture, preserving captured pixels. No HomeOS kernel code was
+copied, executed or treated as evidence of Pi display performance.

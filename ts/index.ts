@@ -346,6 +346,13 @@ export interface CameraTransform {
   strict?: boolean
 }
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+/** Straight-alpha RGBA8. Active rows are copied into bounded native ownership. */
+export interface PreviewOverlay {
+  data: Uint8Array
+  width: number
+  height: number
+  stride?: number
+}
 export interface CameraOptions {
   transform?: CameraTransform
   /** Opt in to writable mappings and READ|WRITE DMA fences before first start. */
@@ -672,6 +679,7 @@ export class Camera {
     return Object.freeze([...this.recordings])
   }
   private previewHandle = 0 as Pointer
+  private overlayHandle = 0 as Pointer
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
@@ -1836,20 +1844,85 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewHandle) throw new CameraError(-4, 'preview already active')
-    const info = this.info(),
-      name = cstring(title),
+    const info = this.info()
+    this.openPreviewOwned(title, info.width, info.height)
+    try {
+      this.start()
+      this.ensurePump()
+    } catch (error) {
+      this.stopPreviewOwned()
+      throw error
+    }
+  }
+  /** Replace or clear the display-only overlay. Does not modify capture/encoding. */
+  setOverlay(overlay: PreviewOverlay | null) {
+    guardRequestCallback()
+    guardOutputHook()
+    this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (!this.previewHandle) throw new CameraError(-2, 'preview not active')
+    let candidate = 0 as Pointer
+    if (overlay !== null) {
+      const data = overlay.data,
+        width = uint(overlay.width, 4096),
+        height = uint(overlay.height, 4096),
+        stride = uint(overlay.stride ?? width * 4)
+      if (
+        !(data instanceof Uint8Array) ||
+        !width ||
+        !height ||
+        stride < width * 4 ||
+        data.byteLength < (height - 1) * stride + width * 4
+      )
+        throw new RangeError('invalid RGBA preview overlay')
+      // Application accessors can reenter; recheck before reserving native data.
+      this.assertOpen()
+      if (this.hasPendingModes() || !this.previewHandle)
+        throw new CameraError(-4, 'preview changed during overlay validation')
+      const out = outPointer()
+      check(
+        n.zc_preview_overlay_create(
+          ptr(data),
+          BigInt(data.byteLength),
+          width,
+          height,
+          stride,
+          ptr(out),
+        ),
+      )
+      candidate = handle(out)
+    }
+    try {
+      check(n.zc_preview_set_overlay(this.previewHandle, candidate))
+    } catch (error) {
+      n.zc_preview_overlay_close(candidate)
+      throw error
+    }
+    n.zc_preview_overlay_close(this.overlayHandle)
+    this.overlayHandle = candidate
+  }
+  private openPreviewOwned(title: string, width: number, height: number) {
+    const name = cstring(title),
       out = outPointer()
-    check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
-    this.previewHandle = handle(out)
+    check(n.zc_preview_open(ptr(name), width, height, ptr(out)))
+    const candidate = handle(out)
+    try {
+      if (this.overlayHandle)
+        check(n.zc_preview_set_overlay(candidate, this.overlayHandle))
+    } catch (error) {
+      check(n.zc_preview_close(candidate))
+      throw error
+    }
+    this.previewHandle = candidate
     this.previewTitle = title
-    this.start()
-    this.ensurePump()
   }
   stopPreview() {
     guardRequestCallback()
     guardOutputHook()
     if (this.modeActive) throw new CameraError(-4, 'mode change active')
     this.stopPreviewOwned()
+    n.zc_preview_overlay_close(this.overlayHandle)
+    this.overlayHandle = 0 as Pointer
   }
   private stopPreviewOwned() {
     if (this.previewHandle) {
@@ -2073,12 +2146,8 @@ export class Camera {
         let failure: unknown
         const preview = () => {
           if (!title || !this.handle || this.closing || this.stopJob) return
-          const info = this.readInfo(),
-            name = cstring(title),
-            out = outPointer()
-          check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
-          this.previewHandle = handle(out)
-          this.previewTitle = title
+          const info = this.readInfo()
+          this.openPreviewOwned(title, info.width, info.height)
         }
         let attachmentAttempted = false
         const attach = () => {
@@ -2529,12 +2598,8 @@ export class Camera {
           controls = this.readModeControls(autofocus ? 2n : 0n)
         const preview = () => {
           if (!title || !this.handle || this.closing || this.stopJob) return
-          const info = this.readInfo(),
-            name = cstring(title),
-            out = outPointer()
-          check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
-          this.previewHandle = handle(out)
-          this.previewTitle = title
+          const info = this.readInfo()
+          this.openPreviewOwned(title, info.width, info.height)
         }
         current.signal.addEventListener('abort', abortChildren, { once: true })
         try {
@@ -2983,18 +3048,11 @@ export class Camera {
           if (!title || !this.handle || this.closing || this.stopJob) return
           const info = storage(680)
           check(n.zc_get_info(this.handle, ptr(info)))
-          const name = cstring(title),
-            out = outPointer()
-          check(
-            n.zc_preview_open(
-              ptr(name),
-              view(info).getUint32(8, true),
-              view(info).getUint32(12, true),
-              ptr(out),
-            ),
+          this.openPreviewOwned(
+            title,
+            view(info).getUint32(8, true),
+            view(info).getUint32(12, true),
           )
-          this.previewHandle = handle(out)
-          this.previewTitle = title
         }
         try {
           this.stopPreviewOwned()
@@ -3638,7 +3696,13 @@ export class Camera {
     guardRequestCallback()
     guardOutputHook()
     if (this.closeJob) return this.closeJob
-    if (!this.handle && !this.fanout) return Promise.resolve()
+    if (
+      !this.handle &&
+      !this.fanout &&
+      !this.previewHandle &&
+      !this.overlayHandle
+    )
+      return Promise.resolve()
     this.closing = true
     this.closeJob = (async () => {
       let failure: unknown
