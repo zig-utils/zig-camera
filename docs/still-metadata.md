@@ -45,9 +45,10 @@ encoded bytes and survive request/camera disposal. Zig exposes
 `Frame.saveStreamImageProfile`. Callers retain custom bytes until the call ends.
 File writes use the existing atomic replacement and preserve prior files on
 profile, source or encoding failure. Cancellation before a queued capture runs
-leaves the destination untouched. A running temporary-mode worker can commit a
-file before cancellation or a later callback/restoration error is reported;
-coordinating that file commit with job publication remains parity work.
+leaves the destination untouched. Temporary-mode files use
+[staged publication](staged-files.md) after request callbacks and camera/preview
+restoration. Accepted cancellation before publication discards the private file;
+late cancellation is rejected after the native publication claim.
 
 Home's shared embedding helper preserves encoded pixel payloads. JPEG profiles
 are split into numbered APP2 segments after APP0, replacing prior pre-scan ICC

@@ -324,6 +324,22 @@ void zc_image_blob_close(zc_image_blob *);
 int zc_save_image(zc_camera *,uint64_t token,const char *path,const zc_image_options *);
 int zc_save_stream_image(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *);
 int zc_save_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *,const zc_image_profile *);
+/* Staged atomic still-file output. Create copies the path and reserves an I/O
+ * thread without file I/O. Every created object needs finish (even if unused).
+ * Prepare runs synchronously on the capture owner and retains no frame. Retire
+ * that owner before finish/close. cancel/state may run concurrently with prepare.
+ * finish(1) irrevocably claims publication; finish(0) discards. Both start native
+ * I/O jobs. Poll finished before close, which joins and releases exactly once.
+ * Error/cleanup codes remain observable even if publication was already claimed.
+ * No durability/fsync guarantee. Crash cleanup of orphan temporaries is external. */
+typedef struct zc_image_file zc_image_file;
+typedef struct { uint32_t struct_size,phase,preparing,released,finished,committed; int32_t result,cleanup_code; } zc_image_file_state;
+int zc_image_file_create(const char *,zc_image_file **);
+int zc_image_file_prepare(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *);
+int zc_image_file_cancel(zc_image_file *); /* 1 accepted, 0 too late/already cancelled */
+int zc_image_file_finish(zc_image_file *,uint32_t publish);
+int zc_image_file_state_get(zc_image_file *,zc_image_file_state *);
+int zc_image_file_close(zc_image_file *); /* BUSY until owner/job retired */
 const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */

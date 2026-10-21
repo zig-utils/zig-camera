@@ -553,3 +553,23 @@ and embedding helper do not implement arbitrary gamut/transfer transformation,
 complete JPEG scan/TIFF page decoding or Exif fields. Those parity requirements
 remain in scope. Home Actions remains disabled; copied-source camera CI supplies
 Linux x86/ARM and macOS coverage separately from the local Home results.
+
+The 0.57 audit fetches Home main at f310e9345448d909041ad20a3bc332d07b78130f
+and reads async/preparation_gate.zig, video/core/recording_path.zig and the fs VFS
+and bindings. The existing Gate, contributed at
+1ebb311b33b9e4982c6b15d971981792c599560c and already copied verbatim, supplies
+claimed cancellation, immutable publication and cleanup/error precedence. The
+camera reuses it under a mutex for staged still-file ownership. The recording
+path helper supplies naming policy, not hosted atomic replacement. Home fs's
+kernel/VFS abstractions and incomplete hosted bindings do not replace pinned
+Zig's atomic-file/descriptor I/O here. No shared helper needs a source change.
+
+The camera retains capture leases, filesystem handles/identity checks, native
+I/O-thread reservation/join and ABI outcomes. Paths are copied and staging keeps
+no camera/frame or Bun payload. Request callbacks and camera/control/preview
+restoration precede publication; completion callbacks follow its joined result.
+The optional system-JPEG file-descriptor path is preserved; Home codecs, ICC
+embedding and RGB/I420 conversions are unchanged. Native cross-thread/identity
+and Bun cancellation/restoration/decoder tests cover the new contract. General
+filesystem crash recovery, hardware acceptance and remaining parity capabilities
+are not established by a successful atomic rename.

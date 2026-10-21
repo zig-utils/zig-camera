@@ -142,3 +142,13 @@ specified by ADR-MC3 remains the applicable boundary: JPEG/PNG/TIFF ICC embeddin
 and the zlib owner cleanup are contributed to Home image and reused in camera.
 No kernel state or device pointer is imported; the OS stays unchanged. Independent
 hosted container/image checks do not establish Pi display/sensor calibration.
+
+The 0.57 audit fetches Home OS at the unchanged
+151269666bc09aa15a271f1c1f4603f681132e65 and reads kernel/src/fs/journal.home
+plus ADR-MC3. Its transaction states and journal commit/checkpoint operate on
+kernel blocks, drivers and serial output. They do not supply a hosted staged
+image-file transaction, descriptor lifetime or Bun/native publication barrier.
+The camera therefore reuses Home async's preparation gate and its existing
+hosted Zig atomic-file layer, keeping native handles and image/frame ownership
+outside the kernel. No OS code is copied or changed, and no kernel journaling,
+crash-durability or hardware result is asserted.

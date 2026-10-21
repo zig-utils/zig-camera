@@ -1051,6 +1051,43 @@ pub export fn zc_autofocus_wait(p: *c.zc_camera, id: u64, timeout_ms: u32, state
 }
 extern fn zcd_write_jpeg_fd(*const c.zc_frame, c_int, u32) c_int;
 const still = @import("still.zig");
+const image_file = @import("image_file.zig");
+comptime {
+    _ = image_file;
+}
+pub export fn zc_image_file_prepare(output: *c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
+    const start = image_file.begin(output);
+    if (start != 0) return start;
+    if (options.jpeg and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN and profile == null) return image_file.prepared(output, stageSystemJpeg(output, p, token, opts));
+    var encoded: ?*c.zc_image_blob = null;
+    var rc = zc_encode_stream_image_profile(p, token, stream, opts, profile, &encoded);
+    if (rc == c.ZC_OK) {
+        const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));
+        rc = image_file.write(output, blob.bytes);
+        zc_image_blob_close(encoded);
+    }
+    return image_file.prepared(output, rc);
+}
+fn stageSystemJpeg(output: *c.zc_image_file, p: *c.zc_camera, token: u64, opts: *const c.zc_image_options) c_int {
+    if (!still.valid(opts)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    const slot = &self.slots[index];
+    var color = std.mem.zeroes(c.zc_color_space);
+    if (!std.mem.eql(u8, std.mem.sliceTo(&slot.frame.main.format, 0), "BGR888")) {
+        const rc = driver.colorSpace(self.device.?, c.ZC_MAIN, &color);
+        if (rc != c.ZC_OK) return rc;
+    }
+    const source = @import("stream_rgb.zig").Selected.init(std.heap.c_allocator, slot.frame, slot.frame.main, color) catch |err| return still.status(err);
+    defer source.deinit(std.heap.c_allocator);
+    var fd: std.posix.fd_t = undefined;
+    const rc = image_file.open(output, &fd);
+    if (rc != c.ZC_OK) return rc;
+    return zcd_write_jpeg_fd(&source.frame, fd, opts.quality);
+}
 pub export fn zc_default_image_options(out: *c.zc_image_options) void {
     out.* = .{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_JPEG, .quality = 98, .png_compression = 1, .png_filter = c.ZC_PNG_ADAPTIVE };
 }

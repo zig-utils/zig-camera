@@ -833,3 +833,56 @@ test "Zig ICC image profiles retain owned blobs and reject mismatched or invalid
     try frame.release();
     try std.testing.expectError(error.StaleFrame, frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile));
 }
+
+test "staged encoded files publish after the source camera and every frame are destroyed" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const files = @import("image_file.zig");
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const parent = try tmp.dir.realpathAlloc(t.allocator, ".");
+    defer t.allocator.free(parent);
+    const path = try std.fmt.allocPrintSentinel(t.allocator, "{s}/photo.png", .{parent}, 0);
+    defer t.allocator.free(path);
+    var output: ?*c.zc_image_file = null;
+    try check(files.zc_image_file_create(path, &output));
+    defer {
+        _ = files.zc_image_file_finish(output.?, 0);
+        var state: c.zc_image_file_state = undefined;
+        while (true) {
+            _ = files.zc_image_file_state_get(output.?, &state);
+            if (state.finished != 0) break;
+            std.Thread.sleep(std.time.ns_per_ms);
+        }
+        _ = files.zc_image_file_close(output);
+    }
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    try camera.start();
+    var frame = try camera.acquire(0);
+    var opts = defaultImageOptions();
+    opts.format = c.ZC_IMAGE_PNG;
+    const profile = srgbImageProfile();
+    try check(core.zc_image_file_prepare(output.?, camera.handle, frame.value.token, c.ZC_MAIN, &opts, &profile));
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    try t.expectError(error.FileNotFound, tmp.dir.openFile("photo.png", .{}));
+    try check(files.zc_image_file_finish(output.?, 1));
+    var state: c.zc_image_file_state = undefined;
+    var timer = try std.time.Timer.start();
+    while (timer.read() < 10 * std.time.ns_per_s) {
+        try check(files.zc_image_file_state_get(output.?, &state));
+        if (state.finished != 0) break;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try t.expectEqual(@as(u32, 1), state.finished);
+    try t.expectEqual(@as(u32, 1), state.committed);
+    try check(state.result);
+    const bytes = try tmp.dir.readFileAlloc(t.allocator, "photo.png", 65536);
+    defer t.allocator.free(bytes);
+    try t.expectEqualSlices(u8, "\x89PNG\r\n\x1a\n", bytes[0..8]);
+    try t.expectEqualSlices(u8, "iCCP", bytes[37..41]);
+}

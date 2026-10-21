@@ -200,6 +200,26 @@ export function saveNativeImage(
     ),
   )
 }
+export function stageNativeImage(
+  output: Pointer,
+  camera: Pointer,
+  token: bigint,
+  options: Uint8Array,
+  stream: number,
+  profile?: ImageProfile,
+) {
+  const descriptor = imageProfileDescriptor(profile)
+  check(
+    n.zc_image_file_prepare(
+      output,
+      camera,
+      token,
+      stream,
+      ptr(options),
+      descriptor ? ptr(descriptor) : null,
+    ),
+  )
+}
 export function encodeNativeImage(
   camera: Pointer,
   token: bigint,

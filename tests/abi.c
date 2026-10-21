@@ -43,6 +43,7 @@ _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
 _Static_assert(sizeof(zc_orientation_info)==16,"orientation ABI");
 _Static_assert(sizeof(zc_image_options)==20,"image options ABI");
 _Static_assert(sizeof(zc_image_profile)==24,"image profile ABI");
+_Static_assert(sizeof(zc_image_file_state)==32,"staged file state ABI");
 _Static_assert(offsetof(zc_image_profile,data)==8,"image profile pointer ABI");
 _Static_assert(sizeof(zc_color_space)==24,"stream color ABI");
 _Static_assert(sizeof(zc_pipeline_info)==224,"pipeline info ABI");
@@ -153,6 +154,22 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_image_file *file=NULL;
+        assert(zc_image_file_create("/zig-camera-missing-directory/unused.png",&file)==ZC_OK && file);
+        assert(zc_image_file_close(file)==ZC_BUSY);
+        assert(zc_image_file_cancel(file)==1);
+        assert(zc_image_file_finish(file,1)==ZC_STATE);
+        assert(zc_image_file_finish(file,0)==ZC_OK);
+        zc_image_file_state state;
+        for(unsigned i=0;;i++) {
+            assert(i<10000 && zc_image_file_state_get(file,&state)==ZC_OK && state.struct_size==32);
+            if(state.finished)break;
+            const struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+        }
+        assert(state.phase==ZC_PREPARATION_CANCELLED && !state.committed && state.result==ZC_OK && state.cleanup_code==ZC_OK);
+        assert(zc_image_file_close(file)==ZC_OK && zc_image_file_close(NULL)==ZC_OK);
+    }
     recording_color_contract();
     color_requests();
     formatted_main();

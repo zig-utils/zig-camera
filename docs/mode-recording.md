@@ -145,3 +145,14 @@ and deadlines cannot interrupt an entered flush, native call or user hook; clean
 can extend past the deadline. operationDone fences both owners before callbacks
 run; cleanupDone also includes signalFunction and admission release. Physical Pi
 A/V validation remains outstanding.
+
+## Temporary-mode files
+
+From 0.57, file captures stage their output and publish only after request
+callbacks and camera/control/preview restoration succeed. Accepted cancellation
+before the native publication claim discards the candidate; after the claim,
+cancellation is rejected and stop/close wait for the actual I/O outcome. Deadlines
+are rechecked after preview restoration. `operationDone` includes joined file
+cleanup. Completion callbacks still run after the terminal result and cannot
+undo a published file. See [staged file ownership](staged-files.md) for the C ABI,
+failure outcomes and filesystem limits.

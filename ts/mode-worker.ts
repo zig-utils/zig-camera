@@ -1,5 +1,9 @@
 import { decodeMetadata } from './metadata'
-import { encodeNativeImage, saveNativeImage, type ImageProfile } from './images'
+import {
+  encodeNativeImage,
+  stageNativeImage,
+  type ImageProfile,
+} from './images'
 import {
   native as n,
   ptr,
@@ -38,6 +42,7 @@ export interface ModeRequest {
     kind: 'rgb' | 'stream' | 'metadata' | 'file' | 'encoded'
     imageOptions?: Uint8Array
     imageProfile?: ImageProfile
+    fileOutput?: Pointer
     stream?: number
     path?: Uint8Array
     dng?: boolean
@@ -378,27 +383,21 @@ self.onmessage = ({ data: request }) => {
             capture.imageProfile,
           )
         } else if (capture.kind === 'file') {
-          if (capture.imageOptions)
-            saveNativeImage(
-              result.handle,
-              token,
-              capture.imageOptions,
-              capture.stream ??
-                (view(capture.imageOptions).getUint32(4, true) === 6 ? 1 : 0),
-              capture.path!,
-              capture.imageProfile,
-            )
-          else
-            check(
-              capture.dng
-                ? n.zc_save_dng(result.handle, token, ptr(capture.path!))
-                : n.zc_save_jpeg(
-                    result.handle,
-                    token,
-                    ptr(capture.path!),
-                    capture.quality ?? 98,
-                  ),
-            )
+          if (!capture.fileOutput) throw -2
+          const options = capture.imageOptions ?? storage(20)
+          if (!capture.imageOptions) {
+            n.zc_default_image_options(ptr(options))
+            view(options).setUint32(4, capture.dng ? 6 : 1, true)
+            view(options).setUint32(8, capture.quality ?? 98, true)
+          }
+          stageNativeImage(
+            capture.fileOutput,
+            result.handle,
+            token,
+            options,
+            capture.stream ?? (view(options).getUint32(4, true) === 6 ? 1 : 0),
+            capture.imageProfile,
+          )
           result.value = storage(96)
           check(
             n.zc_get_frame_metadata(result.handle, token, ptr(result.value)),

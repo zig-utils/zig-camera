@@ -1,3 +1,4 @@
+import { withStagedImageFile } from './staged-image'
 import {
   readColorNegotiation,
   encodeColorSpace,
@@ -3375,182 +3376,194 @@ export class Camera {
     const effective = { ...jobOptions, timeoutMs: jobOptions.timeoutMs ?? 5000 }
     const deadline = Date.now() + effective.timeoutMs
     const job = new BunJob<T>(
-      async (current) => {
-        current.check()
-        this.checkModeLeases()
-        await this.settleFocus(focusPolicy, current)
-        current.check()
-        const stats = storage(40)
-        check(n.zc_get_stats(this.handle, ptr(stats)))
-        if (
-          view(stats).getUint32(36, true) ||
-          this.recording ||
-          this.requests.length
-        )
-          throw new CameraError(-4, 'mode requires unleased idle camera')
-        const previous = this.options,
-          old = cameraConfiguration(previous),
-          started = this.started,
-          previewConfig = this.previewConfiguration,
-          controls = this.readModeControls(autofocus ? 2n : 0n)
-        this.modeActive = true
-        if (this.timer !== undefined) {
-          clearTimeout(this.timer)
-          this.timer = undefined
-        }
-        let response: ModeResponse | undefined
-        let value: unknown
-        let failure: unknown
-        const preview = () => {
-          if (
-            previewConfig === undefined ||
-            !this.handle ||
-            this.closing ||
-            this.stopJob
-          )
-            return
-          this.openPreviewOwned(previewConfig)
-        }
-        try {
-          this.stopPreviewOwned()
-          response = await this.runOwnedMode({
-            handle: this.handle,
-            ...encoded,
-            cameraId: this.selectedIdBytes,
-            previousConfig: old.config,
-            previousPipeline: old.pipeline,
-            previousWritable: old.writable,
-            previousOrientation: old.orientation,
-            previousStrictOrientation: old.strictOrientation,
-            previousMainFormat: old.mainFormat,
-            previousProcessed: old.processed,
-            previousStarted: started,
-            ...controls,
-            cancel: current.cancellation,
-            deadline,
-            capture,
-            dropFrames,
-            autofocus,
-          })
-          this.handle = response.handle
-          this.started = response.started
-          if (response.callbackError !== undefined)
-            throw Object.assign(response.callbackError as object, {
-              restoreCode: response.restoreCode,
-              controlCode: response.controlCode,
-              restoreControlCode: response.restoreControlCode,
-            })
-          if (
-            response.autofocusState !== undefined &&
-            response.code &&
-            response.code !== -5 &&
-            !response.restoreCode &&
-            !current.cancelRequested
-          )
-            throw Object.assign(
-              new CameraError(response.code, 'target autofocus'),
-              { autofocusState: response.autofocusState },
+      (current) =>
+        withStagedImageFile(
+          capture?.kind === 'file' ? capture.path : undefined,
+          current,
+          async (file) => {
+            current.check()
+            this.checkModeLeases()
+            await this.settleFocus(focusPolicy, current)
+            current.check()
+            const stats = storage(40)
+            check(n.zc_get_stats(this.handle, ptr(stats)))
+            if (
+              view(stats).getUint32(36, true) ||
+              this.recording ||
+              this.requests.length
             )
-          if (response.controlCode && !response.restoreCode)
-            throw Object.assign(
-              new CameraError(
-                response.code || response.controlCode,
-                'runtime control restoration',
-              ),
-              { controlCode: response.controlCode },
-            )
-          if (Date.now() >= deadline && !current.cancelRequested)
-            current.cancel(new CameraError(-3, 'mode deadline'))
-          if (response.restoreCode) {
-            const error = new CameraError(
-              response.code || response.restoreCode,
-              'mode restoration',
-            ) as CameraError & { restoreCode: number }
-            error.restoreCode = response.restoreCode
-            Object.assign(error, {
-              controlCode: response.controlCode,
-              restoreControlCode: response.restoreControlCode,
-            })
-            throw error
-          }
-          if (response.code === -5 && current.cancelRequested) current.check()
-          check(response.code, 'mode switch')
-          current.check()
-          this.configuration = response.target ? target : previous
-          if (capture) {
-            value = response.value
-            if (capture.kind === 'metadata' || capture.kind === 'file')
-              value = decodeMetadata(response.value!)
-            if (capture.kind === 'stream')
-              value = { ...response.stream!, data: response.value! }
-          }
-          preview()
-        } catch (error) {
-          failure = error
-          if (error instanceof ModeWorkerFault) {
-            this.handle = 0 as Pointer
-            this.started = false
-          }
-          if (response?.target && this.handle) {
+              throw new CameraError(-4, 'mode requires unleased idle camera')
+            const previous = this.options,
+              old = cameraConfiguration(previous),
+              started = this.started,
+              previewConfig = this.previewConfiguration,
+              controls = this.readModeControls(autofocus ? 2n : 0n)
+            this.modeActive = true
+            if (this.timer !== undefined) {
+              clearTimeout(this.timer)
+              this.timer = undefined
+            }
+            let response: ModeResponse | undefined
+            let value: unknown
+            let failure: unknown
+            const preview = () => {
+              if (
+                previewConfig === undefined ||
+                !this.handle ||
+                this.closing ||
+                this.stopJob
+              )
+                return
+              this.openPreviewOwned(previewConfig)
+            }
             try {
-              const restored = await this.runOwnedMode({
+              this.stopPreviewOwned()
+              response = await this.runOwnedMode({
                 handle: this.handle,
-                ...old,
+                ...encoded,
                 cameraId: this.selectedIdBytes,
-                previousConfig: encoded.config,
-                previousPipeline: encoded.pipeline,
-                previousWritable: encoded.writable,
-                previousOrientation: encoded.orientation,
-                previousStrictOrientation: encoded.strictOrientation,
-                previousMainFormat: encoded.mainFormat,
-                previousProcessed: encoded.processed,
-                previousStarted: true,
+                previousConfig: old.config,
+                previousPipeline: old.pipeline,
+                previousWritable: old.writable,
+                previousOrientation: old.orientation,
+                previousStrictOrientation: old.strictOrientation,
+                previousMainFormat: old.mainFormat,
+                previousProcessed: old.processed,
+                previousStarted: started,
                 ...controls,
-                controlRevision: response!.controlRevision,
-                cancel: new SharedArrayBuffer(8),
-                deadline: Infinity,
-                dropFrames: 0,
+                cancel: current.cancellation,
+                deadline,
+                capture: file
+                  ? { ...capture!, fileOutput: file.handle }
+                  : capture,
+                dropFrames,
+                autofocus,
               })
-              this.handle = restored.handle
-              this.started = restored.started
-              this.configuration = restored.target ? previous : target
-              check(restored.restoreCode || restored.code, 'mode rollback')
-              if (!started && this.handle) {
-                check(n.zc_stop(this.handle))
-                this.started = false
+              this.handle = response.handle
+              this.started = response.started
+              if (response.callbackError !== undefined)
+                throw Object.assign(response.callbackError as object, {
+                  restoreCode: response.restoreCode,
+                  controlCode: response.controlCode,
+                  restoreControlCode: response.restoreControlCode,
+                })
+              if (
+                response.autofocusState !== undefined &&
+                response.code &&
+                response.code !== -5 &&
+                !response.restoreCode &&
+                !current.cancelRequested
+              )
+                throw Object.assign(
+                  new CameraError(response.code, 'target autofocus'),
+                  { autofocusState: response.autofocusState },
+                )
+              if (response.controlCode && !response.restoreCode)
+                throw Object.assign(
+                  new CameraError(
+                    response.code || response.controlCode,
+                    'runtime control restoration',
+                  ),
+                  { controlCode: response.controlCode },
+                )
+              if (Date.now() >= deadline && !current.cancelRequested)
+                current.cancel(new CameraError(-3, 'mode deadline'))
+              if (response.restoreCode) {
+                const error = new CameraError(
+                  response.code || response.restoreCode,
+                  'mode restoration',
+                ) as CameraError & { restoreCode: number }
+                error.restoreCode = response.restoreCode
+                Object.assign(error, {
+                  controlCode: response.controlCode,
+                  restoreControlCode: response.restoreControlCode,
+                })
+                throw error
               }
-            } catch (restorationError) {
-              if (restorationError instanceof ModeWorkerFault) {
+              if (response.code === -5 && current.cancelRequested)
+                current.check()
+              check(response.code, 'mode switch')
+              current.check()
+              this.configuration = response.target ? target : previous
+              if (capture) {
+                value = response.value
+                if (capture.kind === 'metadata' || capture.kind === 'file')
+                  value = decodeMetadata(response.value!)
+                if (capture.kind === 'stream')
+                  value = { ...response.stream!, data: response.value! }
+              }
+              preview()
+            } catch (error) {
+              failure = error
+              if (error instanceof ModeWorkerFault) {
                 this.handle = 0 as Pointer
                 this.started = false
               }
-              if (error && typeof error === 'object')
-                Object.assign(error, { restorationError })
-              else
-                failure = new AggregateError(
-                  [error, restorationError],
-                  'mode and restoration failed',
-                )
+              if (response?.target && this.handle) {
+                try {
+                  const restored = await this.runOwnedMode({
+                    handle: this.handle,
+                    ...old,
+                    cameraId: this.selectedIdBytes,
+                    previousConfig: encoded.config,
+                    previousPipeline: encoded.pipeline,
+                    previousWritable: encoded.writable,
+                    previousOrientation: encoded.orientation,
+                    previousStrictOrientation: encoded.strictOrientation,
+                    previousMainFormat: encoded.mainFormat,
+                    previousProcessed: encoded.processed,
+                    previousStarted: true,
+                    ...controls,
+                    controlRevision: response!.controlRevision,
+                    cancel: new SharedArrayBuffer(8),
+                    deadline: Infinity,
+                    dropFrames: 0,
+                  })
+                  this.handle = restored.handle
+                  this.started = restored.started
+                  this.configuration = restored.target ? previous : target
+                  check(restored.restoreCode || restored.code, 'mode rollback')
+                  if (!started && this.handle) {
+                    check(n.zc_stop(this.handle))
+                    this.started = false
+                  }
+                } catch (restorationError) {
+                  if (restorationError instanceof ModeWorkerFault) {
+                    this.handle = 0 as Pointer
+                    this.started = false
+                  }
+                  if (error && typeof error === 'object')
+                    Object.assign(error, { restorationError })
+                  else
+                    failure = new AggregateError(
+                      [error, restorationError],
+                      'mode and restoration failed',
+                    )
+                }
+              }
+              if (!this.previewActive) {
+                try {
+                  preview()
+                } catch (restorationError) {
+                  if (error && typeof error === 'object')
+                    Object.assign(error, { previewError: restorationError })
+                }
+              }
+            } finally {
+              this.modeActive = false
+              if (
+                this.previewActive ||
+                (this.started && this.hasRequestCallbacks)
+              )
+                this.ensurePump()
             }
-          }
-          if (!this.previewActive) {
-            try {
-              preview()
-            } catch (restorationError) {
-              if (error && typeof error === 'object')
-                Object.assign(error, { previewError: restorationError })
-            }
-          }
-        } finally {
-          this.modeActive = false
-          if (this.previewActive || (this.started && this.hasRequestCallbacks))
-            this.ensurePump()
-        }
-        if (failure !== undefined) throw failure
-        if (!capture) value = this.info()
-        current.seal()
-        return value as T
-      },
+            if (failure !== undefined) throw failure
+            if (!capture) value = this.info()
+            if (file) await file.publish(current, deadline)
+            current.seal()
+            return value as T
+          },
+        ),
       () => this.modeJobs.delete(job),
       effective,
     )
