@@ -21,3 +21,9 @@
 
 - Implementation, bindings, tests and tooling use Zig or TypeScript/Bun. Do not
   add or execute Python. System C/C++ bridges remain for libcamera and codecs.
+
+- For media and hardware changes, check both home-lang/home shared packages and
+  Home OS at ~/Code/Home/os for existing implementations to reuse or improve.
+  Record inspected revisions and reuse decisions in docs/home-reuse.md and
+  docs/home-os-reuse.md. Keep kernel/device ownership separate from hosted camera
+  ownership; an architecture proposal or stub return is not working hardware.

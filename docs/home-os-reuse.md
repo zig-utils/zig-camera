@@ -72,3 +72,13 @@ conversion. Neither supplies a portable planar converter or hosted preview owner
 The ADR places media algorithms in Home stdlib; the shared I420 block improvement
 therefore lands in Home video before camera reuse. Home OS remains unchanged at
 the audited commit. No kernel/device execution or acceleration claim is made.
+
+The same audit reads docs/adr/ADR-MC5-display.md and apps/media_player.home.
+The display ADR specifies independent native-YUV video and ARGB UI/OSD planes,
+with display interrupts pacing UI independently of video. This is a useful design
+reference for the outstanding DRM/KMS preview backend. The ADR records unverified
+Pi register/bring-up work and freezes OpenGL/Vulkan for its v1; its bandwidth
+figures are estimates, not measured performance. The media-player app delegates
+to the kernel decoder above and does not add a standalone converter or container.
+A future hosted backend must use Linux display/DMA ownership and validate format,
+stride, fences and lease lifetime rather than importing kernel physical pointers.
