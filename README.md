@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.51 adds [display view controls](docs/preview-views.md): window placement,
-aspect fitting, independent image/overlay transforms and overlay rectangles,
-with validated live updates and mode restoration. See [headless preview](docs/headless-preview.md), [RGBA preview overlays](docs/preview-overlays.md), [coordinated recording groups](docs/recording-groups.md),
+Version 0.52 adds [preview stream selection](docs/preview-streams.md): main or
+RGB/I420 lores, live source changes, background-only display and isolated display
+failures. Selected sources and [display views](docs/preview-views.md) survive mode
+restoration. See [headless preview](docs/headless-preview.md), [RGBA preview overlays](docs/preview-overlays.md), [coordinated recording groups](docs/recording-groups.md),
 [shared microphone audio](docs/shared-audio.md),
 [multiple encoders](docs/multiple-encoders.md) and the
 [Home OS reuse audit](docs/home-os-reuse.md).

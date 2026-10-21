@@ -61,10 +61,75 @@ static void overlay_views(zc_preview *p,const zc_frame *frame) {
     zc_preview_view normal;zc_default_preview_view(&normal);normal.flags|=2;normal.window_width=4;normal.window_height=2;assert(zc_preview_set_view(p,&normal)==ZC_OK);SDL_PumpEvents();
     assert(zcm_preview_overlay(p,NULL,0,0,0)==ZC_OK);
 }
+static void reference_rgb(int y,int u,int v,uint32_t matrix,uint32_t range,int out[3]) {
+    const double kr=matrix==ZC_YCBCR_REC601?0.299:matrix==ZC_YCBCR_REC709?0.2126:0.2627;
+    const double kb=matrix==ZC_YCBCR_REC601?0.114:matrix==ZC_YCBCR_REC709?0.0722:0.0593;
+    const double l=(y-(range==ZC_RANGE_LIMITED?16:0))*255.0/(range==ZC_RANGE_LIMITED?219.0:255.0);
+    const double cb=(u-128)*255.0/(range==ZC_RANGE_LIMITED?224.0:255.0),cr=(v-128)*255.0/(range==ZC_RANGE_LIMITED?224.0:255.0);
+    double rgb[3]={l+2*(1-kr)*cr,l-2*kb*(1-kb)/(1-kr-kb)*cb-2*kr*(1-kr)/(1-kr-kb)*cr,l+2*(1-kb)*cb};
+    for(int i=0;i<3;i++){if(rgb[i]<0)rgb[i]=0;if(rgb[i]>255)rgb[i]=255;out[i]=(int)(rgb[i]+0.5);}
+}
+static void read_small(zc_preview *p,uint8_t out[12]) {
+    assert(zcm_preview_render(p,0)==ZC_OK);assert(SDL_RenderReadPixels(p->renderer,NULL,SDL_PIXELFORMAT_RGB24,out,6)==0);
+}
+static void yuv_inputs(void) {
+    zc_preview *p=NULL;assert(zcm_preview_open("I420",2,2,&p)==ZC_OK);
+    uint8_t ys[6]={16,235,77,77,80,120},us[1]={64},vs[1]={192};
+    zc_frame frame={0};frame.token=1;frame.main.width=2;frame.main.height=2;frame.main.stride=4;frame.main.plane_count=3;strcpy(frame.main.format,"YUV420");
+    frame.main.planes[0]=(zc_plane){.data=ys,.length=6,.bytes_used=6,.fd=-1};
+    frame.main.planes[1]=(zc_plane){.data=us,.length=1,.bytes_used=1,.fd=-1};frame.main.planes[2]=(zc_plane){.data=vs,.length=1,.bytes_used=1,.fd=-1};
+    zc_color_space color={.struct_size=sizeof(color),.present=1,.primaries=ZC_PRIMARIES_REC709,.transfer=ZC_TRANSFER_SRGB};
+    for(uint32_t matrix=ZC_YCBCR_REC601;matrix<=ZC_YCBCR_REC2020;matrix++) for(uint32_t range=ZC_RANGE_FULL;range<=ZC_RANGE_LIMITED;range++) {
+        color.ycbcr_encoding=matrix;color.range=range;assert(zc_preview_show_input(p,&frame,&color)==ZC_OK);
+        uint8_t out[12];read_small(p,out);
+        for(int i=0;i<4;i++){int rgb[3];reference_rgb(ys[(i/2)*4+i%2],64,192,matrix,range,rgb);for(int k=0;k<3;k++)assert(abs((int)out[i*3+k]-rgb[k])<=1);}
+        frame.main.planes[2].bytes_used=0;assert(zc_preview_show_input(p,&frame,&color)==ZC_INVALID);frame.main.planes[2].bytes_used=1;
+        uint8_t after[12];read_small(p,after);assert(!memcmp(out,after,12));
+    }
+    assert(zc_preview_show_input(p,&frame,NULL)==ZC_UNSUPPORTED);
+    uint8_t packed[12]={16,235,77,77,80,120,77,77,64,77,192,77};
+    frame.main.plane_count=1;frame.main.planes[0]=(zc_plane){.data=packed,.length=12,.bytes_used=12,.fd=-1};
+    assert(zc_preview_show_input(p,&frame,&color)==ZC_OK);
+    frame.main.planes[0].bytes_used=10;assert(zc_preview_show_input(p,&frame,&color)==ZC_INVALID);frame.main.planes[0].bytes_used=12;
+    uint8_t *locked=NULL;uint64_t length=0;uint32_t stride=0;
+    assert(zcm_preview_rgb_begin(p,&locked,&length,&stride)==ZC_OK && locked && length>=12 && stride>=6);
+    uint8_t *other=NULL;uint64_t other_length=0;uint32_t other_stride=0;
+    assert(zcm_preview_rgb_begin(p,&other,&other_length,&other_stride)==ZC_BUSY);
+    assert(zcm_preview_close(p)==ZC_BUSY);assert(zcm_preview_background(p)==ZC_BUSY);
+    assert(zcm_preview_rgb_end(p,0)==ZC_OK);assert(zcm_preview_rgb_end(p,0)==ZC_STATE);
+    assert(zc_preview_show_background(p)==ZC_OK);uint8_t background[12];read_small(p,background);for(int i=0;i<12;i++)assert(background[i]==0);
+    assert(zcm_preview_close(p)==ZC_OK);
+    zc_preview *blank=NULL;assert(zc_preview_open_background("no image texture",2,2,&blank)==ZC_OK && !blank->texture);
+    assert(zc_preview_show_background(blank)==ZC_OK);read_small(blank,background);for(int i=0;i<12;i++)assert(background[i]==0);
+    assert(zc_preview_show_input(blank,&frame,&color)==ZC_UNSUPPORTED);assert(zc_preview_close(blank)==ZC_OK);
+}
+static void leased_lores(void) {
+    zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=4;
+    zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);pipeline.lores_width=2;pipeline.lores_height=2;
+    zc_camera *camera=NULL;assert(zc_open_pipeline(&cfg,&pipeline,&camera)==ZC_OK);assert(zc_enable_writable(camera)==ZC_OK);assert(zc_start(camera)==ZC_OK);
+    zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+    zc_preview *p=NULL;assert(zcm_preview_open("leased lores",2,2,&p)==ZC_OK);
+    zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,ZC_LORES,1,&map)==ZC_OK);
+    zc_stream input;assert(zc_frame_map_stream(map,&input)==ZC_OK);
+    assert(input.plane_count==3);uint8_t *bytes=(uint8_t *)input.planes[0].data;
+    bytes[0]=100;bytes[1]=100;bytes[input.stride]=100;bytes[input.stride+1]=100;
+    ((uint8_t *)input.planes[1].data)[0]=64;((uint8_t *)input.planes[2].data)[0]=192;
+    assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_BUSY);
+    assert(zc_frame_map_close(map)==ZC_OK);
+    assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_OK);
+    zc_color_space color;assert(zc_get_stream_color_space(camera,ZC_LORES,&color)==ZC_OK);
+    uint8_t out[12];read_small(p,out);int expected[3];reference_rgb(100,64,192,color.ycbcr_encoding,color.range,expected);
+    for(int i=0;i<4;i++)for(int k=0;k<3;k++)assert(abs(out[i*3+k]-expected[k])<=1);
+    assert(zc_preview_show_stream(p,camera,frame.token,ZC_MAIN)==ZC_INVALID);assert(zc_frame_readable(camera,frame.token)==ZC_OK);
+    assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_STALE);
+    assert(zc_preview_close(p)==ZC_OK);assert(zc_close(camera)==ZC_OK);
+}
 int main(void) {
     assert(SDL_setenv("SDL_VIDEODRIVER","dummy",1)==0);
     SDL_SetHint(SDL_HINT_RENDER_DRIVER,"software");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"0");
+    yuv_inputs();
+    leased_lores();
     zc_preview *p=NULL;
     assert(zcm_preview_open("overlay-test",4,2,&p)==ZC_OK);
     uint8_t rgb[24]; memset(rgb,100,sizeof(rgb));

@@ -21,8 +21,9 @@ const help =
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
     \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
     \\  --image-stream NAME      Select main/lores for images, raw for DNG
-    \\  --record-stream NAME     Select main/lores for video; preview still uses main
+    \\  --record-stream NAME     Select main/lores for video, independent of preview
     \\  --png-compression N --png-filter NAME  zlib 0..9; adaptive/none/sub/up/average/paeth
+    \\  --preview-stream NAME    main (default), lores or none (background/overlay only)
     \\  --fps N                  Preview/record frame rate (default 30)
     \\  --codec NAME             mjpeg (MKV), h264 or hevc (MP4, -Dcodecs=true)
     \\  --bitrate N --gop N       AVC/HEVC bits/sec (0 CRF) and keyframe interval
@@ -86,6 +87,7 @@ fn run() !void {
     var pipeline: camera.c.zc_pipeline_options = undefined;
     camera.core.zc_default_pipeline_options(&pipeline);
     var fps: u32 = 30;
+    var preview_stream: ?u32 = camera.c.ZC_MAIN;
     var codec: u32 = camera.c.ZC_MJPEG;
     var bitrate: u32 = 0;
     var gop: u32 = 0;
@@ -156,6 +158,8 @@ fn run() !void {
             image_format = try camera.still.formatFromName(value);
         } else if (eq(key, "--image-stream")) {
             image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
+        } else if (eq(key, "--preview-stream")) {
+            preview_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "none")) null else return error.InvalidPreviewStream;
         } else if (eq(key, "--record-stream")) {
             record_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else return error.InvalidRecordingStream;
         } else if (eq(key, "--png-filter")) {
@@ -342,7 +346,18 @@ fn run() !void {
     }
     if (eq(command, "preview") or eq(command, "record")) {
         var window: ?*camera.c.zc_preview = null;
-        if (show_preview) try camera.check(camera.media.zc_preview_open("zig-camera", info.main.width, info.main.height, &window));
+        if (show_preview) {
+            const display = if (preview_stream == camera.c.ZC_LORES) negotiated.lores else info.main;
+            if (display.width == 0 or display.height == 0) return error.InvalidPreviewStream;
+            if (preview_stream) |which| {
+                var space: camera.c.zc_color_space = undefined;
+                try camera.check(camera.core.zc_get_stream_color_space(cam.handle, which, &space));
+                const format = std.mem.sliceTo(&display.format, 0);
+                const pixel_format: u32 = if (eq(format, "BGR888")) camera.c.ZC_RGB24 else if (eq(format, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidPreviewStream;
+                try camera.check(camera.preview_input.zc_preview_check_color(pixel_format, &space));
+            }
+            try camera.check(if (preview_stream == null) camera.media.zc_preview_open_background("zig-camera", display.width, display.height, &window) else camera.media.zc_preview_open("zig-camera", display.width, display.height, &window));
+        }
         defer if (window) |w| {
             camera.check(camera.media.zc_preview_close(w)) catch {};
         };
@@ -382,7 +397,7 @@ fn run() !void {
             var frame = try cam.acquire(timeout_ms);
             defer frame.release() catch {};
             if (window) |w| {
-                const status = camera.media.zc_preview_show(w, &frame.value);
+                const status = if (preview_stream) |which| camera.preview_input.zc_preview_show_stream(w, cam.handle, frame.value.token, which) else camera.preview_input.zc_preview_show_background(w);
                 if (status == 1) break;
                 try camera.check(status);
             }

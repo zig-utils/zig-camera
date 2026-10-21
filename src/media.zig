@@ -36,12 +36,18 @@ pub export fn zc_prepared_output_close(p: ?*c.zc_prepared_output) void {
     @import("video.zig").closePrepared(p orelse return);
 }
 extern fn zcm_preview_open([*:0]const u8, u32, u32, *?*c.zc_preview) c_int;
+extern fn zcm_preview_open_background([*:0]const u8, u32, u32, *?*c.zc_preview) c_int;
 extern fn zcm_preview_show(*c.zc_preview, *const c.zc_frame) c_int;
 extern fn zcm_preview_close(*c.zc_preview) c_int;
 pub export fn zc_preview_open(title: [*:0]const u8, width: u32, height: u32, out: *?*c.zc_preview) c_int {
     out.* = null;
     if (!options.preview) return c.ZC_UNSUPPORTED;
     return zcm_preview_open(title, width, height, out);
+}
+pub export fn zc_preview_open_background(title: [*:0]const u8, width: u32, height: u32, out: *?*c.zc_preview) c_int {
+    out.* = null;
+    if (!options.preview) return c.ZC_UNSUPPORTED;
+    return zcm_preview_open_background(title, width, height, out);
 }
 pub export fn zc_preview_show(p: *c.zc_preview, f: *const c.zc_frame) c_int {
     if (!options.preview) return c.ZC_UNSUPPORTED;

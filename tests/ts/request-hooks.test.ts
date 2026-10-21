@@ -12,7 +12,9 @@ const native: {
   zc_video_producer_frame: (
     ...args: Parameters<typeof ffi.zc_video_producer_frame>
   ) => number
-  zc_preview_show: (...args: Parameters<typeof ffi.zc_preview_show>) => number
+  zc_preview_show_stream: (
+    ...args: Parameters<typeof ffi.zc_preview_show_stream>
+  ) => number
   zc_video_producer_av: (
     ...args: Parameters<typeof ffi.zc_video_producer_av>
   ) => number
@@ -620,11 +622,17 @@ previewTest(
   'preview receives post edits only after mapped scopes close',
   async () => {
     const c = cam(),
-      show = native.zc_preview_show
+      show = native.zc_preview_show_stream
     const seen: number[][] = []
     try {
-      native.zc_preview_show = (...args) => {
-        seen.push(pixel(args[1] as Pointer))
+      native.zc_preview_show_stream = (...args) => {
+        const frame = new Uint8Array(456)
+        new DataView(frame.buffer).setBigUint64(0, args[2] as bigint, true)
+        expect(
+          ffi.zc_get_stream(args[1], args[2], args[3], ptr(frame.subarray(40))),
+        ).toBe(0)
+        expect(ffi.zc_frame_readable(args[1], args[2])).toBe(0)
+        seen.push(pixel(ptr(frame)))
         return show(...args)
       }
       c.setRequestCallbacks({
@@ -641,7 +649,7 @@ previewTest(
       expect([...rgb.subarray(0, 3)]).toEqual([1, 2, 3])
       expect(seen[0]).toEqual([4, 5, 6])
     } finally {
-      native.zc_preview_show = show
+      native.zc_preview_show_stream = show
       await c.close()
     }
   },

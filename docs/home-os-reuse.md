@@ -65,3 +65,10 @@ ownership are not a portable SDL view contract. The hosted implementation reuses
 Home image's checked unsigned regions/orientation and contributes a standalone
 viewport plan for aspect fitting and texture coordinates. No kernel allocator,
 framebuffer copy or device execution is introduced into camera display controls.
+
+The 0.52 follow-up again reads the media-stdlib ADR, compositor.home's packed
+color_blend and VC7 DMA fill/copy CPU fallbacks, and searches both for I420/YUV
+conversion. Neither supplies a portable planar converter or hosted preview owner.
+The ADR places media algorithms in Home stdlib; the shared I420 block improvement
+therefore lands in Home video before camera reuse. Home OS remains unchanged at
+the audited commit. No kernel/device execution or acceleration claim is made.

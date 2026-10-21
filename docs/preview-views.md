@@ -89,4 +89,5 @@ subpixel rectangles, aspect/stretch behavior, resizing and window/thread isolati
 Bun tests cover copied settings, live failure/reentry, unchanged capture pixels,
 headless validation and camera/recorder mode restoration. Home helpers pass pinned
 and development Zig Debug/ReleaseSafe tests. DRM/KMS, GPU/GUI buffer sharing,
-additional display streams/formats and physical Pi acceptance remain parity work.
+additional display formats and physical Pi acceptance remain parity work. Main/lores
+and background-only selection are covered by [preview streams](preview-streams.md).

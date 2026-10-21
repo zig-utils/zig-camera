@@ -1,3 +1,4 @@
+import type { PreviewStream } from './preview-stream'
 import { native as n, storage, view, ptr, check } from './ffi'
 export interface PreviewTransform {
   rotation?: 0 | 90 | 180 | 270
@@ -32,6 +33,7 @@ export interface PreparedPreviewView {
 export interface PreviewConfiguration {
   readonly backend: 'sdl' | 'headless'
   readonly title: string
+  readonly stream?: PreviewStream
   readonly view: PreparedPreviewView
 }
 function uint(value: number, max = 0xffffffff) {

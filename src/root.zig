@@ -24,6 +24,10 @@ comptime {
     _ = output_mailbox;
     _ = @import("home/pts_clock.zig");
 }
+pub const preview_input = @import("preview_input.zig");
+comptime {
+    _ = preview_input;
+}
 pub const preview_view = @import("preview_view.zig");
 comptime {
     _ = preview_view;

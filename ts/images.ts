@@ -29,6 +29,9 @@ export function processedImageStream(stream: 'main' | 'lores' = 'main') {
 export function readStreamColorSpace(camera: Pointer, stream: ImageStream) {
   const data = storage(24)
   check(n.zc_get_stream_color_space(camera, imageStreamId(stream), ptr(data)))
+  return decodeStreamColorSpace(data)
+}
+export function decodeStreamColorSpace(data: Uint8Array) {
   const d = view(data)
   return {
     present: !!d.getUint32(4, true),

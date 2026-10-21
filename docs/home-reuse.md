@@ -426,3 +426,17 @@ and copied verbatim with region.zig. Eight standalone/dependency tests pass in
 Debug/ReleaseSafe with pinned and development Zig. Camera code validates the
 public scalar ABI in Zig and keeps SDL calls in the existing system bridge;
 window manager requests and display transforms never alter camera frame buffers.
+
+The 0.52 audit reuses Home video yuv_rgb for selected I420 preview directly into
+SDL's locked RGB texture. Home main 7ec5214016ca0486b48eb9ad48b2574726fa960a
+improves decode420 to reuse chroma contributions per 2x2 block while preserving
+fixed-point rounding/clipping. All four standalone tests pass with pinned 0.15.2
+and development Zig in Debug/ReleaseSafe, including 75,264 legacy-equivalence
+blocks and padding canaries. The camera copy is verbatim. Existing frame_access
+read gates pin a synchronous scoped read without allocating a reference token.
+
+Home retains a reproducible legacy/new padded 640x480 benchmark and raw CSVs.
+Local macOS/arm64 ReleaseFast median batch ratios were 1.77–1.89; ReleaseSafe
+was 0.94–1.46, including a slight BT.709-full regression. A concurrent-compiler
+run is also retained to expose noise. These are shared-host observations, not Pi
+results, camera throughput or a Picamera2 comparison. No safety checks were removed.

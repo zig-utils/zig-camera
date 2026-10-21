@@ -73,6 +73,13 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    assert(zc_preview_check_color(ZC_RGB24,NULL)==ZC_OK);
+    assert(zc_preview_check_color(ZC_YUV420,NULL)==ZC_UNSUPPORTED);
+    zc_color_space display_color={.struct_size=sizeof(display_color),.present=1,.ycbcr_encoding=ZC_YCBCR_REC709,.range=ZC_RANGE_LIMITED};
+    assert(zc_preview_check_color(ZC_YUV420,&display_color)==ZC_OK);
+    display_color.range=0;assert(zc_preview_check_color(ZC_YUV420,&display_color)==ZC_UNSUPPORTED);
+    display_color.struct_size=0;assert(zc_preview_check_color(ZC_YUV420,&display_color)==ZC_INVALID);
+
     zc_preview_view display;zc_default_preview_view(&display);
     assert(display.struct_size==48 && display.flags==1 && display.image_orientation==1 && display.overlay_orientation==1);
     assert(zc_preview_check_view(64,48,&display)==ZC_OK);

@@ -107,6 +107,12 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
           ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
           ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
+          ./zig-out/bin/zig-camera preview --simulate --width 64 --height 48 --lores-width 16 --lores-height 12 --preview-stream lores --frames 4 --warmup 0
+          ./zig-out/bin/zig-camera preview --simulate --width 64 --height 48 --lores-width 16 --lores-height 12 --lores-format BGR888 --preview-stream lores --frames 4 --warmup 0
+          ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --preview-stream none --frames 4 --warmup 0
+          ./zig-out/bin/zig-camera record --simulate --width 64 --height 48 --lores-width 16 --lores-height 12 --preview --preview-stream lores --frames 4 --warmup 0 --output zig-out/lores-display.mkv
+          if ./zig-out/bin/zig-camera preview --simulate --preview-stream lores --frames 1 --warmup 0; then exit 1; fi
+          if ./zig-out/bin/zig-camera preview --simulate --preview-stream raw --frames 1 --warmup 0; then exit 1; fi
           ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/home.jpg
           ./zig-out/bin/zig-camera capture --simulate --width 128 --height 96 --warmup 0 --output zig-out/test.dng
           ./zig-out/bin/zig-camera record --simulate --width 128 --height 96 --frames 12 --fps 24 --warmup 0 --output zig-out/home.mkv

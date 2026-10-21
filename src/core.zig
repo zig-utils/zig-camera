@@ -560,6 +560,41 @@ pub export fn zc_copy_frame_rgb(p: *c.zc_camera, token: u64, out: [*]u8, length:
     if (self.slots[index].access.writer) return c.ZC_BUSY;
     return @import("media.zig").zc_copy_rgb(&self.slots[index].frame, out, length);
 }
+/// Internal synchronous read scope. The caller keeps its lease through finish;
+/// the access gate prevents final release/writes without allocating another token.
+/// Do not copy or retain this scope beyond the consuming native call.
+pub const ProcessedRead = struct {
+    owner: ?*Session,
+    index: u32,
+    stream: c.zc_stream,
+    color: c.zc_color_space,
+    pub fn finish(self: *ProcessedRead) c_int {
+        const owner = self.owner orelse return c.ZC_STATE;
+        owner.operation.lock();
+        defer owner.operation.unlock();
+        const next = owner.slots[self.index].access.ending(false) catch return c.ZC_STALE;
+        owner.slots[self.index].access = next;
+        self.owner = null;
+        return c.ZC_OK;
+    }
+};
+pub fn beginProcessedRead(p: *c.zc_camera, token: u64, which: u32, out: *ProcessedRead) c_int {
+    if (which != c.ZC_MAIN and which != c.ZC_LORES) return c.ZC_UNSUPPORTED;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    const next = self.slots[index].access.beginning(false, self.leases.count(token) catch unreachable) catch return c.ZC_BUSY;
+    var descriptor: c.zc_stream = undefined;
+    var color: c.zc_color_space = undefined;
+    const rc = streamLocked(self, index, which, &descriptor);
+    if (rc != c.ZC_OK) return rc;
+    const colored = driver.colorSpace(self.device.?, which, &color);
+    if (colored != c.ZC_OK) return colored;
+    self.slots[index].access = next;
+    out.* = .{ .owner = self, .index = index, .stream = descriptor, .color = color };
+    return c.ZC_OK;
+}
 pub export fn zc_frame_map_open(p: *c.zc_camera, token: u64, stream: u32, write: u32, out: *?*c.zc_frame_map) c_int {
     out.* = null;
     if (write > 1) return c.ZC_INVALID;
@@ -2574,4 +2609,41 @@ test "mapped readers preserve primary capacity and reject pool saturation withou
     try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
     for (maps[0..count]) |map| try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(map.?));
     try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+}
+
+test "synchronous processed readers pin final release and writers without allocating reference tokens" {
+    if (options.libcamera) return error.SkipZigTest;
+    var config: c.zc_config = undefined;
+    zc_default_config(&config);
+    config.width = 16;
+    config.height = 16;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    pipeline.lores_width = 8;
+    pipeline.lores_height = 8;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_open_pipeline(&config, &pipeline, &camera));
+    defer {
+        _ = zc_close(camera.?);
+    }
+    try std.testing.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 1000, &frame));
+    var first: ProcessedRead = undefined;
+    var second: ProcessedRead = undefined;
+    const before = try session(camera.?).leases.count(frame.token);
+    try std.testing.expectEqual(c.ZC_OK, beginProcessedRead(camera.?, frame.token, c.ZC_LORES, &first));
+    try std.testing.expectEqual(c.ZC_OK, beginProcessedRead(camera.?, frame.token, c.ZC_MAIN, &second));
+    try std.testing.expectEqual(before, try session(camera.?).leases.count(frame.token));
+    try std.testing.expectEqual(@as(u32, 8), first.stream.width);
+    try std.testing.expectEqual(c.ZC_BUSY, zc_release(camera.?, frame.token));
+    var writer: ?*c.zc_frame_map = null;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_frame_map_open(camera.?, frame.token, c.ZC_MAIN, 1, &writer));
+    try std.testing.expectEqual(c.ZC_OK, first.finish());
+    try std.testing.expectEqual(c.ZC_STATE, first.finish());
+    try std.testing.expectEqual(c.ZC_BUSY, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_OK, second.finish());
+    try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try std.testing.expectEqual(c.ZC_STALE, beginProcessedRead(camera.?, frame.token, c.ZC_MAIN, &first));
 }

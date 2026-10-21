@@ -299,7 +299,22 @@ typedef struct zc_preview zc_preview;
 /* Copy active RGB pixels into an owned tightly packed buffer; caller keeps lease. */
 int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);
+/* Display with no image texture allocation; logical dimensions place overlays. */
+int zc_preview_open_background(const char *title,uint32_t width,uint32_t height,zc_preview **);
 int zc_preview_show(zc_preview *, const zc_frame *);
+/* Main/lores BGR888 or I420 from the caller's leased frame. I420 requires a
+ * present negotiated matrix/range; conversion writes directly into SDL's locked
+ * RGB texture, without a temporary RGB image. RGB ignores optional color data.
+ * No plane or frame pointer survives this call. */
+int zc_preview_check_color(uint32_t input_format,const zc_color_space *);
+/* Explicit borrowed input uses frame.main for either selected stream. */
+int zc_preview_show_input(zc_preview *,const zc_frame *,const zc_color_space *);
+/* Select from a live camera token under a scoped native read, using negotiated
+ * color data. No heap/reference-token allocation; final release/writers are BUSY
+ * during the call. The camera operation mutex is not held while SDL runs. */
+int zc_preview_show_stream(zc_preview *,zc_camera *,uint64_t token,uint32_t stream);
+/* Draw background/overlay without reading image planes; still polls UI close. */
+int zc_preview_show_background(zc_preview *);
 int zc_preview_close(zc_preview *);
 /* Display-only view. Orientations use zc_orientation_from_transform, not EXIF.
  * flags: keep aspect=1, request window size=2, request window position=4,

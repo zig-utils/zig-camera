@@ -1,4 +1,14 @@
 import {
+  snapshotPreviewStream,
+  readPreviewInput,
+  copyPreviewStreamInfo,
+  type PreviewStream,
+  type PreviewStreamInfo,
+  type PreparedPreviewInput,
+} from './preview-stream'
+export type { PreviewStream, PreviewStreamInfo } from './preview-stream'
+import { text } from './ffi'
+import {
   preparePreviewView,
   validatePreviewView,
   copyPreviewViewOptions,
@@ -266,11 +276,6 @@ function fields(
   })
   return data
 }
-function text(data: Uint8Array, offset = 0, length = data.length - offset) {
-  const slice = data.subarray(offset, offset + length)
-  const end = slice.indexOf(0)
-  return new TextDecoder().decode(end < 0 ? slice : slice.subarray(0, end))
-}
 function state(data: Uint8Array) {
   return {
     generation: u64(data),
@@ -360,10 +365,12 @@ export interface CameraTransform {
 }
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 export interface PreviewOptions extends PreviewViewOptions {
+  stream?: PreviewStream
   backend?: 'sdl' | 'headless'
   title?: string
 }
 export interface PreviewInfo extends PreviewViewOptions {
+  stream?: PreviewStream
   backend: 'sdl' | 'headless'
   title: string
   suspended: boolean
@@ -700,8 +707,13 @@ export class Camera {
   get activeRecordings(): readonly Recording[] {
     return Object.freeze([...this.recordings])
   }
+  private lastPreviewError?: unknown
+  get previewError() {
+    return this.lastPreviewError
+  }
   private previewHandle = 0 as Pointer
   private previewConfiguration?: PreviewConfiguration
+  private previewInput?: PreparedPreviewInput
   private previewSuspended = false
   private get previewActive() {
     return this.previewConfiguration !== undefined && !this.previewSuspended
@@ -712,6 +724,9 @@ export class Camera {
       this.previewConfiguration && {
         backend: this.previewConfiguration.backend,
         title: this.previewConfiguration.title,
+        ...(this.previewConfiguration.stream !== undefined
+          ? { stream: this.previewConfiguration.stream }
+          : {}),
         ...copyPreviewViewOptions(this.previewConfiguration.view),
         suspended:
           this.previewSuspended ||
@@ -719,6 +734,15 @@ export class Camera {
           !!this.coordinatedRecorder ||
           !!this.coordinatedGroup,
       }
+    )
+  }
+  previewStreamInfo(): PreviewStreamInfo | undefined {
+    return (
+      this.previewInput &&
+      copyPreviewStreamInfo(
+        this.previewInput,
+        this.previewInfo()?.suspended ?? true,
+      )
     )
   }
   private overlayHandle = 0 as Pointer
@@ -1896,6 +1920,9 @@ export class Camera {
       throw new RangeError('invalid preview backend')
     if (typeof title !== 'string') throw new TypeError('invalid preview title')
     cstring(title)
+    const stream = snapshotPreviewStream(
+      typeof options === 'string' ? undefined : options.stream,
+    )
     const preparedView = preparePreviewView(
       typeof options === 'string' ? {} : options,
     )
@@ -1903,11 +1930,13 @@ export class Camera {
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewConfiguration)
       throw new CameraError(-4, 'preview already active')
-    const info = this.info()
     this.openPreviewOwned(
-      Object.freeze({ backend, title, view: preparedView }),
-      info.width,
-      info.height,
+      Object.freeze({
+        backend,
+        title,
+        view: preparedView,
+        ...(stream !== undefined ? { stream } : {}),
+      }),
     )
     try {
       this.start()
@@ -1932,7 +1961,7 @@ export class Camera {
       this.previewConfiguration !== owner
     )
       throw new CameraError(-4, 'preview changed during view validation')
-    const info = this.readInfo()
+    const info = this.previewInput!.info
     validatePreviewView(prepared, info.width, info.height)
     if (owner.backend === 'sdl')
       check(
@@ -1940,6 +1969,52 @@ export class Camera {
         'preview view',
       )
     this.previewConfiguration = Object.freeze({ ...owner, view: prepared })
+  }
+  /** Prepare a replacement display before retiring the old stream owner. */
+  setPreviewStream(stream: PreviewStream, options?: PreviewViewOptions) {
+    guardRequestCallback()
+    this.assertOpen()
+    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (!this.previewActive) throw new CameraError(-2, 'preview not active')
+    const owner = this.previewConfiguration!,
+      selected = snapshotPreviewStream(stream)
+    if (selected === undefined)
+      throw new RangeError('explicit preview stream required')
+    const preparedView =
+      options === undefined ? owner.view : preparePreviewView(options)
+    this.assertOpen()
+    if (
+      this.hasPendingModes() ||
+      !this.previewActive ||
+      this.previewConfiguration !== owner
+    )
+      throw new CameraError(-4, 'preview changed during stream validation')
+    const next = Object.freeze({
+        ...owner,
+        stream: selected,
+        view: preparedView,
+      }),
+      candidate = this.makePreview(next)
+    try {
+      this.assertOpen()
+      if (
+        this.hasPendingModes() ||
+        !this.previewActive ||
+        this.previewConfiguration !== owner
+      )
+        throw new CameraError(-4, 'preview changed during stream preparation')
+      if (this.previewHandle)
+        check(n.zc_preview_close(this.previewHandle), 'old preview close')
+    } catch (error) {
+      if (candidate.handle)
+        check(n.zc_preview_close(candidate.handle), 'candidate preview close')
+      throw error
+    }
+    this.previewHandle = candidate.handle
+    this.previewInput = candidate.input
+    this.previewConfiguration = next
+    this.previewSuspended = false
+    this.lastPreviewError = undefined
   }
   /** Replace or clear the display-only overlay. Does not modify capture/encoding. */
   setOverlay(overlay: PreviewOverlay | null) {
@@ -1990,20 +2065,19 @@ export class Camera {
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = candidate
   }
-  private openPreviewOwned(
-    configuration: PreviewConfiguration,
-    width: number,
-    height: number,
-  ) {
+  private makePreview(configuration: PreviewConfiguration) {
+    const input = readPreviewInput(this.handle, configuration.stream),
+      { width, height } = input.info
     validatePreviewView(configuration.view, width, height)
-    if (configuration.backend === 'headless') {
-      this.previewConfiguration = configuration
-      this.previewSuspended = false
-      return
-    }
+    if (configuration.backend === 'headless')
+      return { handle: 0 as Pointer, input }
     const name = cstring(configuration.title),
       out = outPointer()
-    check(n.zc_preview_open(ptr(name), width, height, ptr(out)))
+    const open =
+      input.info.stream === null
+        ? n.zc_preview_open_background
+        : n.zc_preview_open
+    check(open(ptr(name), width, height, ptr(out)))
     const candidate = handle(out)
     try {
       if (configuration.view.customized)
@@ -2017,9 +2091,15 @@ export class Camera {
       check(n.zc_preview_close(candidate))
       throw error
     }
-    this.previewHandle = candidate
+    return { handle: candidate, input }
+  }
+  private openPreviewOwned(configuration: PreviewConfiguration) {
+    const prepared = this.makePreview(configuration)
+    this.previewHandle = prepared.handle
+    this.previewInput = prepared.input
     this.previewConfiguration = configuration
     this.previewSuspended = false
+    this.lastPreviewError = undefined
   }
   stopPreview() {
     guardRequestCallback()
@@ -2029,6 +2109,7 @@ export class Camera {
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = 0 as Pointer
     this.previewConfiguration = undefined
+    this.previewInput = undefined
     this.previewSuspended = false
   }
   private stopPreviewOwned() {
@@ -2259,8 +2340,7 @@ export class Camera {
             this.stopJob
           )
             return
-          const info = this.readInfo()
-          this.openPreviewOwned(previewConfig, info.width, info.height)
+          this.openPreviewOwned(previewConfig)
         }
         let attachmentAttempted = false
         const attach = () => {
@@ -2717,8 +2797,7 @@ export class Camera {
             this.stopJob
           )
             return
-          const info = this.readInfo()
-          this.openPreviewOwned(previewConfig, info.width, info.height)
+          this.openPreviewOwned(previewConfig)
         }
         current.signal.addEventListener('abort', abortChildren, { once: true })
         try {
@@ -3171,13 +3250,7 @@ export class Camera {
             this.stopJob
           )
             return
-          const info = storage(680)
-          check(n.zc_get_info(this.handle, ptr(info)))
-          this.openPreviewOwned(
-            previewConfig,
-            view(info).getUint32(8, true),
-            view(info).getUint32(12, true),
-          )
+          this.openPreviewOwned(previewConfig)
         }
         try {
           this.stopPreviewOwned()
@@ -3686,12 +3759,31 @@ export class Camera {
             }
           }
           if (this.previewHandle) {
-            const code = n.zc_preview_show(
-              this.previewHandle,
-              ptr(frame[readableFrame]),
-            )
-            if (code === 1) this.stopPreview()
-            else check(code)
+            try {
+              const input = this.previewInput!
+              const code =
+                input.info.stream === null
+                  ? n.zc_preview_show_background(this.previewHandle)
+                  : n.zc_preview_show_stream(
+                      this.previewHandle,
+                      this.handle,
+                      frame.token,
+                      input.id,
+                    )
+              if (code === 1) this.stopPreview()
+              else check(code, 'preview display')
+            } catch (error) {
+              this.lastPreviewError = error
+              try {
+                this.stopPreview()
+              } catch (cleanup) {
+                this.lastPreviewError = new AggregateError(
+                  [error, cleanup],
+                  'preview display and cleanup failed',
+                )
+                throw cleanup
+              }
+            }
           }
         }
       } catch (error) {

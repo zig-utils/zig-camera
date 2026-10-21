@@ -385,3 +385,11 @@ Home checked display geometry (0.51):
   Existing orientation.zig is unchanged and retains its earlier provenance.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/ac8eef68bd64a601ca72399a19fd3152dc81bba0
+
+Home shared-chroma I420 decoding (0.52):
+- src/home/yuv_rgb.zig is copied verbatim from packages/video/src/core/yuv_rgb.zig
+  at 7ec5214016ca0486b48eb9ad48b2574726fa960a. The shared 2x2 chroma terms preserve
+  legacy pixel output, checked spans, strides and padding. Home includes equivalence
+  tests, a reproducible legacy/block benchmark and all raw local timing rows.
+  https://github.com/home-lang/home/commit/7ec5214016ca0486b48eb9ad48b2574726fa960a
+The Home MIT license and copyright reproduced above apply.

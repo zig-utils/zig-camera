@@ -162,7 +162,12 @@ export const native = dlopen(library, {
   zc_default_preview_view: { args: [p], returns: v },
   zc_preview_check_view: { args: [u, u, p], returns: i },
   zc_preview_set_view: { args: [p, p], returns: i },
+  zc_preview_open_background: { args: [p, u, u, p], returns: i },
   zc_preview_open: { args: [p, u, u, p], returns: i },
+  zc_preview_check_color: { args: [u, p], returns: i },
+  zc_preview_show_input: { args: [p, p, p], returns: i },
+  zc_preview_show_stream: { args: [p, p, n, u], returns: i },
+  zc_preview_show_background: { args: [p], returns: i },
   zc_preview_show: { args: [p, p], returns: i },
   zc_preview_overlay_create: { args: [p, n, u, u, u, p], returns: i },
   zc_preview_overlay_close: { args: [p], returns: v },
@@ -260,3 +265,13 @@ export function cstring(text: string) {
   return new TextEncoder().encode(`${text}\0`)
 }
 if (native.zc_abi_version() !== 1) throw new Error('unsupported camera ABI')
+
+export function text(
+  data: Uint8Array,
+  offset = 0,
+  length = data.length - offset,
+) {
+  const slice = data.subarray(offset, offset + length)
+  const end = slice.indexOf(0)
+  return new TextDecoder().decode(end < 0 ? slice : slice.subarray(0, end))
+}
