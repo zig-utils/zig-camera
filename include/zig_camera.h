@@ -82,6 +82,24 @@ typedef struct {
     zc_stream lores;
 } zc_pipeline_info;
 void zc_default_pipeline_options(zc_pipeline_options *);
+/* Shared processed-stream color request. present=0 selects the legacy default recipe and
+ * requires zero color components and strict_color=0. RGB normalizes the requested
+ * matrix/range to none/full while preserving primaries/transfer. YUV requires a
+ * matrix. Raw primaries cannot describe processed streams. */
+typedef struct { uint32_t struct_size,main_format,strict_color; zc_color_space color_space; } zc_processed_options;
+enum { ZC_COLOR_SRGB=1,ZC_COLOR_SYCC=2,ZC_COLOR_SMPTE170M=3,ZC_COLOR_REC709=4,ZC_COLOR_REC2020=5,ZC_COLOR_RAW=6 };
+void zc_default_processed_options(zc_processed_options *);
+int zc_color_space_preset(uint32_t preset,zc_color_space *out);
+int zc_check_processed_options(const zc_processed_options *,const zc_pipeline_options *);
+/* Existing config/stream/frame layouts remain ABI v1. Strict color rejects
+ * backend adjustments against the format-normalized effective request. */
+int zc_open_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,zc_camera **out);
+int zc_open_id_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,const uint8_t *id,uint32_t length,zc_camera **out);
+/* flags: configured=1, strict=2, RGB-normalized=4, backend-adjusted=8.
+ * Absent/unknown actual metadata counts as adjusted for configured requests.
+ * main/lores only; requested/effective are absent for backend-default requests. */
+typedef struct { uint32_t struct_size,flags,format,reserved; zc_color_space requested,effective,actual; } zc_color_negotiation;
+int zc_get_color_negotiation(zc_camera *,uint32_t stream,zc_color_negotiation *out);
 /* Exact UTF-8 backend ID selection. ID bytes are nonempty, at most 4096 bytes,
  * with no NUL or terminator. cfg.camera_index must be zero; never falls back.
  * Old config/ABI layouts remain unchanged. Copy returns the full selected ID;

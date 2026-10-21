@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
+_Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
 _Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
 _Static_assert(sizeof(zc_pcm_span)==24,"shared PCM span ABI");
 _Static_assert(sizeof(zc_pcm_batch)==32,"shared PCM batch ABI");
@@ -101,7 +103,40 @@ static void formatted_main(void) {
     assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_STALE);
     assert(zc_close(camera)==ZC_OK);
 }
+static void color_requests(void) {
+    zc_config cfg;zc_default_config(&cfg);cfg.width=16;cfg.height=16;
+    zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=8;pipe.lores_height=8;
+    zc_processed_options processed;zc_default_processed_options(&processed);
+    assert(processed.struct_size==36 && processed.main_format==ZC_RGB24 && processed.color_space.struct_size==24 && !processed.color_space.present);
+    assert(zc_check_processed_options(&processed,&pipe)==ZC_OK);
+    processed.strict_color=1;assert(zc_check_processed_options(&processed,&pipe)==ZC_INVALID);processed.strict_color=0;
+    assert(zc_color_space_preset(ZC_COLOR_SRGB,&processed.color_space)==ZC_OK);
+    assert(zc_check_processed_options(&processed,&pipe)==ZC_INVALID); /* lores is YUV */
+    zc_color_space canary;memset(&canary,90,sizeof(canary));const zc_color_space before=canary;
+    assert(zc_color_space_preset(99,&canary)==ZC_INVALID && !memcmp(&canary,&before,sizeof(canary)));
+    assert(zc_color_space_preset(ZC_COLOR_RAW,&processed.color_space)==ZC_OK);
+    assert(zc_check_processed_options(&processed,&pipe)==ZC_INVALID);
+    for(uint32_t format=ZC_YUV420;format<=ZC_RGB24;format++)for(uint32_t preset=ZC_COLOR_SYCC;preset<=ZC_COLOR_REC2020;preset++) {
+        zc_default_processed_options(&processed);processed.main_format=format;processed.strict_color=1;
+        pipe.lores_format=format==ZC_RGB24?ZC_YUV420:ZC_RGB24;
+        assert(zc_color_space_preset(preset,&processed.color_space)==ZC_OK);
+        zc_camera *camera=NULL;
+        assert(zc_open_id_processed_pipeline(&cfg,&pipe,&processed,ZC_ROTATE0,0,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
+        zc_color_negotiation main,lores;assert(zc_get_color_negotiation(camera,ZC_MAIN,&main)==ZC_OK);assert(zc_get_color_negotiation(camera,ZC_LORES,&lores)==ZC_OK);
+        assert(main.struct_size==88 && (main.flags&3)==3 && !(main.flags&8) && main.format==format);
+        assert(main.actual.primaries==processed.color_space.primaries && main.actual.transfer==processed.color_space.transfer);
+        const zc_color_negotiation *rgb=format==ZC_RGB24?&main:&lores,*yuv=format==ZC_YUV420?&main:&lores;
+        assert(rgb->actual.ycbcr_encoding==ZC_YCBCR_NONE && rgb->actual.range==ZC_RANGE_FULL && (rgb->flags&4));
+        assert(yuv->actual.ycbcr_encoding==processed.color_space.ycbcr_encoding && yuv->actual.range==processed.color_space.range);
+        const zc_color_negotiation old=main;
+        assert(zc_get_color_negotiation(camera,ZC_RAW,&main)==ZC_UNSUPPORTED && !memcmp(&main,&old,sizeof(main)));
+        assert(zc_start(camera)==ZC_OK);zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+        uint8_t rgb_copy[16*16*3];assert(zc_copy_frame_rgb(camera,frame.token,rgb_copy,sizeof(rgb_copy))==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_close(camera)==ZC_OK);
+    }
+}
 int main(void) {
+    color_requests();
     formatted_main();
     assert(zc_preview_check_color(ZC_RGB24,NULL)==ZC_OK);
     assert(zc_preview_check_color(ZC_YUV420,NULL)==ZC_UNSUPPORTED);

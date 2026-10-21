@@ -89,3 +89,12 @@ a usable format-negotiated capture path. ADR-MC5's separate native-YUV display
 plane is a future integration reference, while current hosted capture uses
 libcamera and Home stdlib conversions/packing. Source revision remains
 151269666bc09aa15a271f1c1f4603f681132e65; no Home OS code was executed or copied.
+
+The 0.54 audit searches kernel/media, camera.home and videocore7.home for color
+metadata/transfer negotiation and inspects VC7 gamma_table/vc7_set_gamma. That code
+constructs approximate display LUTs for hardware register output; it does not
+describe camera format normalization or query negotiated libcamera color metadata.
+The camera stub also supplies no such contract. No LUT or kernel state is imported
+into hosted capture policy. Shared description/negotiation policy therefore lands
+in Home video. The audited Home OS revision remains unchanged; no kernel or
+physical display code was executed, and no gamma accuracy claim is made.

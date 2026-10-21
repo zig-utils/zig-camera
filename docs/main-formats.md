@@ -65,8 +65,9 @@ libcamera requests sYCC for YUV and encoded RGB with no YCbCr matrix for RGB;
 validation can adjust color metadata. Copy/preview interpret negotiated YCbCr
 matrix/range. Recording keeps its existing strict gamut/transfer requirements and
 rejects unsupported/unknown color before admission. No conversion here changes
-primaries or gamma. Explicit color-space configuration, other formats and hardware
-encoding remain parity work.
+primaries or gamma. [Explicit color-space requests](color-configuration.md) now
+include strict negotiation and mode restoration. Other formats, general color
+conversion and hardware encoding remain parity work.
 
 Camera, temporary capture, single-recorder and recorder-group mode jobs carry
 main format through target opening, cancellation and rollback. Preview is recreated

@@ -9,6 +9,7 @@ pub const color_matrix = [9]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 pub const Callback = @import("real.zig").Callback;
 pub const Handle = struct {
     config: c.zc_config,
+    color_request: c.zc_color_space = std.mem.zeroes(c.zc_color_space),
     context: ?*anyopaque,
     callback: Callback,
     buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
@@ -63,7 +64,7 @@ fn attachProcessed(stream: *c.zc_stream, buf: []u8) void {
         stream.planes[i] = .{ .data = buf[offset..].ptr, .length = len, .bytes_used = len, .fd = -1, .offset = 0, .reserved = 0 };
     }
 }
-fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize) !void {
+fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize, color: c.zc_color_space) !void {
     @memset(buf, 0);
     const output = orientation.Extent{ .width = stream.width, .height = stream.height };
     if (stream.plane_count == 1) {
@@ -78,10 +79,11 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
             tmp[(y * stream.width + x) * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
         };
         const ysize = @as(usize, stream.stride) * stream.height;
-        try @import("home/yuv_rgb.zig").encode420(tmp, stream.width, stream.height, stream.width * 3, .{ buf[0..ysize], buf[ysize..][0 .. ysize / 4], buf[ysize + ysize / 4 ..] }, .{ stream.stride, stream.stride / 2, stream.stride / 2 }, @import("home/yuv_rgb.zig").Conversion.init(.bt601, .full));
+        try @import("home/yuv_rgb.zig").encode420(tmp, stream.width, stream.height, stream.width * 3, .{ buf[0..ysize], buf[ysize..][0 .. ysize / 4], buf[ysize + ysize / 4 ..] }, .{ stream.stride, stream.stride / 2, stream.stride / 2 }, try @import("stream_rgb.zig").conversion(color));
     }
 }
-pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main_format: u32, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    const main_format = processed.main_format;
     const transform = orientation.Transform.fromOrientation(requested_orientation) catch return c.ZC_INVALID;
     if (opts.sensor_width != 0) {
         var found = false;
@@ -97,7 +99,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main
     const main_output = orientation.Extent{ .width = width, .height = height };
     const main_source = transform.extent(main_output);
     const stride = std.mem.alignForward(u32, width * @as(u32, if (main_format == c.ZC_RGB24) 3 else 1), 64);
-    h.* = .{ .config = config.*, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
+    h.* = .{ .config = config.*, .color_request = processed.color_space, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
     h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
     h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else @intCast(main_source.width);
     h.pipeline.sensor_height = if (opts.sensor_width != 0) opts.sensor_height else @intCast(main_source.height);
@@ -150,7 +152,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main
             close(h);
             return c.ZC_NOMEM;
         };
-        fillProcessed(h.buffers[i], h.info.main, transform, main_source, i) catch {
+        fillProcessed(h.buffers[i], h.info.main, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, main_format) catch unreachable) catch {
             close(h);
             return c.ZC_NOMEM;
         };
@@ -176,7 +178,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main
                 close(h);
                 return c.ZC_NOMEM;
             };
-            fillProcessed(h.lores_buffers[i], l, transform, main_source, i) catch {
+            fillProcessed(h.lores_buffers[i], l, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, opts.lores_format) catch unreachable) catch {
                 close(h);
                 return c.ZC_NOMEM;
             };
@@ -495,8 +497,13 @@ pub fn sensorModes(_: *Handle, out: ?[*]c.zc_sensor_mode, capacity: u32, count: 
 pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
     if (stream > c.ZC_LORES) return c.ZC_INVALID;
     if (stream == c.ZC_RAW and h.config.raw == 0 or stream == c.ZC_LORES and h.pipeline.lores.plane_count == 0) return c.ZC_UNSUPPORTED;
-    const raw = stream == c.ZC_RAW;
-    out.* = .{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = if (raw) c.ZC_PRIMARIES_RAW else c.ZC_PRIMARIES_REC709, .transfer = if (raw) c.ZC_TRANSFER_LINEAR else c.ZC_TRANSFER_SRGB, .ycbcr_encoding = if ((stream == c.ZC_LORES and h.pipeline.lores.plane_count == 3) or (stream == c.ZC_MAIN and h.info.main.plane_count == 3)) c.ZC_YCBCR_REC601 else c.ZC_YCBCR_NONE, .range = c.ZC_RANGE_FULL };
+    if (stream == c.ZC_RAW) {
+        out.* = @import("color_policy.zig").toSpace(@import("home/color_description.zig").preset(.raw));
+    } else {
+        const descriptor = if (stream == c.ZC_MAIN) h.info.main else h.pipeline.lores;
+        const format: u32 = if (descriptor.plane_count == 3) c.ZC_YUV420 else c.ZC_RGB24;
+        out.* = @import("color_policy.zig").effective(h.color_request, format) catch return c.ZC_UNSUPPORTED;
+    }
     return c.ZC_OK;
 }
 pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
@@ -522,10 +529,10 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
 }
 
 pub const device_id = "synthetic";
-pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main_format: u32, requested_orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
     out.* = null;
     if (!std.mem.eql(u8, id, device_id)) return c.ZC_DEVICE;
-    return open(config, opts, main_format, requested_orientation, strict, actual, context, callback, out, info, pipeline);
+    return open(config, opts, processed, requested_orientation, strict, actual, context, callback, out, info, pipeline);
 }
 pub fn cameraId(_: *Handle, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     length.* = device_id.len;

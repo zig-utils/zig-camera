@@ -57,6 +57,12 @@ jobs:
           ./zig-out/bin/zig-camera info --simulate --camera-id synthetic
           if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi
           if ./zig-out/bin/zig-camera info --simulate --camera-id synthetic --camera 0; then exit 1; fi
+          ./zig-out/bin/zig-camera info --simulate --color-space rec709 --strict-color-space --width 64 --height 48 --lores-width 16 --lores-height 12
+          ./zig-out/bin/zig-camera info --simulate --main-format YUV420 --color-space rec2020 --strict-color-space --width 64 --height 48 --lores-width 16 --lores-height 12 --lores-format BGR888
+          if ./zig-out/bin/zig-camera info --simulate --main-format YUV420 --color-space srgb; then exit 1; fi
+          if ./zig-out/bin/zig-camera info --simulate --strict-color-space; then exit 1; fi
+          if ./zig-out/bin/zig-camera record --simulate --color-space rec2020 --frames 1 --warmup 0 --output zig-out/rejected-color.mkv; then exit 1; fi
+          test ! -e zig-out/rejected-color.mkv
           ./zig-out/bin/zig-camera modes --simulate
           ./zig-out/bin/zig-camera info --simulate --rotation 90 --transpose --strict-transform
           ./zig-out/bin/zig-camera capture --simulate --width 3 --height 2 --fifo --hflip --strict-transform --warmup 0 --output zig-out/oriented.ppm
@@ -107,7 +113,7 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
           ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
           ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
-          ./zig-out/bin/zig-camera preview --simulate --main-format YUV420 --width 64 --height 48 --frames 4 --warmup 0
+          ./zig-out/bin/zig-camera preview --simulate --main-format YUV420 --color-space rec709 --strict-color-space --width 64 --height 48 --frames 4 --warmup 0
           ./zig-out/bin/zig-camera capture --simulate --fifo --main-format YUV420 --width 64 --height 48 --warmup 0 --output zig-out/main-i420.png
           ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --width 64 --height 48 --frames 4 --fps 25 --warmup 0 --output zig-out/main-i420.mkv
           ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --width 64 --height 48 --frames 4 --fps 25 --codec h264 --warmup 0 --output zig-out/main-i420-h264.mp4
@@ -132,7 +138,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
-          bun test tests/ts/still-images.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts
+          bun test tests/ts/still-images.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

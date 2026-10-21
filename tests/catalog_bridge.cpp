@@ -41,6 +41,19 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    zc_color_space requested={sizeof(zc_color_space),1,ZC_PRIMARIES_REC2020,ZC_TRANSFER_REC709,ZC_YCBCR_REC2020,ZC_RANGE_LIMITED};
+    const auto unchanged=requested;
+    const auto requested_rgb=requestedProcessedColorSpace(ZC_RGB24,requested);
+    const auto requested_yuv=requestedProcessedColorSpace(ZC_YUV420,requested);
+    assert(requested_rgb && requested_yuv && !std::memcmp(&requested,&unchanged,sizeof(requested)));
+    const auto portable_rgb=portableColorSpace(requested_rgb),portable_yuv=portableColorSpace(requested_yuv);
+    assert(portable_rgb.primaries==ZC_PRIMARIES_REC2020 && portable_rgb.transfer==ZC_TRANSFER_REC709 && portable_rgb.ycbcr_encoding==ZC_YCBCR_NONE && portable_rgb.range==ZC_RANGE_FULL);
+    assert(portable_yuv.primaries==requested.primaries && portable_yuv.transfer==requested.transfer && portable_yuv.ycbcr_encoding==requested.ycbcr_encoding && portable_yuv.range==requested.range);
+    requested.primaries=ZC_PRIMARIES_RAW;assert(!requestedProcessedColorSpace(ZC_RGB24,requested));requested=unchanged;
+    requested.transfer=0;assert(!requestedProcessedColorSpace(ZC_YUV420,requested));requested=unchanged;
+    requested.ycbcr_encoding=ZC_YCBCR_NONE;assert(!requestedProcessedColorSpace(ZC_YUV420,requested));requested=unchanged;
+    requested.range=0;assert(!requestedProcessedColorSpace(ZC_RGB24,requested));
+
     assert(processedPixelFormat(ZC_RGB24)==formats::BGR888 && processedPixelFormat(ZC_YUV420)==formats::YUV420);
     const auto rgb_request=portableColorSpace(processedColorSpace(ZC_RGB24));
     const auto yuv_request=portableColorSpace(processedColorSpace(ZC_YUV420));

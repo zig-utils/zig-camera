@@ -24,6 +24,10 @@ comptime {
     _ = output_mailbox;
     _ = @import("home/pts_clock.zig");
 }
+pub const color_policy = @import("color_policy.zig");
+comptime {
+    _ = color_policy;
+}
 pub const preview_input = @import("preview_input.zig");
 comptime {
     _ = preview_input;
@@ -44,6 +48,15 @@ comptime {
 }
 pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;
+pub const ProcessedOptions = c.zc_processed_options;
+pub fn defaultProcessedOptions() ProcessedOptions {
+    return color_policy.defaults();
+}
+pub fn colorSpacePreset(preset: u32) Error!c.zc_color_space {
+    var out: c.zc_color_space = undefined;
+    try check(color_policy.zc_color_space_preset(preset, &out));
+    return out;
+}
 pub const Info = c.zc_info;
 pub const Stats = c.zc_stats;
 pub const CaptureFilter = c.zc_capture_filter;
@@ -145,6 +158,22 @@ pub const Camera = struct {
         var out: ?*c.zc_camera = null;
         try check(core.zc_open_id_formatted_pipeline(&cfg, &opts, format, transform.orientation(), @intFromBool(strict), id.ptr, @intCast(id.len), &out));
         return .{ .handle = out.? };
+    }
+    pub fn initProcessedPipeline(cfg: Config, opts: c.zc_pipeline_options, processed: ProcessedOptions, transform: ImageTransform, strict: bool) Error!Camera {
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_processed_pipeline(&cfg, &opts, &processed, transform.orientation(), @intFromBool(strict), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn initProcessedPipelineId(cfg: Config, opts: c.zc_pipeline_options, processed: ProcessedOptions, transform: ImageTransform, strict: bool, id: []const u8) Error!Camera {
+        if (id.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_id_processed_pipeline(&cfg, &opts, &processed, transform.orientation(), @intFromBool(strict), id.ptr, @intCast(id.len), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn colorNegotiation(self: Camera, stream: u32) Error!c.zc_color_negotiation {
+        var out: c.zc_color_negotiation = undefined;
+        try check(core.zc_get_color_negotiation(self.handle, stream, &out));
+        return out;
     }
     pub fn orientation(self: Camera) Error!c.zc_orientation_info {
         var result: c.zc_orientation_info = undefined;
@@ -428,7 +457,11 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         if (id != c.ZC_MAIN and id != c.ZC_LORES) return error.Unsupported;
         try check(core.zc_frame_readable(self.camera.handle, self.value.token));
-        if (id == c.ZC_MAIN and std.mem.eql(u8, std.mem.sliceTo(&self.value.main.format, 0), "BGR888")) return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
+        if (id == c.ZC_MAIN and std.mem.eql(u8, std.mem.sliceTo(&self.value.main.format, 0), "BGR888")) {
+            const color = try self.colorSpace(id);
+            try check(media.zc_video_check_input_color(&color, c.ZC_RGB24));
+            return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
+        }
         var selected = self.value;
         selected.main = try self.stream(id);
         const color = try self.colorSpace(id);

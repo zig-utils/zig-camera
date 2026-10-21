@@ -127,11 +127,33 @@ static void leased_processed(uint32_t which) {
     assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_preview_show_stream(p,camera,frame.token,which)==ZC_STALE);
     assert(zc_preview_close(p)==ZC_OK);assert(zc_close(camera)==ZC_OK);
 }
+static void configured_colors(void) {
+    for(uint32_t matrix=ZC_YCBCR_REC601;matrix<=ZC_YCBCR_REC2020;matrix++)for(uint32_t range=ZC_RANGE_FULL;range<=ZC_RANGE_LIMITED;range++) {
+        zc_config cfg;zc_default_config(&cfg);cfg.width=2;cfg.height=2;
+        zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);
+        zc_processed_options processed;zc_default_processed_options(&processed);processed.main_format=ZC_YUV420;processed.strict_color=1;
+        assert(zc_color_space_preset(ZC_COLOR_SYCC,&processed.color_space)==ZC_OK);
+        processed.color_space.ycbcr_encoding=matrix;processed.color_space.range=range;
+        zc_camera *camera=NULL;assert(zc_open_processed_pipeline(&cfg,&pipeline,&processed,ZC_ROTATE0,0,&camera)==ZC_OK);
+        assert(zc_enable_writable(camera)==ZC_OK && zc_start(camera)==ZC_OK);
+        zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+        zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,ZC_MAIN,1,&map)==ZC_OK);
+        zc_stream input;assert(zc_frame_map_stream(map,&input)==ZC_OK);
+        memset((void *)input.planes[0].data,100,input.planes[0].bytes_used);memset((void *)input.planes[1].data,64,input.planes[1].bytes_used);memset((void *)input.planes[2].data,192,input.planes[2].bytes_used);
+        assert(zc_frame_map_close(map)==ZC_OK);
+        zc_preview *preview=NULL;assert(zc_preview_open("configured color",2,2,&preview)==ZC_OK);
+        assert(zc_preview_show_stream(preview,camera,frame.token,ZC_MAIN)==ZC_OK);
+        uint8_t out[12];read_small(preview,out);int expected[3];reference_rgb(100,64,192,matrix,range,expected);
+        for(int i=0;i<4;i++)for(int channel=0;channel<3;channel++)assert(abs((int)out[i*3+channel]-expected[channel])<=1);
+        assert(zc_preview_close(preview)==ZC_OK && zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);
+    }
+}
 int main(void) {
     assert(SDL_setenv("SDL_VIDEODRIVER","dummy",1)==0);
     SDL_SetHint(SDL_HINT_RENDER_DRIVER,"software");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"0");
     yuv_inputs();
+    configured_colors();
     leased_processed(ZC_MAIN);
     leased_processed(ZC_LORES);
     zc_preview *p=NULL;

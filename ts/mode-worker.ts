@@ -19,6 +19,8 @@ export interface ModeRequest {
   previousPipeline: Uint8Array
   mainFormat?: number
   previousMainFormat?: number
+  processed?: Uint8Array
+  previousProcessed?: Uint8Array
   previousStarted: boolean
   writable?: boolean
   previousWritable?: boolean
@@ -105,12 +107,13 @@ self.onmessage = ({ data: request }) => {
     view(selected).setUint32(12, 0, true)
     const mainFormat =
       (restoring ? request.previousMainFormat : request.mainFormat) ?? 1
+    const processed = restoring ? request.previousProcessed : request.processed
     check(
-      mainFormat === 0
-        ? n.zc_open_id_formatted_pipeline(
+      processed
+        ? n.zc_open_id_processed_pipeline(
             ptr(selected),
             ptr(pipeline),
-            mainFormat,
+            ptr(processed),
             (restoring ? request.previousOrientation : request.orientation) ??
               1,
             (
@@ -124,22 +127,40 @@ self.onmessage = ({ data: request }) => {
             request.cameraId.length,
             ptr(out),
           )
-        : n.zc_open_id_oriented_pipeline(
-            ptr(selected),
-            ptr(pipeline),
-            (restoring ? request.previousOrientation : request.orientation) ??
-              1,
-            (
-              restoring
-                ? request.previousStrictOrientation
-                : request.strictOrientation
+        : mainFormat === 0
+          ? n.zc_open_id_formatted_pipeline(
+              ptr(selected),
+              ptr(pipeline),
+              mainFormat,
+              (restoring ? request.previousOrientation : request.orientation) ??
+                1,
+              (
+                restoring
+                  ? request.previousStrictOrientation
+                  : request.strictOrientation
+              )
+                ? 1
+                : 0,
+              ptr(request.cameraId),
+              request.cameraId.length,
+              ptr(out),
             )
-              ? 1
-              : 0,
-            ptr(request.cameraId),
-            request.cameraId.length,
-            ptr(out),
-          ),
+          : n.zc_open_id_oriented_pipeline(
+              ptr(selected),
+              ptr(pipeline),
+              (restoring ? request.previousOrientation : request.orientation) ??
+                1,
+              (
+                restoring
+                  ? request.previousStrictOrientation
+                  : request.strictOrientation
+              )
+                ? 1
+                : 0,
+              ptr(request.cameraId),
+              request.cameraId.length,
+              ptr(out),
+            ),
     )
     result.handle = handle(out)
     result.started = false

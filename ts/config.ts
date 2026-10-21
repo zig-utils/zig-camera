@@ -1,3 +1,4 @@
+import { snapshotColorSpace, prepareProcessedOptions } from './color-config'
 import { native as n, storage, ptr, view, cstring, check } from './ffi'
 import type { CameraOptions } from './index'
 export function copyConfiguration(options: CameraOptions): CameraOptions {
@@ -11,6 +12,7 @@ export function copyConfiguration(options: CameraOptions): CameraOptions {
     throw new RangeError('invalid camera transform')
   return {
     ...snapshot,
+    colorSpace: snapshotColorSpace(snapshot.colorSpace),
     sensor: snapshot.sensor ? { ...snapshot.sensor } : undefined,
     lores: snapshot.lores ? { ...snapshot.lores } : undefined,
     transform: snapshot.transform ? { ...snapshot.transform } : undefined,
@@ -118,6 +120,12 @@ export function cameraConfiguration(options: CameraOptions) {
     config,
     pipeline,
     mainFormat,
+    processed: prepareProcessedOptions(
+      mainFormat,
+      pipeline,
+      options.colorSpace,
+      options.strictColorSpace,
+    ),
     cameraId,
     writable: options.writable ?? false,
     orientation,

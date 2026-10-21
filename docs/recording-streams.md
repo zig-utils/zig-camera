@@ -49,7 +49,12 @@ The existing AVC/HEVC VUI and MP4 `nclx` signal Rec.709 primaries, sRGB transfer
 limited BT.601 YCbCr. Selected inputs must have these primaries/transfer before
 matrix/range conversion. Different gamut/gamma or unknown metadata reject
 `UNSUPPORTED`, rather than silently receiving incompatible output tags. This is
-not a general gamut/transfer conversion API. Those conversions and configurable
+not a general gamut/transfer conversion API. Explicit [camera color requests](color-configuration.md)
+do not bypass this validation. Camera-owned RGB main input verifies actual metadata
+before using its legacy fast path; the result is cached per adopted handle and
+invalidated on every mode handoff, including allocator address reuse. Descriptor-only
+legacy C writes assume the existing compatible RGB signal; camera-aware Zig writes
+and colored C input APIs validate actual metadata. Those conversions and configurable
 encoder color metadata remain on the parity worklist.
 
 Async submission validates and owns tight pixel, color and PCM copies before

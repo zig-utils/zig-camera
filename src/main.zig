@@ -12,6 +12,8 @@ const help =
     \\  --lens N                 Manual lens position in dioptres; default continuous AF if supported
     \\  --sensor-width N --sensor-height N --sensor-depth N   Exact advertised mode
     \\  --lores-width N --lores-height N  Add a paired analysis stream
+    \\  --color-space NAME       srgb/sycc/smpte170m/rec709/rec2020 (otherwise sYCC request)
+    \\  --strict-color-space     Reject backend color adjustments; requires --color-space
     \\  --main-format NAME       BGR888 (default, RGB bytes) or YUV420
     \\  --lores-format NAME      YUV420 (default) or BGR888
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
@@ -90,6 +92,7 @@ fn run() !void {
     var fps: u32 = 30;
     var preview_stream: ?u32 = camera.c.ZC_MAIN;
     var main_format: u32 = camera.c.ZC_RGB24;
+    var processed = camera.defaultProcessedOptions();
     var codec: u32 = camera.c.ZC_MJPEG;
     var bitrate: u32 = 0;
     var gop: u32 = 0;
@@ -129,6 +132,10 @@ fn run() !void {
             vflip = true;
             continue;
         }
+        if (eq(key, "--strict-color-space")) {
+            processed.strict_color = 1;
+            continue;
+        }
         if (eq(key, "--strict-transform")) {
             strict_transform = true;
             continue;
@@ -160,6 +167,9 @@ fn run() !void {
             image_format = try camera.still.formatFromName(value);
         } else if (eq(key, "--image-stream")) {
             image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
+        } else if (eq(key, "--color-space")) {
+            const preset: u32 = if (eq(value, "srgb")) camera.c.ZC_COLOR_SRGB else if (eq(value, "sycc")) camera.c.ZC_COLOR_SYCC else if (eq(value, "smpte170m")) camera.c.ZC_COLOR_SMPTE170M else if (eq(value, "rec709")) camera.c.ZC_COLOR_REC709 else if (eq(value, "rec2020")) camera.c.ZC_COLOR_REC2020 else return error.InvalidColorSpace;
+            processed.color_space = try camera.colorSpacePreset(preset);
         } else if (eq(key, "--main-format")) {
             main_format = if (eq(value, "BGR888")) camera.c.ZC_RGB24 else if (eq(value, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidMainFormat;
         } else if (eq(key, "--preview-stream")) {
@@ -266,7 +276,8 @@ fn run() !void {
     if (camera_id != null and camera_index_set) return error.AmbiguousCameraSelector;
     var transform = try camera.ImageTransform.fromRotation(rotation, hflip, vflip);
     if (transpose) transform.transpose = !transform.transpose;
-    const cam = if (camera_id) |id| try camera.Camera.initFormattedPipelineId(cfg, pipeline, main_format, transform, strict_transform, id) else try camera.Camera.initFormattedPipeline(cfg, pipeline, main_format, transform, strict_transform);
+    processed.main_format = main_format;
+    const cam = if (camera_id) |id| try camera.Camera.initProcessedPipelineId(cfg, pipeline, processed, transform, strict_transform, id) else try camera.Camera.initProcessedPipeline(cfg, pipeline, processed, transform, strict_transform);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
@@ -286,6 +297,11 @@ fn run() !void {
         return;
     }
     if (eq(command, "info")) {
+        for ([_]u32{ camera.c.ZC_MAIN, camera.c.ZC_LORES }) |which| {
+            if (which == camera.c.ZC_LORES and negotiated.lores.plane_count == 0) continue;
+            const color = try cam.colorNegotiation(which);
+            std.debug.print("color stream={s} format={d} configured={d} strict={d} normalized={d} adjusted={d} requested={d},{d},{d},{d} effective={d},{d},{d},{d} actual={d},{d},{d},{d} present={d}\n", .{ if (which == camera.c.ZC_MAIN) "main" else "lores", color.format, color.flags & 1, (color.flags >> 1) & 1, (color.flags >> 2) & 1, (color.flags >> 3) & 1, color.requested.primaries, color.requested.transfer, color.requested.ycbcr_encoding, color.requested.range, color.effective.primaries, color.effective.transfer, color.effective.ycbcr_encoding, color.effective.range, color.actual.primaries, color.actual.transfer, color.actual.ycbcr_encoding, color.actual.range, color.actual.present });
+        }
         const orientation = try cam.orientation();
         std.debug.print("orientation=requested:{d} actual:{d} adjusted:{d}\n", .{ orientation.requested, orientation.actual, orientation.adjusted });
         std.debug.print("backend={s} camera={s} main={d}x{d} stride={d} buffers={d} raw={s}\n", .{
@@ -299,6 +315,12 @@ fn run() !void {
         });
         std.debug.print("sensor={d}x{d} depth={d} lores={d}x{d} format={s} stride={d}\n", .{ negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, std.mem.sliceTo(&negotiated.lores.format, 0), negotiated.lores.stride });
         return;
+    }
+    if (eq(command, "record")) {
+        const name = std.mem.sliceTo(&video_geometry.format, 0);
+        const format: u32 = if (eq(name, "BGR888")) camera.c.ZC_RGB24 else if (eq(name, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidRecordingStream;
+        var color = try cam.colorSpace(record_stream);
+        try camera.check(camera.media.zc_video_check_input_color(&color, format));
     }
     try cam.start();
     defer cam.stop() catch {};

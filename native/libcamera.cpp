@@ -257,6 +257,36 @@ static ColorSpace processedColorSpace(uint32_t format) {
     if(format==ZC_RGB24)color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
     return color;
 }
+static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,const zc_color_space &requested) {
+    if(requested.present==0)return processedColorSpace(format);
+    if(requested.struct_size!=sizeof(requested) || requested.present!=1)return std::nullopt;
+    ColorSpace color=ColorSpace::Sycc;
+    switch(requested.primaries) {
+    case ZC_PRIMARIES_SMPTE170M:color.primaries=ColorSpace::Primaries::Smpte170m;break;
+    case ZC_PRIMARIES_REC709:color.primaries=ColorSpace::Primaries::Rec709;break;
+    case ZC_PRIMARIES_REC2020:color.primaries=ColorSpace::Primaries::Rec2020;break;
+    default:return std::nullopt;
+    }
+    switch(requested.transfer) {
+    case ZC_TRANSFER_LINEAR:color.transferFunction=ColorSpace::TransferFunction::Linear;break;
+    case ZC_TRANSFER_SRGB:color.transferFunction=ColorSpace::TransferFunction::Srgb;break;
+    case ZC_TRANSFER_REC709:color.transferFunction=ColorSpace::TransferFunction::Rec709;break;
+    default:return std::nullopt;
+    }
+    switch(requested.ycbcr_encoding) {
+    case ZC_YCBCR_NONE:color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;break;
+    case ZC_YCBCR_REC601:color.ycbcrEncoding=ColorSpace::YcbcrEncoding::Rec601;break;
+    case ZC_YCBCR_REC709:color.ycbcrEncoding=ColorSpace::YcbcrEncoding::Rec709;break;
+    case ZC_YCBCR_REC2020:color.ycbcrEncoding=ColorSpace::YcbcrEncoding::Rec2020;break;
+    default:return std::nullopt;
+    }
+    if(requested.range==ZC_RANGE_FULL)color.range=ColorSpace::Range::Full;
+    else if(requested.range==ZC_RANGE_LIMITED)color.range=ColorSpace::Range::Limited;
+    else return std::nullopt;
+    if(format==ZC_RGB24) { color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;color.range=ColorSpace::Range::Full; }
+    else if(format!=ZC_YUV420 || color.ycbcrEncoding==ColorSpace::YcbcrEncoding::None)return std::nullopt;
+    return color;
+}
 struct Device {
     ManagerLease manager_lease;
     std::shared_ptr<Camera> camera;
@@ -380,8 +410,9 @@ struct Device {
         return ZC_OK;
     }
     uint32_t actual_orientation=ZC_ROTATE0;
-    int init(const zc_config &cfg, const zc_pipeline_options &pipe, uint32_t main_format,uint32_t orientation,bool strict,void *ctx, Completion complete, const std::string *selected_id=nullptr) {
+    int init(const zc_config &cfg, const zc_pipeline_options &pipe, const zc_processed_options &processed,uint32_t orientation,bool strict,void *ctx, Completion complete, const std::string *selected_id=nullptr) {
         const auto &opts=pipe.capture;
+        const auto main_format=processed.main_format;
         requested = cfg; options = opts; context = ctx; callback = complete;
         const int manager_rc=manager_lease.acquire();
         if(manager_rc)return manager_rc;
@@ -425,14 +456,16 @@ struct Device {
         auto &main_request = config->at(0);
         // libcamera's BGR888 fourcc stores R,G,B bytes on little endian hosts.
         main_request.pixelFormat = processedPixelFormat(main_format);
-        main_request.colorSpace = processedColorSpace(main_format);
+        main_request.colorSpace = requestedProcessedColorSpace(main_format,processed.color_space);
+        if(!main_request.colorSpace)return ZC_UNSUPPORTED;
         if (cfg.width) main_request.size = {cfg.width, cfg.height};
         main_request.bufferCount = cfg.buffer_count;
         if(has_lores) {
             auto &lores=config->at(1);
             lores.size={pipe.lores_width,pipe.lores_height};
             lores.pixelFormat=processedPixelFormat(pipe.lores_format);
-            lores.colorSpace=processedColorSpace(pipe.lores_format);
+            lores.colorSpace=requestedProcessedColorSpace(pipe.lores_format,processed.color_space);
+            if(!lores.colorSpace)return ZC_UNSUPPORTED;
             lores.bufferCount=cfg.buffer_count;
         }
         if(pipe.sensor_width) {
@@ -637,11 +670,11 @@ struct Device {
     }
 };
 }
-extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts,uint32_t main_format,uint32_t orientation,bool strict,uint32_t *actual, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
+extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts,const zc_processed_options *processed,uint32_t orientation,bool strict,uint32_t *actual, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
     *out = nullptr;
     try {
         auto device = std::make_unique<Device>();
-        const int rc = device->init(*cfg, *opts,main_format,orientation,strict, ctx, cb);
+        const int rc = device->init(*cfg, *opts,*processed,orientation,strict, ctx, cb);
         if (rc) return rc;
         *info = device->info; *pipeline=device->pipeline;*actual=device->actual_orientation; *out = device.release(); return ZC_OK;
     } catch (const std::bad_alloc &) { return ZC_NOMEM; }
@@ -765,12 +798,12 @@ extern "C" int zcd_catalog(Device *device,uint32_t kind,uint32_t index,const zcd
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }
 
-extern "C" int zcd_open_id(const zc_config *cfg,const zc_pipeline_options *opts,uint32_t main_format,uint32_t orientation,bool strict,uint32_t *actual,const uint8_t *id,uint32_t length,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
+extern "C" int zcd_open_id(const zc_config *cfg,const zc_pipeline_options *opts,const zc_processed_options *processed,uint32_t orientation,bool strict,uint32_t *actual,const uint8_t *id,uint32_t length,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
     *out=nullptr;
     try {
         auto device=std::make_unique<Device>();
         const std::string selected(reinterpret_cast<const char *>(id),length);
-        const int rc=device->init(*cfg,*opts,main_format,orientation,strict,ctx,cb,&selected);
+        const int rc=device->init(*cfg,*opts,*processed,orientation,strict,ctx,cb,&selected);
         if(rc)return rc;
         *info=device->info;*pipeline=device->pipeline;*actual=device->actual_orientation;*out=device.release();return ZC_OK;
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}

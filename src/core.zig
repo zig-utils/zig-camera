@@ -10,6 +10,7 @@ const Gate = @import("home/completion_gate.zig").Gate;
 const ControlState = @import("home/keyed_state.zig").State(c.zc_control, c.ZC_MAX_CONTROLS);
 const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID);
 const CaptureFilter = @import("capture_filter.zig");
+const colors = @import("color_policy.zig");
 const Session = struct {
     identity: Identity = .{},
     desired: ControlState = .{},
@@ -36,6 +37,7 @@ const Session = struct {
     fatal: c_int = 0,
     leases: @import("home/lease_pool.zig").Pool(c.ZC_MAX_BUFFERS, c.ZC_MAX_FRAME_REFERENCES) = .{},
     config: c.zc_config,
+    processed: c.zc_processed_options = colors.defaults(),
     info: c.zc_info = std.mem.zeroes(c.zc_info),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     device: ?*driver.Handle = null,
@@ -184,16 +186,28 @@ pub export fn zc_open_id_oriented_pipeline(cfg: *const c.zc_config, pipeline: *c
     return zc_open_id_formatted_pipeline(cfg, pipeline, c.ZC_RGB24, orientation, strict, id, length, out);
 }
 pub export fn zc_open_formatted_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
-    return openPipeline(cfg, pipeline, main_format, null, orientation, strict, out);
+    var processed = colors.defaults();
+    processed.main_format = main_format;
+    return zc_open_processed_pipeline(cfg, pipeline, &processed, orientation, strict, out);
 }
 pub export fn zc_open_id_formatted_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
+    var processed = colors.defaults();
+    processed.main_format = main_format;
+    return zc_open_id_processed_pipeline(cfg, pipeline, &processed, orientation, strict, id, length, out);
+}
+pub export fn zc_open_processed_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+    return openPipeline(cfg, pipeline, processed, null, orientation, strict, out);
+}
+pub export fn zc_open_id_processed_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (id == null or length == 0 or length > c.ZC_MAX_CAMERA_ID or cfg.camera_index != 0) return c.ZC_INVALID;
     const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
-    return openPipeline(cfg, pipeline, main_format, requested.bytes(), orientation, strict, out);
+    return openPipeline(cfg, pipeline, processed, requested.bytes(), orientation, strict, out);
 }
-fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
+    if (colors.zc_check_processed_options(processed, pipeline) != c.ZC_OK) return c.ZC_INVALID;
+    const main_format = processed.main_format;
     if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_RGB24 or (main_format == c.ZC_YUV420 and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
@@ -205,9 +219,9 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
-    self.* = .{ .config = cfg.* };
+    self.* = .{ .config = cfg.*, .processed = processed.* };
     var actual: u32 = 0;
-    const rc = if (id) |selected| driver.openId(cfg, pipeline, main_format, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, main_format, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
+    const rc = if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
@@ -222,6 +236,18 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
         driver.close(self.device.?);
         std.heap.c_allocator.destroy(self);
         return c.ZC_DEVICE;
+    }
+    if (processed.color_space.present != 0) {
+        for ([_]u32{ c.ZC_MAIN, c.ZC_LORES }) |which| {
+            if (which == c.ZC_LORES and self.pipeline.lores.plane_count == 0) continue;
+            var negotiation: c.zc_color_negotiation = undefined;
+            const checked = colorNegotiation(self, which, true, &negotiation);
+            if (checked != c.ZC_OK) {
+                driver.close(self.device.?);
+                std.heap.c_allocator.destroy(self);
+                return checked;
+            }
+        }
     }
     var length: u64 = 0;
     var identity_rc = driver.cameraId(self.device.?, null, 0, &length);
@@ -244,6 +270,23 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
     }
     out.* = self.ptr();
     return c.ZC_OK;
+}
+fn colorNegotiation(self: *Session, which: u32, enforce: bool, out: *c.zc_color_negotiation) c_int {
+    if (which != c.ZC_MAIN and which != c.ZC_LORES) return if (which == c.ZC_RAW) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+    const stream = if (which == c.ZC_MAIN) self.info.main else self.pipeline.lores;
+    if (stream.plane_count == 0) return c.ZC_UNSUPPORTED;
+    const name = std.mem.sliceTo(&stream.format, 0);
+    const format: u32 = if (std.mem.eql(u8, name, "BGR888")) c.ZC_RGB24 else if (std.mem.eql(u8, name, "YUV420")) c.ZC_YUV420 else return c.ZC_UNSUPPORTED;
+    var actual: c.zc_color_space = undefined;
+    const rc = driver.colorSpace(self.device.?, which, &actual);
+    if (rc != c.ZC_OK) return rc;
+    return colors.negotiation(self.processed, actual, format, enforce, out);
+}
+pub export fn zc_get_color_negotiation(camera: *c.zc_camera, which: u32, out: *c.zc_color_negotiation) c_int {
+    const self = session(camera);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return colorNegotiation(self, which, false, out);
 }
 pub export fn zc_get_pipeline_info(p: *c.zc_camera, out: *c.zc_pipeline_info) c_int {
     out.* = session(p).pipeline;
@@ -2654,4 +2697,49 @@ test "synchronous processed readers pin final release and writers without alloca
     try std.testing.expectEqual(c.ZC_OK, second.finish());
     try std.testing.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
     try std.testing.expectEqual(c.ZC_STALE, beginProcessedRead(camera.?, frame.token, c.ZC_MAIN, &first));
+}
+
+test "explicit processed colors normalize per stream and strict metadata remains observable" {
+    if (options.libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    pipeline.lores_width = 8;
+    pipeline.lores_height = 8;
+    for ([_]u32{ c.ZC_RGB24, c.ZC_YUV420 }) |format| for ([_]u32{ c.ZC_COLOR_SYCC, c.ZC_COLOR_SMPTE170M, c.ZC_COLOR_REC709, c.ZC_COLOR_REC2020 }) |preset| {
+        var processed = colors.defaults();
+        processed.main_format = format;
+        processed.strict_color = 1;
+        try std.testing.expectEqual(c.ZC_OK, colors.zc_color_space_preset(preset, &processed.color_space));
+        pipeline.lores_format = if (format == c.ZC_RGB24) c.ZC_YUV420 else c.ZC_RGB24;
+        var camera: ?*c.zc_camera = null;
+        try std.testing.expectEqual(c.ZC_OK, zc_open_processed_pipeline(&cfg, &pipeline, &processed, c.ZC_ROTATE0, 0, &camera));
+        defer std.testing.expectEqual(c.ZC_OK, zc_close(camera.?)) catch unreachable;
+        for ([_]u32{ c.ZC_MAIN, c.ZC_LORES }) |which| {
+            var result: c.zc_color_negotiation = undefined;
+            try std.testing.expectEqual(c.ZC_OK, zc_get_color_negotiation(camera.?, which, &result));
+            try std.testing.expectEqual(@as(u32, 0), result.flags & 8);
+            try std.testing.expectEqual(@as(u32, 3), result.flags & 3);
+            try std.testing.expectEqual(processed.color_space.primaries, result.actual.primaries);
+            try std.testing.expectEqual(processed.color_space.transfer, result.actual.transfer);
+            if (result.format == c.ZC_RGB24) {
+                try std.testing.expectEqual(@as(u32, c.ZC_YCBCR_NONE), result.actual.ycbcr_encoding);
+                try std.testing.expectEqual(@as(u32, c.ZC_RANGE_FULL), result.actual.range);
+                try std.testing.expectEqual(@as(u32, 4), result.flags & 4);
+            } else {
+                try std.testing.expectEqual(processed.color_space.ycbcr_encoding, result.actual.ycbcr_encoding);
+                try std.testing.expectEqual(processed.color_space.range, result.actual.range);
+            }
+        }
+        // Fault injection changes only synthetic backend metadata. Strict opening
+        // was accepted; a later query reports drift rather than hiding it.
+        _ = colors.zc_color_space_preset(if (preset == c.ZC_COLOR_SYCC) c.ZC_COLOR_REC709 else c.ZC_COLOR_SYCC, &session(camera.?).device.?.color_request);
+        var changed: c.zc_color_negotiation = undefined;
+        try std.testing.expectEqual(c.ZC_UNSUPPORTED, colorNegotiation(session(camera.?), c.ZC_MAIN, true, &changed));
+        try std.testing.expectEqual(c.ZC_OK, zc_get_color_negotiation(camera.?, c.ZC_MAIN, &changed));
+        try std.testing.expectEqual(@as(u32, 8), changed.flags & 8);
+    };
 }

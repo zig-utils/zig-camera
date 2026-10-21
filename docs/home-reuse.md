@@ -449,3 +449,13 @@ is needed. Synthetic setup shares one checked fill/attachment path for main and
 lores. The real backend requests YUV from libcamera. Existing Home attribution
 and verbatim helper revisions in NOTICE remain in force. No Home source change
 is required for this integration; additional pixel formats remain in scope.
+
+The 0.54 audit reads image/colorspace.zig's Image/Color pixel transformations and
+video/pixel_convert.zig's matrix/range conversion. They do not describe capture
+request versus backend negotiation. Home video now supplies color_description.zig
+for that allocation-free policy, exported from video.zig with standalone workflow
+coverage. Commits 4b7f39b1e063c2314a12e69a558f18247d9d7af0 and
+3c3c3a8814d822de8df0d0085fbb94d9c1a242cf were pushed before verbatim camera reuse.
+Four tests pass pinned/development Zig Debug/ReleaseSafe, including independent
+gamut, transfer, matrix and range adjustment checks. Existing yuv_rgb/yuv_remap
+continue to handle pixels; negotiation is not a substitute for a gamut transform.
