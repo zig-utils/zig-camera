@@ -294,7 +294,7 @@ test('mode switching rejects multiple encoders before flushing and works after p
   }
 })
 test.skipIf(!process.env.ZC_TEST_AAC)(
-  'shared audio cursors and dropping PCM reject before ownership changes',
+  'shared audio accepts dropping consumers and holds the microphone until its last recording closes',
   async () => {
     const c = cam(),
       audio = new AudioCapture({
@@ -313,20 +313,21 @@ test.skipIf(!process.env.ZC_TEST_AAC)(
         producerQueue: { maxBytes: 65536, maxOperations: 1 },
       })
     try {
-      expect(() =>
-        c.startRecording(r, { audio, backpressure: 'drop' }),
-      ).toThrow()
-      expect(c.activeRecordings).toEqual([])
-      const a = c.startRecording(r, { audio })
-      expect(() => c.startRecording(peer, { audio })).toThrow()
-      const b = c.startRecording(peer)
+      const a = c.startRecording(r, { audio, backpressure: 'drop' })
+      const b = c.startRecording(peer, { audio })
+      expect(() => audio.read()).toThrow()
+      expect(() => audio.close()).toThrow()
       await until(() => a.stats().completed >= 2n && b.stats().completed >= 2n)
       expect(c.activeRecordings.length).toBe(2)
+      await b.close()
+      expect(audio.handle).not.toBe(0)
+      await a.close()
+      expect(Number(audio.handle)).toBe(0)
       await c.stop()
     } finally {
+      await c.close()
       audio.close()
       await Promise.allSettled([r.close(), peer.close()])
-      await c.close()
     }
   },
 )

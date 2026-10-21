@@ -1,4 +1,11 @@
 import {
+  SharedAudio,
+  type AudioConsumerStats,
+  type SharedAudioStats,
+  type NativeAudioBatch,
+} from './shared-audio'
+export type { AudioConsumerStats, SharedAudioStats } from './shared-audio'
+import {
   FrameFanout,
   type CaptureConsumerStats,
   type RecordingBackpressure,
@@ -111,6 +118,12 @@ import {
 export { CameraError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
 const consumerState = Symbol('consumerState')
+const audioState = Symbol('audioState')
+const audioGroupView = Symbol('audioGroupView')
+const recordingAudioState = Symbol('recordingAudioState')
+const recordingTimestamp = Symbol('recordingTimestamp')
+const prepareRecordingAudio = Symbol('prepareRecordingAudio')
+const writeSharedAudio = Symbol('writeSharedAudio')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
 const readableFrame = Symbol('readableFrame')
@@ -636,6 +649,11 @@ export class Camera {
   private fanout?: FrameFanout
   private recordingIds = new Map<Recording, bigint>()
   private recordingAudio = new Map<Recording, AudioCapture>()
+  private audioGroups = new Map<AudioCapture, SharedAudio>()
+  private audioBindings = new Map<
+    Recording,
+    { group: SharedAudio; id: bigint; source: AudioCapture }
+  >()
   private producers = new Map<Recording, Promise<void>>()
   private get recording() {
     return this.recordings.values().next().value
@@ -1846,11 +1864,6 @@ export class Camera {
     if (!fps) throw new RangeError('invalid recording FPS')
     if (backpressure !== 'wait' && backpressure !== 'drop')
       throw new RangeError('invalid recording backpressure')
-    if (audio && backpressure === 'drop')
-      throw new CameraError(
-        -8,
-        'dropping audio recordings requires shared PCM retention',
-      )
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (recorder.sessionState().phase !== 'open')
@@ -1859,8 +1872,9 @@ export class Camera {
     if (info.width !== recorder.width || info.height !== recorder.height)
       throw new RangeError('recorder geometry mismatch')
     if (audio) {
-      if ([...this.recordingAudio.values()].includes(audio))
-        throw new CameraError(-4, 'audio capture already attached')
+      const shared = this.audioGroups.get(audio)
+      if (shared && shared.fps !== fps)
+        throw new RangeError('shared audio requires the same recording FPS')
       const format = recorder.options.audio
       if (
         !audio.handle ||
@@ -1875,19 +1889,23 @@ export class Camera {
     const fanout = (this.fanout ??= new FrameFanout()),
       id = fanout.add(backpressure)
     let owned = false
+    let binding: ReturnType<Camera['reserveAudio']> | undefined
     try {
       recorder[recordingOwner](this)
       owned = true
+      if (audio) binding = this.reserveAudio(audio, fps)
       this.start()
       const recording = new Recording(this, recorder, audio, fps, backpressure)
       this.recordingIds.set(recording, id)
       if (audio) this.recordingAudio.set(recording, audio)
+      if (binding) this.audioBindings.set(recording, binding)
       this.recordings.add(recording)
       recording[consumerState] = fanout.state(id)
       this.ensurePump()
       return recording
     } catch (error) {
       fanout.retire(id)
+      if (binding) this.releaseAudio(binding, false)
       if (owned) recorder[recordingOwner](this, true)
       throw error
     }
@@ -1899,6 +1917,13 @@ export class Camera {
   ) {
     const fanout = (this.fanout ??= new FrameFanout()),
       id = fanout.add(backpressure)
+    let binding: ReturnType<Camera['reserveAudio']> | undefined
+    try {
+      if (audio) binding = this.reserveAudio(audio, recorder.fps)
+    } catch (error) {
+      fanout.retire(id)
+      throw error
+    }
     const recording = new Recording(
       this,
       recorder,
@@ -1908,6 +1933,7 @@ export class Camera {
     )
     this.recordingIds.set(recording, id)
     if (audio) this.recordingAudio.set(recording, audio)
+    if (binding) this.audioBindings.set(recording, binding)
     this.recordings.add(recording)
     recording[consumerState] = fanout.state(id)
     return recording
@@ -1981,8 +2007,6 @@ export class Camera {
       exact,
     )
     const audio = jobOptions.audio
-    if (audio && this.recording?.backpressure === 'drop')
-      throw new CameraError(-8, 'audio requires wait backpressure')
     if (
       audio &&
       (!audio.handle ||
@@ -1991,6 +2015,11 @@ export class Camera {
         audio.channels !== candidate.audio.channels)
     )
       throw new RangeError('audio capture format differs from recorder session')
+    if (audio)
+      check(
+        n.zc_audio_can_share(audio.handle),
+        'candidate audio is already attached',
+      )
     const effective = {
       ...jobOptions,
       timeoutMs: jobOptions.timeoutMs ?? 10000,
@@ -2040,8 +2069,10 @@ export class Camera {
           this.previewHandle = handle(out)
           this.previewTitle = title
         }
+        let attachmentAttempted = false
         const attach = () => {
           if (resumed) return
+          attachmentAttempted = true
           if (this.closing || this.stopJob || recorder.closing)
             throw new CameraError(
               -2,
@@ -2052,11 +2083,16 @@ export class Camera {
           // Camera and media are published together; no user work can enter until
           // the reservation is released. Audio ownership transfers only here.
           recorder[recordingOwner](this, false, true)
-          resumed = this.attachCoordinatedRecording(
-            recorder,
-            audio,
-            initialRecording?.backpressure ?? 'wait',
-          )
+          try {
+            resumed = this.attachCoordinatedRecording(
+              recorder,
+              audio,
+              initialRecording?.backpressure ?? 'wait',
+            )
+          } catch (error) {
+            recorder[recordingOwner](this, true)
+            throw error
+          }
         }
         try {
           current.check()
@@ -2179,6 +2215,11 @@ export class Camera {
                   -2,
                   'audio closed before session publication',
                 )
+              if (audio)
+                check(
+                  n.zc_audio_can_share(audio.handle),
+                  'candidate audio is already attached',
+                )
             },
             () => {
               this.configuration = target
@@ -2262,6 +2303,7 @@ export class Camera {
           }
           if (
             published &&
+            !attachmentAttempted &&
             !this.closing &&
             !this.stopJob &&
             !recorder.closing
@@ -2631,6 +2673,107 @@ export class Camera {
     await Promise.all(jobs.map((job) => job.operationDone))
   }
 
+  private reserveAudio(source: AudioCapture, fps: number) {
+    let group = this.audioGroups.get(source)
+    if (group && group.fps !== fps)
+      throw new RangeError('shared audio requires the same recording FPS')
+    const fresh = !group
+    group ??= new SharedAudio(
+      source.handle,
+      source.sharedBufferFrames,
+      source.sharedMaxBlocks,
+      fps,
+    )
+    try {
+      const id = group.add()
+      this.audioGroups.set(source, group)
+      source[audioGroupView] = group
+      return { group, id, source }
+    } catch (error) {
+      if (fresh) group.close()
+      throw error
+    }
+  }
+  private releaseAudio(
+    binding: { group: SharedAudio; id: bigint; source: AudioCapture },
+    closeSource: boolean,
+  ) {
+    const { group, id, source } = binding
+    const final = group.retire(id)
+    if (!group.count) {
+      group.close()
+      this.audioGroups.delete(source)
+      if (closeSource) source.close()
+    }
+    return final
+  }
+  [recordingAudioState](recording: Recording): AudioConsumerStats | undefined {
+    const binding = this.audioBindings.get(recording)
+    if (binding) recording[audioState] = binding.group.state(binding.id)
+    const value = recording[audioState]
+    return value && { ...value }
+  }
+  [recordingTimestamp](
+    recording: Recording,
+    offered: bigint | undefined,
+    fallback: bigint,
+  ) {
+    const binding = this.audioBindings.get(recording)
+    return binding && offered !== undefined
+      ? binding.group.timestamp(
+          offered,
+          fallback,
+          this.readInfo().backend === 0,
+        )
+      : fallback
+  }
+  [prepareRecordingAudio](
+    recording: Recording,
+    timestamp: bigint,
+    manual: boolean,
+  ) {
+    const binding = this.audioBindings.get(recording)
+    if (!binding) return
+    if (manual) binding.group.fill(timestamp)
+    const batch = binding.group.prepare(binding.id, timestamp)
+    return {
+      ...batch,
+      finish: (accepted: boolean) => {
+        recording[audioState] = binding.group.finish(
+          binding.id,
+          batch.ticket,
+          accepted,
+        )
+      },
+    }
+  }
+  private fillRecordingAudio(frame: Frame, offered: bigint) {
+    for (const [source, group] of this.audioGroups) {
+      const consumers = [...this.recordings].filter(
+        (r) => this.recordingAudio.get(r) === source,
+      )
+      if (!consumers.length) continue
+      try {
+        group.fill(
+          group.timestamp(
+            offered,
+            frame.timestampNs,
+            this.readInfo().backend === 0,
+          ),
+        )
+      } catch (error) {
+        for (const consumer of consumers) this.failRecording(consumer, error)
+        continue
+      }
+      for (const consumer of consumers) {
+        try {
+          group.check(this.audioBindings.get(consumer)!.id)
+        } catch (error) {
+          this.failRecording(consumer, error)
+        }
+      }
+    }
+  }
   recordingState(recording: Recording): CaptureConsumerStats {
     const id = this.recordingIds.get(recording)
     if (id !== undefined) recording[consumerState] = this.fanout!.state(id)
@@ -2644,6 +2787,11 @@ export class Camera {
     this.recordings.delete(recording)
     this.failedRecordings.delete(recording)
     this.recordingAudio.delete(recording)
+    const binding = this.audioBindings.get(recording)
+    if (binding) {
+      recording[audioState] = this.releaseAudio(binding, true)
+      this.audioBindings.delete(recording)
+    }
     if (id !== undefined) {
       recording[consumerState] = this.fanout!.retire(id)
       this.recordingIds.delete(recording)
@@ -2789,6 +2937,7 @@ export class Camera {
           selected = undefined
         }
         if (!callbackFailed) {
+          this.fillRecordingAudio(frame, offered!)
           for (const writing of [...this.recordings]) {
             const id = this.recordingIds.get(writing)!
             let ticket: bigint | undefined
@@ -3691,6 +3840,56 @@ export class Recorder {
       'producer A/V admission',
     )
     return this.queueProducer(handle(out), options)
+  }
+  [writeSharedAudio](
+    frame: Frame,
+    batch: NativeAudioBatch,
+    timestampNs: bigint,
+    asynchronous: boolean,
+  ): BunJob<void> | undefined {
+    this.assertOpen(asynchronous)
+    if (!asynchronous) {
+      const d = view(batch.inputs)
+      for (let i = 0; i < batch.count; i++)
+        check(
+          n.zc_video_write_audio(
+            this.handle,
+            Number(d.getBigUint64(i * 24, true)) as Pointer,
+            d.getBigUint64(i * 24 + 8, true),
+            d.getBigUint64(i * 24 + 16, true),
+          ),
+          'shared PCM write',
+        )
+      this.write(frame, timestampNs)
+      return
+    }
+    const source =
+        this.options.stream === 'lores'
+          ? frame[recorderInput]('lores')
+          : undefined,
+      out = outPointer()
+    check(
+      source
+        ? n.zc_video_producer_input_av(
+            this.handle,
+            ptr(source.descriptor),
+            ptr(source.color),
+            timestampNs,
+            batch.count ? ptr(batch.inputs) : null,
+            batch.count,
+            ptr(out),
+          )
+        : n.zc_video_producer_av(
+            this.handle,
+            ptr(frame[readableFrame]),
+            timestampNs,
+            batch.count ? ptr(batch.inputs) : null,
+            batch.count,
+            ptr(out),
+          ),
+      'shared A/V producer admission',
+    )
+    return this.queueProducer(handle(out), {})
   }
   private queueProducer(
     native: Pointer,
@@ -5476,6 +5675,12 @@ export class Recorder {
   }
 }
 export class AudioCapture {
+  [audioGroupView]?: SharedAudio
+  sharedStats(): SharedAudioStats | undefined {
+    return this[audioGroupView]?.stats()
+  }
+  readonly sharedBufferFrames: number
+  readonly sharedMaxBlocks: number
   handle: Pointer
   readonly sampleRate: number
   readonly channels: number
@@ -5487,6 +5692,7 @@ export class AudioCapture {
     blockFrames = 1024,
     startNs = 0n,
     device = 'default',
+    sharedHistory,
   }: {
     simulate?: boolean
     sampleRate?: number
@@ -5494,10 +5700,18 @@ export class AudioCapture {
     blockFrames?: number
     startNs?: bigint
     device?: string
+    sharedHistory?: { maxFrames?: number; maxBlocks?: number }
   } = {}) {
     this.sampleRate = sampleRate
     this.channels = channels
     this.blockFrames = blockFrames
+    this.sharedBufferFrames = uint(
+      sharedHistory?.maxFrames ?? sampleRate * 2,
+      sampleRate * 10,
+    )
+    this.sharedMaxBlocks = uint(sharedHistory?.maxBlocks ?? 256, 256)
+    if (this.sharedBufferFrames < blockFrames || !this.sharedMaxBlocks)
+      throw new RangeError('invalid shared audio history')
     const cfg = fields(32, n.zc_default_audio_config, [
       undefined,
       simulate ? 0 : 1,
@@ -5545,7 +5759,11 @@ export class AudioCapture {
 }
 export class Recording {
   [consumerState]?: CaptureConsumerStats
-  private originFrame?: bigint
+  private originFrame?: bigint;
+  [audioState]?: AudioConsumerStats
+  audioStats() {
+    return this.audio ? this.camera[recordingAudioState](this) : undefined
+  }
   stats() {
     return this.camera.recordingState(this)
   }
@@ -5555,7 +5773,6 @@ export class Recording {
   private closeJob?: Promise<void>
   private flushJob?: BunJob<void>
   private retainedRecorder = false
-  private pendingAudio?: ReturnType<AudioCapture['read']>
   get closing() {
     return this.stopped
   }
@@ -5571,46 +5788,43 @@ export class Recording {
     if (offered !== undefined) this.originFrame ??= offered
     const index =
       offered === undefined ? BigInt(this.frames) : offered - this.originFrame!
-    const timestamp =
+    const fallback =
       this.camera.info().backend === 0
         ? (index * 1_000_000_000n) / BigInt(this.fps)
         : frame.timestampNs
-    const blocks: ProducerAudioBlock[] = []
-    if (this.audio) {
-      let count = 0
-      const end = timestamp + 1_000_000_000n / BigInt(this.fps)
-      while (count++ < 256) {
-        let block = this.pendingAudio
-        if (!block) {
-          try {
-            block = this.audio.read(0)
-          } catch (error) {
-            if (error instanceof CameraError && error.code === -3) break
-            throw error
-          }
-        }
-        if (block.timestampNs >= end) {
-          this.pendingAudio = block
-          break
-        }
-        this.pendingAudio = undefined
-        blocks.push(block)
-      }
-    }
-    return { timestamp, blocks }
+    const timestamp = this.camera[recordingTimestamp](this, offered, fallback)
+    const audio = this.camera[prepareRecordingAudio](
+      this,
+      timestamp,
+      offered === undefined,
+    )
+    return { timestamp, audio }
   }
   write(frame: Frame, offered?: bigint) {
-    const { timestamp, blocks } = this.inputs(frame, offered)
-    for (const block of blocks)
-      this.recorder.writeAudio(block.data, block.timestampNs)
-    this.recorder.write(frame, timestamp)
-    this.frames++
+    const { timestamp, audio } = this.inputs(frame, offered)
+    let accepted = false
+    try {
+      if (audio) this.recorder[writeSharedAudio](frame, audio, timestamp, false)
+      else this.recorder.write(frame, timestamp)
+      this.frames++
+      accepted = true
+    } finally {
+      audio?.finish(accepted)
+    }
   }
   writeAsync(frame: Frame, offered?: bigint): Promise<void> {
-    const { timestamp, blocks } = this.inputs(frame, offered)
-    const job = this.recorder.writeAVAsync(frame, blocks, timestamp)
-    this.frames++
-    return Promise.resolve(job)
+    const { timestamp, audio } = this.inputs(frame, offered)
+    let accepted = false
+    try {
+      const job = audio
+        ? this.recorder[writeSharedAudio](frame, audio, timestamp, true)
+        : this.recorder.writeAVAsync(frame, [], timestamp)
+      this.frames++
+      accepted = true
+      return Promise.resolve(job)
+    } finally {
+      audio?.finish(accepted)
+    }
   }
   split(output: string | CustomOutput, id: bigint | number = 0n) {
     return this.recorder.split(output, id)
@@ -5652,8 +5866,6 @@ export class Recording {
     this.stopped = true
     this.retainedRecorder = true
     this.camera.detach(this)
-    this.audio?.close()
-    this.pendingAudio = undefined
     return job
   }
   close() {
@@ -5663,11 +5875,6 @@ export class Recording {
     this.camera.detach(this)
     this.closeJob = (async () => {
       let failure = this.error
-      try {
-        this.audio?.close()
-      } catch (error) {
-        failure ??= error
-      }
       try {
         if (this.retainedRecorder) await this.flushJob?.operationDone
         else await this.recorder.close()

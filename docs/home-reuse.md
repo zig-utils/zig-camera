@@ -372,3 +372,20 @@ Home exports the helper and includes both optimization modes in its workflow.
 Existing Home compact producers, media codecs, output queues and containers remain
 the byte-owning implementations. Full multi-encoder mode transactions and shared
 PCM fan-out remain work; physical speedups have not been inferred.
+
+The 0.47 audit reuses Home pcm_timeline.Queue and packet_output.Slots and contributes
+core/pcm_fanout.zig at 53fdf28d5b1aa07a71d3b917f15c6a11f686dd2d, copied verbatim.
+Independent sample watermarks, short borrowed preparation tickets, delayed-input
+handling and overrun quarantine share one bounded history. Twenty standalone
+helper/dependency tests pass on pinned/development Zig Debug/ReleaseSafe, with
+Home exports and workflow triggers/tests. HomeOS's mixer settings, playback ring
+and ALSA facade supply no equivalent capture fan-out; see the updated audit.
+Camera Zig owns one capture cursor, fixed history/scratch storage and bounded read
+work; Bun passes only private descriptors into existing native copied producers.
+Exact stereo samples, fractional 44.1 kHz cuts, dropped-video PCM catch-up, late
+joins, failed-start ownership, source-budget failure, overrun isolation and
+publication races have Bun/C tests. AVC/HEVC/AAC MP4 tests verify edit durations
+and decoded audio/video against independent references. Existing Home codecs,
+containers and producer queues remain the implementations; no PCM payload queue
+is duplicated in Bun. Physical drift/latency and multi-encoder mode transactions
+remain acceptance/implementation work.

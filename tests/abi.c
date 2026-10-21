@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_pcm_span)==24,"shared PCM span ABI");
+_Static_assert(sizeof(zc_pcm_batch)==32,"shared PCM batch ABI");
+_Static_assert(sizeof(zc_pcm_consumer_state)==56,"shared PCM consumer ABI");
+_Static_assert(sizeof(zc_pcm_fanout_stats)==96,"shared PCM stats ABI");
+_Static_assert(sizeof(zc_audio_fanout_config)==16,"shared PCM config ABI");
 _Static_assert(sizeof(zc_fanout_state)==72,"capture fanout ABI");
 _Static_assert(sizeof(zc_producer_stats)==104,"producer stats ABI");
 _Static_assert(sizeof(zc_session_state)==16,"session state ABI");
@@ -67,6 +72,44 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
+    {
+        zc_audio_config config;zc_default_audio_config(&config);config.backend=0;config.channels=2;config.block_frames=48;
+        zc_audio *source=NULL;assert(zc_audio_open(&config,"",&source)==ZC_OK);
+        zc_audio_fanout_config cfg={sizeof(cfg),192,8,0};zc_audio_fanout *shared=NULL,*duplicate=NULL;
+        cfg.reserved=1;assert(zc_audio_fanout_open(source,&cfg,&shared)==ZC_INVALID && !shared);
+        assert(zc_audio_can_share(source)==ZC_OK);cfg.reserved=0;
+        assert(zc_audio_fanout_open(source,&cfg,&shared)==ZC_OK && shared);
+        assert(zc_audio_can_share(source)==ZC_BUSY && zc_audio_fanout_open(source,&cfg,&duplicate)==ZC_BUSY && !duplicate);
+        uint8_t untouched[192];memset(untouched,77,sizeof(untouched));zc_audio_block meta;
+        assert(zc_audio_read(source,untouched,sizeof(untouched),0,&meta)==ZC_BUSY && untouched[0]==77);
+        assert(zc_audio_close(source)==ZC_BUSY);
+        uint64_t a,b;assert(zc_audio_fanout_add(shared,&a)==ZC_OK && zc_audio_fanout_add(shared,&b)==ZC_OK && a!=b);
+        assert(zc_audio_fanout_close(shared)==ZC_BUSY);
+        assert(zc_audio_fanout_fill(shared,2000000,256)==ZC_OK);
+        zc_pcm_span spans[256];zc_pcm_batch batch;zc_pcm_consumer_state state;
+        assert(zc_audio_fanout_prepare(shared,a,0,1000000,spans,0,&batch)==ZC_INVALID && !batch.ticket);
+        assert(zc_audio_fanout_prepare(shared,a,0,1000000,spans,256,&batch)==ZC_OK && batch.frames==48 && batch.blocks==1);
+        uint64_t ticket=batch.ticket;assert(spans[0].length==192 && spans[0].timestamp_ns==0);
+        uint8_t original[192];memcpy(original,spans[0].data,sizeof(original));
+        assert(zc_audio_fanout_fill(shared,3000000,256)==ZC_BUSY && memcmp(original,spans[0].data,sizeof(original))==0);
+        assert(zc_audio_fanout_finish(shared,a,ticket+1,1,&state)==ZC_STALE);
+        assert(zc_audio_fanout_finish(shared,a,ticket,2,&state)==ZC_INVALID);
+        assert(zc_audio_fanout_finish(shared,a,ticket,0,&state)==ZC_OK && state.frames==0 && state.cancelled==1);
+        assert(zc_audio_fanout_prepare(shared,a,0,1000000,spans,256,&batch)==ZC_OK && batch.frames==48 && batch.ticket!=ticket);
+        assert(zc_audio_fanout_finish(shared,a,batch.ticket,1,&state)==ZC_OK && state.frames==48 && state.next_ns==1000000);
+        assert(zc_audio_fanout_fill(shared,3000000,256)==ZC_OK);
+        assert(zc_audio_fanout_prepare(shared,b,0,3000000,spans,256,&batch)==ZC_OK && batch.frames==144);
+        assert(zc_audio_fanout_finish(shared,b,batch.ticket,1,&state)==ZC_OK && state.frames==144);
+        zc_pcm_fanout_stats stats;assert(zc_audio_fanout_stats(shared,&stats)==ZC_OK && stats.reads==3 && stats.pushed_frames==144 && stats.max_frames==192 && stats.max_blocks==8 && stats.channels==2);
+        assert(zc_audio_fanout_retire(shared,a,&state)==ZC_OK && !(state.flags&1));
+        assert(zc_audio_fanout_state(shared,a,&state)==ZC_STALE);
+        assert(zc_audio_fanout_check(shared,b)==ZC_OK);
+        assert(zc_audio_fanout_retire(shared,b,&state)==ZC_OK);
+        assert(zc_audio_fanout_close(shared)==ZC_OK && zc_audio_can_share(source)==ZC_OK);
+        assert(zc_audio_read(source,untouched,sizeof(untouched),0,&meta)==ZC_OK && meta.timestamp_ns==3000000);
+        assert(zc_audio_close(source)==ZC_OK);
+    }
+
     {
         zc_fanout *fanout=NULL;assert(zc_fanout_open(&fanout)==ZC_OK && fanout);
         uint64_t ids[8],frame=0,ticket=0,other=0;zc_fanout_state state;

@@ -12,6 +12,7 @@ repository alongside Home compiler packages in subsequent media/hardware audits.
 | kernel/src/media/video_decoder.home | Software codec entry points return success without producing decoded pixels; hardware selection assumes codec support | Do not use as a codec or conformance oracle; retain independent decoder tests |
 | kernel/src/media/audio_codec.home | Header parsing and codec scaffolding; the ADR explicitly records lack of frame decoding | Codec/container work remains in Home audio/video packages; not evidence of usable encoding |
 | kernel/src/audio/alsa.home | Minimal playback facade; no capture/read path or usable shared PCM cursor ownership | Cannot supply multi-encoder microphone fan-out; retain existing bounded native audio pipeline |
+| kernel/src/audio/mixer.home | Bounded channel volume/pan/mute configuration; no capture or shared sample cursors | No capture fan-out implementation to import; use Home PCM timeline |
 | kernel/src/drivers/audio.home | AC97/HDA register and playback descriptor management | Kernel hardware integration candidate, not a Linux/Pi microphone capture adapter |
 | kernel/src/drivers/dma.home | Legacy ISA 8237 channel setup with 16 MB / 64 KB transfer bounds | Hardware-specific and incompatible with libcamera DMA-BUF ownership |
 | kernel/src/rpi/videocore7.home | Pi display/GPU code; vc7_dma_fill/copy currently use CPU fallbacks | Candidate for later HomeOS display integration; not a working accelerated codec or DMA path |
@@ -27,3 +28,10 @@ useful architectural reference; it does not establish tested camera throughput.
 Future HomeOS camera/preview work must verify actual device paths, allocator/FFI
 boundaries, DMA synchronization, buffer lifetimes and conformance. Avoid duplicating
 codecs in the OS tree or treating stub success returns as hardware support.
+
+The 0.47 follow-up inspects HomeOS audio/mixer.home as well as the playback ring
+and ALSA facade. Their per-channel settings and kernel playback buffers do not
+supply userspace capture cursors or sample-accurate consumer windows. The new
+shared-microphone implementation therefore reuses and improves Home stdlib's PCM
+timeline and stable slots, with one native capture claim and bounded producer
+copies. No HomeOS hardware capability or synchronization result is inferred.

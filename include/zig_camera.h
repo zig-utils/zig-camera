@@ -451,6 +451,33 @@ void zc_default_audio_config(zc_audio_config *);
 int zc_audio_open(const zc_audio_config *,const char *device,zc_audio **);
 int zc_audio_read(zc_audio *,uint8_t *output,uint64_t capacity,uint32_t timeout_ms,zc_audio_block *);
 int zc_audio_close(zc_audio *);
+int zc_audio_can_share(zc_audio *); /* nonmutating source claim check */
+/* One serialized fan-out owner claims the capture cursor. Raw read/close then
+ * return BUSY until all consumers retire and the fan-out closes. No extra device
+ * opens. Batches borrow bounded shared PCM until exact finish or retirement;
+ * the accepting codec producer must own a copy before finish(accepted=1). */
+typedef struct zc_audio_fanout zc_audio_fanout;
+typedef struct { uint32_t struct_size,max_frames,max_blocks,reserved; } zc_audio_fanout_config;
+typedef struct { const uint8_t *data;uint64_t length,timestamp_ns; } zc_pcm_span;
+typedef struct { uint64_t ticket,frames,next_ns;uint32_t blocks,reserved; } zc_pcm_batch;
+typedef struct { uint64_t id,next_ns,ticket,frames,overruns,cancelled;uint32_t flags,reserved; } zc_pcm_consumer_state;
+typedef struct {
+    uint64_t frames,blocks,max_frames,max_blocks,high_frames,high_blocks,pushed_frames,evicted_frames;
+    uint32_t sample_rate,channels;int64_t clock_error_ns;uint64_t reads;
+    uint32_t pending_future;int32_t error_code;
+} zc_pcm_fanout_stats;
+int zc_audio_fanout_open(zc_audio *,const zc_audio_fanout_config *,zc_audio_fanout **);
+int zc_audio_fanout_close(zc_audio_fanout *);
+int zc_audio_fanout_add(zc_audio_fanout *,uint64_t *id);
+/* Bounded nonblocking reads through cut; one future block remains owned in the
+ * source scratch. A read-budget exhaustion is a terminal source error. */
+int zc_audio_fanout_fill(zc_audio_fanout *,uint64_t cut,uint32_t max_reads);
+int zc_audio_fanout_prepare(zc_audio_fanout *,uint64_t id,uint64_t minimum,uint64_t cut,zc_pcm_span *,uint32_t capacity,zc_pcm_batch *);
+int zc_audio_fanout_finish(zc_audio_fanout *,uint64_t id,uint64_t ticket,uint32_t accepted,zc_pcm_consumer_state *);
+int zc_audio_fanout_check(zc_audio_fanout *,uint64_t id); /* IO quarantines history overrun */
+int zc_audio_fanout_state(zc_audio_fanout *,uint64_t id,zc_pcm_consumer_state *);
+int zc_audio_fanout_retire(zc_audio_fanout *,uint64_t id,zc_pcm_consumer_state *);
+int zc_audio_fanout_stats(zc_audio_fanout *,zc_pcm_fanout_stats *);
 /* Additive recording options. sample_rate=0 disables audio; .mkv uses PCM, .mp4 requires -Daac=true.
  * Existing video-only .mp4/.mkv APIs keep their layouts and behavior. */
 typedef struct {uint32_t struct_size,sample_rate,channels,buffer_frames,max_blocks,exclusive;} zc_recording_options;

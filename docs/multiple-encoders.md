@@ -43,7 +43,8 @@ not independent output delivery acknowledgements. `frames` retains its legacy
 submitted-frame meaning. Retired statistics remain readable after camera close.
 Source timestamps preserve dropped-frame gaps; synthetic timestamps use offered
 source ordinals relative to each recording's first claim, rather than its count
-of accepted frames. Each recording must use the camera's intended cadence.
+of accepted frames. Recordings sharing microphone audio use their group's common
+input clock. Each recording must use the camera's intended cadence.
 
 Encoding/output failure quarantines that encoder. It remains observable on the
 Recording and must be closed to release its attachment. A source/lease failure
@@ -57,17 +58,17 @@ cleanup. A user output hook that never settles can still delay close.
 
 Current boundaries:
 
-- `drop` with AudioCapture is rejected. Skipping video while retaining continuous
-  PCM requires shared PCM retention, which is not yet implemented.
-- Sharing the same AudioCapture object between encoders is rejected before
-  ownership changes. Independent capture objects have independent read cursors.
+- AudioCapture can be shared by same-camera, same-FPS encoders, including `drop`.
+  [Shared audio](shared-audio.md) retains PCM within bounded history, isolates
+  overruns and releases the microphone after the last consumer. Sharing across
+  cameras or using raw read/close while attached rejects.
 - Coordinated camera/recorder mode switching requires other encoders to be
   stopped and detached producer turns to have settled. Rejection precedes flush.
   The one-recorder job waits cancellably for its last copied producer before
   flush; cancellation during that wait preserves the original recording.
 - Queue byte limits persist across session reconfiguration; provision them for
-  the largest intended input. Multi-encoder atomic mode transactions, shared PCM
-  fan-out, hardware encoding and measured Pi throughput remain parity work.
+  the largest intended input and audio catch-up burst. Multi-encoder atomic mode
+  transactions, hardware encoding and measured Pi throughput remain parity work.
 
 The additive C `zc_fanout_*` API exposes this caller-serialized, frame-free native
 admission registry. C callers still perform frame copying, encoding, cleanup and

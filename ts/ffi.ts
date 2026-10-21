@@ -207,6 +207,17 @@ export const native = dlopen(library, {
   zc_audio_open: { args: [p, p, p], returns: i },
   zc_audio_read: { args: [p, p, n, u, p], returns: i },
   zc_audio_close: { args: [p], returns: i },
+  zc_audio_can_share: { args: [p], returns: i },
+  zc_audio_fanout_open: { args: [p, p, p], returns: i },
+  zc_audio_fanout_close: { args: [p], returns: i },
+  zc_audio_fanout_add: { args: [p, p], returns: i },
+  zc_audio_fanout_fill: { args: [p, n, u], returns: i },
+  zc_audio_fanout_prepare: { args: [p, n, n, n, p, u, p], returns: i },
+  zc_audio_fanout_finish: { args: [p, n, n, u, p], returns: i },
+  zc_audio_fanout_check: { args: [p, n], returns: i },
+  zc_audio_fanout_state: { args: [p, n, p], returns: i },
+  zc_audio_fanout_retire: { args: [p, n, p], returns: i },
+  zc_audio_fanout_stats: { args: [p, p], returns: i },
 } as const).symbols
 export class CameraError extends Error {
   constructor(

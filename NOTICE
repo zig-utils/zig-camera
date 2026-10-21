@@ -360,3 +360,9 @@ Home bounded frame consumer admission (0.46):
   Source commit: ff51b18e44e5fe82dba14258fa1034fb9aef8cdf.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/ff51b18e44e5fe82dba14258fa1034fb9aef8cdf
+
+Home bounded shared PCM sample windows (0.47):
+- src/home/pcm_fanout.zig is verbatim packages/video/src/core/pcm_fanout.zig.
+  Source commit: 53fdf28d5b1aa07a71d3b917f15c6a11f686dd2d.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/53fdf28d5b1aa07a71d3b917f15c6a11f686dd2d

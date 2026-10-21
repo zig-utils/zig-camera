@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.46 adds up to eight independent main/lores encoders per camera, with
-native wait/drop admission, bounded copied producers, isolated failures and
-joined close. See [multiple encoders](docs/multiple-encoders.md) and the
+Version 0.47 adds [shared microphone audio](docs/shared-audio.md) across independent
+encoders, continuous PCM catch-up when video drops, native cursor ownership and
+bounded history with isolated overrun handling. See
+[multiple encoders](docs/multiple-encoders.md) and the
 [Home OS reuse audit](docs/home-os-reuse.md).
 See [recording streams](docs/recording-streams.md), [still images](docs/still-images.md)
 and [camera orientation](docs/orientation.md).
