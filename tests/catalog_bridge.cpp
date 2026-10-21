@@ -51,8 +51,8 @@ int main() {
         assert(negotiatedOrientation(other,orientation,true,actual)==ZC_UNSUPPORTED && actual==99);
         assert(negotiatedOrientation(other,orientation,false,actual)==ZC_OK && actual==value);
     }
-    Orientation invalid=Orientation::Rotate0;
-    assert(!nativeOrientation(0,invalid) && !nativeOrientation(9,invalid));
+    Orientation invalid_orientation=Orientation::Rotate0;
+    assert(!nativeOrientation(0,invalid_orientation) && !nativeOrientation(9,invalid_orientation));
     uint32_t untouched=123;
     assert(negotiatedOrientation(1,static_cast<Orientation>(99),false,untouched)==ZC_UNSUPPORTED && untouched==123);
     assert(sameBayerLayout("SRGGB12","SBGGR12"));
