@@ -35,6 +35,10 @@ export function cameraIdentity(options: CameraOptions) {
 }
 export function cameraConfiguration(options: CameraOptions) {
   const cameraId = cameraIdentity(options)
+  const format = options.format === undefined ? 'BGR888' : options.format
+  if (format !== 'BGR888' && format !== 'YUV420')
+    throw new RangeError('invalid main stream format')
+  const mainFormat = format === 'YUV420' ? 0 : 1
   if (options.writable !== undefined && typeof options.writable !== 'boolean')
     throw new RangeError('invalid writable buffer option')
   const config = storage(72),
@@ -113,6 +117,7 @@ export function cameraConfiguration(options: CameraOptions) {
   return {
     config,
     pipeline,
+    mainFormat,
     cameraId,
     writable: options.writable ?? false,
     orientation,

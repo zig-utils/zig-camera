@@ -33,6 +33,8 @@ export const native = dlopen(library, {
   zc_save_image: { args: [p, n, p, p], returns: i },
   zc_orientation_from_transform: { args: [u, u, u, u, p], returns: i },
   zc_get_orientation: { args: [p, p], returns: i },
+  zc_open_formatted_pipeline: { args: [p, p, u, u, u, p], returns: i },
+  zc_open_id_formatted_pipeline: { args: [p, p, u, u, u, p, u, p], returns: i },
   zc_open_oriented_pipeline: { args: [p, p, u, u, p], returns: i },
   zc_open_id_oriented_pipeline: { args: [p, p, u, u, p, u, p], returns: i },
   zc_enable_writable: { args: [p], returns: i },

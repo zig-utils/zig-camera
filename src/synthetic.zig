@@ -55,7 +55,33 @@ fn sampleRGB(transform: orientation.Transform, output: orientation.Extent, main_
     const point = transform.sourcePoint(source, .{ .x = x, .y = y }) catch unreachable;
     return .{ @truncate(point.x * main_source.width / source.width), @truncate(point.y * main_source.height / source.height), @truncate(index * 37) };
 }
-pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+fn attachProcessed(stream: *c.zc_stream, buf: []u8) void {
+    const ysize = @as(usize, stream.stride) * stream.height;
+    for (0..stream.plane_count) |i| {
+        const offset = if (i == 0) 0 else ysize + (i - 1) * ysize / 4;
+        const len = if (stream.plane_count == 1) buf.len else if (i == 0) ysize else ysize / 4;
+        stream.planes[i] = .{ .data = buf[offset..].ptr, .length = len, .bytes_used = len, .fd = -1, .offset = 0, .reserved = 0 };
+    }
+}
+fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize) !void {
+    @memset(buf, 0);
+    const output = orientation.Extent{ .width = stream.width, .height = stream.height };
+    if (stream.plane_count == 1) {
+        for (0..stream.height) |y| for (0..stream.width) |x| {
+            buf[y * stream.stride + x * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
+        };
+    } else {
+        // Synthetic setup only: real hardware supplies the negotiated YUV planes.
+        const tmp = try Alloc.alloc(u8, @as(usize, stream.width) * stream.height * 3);
+        defer Alloc.free(tmp);
+        for (0..stream.height) |y| for (0..stream.width) |x| {
+            tmp[(y * stream.width + x) * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
+        };
+        const ysize = @as(usize, stream.stride) * stream.height;
+        try @import("home/yuv_rgb.zig").encode420(tmp, stream.width, stream.height, stream.width * 3, .{ buf[0..ysize], buf[ysize..][0 .. ysize / 4], buf[ysize + ysize / 4 ..] }, .{ stream.stride, stream.stride / 2, stream.stride / 2 }, @import("home/yuv_rgb.zig").Conversion.init(.bt601, .full));
+    }
+}
+pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main_format: u32, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
     const transform = orientation.Transform.fromOrientation(requested_orientation) catch return c.ZC_INVALID;
     if (opts.sensor_width != 0) {
         var found = false;
@@ -70,7 +96,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requ
     const height = if (config.height == 0) 480 else config.height;
     const main_output = orientation.Extent{ .width = width, .height = height };
     const main_source = transform.extent(main_output);
-    const stride = std.mem.alignForward(u32, width * 3, 64);
+    const stride = std.mem.alignForward(u32, width * @as(u32, if (main_format == c.ZC_RGB24) 3 else 1), 64);
     h.* = .{ .config = config.*, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
     h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
     h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else @intCast(main_source.width);
@@ -94,8 +120,8 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requ
     h.info.main.width = width;
     h.info.main.height = height;
     h.info.main.stride = stride;
-    h.info.main.plane_count = 1;
-    @memcpy(h.info.main.format[0..6], "BGR888");
+    h.info.main.plane_count = if (main_format == c.ZC_RGB24) 1 else 3;
+    @memcpy(h.info.main.format[0..6], if (main_format == c.ZC_RGB24) "BGR888" else "YUV420");
     @memcpy(h.info.camera_id[0..9], "synthetic");
     if (config.raw != 0) {
         const raw_output = transform.extent(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height });
@@ -120,13 +146,13 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requ
         _ = std.fmt.bufPrint(&h.info.raw.format, "S{s}{s}", .{ pattern, name[5..] }) catch unreachable;
     }
     for (0..config.buffer_count) |i| {
-        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height) catch {
+        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (main_format == c.ZC_RGB24) 1 else 3) / @as(usize, if (main_format == c.ZC_RGB24) 1 else 2)) catch {
             close(h);
             return c.ZC_NOMEM;
         };
-        @memset(h.buffers[i], 0);
-        for (0..height) |y| for (0..width) |x| {
-            h.buffers[i][y * stride + x * 3 ..][0..3].* = sampleRGB(transform, main_output, main_source, x, y, i);
+        fillProcessed(h.buffers[i], h.info.main, transform, main_source, i) catch {
+            close(h);
+            return c.ZC_NOMEM;
         };
         if (config.raw != 0) {
             const raw = h.info.raw;
@@ -150,25 +176,10 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requ
                 close(h);
                 return c.ZC_NOMEM;
             };
-            const buf = h.lores_buffers[i];
-            @memset(buf, 0);
-            if (rgb) {
-                for (0..l.height) |y| for (0..l.width) |x| {
-                    buf[y * l.stride + x * 3 ..][0..3].* = sampleRGB(transform, .{ .width = l.width, .height = l.height }, main_source, x, y, i);
-                };
-            } else {
-                const pixels = @as(usize, l.width) * l.height;
-                const tmp = Alloc.alloc(u8, pixels * 3) catch {
-                    close(h);
-                    return c.ZC_NOMEM;
-                };
-                defer Alloc.free(tmp);
-                for (0..l.height) |y| for (0..l.width) |x| {
-                    tmp[(y * l.width + x) * 3 ..][0..3].* = sampleRGB(transform, .{ .width = l.width, .height = l.height }, main_source, x, y, i);
-                };
-                const ysize = @as(usize, l.stride) * l.height;
-                @import("home/yuv_rgb.zig").encode420(tmp, l.width, l.height, l.width * 3, .{ buf[0..ysize], buf[ysize..][0 .. ysize / 4], buf[ysize + ysize / 4 ..] }, .{ l.stride, l.stride / 2, l.stride / 2 }, @import("home/yuv_rgb.zig").Conversion.init(.bt601, .full)) catch unreachable;
-            }
+            fillProcessed(h.lores_buffers[i], l, transform, main_source, i) catch {
+                close(h);
+                return c.ZC_NOMEM;
+            };
         }
     }
     for (1..31) |id| {
@@ -286,10 +297,7 @@ pub fn queue(h: *Handle, index: u32) c_int {
         f.raw.planes[0].bytes_used = h.raw_buffers[index].len;
         f.raw.planes[0].fd = -1;
     }
-    f.main.planes[0].data = h.buffers[index].ptr;
-    f.main.planes[0].length = h.buffers[index].len;
-    f.main.planes[0].bytes_used = h.buffers[index].len;
-    f.main.planes[0].fd = -1;
+    attachProcessed(&f.main, h.buffers[index]);
     f.sequence = h.sequence;
     h.sequence += 1;
     f.timestamp_ns = @import("capture_filter.zig").clockNs() catch return c.ZC_IO;
@@ -488,22 +496,13 @@ pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
     if (stream > c.ZC_LORES) return c.ZC_INVALID;
     if (stream == c.ZC_RAW and h.config.raw == 0 or stream == c.ZC_LORES and h.pipeline.lores.plane_count == 0) return c.ZC_UNSUPPORTED;
     const raw = stream == c.ZC_RAW;
-    out.* = .{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = if (raw) c.ZC_PRIMARIES_RAW else c.ZC_PRIMARIES_REC709, .transfer = if (raw) c.ZC_TRANSFER_LINEAR else c.ZC_TRANSFER_SRGB, .ycbcr_encoding = if (stream == c.ZC_LORES and h.pipeline.lores.plane_count == 3) c.ZC_YCBCR_REC601 else c.ZC_YCBCR_NONE, .range = c.ZC_RANGE_FULL };
+    out.* = .{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = if (raw) c.ZC_PRIMARIES_RAW else c.ZC_PRIMARIES_REC709, .transfer = if (raw) c.ZC_TRANSFER_LINEAR else c.ZC_TRANSFER_SRGB, .ycbcr_encoding = if ((stream == c.ZC_LORES and h.pipeline.lores.plane_count == 3) or (stream == c.ZC_MAIN and h.info.main.plane_count == 3)) c.ZC_YCBCR_REC601 else c.ZC_YCBCR_NONE, .range = c.ZC_RANGE_FULL };
     return c.ZC_OK;
 }
 pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
     out.* = h.pipeline.lores;
     if (out.plane_count == 0) return c.ZC_UNSUPPORTED;
-    const buf = h.lores_buffers[index];
-    const ysize = @as(usize, out.stride) * out.height;
-    for (0..out.plane_count) |i| {
-        const offset = if (i == 0) 0 else ysize + (i - 1) * ysize / 4;
-        const len = if (out.plane_count == 1) buf.len else if (i == 0) ysize else ysize / 4;
-        out.planes[i].data = buf[offset..].ptr;
-        out.planes[i].length = len;
-        out.planes[i].bytes_used = len;
-        out.planes[i].fd = -1;
-    }
+    attachProcessed(out, h.lores_buffers[index]);
     return c.ZC_OK;
 }
 
@@ -523,10 +522,10 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
 }
 
 pub const device_id = "synthetic";
-pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, requested_orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+pub fn openId(config: *const c.zc_config, opts: *const c.zc_pipeline_options, main_format: u32, requested_orientation: u32, strict: bool, actual: *u32, id: []const u8, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
     out.* = null;
     if (!std.mem.eql(u8, id, device_id)) return c.ZC_DEVICE;
-    return open(config, opts, requested_orientation, strict, actual, context, callback, out, info, pipeline);
+    return open(config, opts, main_format, requested_orientation, strict, actual, context, callback, out, info, pipeline);
 }
 pub fn cameraId(_: *Handle, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     length.* = device_id.len;

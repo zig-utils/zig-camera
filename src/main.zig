@@ -12,6 +12,7 @@ const help =
     \\  --lens N                 Manual lens position in dioptres; default continuous AF if supported
     \\  --sensor-width N --sensor-height N --sensor-depth N   Exact advertised mode
     \\  --lores-width N --lores-height N  Add a paired analysis stream
+    \\  --main-format NAME       BGR888 (default, RGB bytes) or YUV420
     \\  --lores-format NAME      YUV420 (default) or BGR888
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
     \\  --strict-transform       Reject adjusted camera orientation
@@ -88,6 +89,7 @@ fn run() !void {
     camera.core.zc_default_pipeline_options(&pipeline);
     var fps: u32 = 30;
     var preview_stream: ?u32 = camera.c.ZC_MAIN;
+    var main_format: u32 = camera.c.ZC_RGB24;
     var codec: u32 = camera.c.ZC_MJPEG;
     var bitrate: u32 = 0;
     var gop: u32 = 0;
@@ -158,6 +160,8 @@ fn run() !void {
             image_format = try camera.still.formatFromName(value);
         } else if (eq(key, "--image-stream")) {
             image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
+        } else if (eq(key, "--main-format")) {
+            main_format = if (eq(value, "BGR888")) camera.c.ZC_RGB24 else if (eq(value, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidMainFormat;
         } else if (eq(key, "--preview-stream")) {
             preview_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "none")) null else return error.InvalidPreviewStream;
         } else if (eq(key, "--record-stream")) {
@@ -262,7 +266,7 @@ fn run() !void {
     if (camera_id != null and camera_index_set) return error.AmbiguousCameraSelector;
     var transform = try camera.ImageTransform.fromRotation(rotation, hflip, vflip);
     if (transpose) transform.transpose = !transform.transpose;
-    const cam = if (camera_id) |id| try camera.Camera.initOrientedPipelineId(cfg, pipeline, transform, strict_transform, id) else try camera.Camera.initOrientedPipeline(cfg, pipeline, transform, strict_transform);
+    const cam = if (camera_id) |id| try camera.Camera.initFormattedPipelineId(cfg, pipeline, main_format, transform, strict_transform, id) else try camera.Camera.initFormattedPipeline(cfg, pipeline, main_format, transform, strict_transform);
     defer cam.deinit() catch |err| std.debug.print("close: {s}\n", .{@errorName(err)});
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
@@ -337,7 +341,7 @@ fn run() !void {
         defer meta_file.close();
         var meta: [4096]u8 = undefined;
         // Names are fixed libcamera pixel-format identifiers, not arbitrary user input.
-        const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d},\"sensor_width\":{d},\"sensor_height\":{d},\"sensor_bit_depth\":{d},\"lores_width\":{d},\"lores_height\":{d},\"lores_stride\":{d},\"lores_format\":\"{s}\"}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count, negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, negotiated.lores.stride, std.mem.sliceTo(&negotiated.lores.format, 0) });
+        const json = try std.fmt.bufPrint(&meta, "{{\"backend\":\"{s}\",\"sequence\":{d},\"timestamp_ns\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"main_format\":\"{s}\",\"exposure_us\":{d},\"analogue_gain\":{d},\"red_gain\":{d},\"blue_gain\":{d},\"raw_format\":\"{s}\",\"raw_width\":{d},\"raw_height\":{d},\"raw_stride\":{d},\"raw_planes\":{d},\"sensor_width\":{d},\"sensor_height\":{d},\"sensor_bit_depth\":{d},\"lores_width\":{d},\"lores_height\":{d},\"lores_stride\":{d},\"lores_format\":\"{s}\"}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frame.value.sequence, frame.value.timestamp_ns, info.main.width, info.main.height, info.main.stride, std.mem.sliceTo(&info.main.format, 0), frame.value.exposure_us, frame.value.analogue_gain, frame.value.red_gain, frame.value.blue_gain, std.mem.sliceTo(&info.raw.format, 0), info.raw.width, info.raw.height, info.raw.stride, frame.value.raw.plane_count, negotiated.sensor_width, negotiated.sensor_height, negotiated.sensor_bit_depth, negotiated.lores.width, negotiated.lores.height, negotiated.lores.stride, std.mem.sliceTo(&negotiated.lores.format, 0) });
         try meta_file.writeAll(json[0 .. json.len - 2]);
         const extra = try std.fmt.bufPrint(&meta, ",\"image_stream\":{d},\"image_width\":{d},\"image_height\":{d},\"source_color_space\":{{\"present\":{d},\"primaries\":{d},\"transfer\":{d},\"ycbcr_encoding\":{d},\"range\":{d}}}}}\n", .{ image_stream.?, selected_stream.width, selected_stream.height, selected_color.present, selected_color.primaries, selected_color.transfer, selected_color.ycbcr_encoding, selected_color.range });
         try meta_file.writeAll(extra);
@@ -443,7 +447,7 @@ fn run() !void {
     const cpu_ns = cpuTime() - cpu_start;
     const s = cam.stats();
     var buf: [1024]u8 = undefined;
-    try std.fs.File.stdout().writeAll(try std.fmt.bufPrint(&buf, "{{\"backend\":\"{s}\",\"mode\":\"lease\",\"format\":\"BGR888\",\"frames\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"buffers\":{d},\"wall_ns\":{d},\"cpu_ns\":{d},\"first_sequence\":{d},\"last_sequence\":{d},\"first_timestamp_ns\":{d},\"last_timestamp_ns\":{d},\"dropped_total\":{d},\"checksum\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", frames, info.main.width, info.main.height, info.main.stride, info.buffer_count, ns, cpu_ns, first, last, first_timestamp, last_timestamp, s.dropped, checksum }));
+    try std.fs.File.stdout().writeAll(try std.fmt.bufPrint(&buf, "{{\"backend\":\"{s}\",\"mode\":\"lease\",\"format\":\"{s}\",\"frames\":{d},\"width\":{d},\"height\":{d},\"stride\":{d},\"buffers\":{d},\"wall_ns\":{d},\"cpu_ns\":{d},\"first_sequence\":{d},\"last_sequence\":{d},\"first_timestamp_ns\":{d},\"last_timestamp_ns\":{d},\"dropped_total\":{d},\"checksum\":{d}}}\n", .{ if (info.backend == 0) "synthetic" else "libcamera", std.mem.sliceTo(&info.main.format, 0), frames, info.main.width, info.main.height, info.main.stride, info.buffer_count, ns, cpu_ns, first, last, first_timestamp, last_timestamp, s.dropped, checksum }));
 }
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);

@@ -135,6 +135,17 @@ pub const Camera = struct {
         try check(core.zc_open_id_oriented_pipeline(&cfg, &opts, transform.orientation(), @intFromBool(strict), id.ptr, @intCast(id.len), &out));
         return .{ .handle = out.? };
     }
+    pub fn initFormattedPipeline(cfg: Config, opts: c.zc_pipeline_options, format: u32, transform: ImageTransform, strict: bool) Error!Camera {
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_formatted_pipeline(&cfg, &opts, format, transform.orientation(), @intFromBool(strict), &out));
+        return .{ .handle = out.? };
+    }
+    pub fn initFormattedPipelineId(cfg: Config, opts: c.zc_pipeline_options, format: u32, transform: ImageTransform, strict: bool, id: []const u8) Error!Camera {
+        if (id.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_id_formatted_pipeline(&cfg, &opts, format, transform.orientation(), @intFromBool(strict), id.ptr, @intCast(id.len), &out));
+        return .{ .handle = out.? };
+    }
     pub fn orientation(self: Camera) Error!c.zc_orientation_info {
         var result: c.zc_orientation_info = undefined;
         try check(core.zc_get_orientation(self.handle, &result));
@@ -345,6 +356,7 @@ pub const Frame = struct {
         if (access == c.ZC_BUSY) return error.BusyFrame;
         if (access != c.ZC_OK) return error.ReleasedFrame;
         const m = self.value.main;
+        if (m.plane_count != 1 or !std.mem.eql(u8, std.mem.sliceTo(&m.format, 0), "BGR888")) return error.UnsupportedFormat;
         return pixels.RgbView.init(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.width, m.height, m.stride);
     }
     pub fn mapStream(self: *const Frame, id: u32, write: bool) Error!FrameMapping {
@@ -416,7 +428,7 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         if (id != c.ZC_MAIN and id != c.ZC_LORES) return error.Unsupported;
         try check(core.zc_frame_readable(self.camera.handle, self.value.token));
-        if (id == c.ZC_MAIN) return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
+        if (id == c.ZC_MAIN and std.mem.eql(u8, std.mem.sliceTo(&self.value.main.format, 0), "BGR888")) return check(media.zc_video_write(recorder, &self.value, timestamp_ns));
         var selected = self.value;
         selected.main = try self.stream(id);
         const color = try self.colorSpace(id);
@@ -711,4 +723,43 @@ test "Zig scoped mappings own buffers independently and publish writable pixel e
     try reader.deinit();
     try reader.deinit();
     try std.testing.expectEqual(@as(u32, 0), camera.stats().leased);
+}
+
+test "formatted main I420 admission preserves legacy layouts and never exposes luma as RGB" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 4;
+    cfg.height = 2;
+    var pipeline: c.zc_pipeline_options = undefined;
+    core.zc_default_pipeline_options(&pipeline);
+    var invalid: ?*c.zc_camera = undefined;
+    for ([_]u32{ 2, std.math.maxInt(u32) }) |format| {
+        try std.testing.expectEqual(c.ZC_INVALID, core.zc_open_formatted_pipeline(&cfg, &pipeline, format, 1, 0, &invalid));
+        try std.testing.expectEqual(null, invalid);
+    }
+    cfg.width = 3;
+    try std.testing.expectEqual(c.ZC_INVALID, core.zc_open_formatted_pipeline(&cfg, &pipeline, c.ZC_YUV420, 1, 0, &invalid));
+    try std.testing.expectEqual(null, invalid);
+    cfg.width = 4;
+    const cam = try Camera.initFormattedPipelineId(cfg, pipeline, c.ZC_YUV420, .{}, false, "synthetic");
+    defer cam.deinit() catch unreachable;
+    try std.testing.expectEqual(@as(u32, 3), cam.info().main.plane_count);
+    const info = cam.info();
+    try std.testing.expectEqualStrings("YUV420", std.mem.sliceTo(&info.main.format, 0));
+    try cam.enableWritable();
+    try cam.start();
+    var frame = try cam.acquire(0);
+    defer frame.release() catch unreachable;
+    try std.testing.expectError(error.UnsupportedFormat, frame.rgb());
+    var mapped = try frame.mapStream(c.ZC_MAIN, true);
+    defer mapped.deinit() catch unreachable;
+    @memset(try mapped.writablePlane(0), 100);
+    @memset(try mapped.writablePlane(1), 64);
+    @memset(try mapped.writablePlane(2), 192);
+    var rgb: [24]u8 = @splat(99);
+    try std.testing.expectEqual(c.ZC_BUSY, core.zc_copy_frame_rgb(cam.handle, frame.value.token, &rgb, rgb.len));
+    try std.testing.expectEqual(@as(u8, 99), rgb[0]);
+    try mapped.deinit();
+    try std.testing.expectEqual(c.ZC_OK, core.zc_copy_frame_rgb(cam.handle, frame.value.token, &rgb, rgb.len));
+    for (0..8) |i| try std.testing.expectEqualSlices(u8, &.{ 190, 76, 0 }, rgb[i * 3 ..][0..3]);
 }

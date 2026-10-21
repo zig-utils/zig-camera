@@ -41,6 +41,11 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    assert(processedPixelFormat(ZC_RGB24)==formats::BGR888 && processedPixelFormat(ZC_YUV420)==formats::YUV420);
+    const auto rgb_request=portableColorSpace(processedColorSpace(ZC_RGB24));
+    const auto yuv_request=portableColorSpace(processedColorSpace(ZC_YUV420));
+    assert(rgb_request.primaries==ZC_PRIMARIES_REC709 && rgb_request.transfer==ZC_TRANSFER_SRGB && rgb_request.ycbcr_encoding==ZC_YCBCR_NONE && rgb_request.range==ZC_RANGE_FULL);
+    assert(yuv_request.primaries==ZC_PRIMARIES_REC709 && yuv_request.transfer==ZC_TRANSFER_SRGB && yuv_request.ycbcr_encoding==ZC_YCBCR_REC601 && yuv_request.range==ZC_RANGE_FULL);
     const auto absent=portableColorSpace(std::nullopt);
     assert(absent.struct_size==sizeof(zc_color_space) && !absent.present && !absent.range);
     const auto sycc=portableColorSpace(ColorSpace::Sycc);

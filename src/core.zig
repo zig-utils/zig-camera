@@ -178,17 +178,23 @@ pub export fn zc_get_orientation(camera: *c.zc_camera, out: *c.zc_orientation_in
     return c.ZC_OK;
 }
 pub export fn zc_open_oriented_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
-    return openPipeline(cfg, pipeline, null, orientation, strict, out);
+    return zc_open_formatted_pipeline(cfg, pipeline, c.ZC_RGB24, orientation, strict, out);
 }
 pub export fn zc_open_id_oriented_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
+    return zc_open_id_formatted_pipeline(cfg, pipeline, c.ZC_RGB24, orientation, strict, id, length, out);
+}
+pub export fn zc_open_formatted_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+    return openPipeline(cfg, pipeline, main_format, null, orientation, strict, out);
+}
+pub export fn zc_open_id_formatted_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (id == null or length == 0 or length > c.ZC_MAX_CAMERA_ID or cfg.camera_index != 0) return c.ZC_INVALID;
     const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
-    return openPipeline(cfg, pipeline, requested.bytes(), orientation, strict, out);
+    return openPipeline(cfg, pipeline, main_format, requested.bytes(), orientation, strict, out);
 }
-fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, main_format: u32, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
-    if (orientation < 1 or orientation > 8 or strict > 1) return c.ZC_INVALID;
+    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_RGB24 or (main_format == c.ZC_YUV420 and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
         pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
@@ -201,7 +207,7 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.* };
     var actual: u32 = 0;
-    const rc = if (id) |selected| driver.openId(cfg, pipeline, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
+    const rc = if (id) |selected| driver.openId(cfg, pipeline, main_format, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, main_format, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         std.heap.c_allocator.destroy(self);
         return rc;
@@ -553,12 +559,7 @@ pub export fn zc_frame_readable(p: *c.zc_camera, token: u64) c_int {
     return if (self.slots[index].access.writer) c.ZC_BUSY else c.ZC_OK;
 }
 pub export fn zc_copy_frame_rgb(p: *c.zc_camera, token: u64, out: [*]u8, length: u64) c_int {
-    const self = session(p);
-    self.operation.lock();
-    defer self.operation.unlock();
-    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
-    if (self.slots[index].access.writer) return c.ZC_BUSY;
-    return @import("media.zig").zc_copy_rgb(&self.slots[index].frame, out, length);
+    return zc_copy_stream_rgb(p, token, c.ZC_MAIN, out, length);
 }
 /// Internal synchronous read scope. The caller keeps its lease through finish;
 /// the access gate prevents final release/writes without allocating another token.

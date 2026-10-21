@@ -107,6 +107,13 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
           ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
           ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --frames 8 --warmup 0
+          ./zig-out/bin/zig-camera preview --simulate --main-format YUV420 --width 64 --height 48 --frames 4 --warmup 0
+          ./zig-out/bin/zig-camera capture --simulate --fifo --main-format YUV420 --width 64 --height 48 --warmup 0 --output zig-out/main-i420.png
+          ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --width 64 --height 48 --frames 4 --fps 25 --warmup 0 --output zig-out/main-i420.mkv
+          ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --width 64 --height 48 --frames 4 --fps 25 --codec h264 --warmup 0 --output zig-out/main-i420-h264.mp4
+          ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --width 64 --height 48 --frames 4 --fps 25 --codec hevc --warmup 0 --output zig-out/main-i420-hevc.mp4
+          ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun tests/ts/check-media.ts zig-out --main-formats
+          if ./zig-out/bin/zig-camera info --simulate --main-format YUV420 --width 65 --height 48; then exit 1; fi
           ./zig-out/bin/zig-camera preview --simulate --width 64 --height 48 --lores-width 16 --lores-height 12 --preview-stream lores --frames 4 --warmup 0
           ./zig-out/bin/zig-camera preview --simulate --width 64 --height 48 --lores-width 16 --lores-height 12 --lores-format BGR888 --preview-stream lores --frames 4 --warmup 0
           ./zig-out/bin/zig-camera preview --simulate --width 65 --height 33 --preview-stream none --frames 4 --warmup 0

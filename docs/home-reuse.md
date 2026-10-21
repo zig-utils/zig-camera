@@ -440,3 +440,12 @@ Local macOS/arm64 ReleaseFast median batch ratios were 1.77–1.89; ReleaseSafe
 was 0.94–1.46, including a slight BT.709-full regression. A concurrent-compiler
 run is also retained to expose noise. These are shared-host observations, not Pi
 results, camera throughput or a Picamera2 comparison. No safety checks were removed.
+
+The 0.53 audit inspects Home video core/yuv_rgb.zig, yuv_remap.zig, plane_pack.zig
+and pixel_convert.zig at 7ec5214016ca0486b48eb9ad48b2574726fa960a. Main I420
+reuses the same checked conversion, direct matrix/range remapping and compact
+owned-plane helpers already used for lores; no second converter or new Home API
+is needed. Synthetic setup shares one checked fill/attachment path for main and
+lores. The real backend requests YUV from libcamera. Existing Home attribution
+and verbatim helper revisions in NOTICE remain in force. No Home source change
+is required for this integration; additional pixel formats remain in scope.

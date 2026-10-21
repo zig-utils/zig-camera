@@ -153,6 +153,7 @@ const coordinatedFlush = Symbol('coordinatedFlush')
 const adoptCoordinatedFlush = Symbol('adoptCoordinatedFlush')
 const readableFrame = Symbol('readableFrame')
 const recorderInput = Symbol('recorderInput')
+const rgbMainFrame = Symbol('rgbMainFrame')
 const savePreparedImage = Symbol('savePreparedImage')
 const encodePreparedImage = Symbol('encodePreparedImage')
 export interface CaptureOptions<T = unknown> extends JobOptions<T> {
@@ -383,6 +384,8 @@ export interface PreviewOverlay {
   stride?: number
 }
 export interface CameraOptions {
+  /** Main processed stream. Defaults to RGB byte order BGR888. */
+  format?: 'BGR888' | 'YUV420'
   transform?: CameraTransform
   /** Opt in to writable mappings and READ|WRITE DMA fences before first start. */
   writable?: boolean
@@ -463,6 +466,22 @@ export class Frame {
   }
   get timestampNs() {
     return u64(this.descriptor, 16)
+  }
+  get format() {
+    return text(this.descriptor, 56, 32)
+  }
+  /** Keep legacy RGB recording admission free of per-frame string decoding. */
+  get [rgbMainFrame]() {
+    const d = this.descriptor
+    return (
+      d[56] === 66 &&
+      d[57] === 71 &&
+      d[58] === 82 &&
+      d[59] === 56 &&
+      d[60] === 56 &&
+      d[61] === 56 &&
+      d[62] === 0
+    )
   }
   get width() {
     return view(this.descriptor).getUint32(40, true)
@@ -891,6 +910,7 @@ export class Camera {
     const {
       config: cfg,
       pipeline,
+      mainFormat,
       cameraId,
       writable,
       orientation,
@@ -898,23 +918,43 @@ export class Camera {
     } = cameraConfiguration(this.configuration)
     const out = outPointer()
     check(
-      cameraId
-        ? n.zc_open_id_oriented_pipeline(
-            ptr(cfg),
-            ptr(pipeline),
-            orientation,
-            strictOrientation ? 1 : 0,
-            ptr(cameraId),
-            cameraId.length,
-            ptr(out),
-          )
-        : n.zc_open_oriented_pipeline(
-            ptr(cfg),
-            ptr(pipeline),
-            orientation,
-            strictOrientation ? 1 : 0,
-            ptr(out),
-          ),
+      mainFormat === 0
+        ? cameraId
+          ? n.zc_open_id_formatted_pipeline(
+              ptr(cfg),
+              ptr(pipeline),
+              mainFormat,
+              orientation,
+              strictOrientation ? 1 : 0,
+              ptr(cameraId),
+              cameraId.length,
+              ptr(out),
+            )
+          : n.zc_open_formatted_pipeline(
+              ptr(cfg),
+              ptr(pipeline),
+              mainFormat,
+              orientation,
+              strictOrientation ? 1 : 0,
+              ptr(out),
+            )
+        : cameraId
+          ? n.zc_open_id_oriented_pipeline(
+              ptr(cfg),
+              ptr(pipeline),
+              orientation,
+              strictOrientation ? 1 : 0,
+              ptr(cameraId),
+              cameraId.length,
+              ptr(out),
+            )
+          : n.zc_open_oriented_pipeline(
+              ptr(cfg),
+              ptr(pipeline),
+              orientation,
+              strictOrientation ? 1 : 0,
+              ptr(out),
+            ),
       'open camera',
     )
     this.handle = handle(out)
@@ -988,11 +1028,25 @@ export class Camera {
       width: v.getUint32(8, true),
       height: v.getUint32(12, true),
       stride: v.getUint32(16, true),
+      format: text(d, 24, 32),
       cameraId: this.selectedId,
     }
   }
   private readRecordingInput(options: RecorderOptions) {
-    if ((options.stream ?? 'main') === 'main') return this.readInfo()
+    if ((options.stream ?? 'main') === 'main') {
+      const info = this.readInfo()
+      if (info.format !== 'BGR888' && info.format !== 'YUV420')
+        throw new CameraError(-8, 'recording stream format')
+      if (info.format === 'YUV420') {
+        const color = storage(24)
+        check(n.zc_get_stream_color_space(this.handle, 0, ptr(color)))
+        check(
+          n.zc_video_check_input_color(ptr(color), 0),
+          'recording stream color',
+        )
+      }
+      return info
+    }
     const data = storage(224),
       color = storage(24)
     check(n.zc_get_pipeline_info(this.handle, ptr(data)))
@@ -2409,6 +2463,7 @@ export class Camera {
             previousWritable: old.writable,
             previousOrientation: old.orientation,
             previousStrictOrientation: old.strictOrientation,
+            previousMainFormat: old.mainFormat,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -2488,6 +2543,7 @@ export class Camera {
                 previousWritable: encoded.writable,
                 previousOrientation: encoded.orientation,
                 previousStrictOrientation: encoded.strictOrientation,
+                previousMainFormat: encoded.mainFormat,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,
@@ -2854,6 +2910,7 @@ export class Camera {
             previousWritable: old.writable,
             previousOrientation: old.orientation,
             previousStrictOrientation: old.strictOrientation,
+            previousMainFormat: old.mainFormat,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -2980,6 +3037,7 @@ export class Camera {
                 previousWritable: encoded.writable,
                 previousOrientation: encoded.orientation,
                 previousStrictOrientation: encoded.strictOrientation,
+                previousMainFormat: encoded.mainFormat,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response.controlRevision,
@@ -3263,6 +3321,7 @@ export class Camera {
             previousWritable: old.writable,
             previousOrientation: old.orientation,
             previousStrictOrientation: old.strictOrientation,
+            previousMainFormat: old.mainFormat,
             previousStarted: started,
             ...controls,
             cancel: current.cancellation,
@@ -3341,6 +3400,7 @@ export class Camera {
                 previousWritable: encoded.writable,
                 previousOrientation: encoded.orientation,
                 previousStrictOrientation: encoded.strictOrientation,
+                previousMainFormat: encoded.mainFormat,
                 previousStarted: true,
                 ...controls,
                 controlRevision: response!.controlRevision,
@@ -4562,8 +4622,8 @@ export class Recorder {
     this.assertOpen(true)
     if (!frame.token) throw new CameraError(-5, 'released frame')
     const source =
-      this.options.stream === 'lores'
-        ? frame[recorderInput]('lores')
+      this.options.stream === 'lores' || !frame[rgbMainFrame]
+        ? frame[recorderInput](this.options.stream ?? 'main')
         : undefined
     const out = outPointer()
     check(
@@ -4636,8 +4696,8 @@ export class Recorder {
     }
     this.assertOpen(true)
     const source =
-      this.options.stream === 'lores'
-        ? frame[recorderInput]('lores')
+      this.options.stream === 'lores' || !frame[rgbMainFrame]
+        ? frame[recorderInput](this.options.stream ?? 'main')
         : undefined
     const out = outPointer()
     check(
@@ -4686,8 +4746,8 @@ export class Recorder {
       return
     }
     const source =
-        this.options.stream === 'lores'
-          ? frame[recorderInput]('lores')
+        this.options.stream === 'lores' || !frame[rgbMainFrame]
+          ? frame[recorderInput](this.options.stream ?? 'main')
           : undefined,
       out = outPointer()
     check(
@@ -4854,8 +4914,8 @@ export class Recorder {
     this.assertOpen()
     if (!frame.token) throw new CameraError(-5, 'released frame')
     const source =
-      this.options.stream === 'lores'
-        ? frame[recorderInput]('lores')
+      this.options.stream === 'lores' || !frame[rgbMainFrame]
+        ? frame[recorderInput](this.options.stream ?? 'main')
         : undefined
     check(
       source

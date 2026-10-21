@@ -72,7 +72,37 @@ static int failing_packet_sink(void *context,const zc_output_packet *packet) {
 }
 static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(value>>(i*8));}
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
+static void formatted_main(void) {
+    zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=2;
+    zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=2;pipe.lores_format=ZC_RGB24;
+    zc_camera *camera=NULL;
+    assert(zc_open_formatted_pipeline(&cfg,&pipe,2,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
+    cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);cfg.width=4;
+    assert(zc_open_id_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
+    zc_info info;assert(zc_get_info(camera,&info)==ZC_OK);assert(!strcmp(info.main.format,"YUV420") && info.main.plane_count==3);
+    zc_color_space color;assert(zc_get_stream_color_space(camera,ZC_MAIN,&color)==ZC_OK && color.ycbcr_encoding==ZC_YCBCR_REC601);
+    assert(zc_get_stream_color_space(camera,ZC_LORES,&color)==ZC_OK && color.ycbcr_encoding==ZC_YCBCR_NONE);
+    assert(zc_enable_writable(camera)==ZC_OK);assert(zc_start(camera)==ZC_OK);
+    zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+    zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,ZC_MAIN,1,&map)==ZC_OK);
+    zc_stream source;assert(zc_frame_map_stream(map,&source)==ZC_OK);
+    memset((void *)source.planes[0].data,100,source.planes[0].bytes_used);
+    memset((void *)source.planes[1].data,64,source.planes[1].bytes_used);
+    memset((void *)source.planes[2].data,192,source.planes[2].bytes_used);
+    uint8_t rgb[24];memset(rgb,99,sizeof(rgb));
+    assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_BUSY && rgb[0]==99);
+    assert(zc_frame_map_close(map)==ZC_OK);
+    assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_OK);
+    for(unsigned i=0;i<8;i++)assert(rgb[i*3]==190 && rgb[i*3+1]==76 && rgb[i*3+2]==0);
+    uint8_t short_rgb[23];memset(short_rgb,99,sizeof(short_rgb));
+    assert(zc_copy_frame_rgb(camera,frame.token,short_rgb,sizeof(short_rgb))==ZC_INVALID);
+    for(unsigned i=0;i<sizeof(short_rgb);i++)assert(short_rgb[i]==99);
+    assert(zc_release(camera,frame.token)==ZC_OK);
+    assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_STALE);
+    assert(zc_close(camera)==ZC_OK);
+}
 int main(void) {
+    formatted_main();
     assert(zc_preview_check_color(ZC_RGB24,NULL)==ZC_OK);
     assert(zc_preview_check_color(ZC_YUV420,NULL)==ZC_UNSUPPORTED);
     zc_color_space display_color={.struct_size=sizeof(display_color),.present=1,.ycbcr_encoding=ZC_YCBCR_REC709,.range=ZC_RANGE_LIMITED};

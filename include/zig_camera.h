@@ -31,7 +31,7 @@ typedef struct {
 } zc_plane;
 typedef struct {
     uint32_t width, height, stride, plane_count;
-    char format[32]; /* main: BGR888 (RGB byte order); raw: negotiated libcamera name */
+    char format[32]; /* processed: BGR888 (RGB bytes) or YUV420; raw: negotiated name */
     zc_plane planes[ZC_MAX_PLANES];
 } zc_stream;
 typedef struct {
@@ -104,6 +104,12 @@ int zc_orientation_from_transform(uint32_t rotation,uint32_t hflip,uint32_t vfli
  * geometry are negotiated and reported by get_info, never assumed from input. */
 int zc_open_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,zc_camera **out);
 int zc_open_id_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,const uint8_t *id,uint32_t length,zc_camera **out);
+/* Main format is ZC_RGB24 (legacy default) or ZC_YUV420. I420 requests require
+ * even explicit dimensions; negotiated format/stride must remain supported.
+ * RGB and I420 plane descriptors share the existing ABI v1 layouts. Color space
+ * is negotiated and queried with zc_get_stream_color_space, never guessed. */
+int zc_open_formatted_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t main_format,uint32_t orientation,uint32_t strict,zc_camera **out);
+int zc_open_id_formatted_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t main_format,uint32_t orientation,uint32_t strict,const uint8_t *id,uint32_t length,zc_camera **out);
 int zc_get_orientation(zc_camera *,zc_orientation_info *out);
 int zc_get_pipeline_info(zc_camera *,zc_pipeline_info *);
 /* Cached discovery: no reconfiguration or capture interruption. Query with

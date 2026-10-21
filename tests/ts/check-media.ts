@@ -1,8 +1,58 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { mkvFrames, mp4, decodeVideo } from './media'
+import { mkvFrames, mp4, decodeVideo, decodeVideoI420 } from './media'
 const dir = process.argv[2] ?? 'zig-out'
+if (process.argv.includes('--main-formats')) {
+  const meta = JSON.parse(readFileSync(join(dir, 'main-i420.png.json'), 'utf8'))
+  assert.equal(meta.main_format, 'YUV420')
+  assert.equal(meta.source_color_space.ycbcr_encoding, 2)
+  assert.equal(mkvFrames(join(dir, 'main-i420.mkv')).length, 4)
+  const expected: Uint8Array[] = []
+  for (let index = 0; index < 4; index++) {
+    const out = new Uint8Array((64 * 48 * 3) / 2),
+      blue = index * 37,
+      pixels = 64 * 48
+    for (let y = 0; y < 48; y++)
+      for (let x = 0; x < 64; x++)
+        out[y * 64 + x] = Math.round(
+          16 + (Math.round(0.299 * x + 0.587 * y + 0.114 * blue) * 219) / 255,
+        )
+    for (let y = 0; y < 48; y += 2)
+      for (let x = 0; x < 64; x += 2) {
+        const luma = 0.299 * (x + 0.5) + 0.587 * (y + 0.5) + 0.114 * blue,
+          offset = (y / 2) * 32 + x / 2
+        out[pixels + offset] = Math.round(
+          128 +
+            ((Math.round(128 + (blue - luma) / (2 * (1 - 0.114))) - 128) *
+              224) /
+              255,
+        )
+        out[pixels + pixels / 4 + offset] = Math.round(
+          128 +
+            ((Math.round(128 + (x + 0.5 - luma) / (2 * (1 - 0.299))) - 128) *
+              224) /
+              255,
+        )
+      }
+    expected.push(out)
+  }
+  for (const codec of ['h264', 'hevc']) {
+    const path = join(dir, `main-i420-${codec}.mp4`),
+      video = mp4(path).get(1)!
+    assert.equal(video.width, 64)
+    assert.equal(video.height, 48)
+    decodeVideoI420(path, video, expected)
+  }
+  const decoder = process.env.ZC_IMAGE_DECODER
+  assert(decoder)
+  const decoded = Bun.spawnSync([decoder, 'png', join(dir, 'main-i420.png')])
+  assert.equal(decoded.exitCode, 0)
+  const bytes = Buffer.from(decoded.stdout)
+  assert.equal(bytes.readUInt32LE(0), 64)
+  assert.equal(bytes.readUInt32LE(4), 48)
+  process.exit(0)
+}
 if (process.argv.includes('--recording-streams')) {
   const frames = mkvFrames(join(dir, 'lores-video.mkv'))
   assert.equal(frames.length, 4)

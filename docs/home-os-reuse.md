@@ -82,3 +82,10 @@ figures are estimates, not measured performance. The media-player app delegates
 to the kernel decoder above and does not add a standalone converter or container.
 A future hosted backend must use Linux display/DMA ownership and validate format,
 stride, fences and lease lifetime rather than importing kernel physical pointers.
+
+The 0.53 audit rechecks camera.home's CAMERA_FORMAT_YUV constant and fixed RGB
+allocation/capture stub against main I420 configuration. It does not implement
+a usable format-negotiated capture path. ADR-MC5's separate native-YUV display
+plane is a future integration reference, while current hosted capture uses
+libcamera and Home stdlib conversions/packing. Source revision remains
+151269666bc09aa15a271f1c1f4603f681132e65; no Home OS code was executed or copied.

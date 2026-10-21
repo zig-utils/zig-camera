@@ -24,12 +24,13 @@ await camera.close()
 `RecorderOptions.stream` is `main` (default) or `lores`. It applies to manual
 `write`, `writeAsync`, `writeAVAsync`, camera recording pumps, circular snapshots,
 splits and rotated/recovered outputs. Preview and ordinary still captures keep
-their own source selection. Main uses the existing RGB path. Lores accepts
-negotiated RGB24 or planar I420; raw requires a future demosaic/encoder path.
+their own source selection. Main and lores accept negotiated RGB24 or planar I420;
+set CameraOptions.format to YUV420 for native main I420 capture. Main RGB retains
+the existing RGB path; raw requires a future demosaic/encoder path.
 
 Width and height describe the encoder input. `startRecording` checks them against
-the selected negotiated stream, and checks lores format/color before claiming
-camera ownership. Disabled streams, raw selection and mismatched geometry reject.
+the selected negotiated stream, and checks selected I420/lores format/color before
+claiming camera ownership. Disabled streams, raw selection and mismatched geometry reject.
 The stream option is snapshotted and immutable within a session. Restart retains
 it; `reconfigureAsync` can change it after flush. Coordinated camera/recorder mode
 jobs resolve geometry against the selected target stream, including adjusted
@@ -65,7 +66,7 @@ and a separate `zc_color_space`; all existing public layouts/calls are unchanged
 C callers retain and synchronize borrowed inputs through synchronous calls.
 Zig's `Frame.writeVideo(recorder, stream, timestamp)` selects a protected lease.
 The CLI accepts `--record-stream main|lores` together with existing lores flags;
-preview continues to use main.
+preview independently accepts --preview-stream main|lores|none.
 
 Tests cover independent JPEG pixels, all decoded AVC/HEVC Y/U/V planes against
 floating/reference input calculations, AAC timing, compact queue charges, source

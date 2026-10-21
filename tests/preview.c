@@ -103,25 +103,28 @@ static void yuv_inputs(void) {
     assert(zc_preview_show_background(blank)==ZC_OK);read_small(blank,background);for(int i=0;i<12;i++)assert(background[i]==0);
     assert(zc_preview_show_input(blank,&frame,&color)==ZC_UNSUPPORTED);assert(zc_preview_close(blank)==ZC_OK);
 }
-static void leased_lores(void) {
+static void leased_processed(uint32_t which) {
     zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=4;
     zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);pipeline.lores_width=2;pipeline.lores_height=2;
-    zc_camera *camera=NULL;assert(zc_open_pipeline(&cfg,&pipeline,&camera)==ZC_OK);assert(zc_enable_writable(camera)==ZC_OK);assert(zc_start(camera)==ZC_OK);
+    if(which==ZC_MAIN){cfg.width=2;cfg.height=2;pipeline.lores_width=0;pipeline.lores_height=0;}
+    zc_camera *camera=NULL;assert(zc_open_formatted_pipeline(&cfg,&pipeline,which==ZC_MAIN?ZC_YUV420:ZC_RGB24,ZC_ROTATE0,0,&camera)==ZC_OK);assert(zc_enable_writable(camera)==ZC_OK);assert(zc_start(camera)==ZC_OK);
     zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
     zc_preview *p=NULL;assert(zcm_preview_open("leased lores",2,2,&p)==ZC_OK);
-    zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,ZC_LORES,1,&map)==ZC_OK);
+    zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,which,1,&map)==ZC_OK);
     zc_stream input;assert(zc_frame_map_stream(map,&input)==ZC_OK);
     assert(input.plane_count==3);uint8_t *bytes=(uint8_t *)input.planes[0].data;
     bytes[0]=100;bytes[1]=100;bytes[input.stride]=100;bytes[input.stride+1]=100;
     ((uint8_t *)input.planes[1].data)[0]=64;((uint8_t *)input.planes[2].data)[0]=192;
-    assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_BUSY);
+    assert(zc_preview_show_stream(p,camera,frame.token,which)==ZC_BUSY);
     assert(zc_frame_map_close(map)==ZC_OK);
-    assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_OK);
-    zc_color_space color;assert(zc_get_stream_color_space(camera,ZC_LORES,&color)==ZC_OK);
+    assert(zc_preview_show_stream(p,camera,frame.token,which)==ZC_OK);
+    zc_color_space color;assert(zc_get_stream_color_space(camera,which,&color)==ZC_OK);
     uint8_t out[12];read_small(p,out);int expected[3];reference_rgb(100,64,192,color.ycbcr_encoding,color.range,expected);
     for(int i=0;i<4;i++)for(int k=0;k<3;k++)assert(abs(out[i*3+k]-expected[k])<=1);
-    assert(zc_preview_show_stream(p,camera,frame.token,ZC_MAIN)==ZC_INVALID);assert(zc_frame_readable(camera,frame.token)==ZC_OK);
-    assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_preview_show_stream(p,camera,frame.token,ZC_LORES)==ZC_STALE);
+    if(which==ZC_LORES)assert(zc_preview_show_stream(p,camera,frame.token,ZC_MAIN)==ZC_INVALID);
+    else assert(zc_preview_show_stream(p,camera,frame.token,ZC_RAW)==ZC_UNSUPPORTED);
+    assert(zc_frame_readable(camera,frame.token)==ZC_OK);
+    assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_preview_show_stream(p,camera,frame.token,which)==ZC_STALE);
     assert(zc_preview_close(p)==ZC_OK);assert(zc_close(camera)==ZC_OK);
 }
 int main(void) {
@@ -129,7 +132,8 @@ int main(void) {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER,"software");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"0");
     yuv_inputs();
-    leased_lores();
+    leased_processed(ZC_MAIN);
+    leased_processed(ZC_LORES);
     zc_preview *p=NULL;
     assert(zcm_preview_open("overlay-test",4,2,&p)==ZC_OK);
     uint8_t rgb[24]; memset(rgb,100,sizeof(rgb));
