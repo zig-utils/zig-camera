@@ -45,6 +45,15 @@ Duration and byte limits are soft because preparation and keyframe delivery take
 time. Storage/construction failures are observable through automation state and
 leave the existing healthy sink recording. The CLI reports errors after cleanup.
 
+Synthetic CLI rotation waits, without a leased camera frame, for each admitted
+asynchronous replacement to become ready before advancing synthetic media time.
+The existing CLI timeout bounds this wait and preparation errors propagate. Real
+capture retains asynchronous, soft keyframe-aligned rotation. This prevents a
+fast synthetic fixture from reaching EOF before its file/header worker can run;
+it is not physical capture pacing or evidence of real-time throughput. The CLI
+smoke checks exact frame accounting across segments and exclusive-path failure.
+
+
 JPEG defaults to quality 98 with 4:4:4 sampling. DNG requires uncompressed Bayer;
 PiSP compressed raw is unsupported. Codec options enable direct x264/x265 links.
 Add `-Daac=true` with standalone FDK AAC installed for AAC MP4, `-Daudio=true`

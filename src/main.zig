@@ -375,6 +375,10 @@ fn run() !void {
         };
         var n: u64 = 0;
         while (frames == 0 or n < frames) : (n += 1) {
+            // Synthetic media time can outrun the async file/header worker. Wait
+            // without a camera lease so rotation fixtures exercise publication,
+            // rather than depending on host scheduling. Real capture stays soft.
+            if (simulate and rotate_pattern != null) try waitSyntheticRotation(recorder.?, timeout_ms);
             var frame = try cam.acquire(timeout_ms);
             defer frame.release() catch {};
             if (window) |w| {
@@ -436,4 +440,20 @@ fn cpuTime() u64 {
     const id: c_int = if (@import("builtin").os.tag == .macos) 12 else 2;
     if (clock_gettime(id, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+fn waitSyntheticRotation(recorder: *camera.c.zc_recorder, timeout_ms: u32) !void {
+    var timer = try std.time.Timer.start();
+    while (true) {
+        try camera.check(camera.media.zc_video_poll_preparations(recorder));
+        var automatic: camera.c.zc_automatic_state = undefined;
+        try camera.check(camera.media.zc_video_automatic_state(recorder, 0, &automatic));
+        try camera.check(automatic.error_code);
+        if (automatic.pending == 0) return;
+        var output: camera.c.zc_output_state = undefined;
+        try camera.check(camera.media.zc_video_output_state(recorder, 0, &output));
+        if (output.split_state == 1) return;
+        if (timer.read() >= @as(u64, timeout_ms) * 1_000_000) return error.Timeout;
+        std.Thread.sleep(1_000_000);
+    }
 }

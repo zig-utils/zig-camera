@@ -80,8 +80,7 @@ jobs:
           bun tests/ts/check-media.ts zig-out --lores
           ./zig-out/bin/zig-camera capture --simulate --width 17 --height 9 --warmup 2 --output zig-out/test.ppm
           ./zig-out/bin/zig-camera bench --simulate --width 640 --height 480 --frames 100 --warmup 2
-          ./zig-out/bin/zig-camera record --simulate --width 32 --height 24 --frames 40 --warmup 0 --rotate-pattern 'zig-out/rotation-{index:03}.mkv' --rotate-ms 100
-          bun tests/ts/check-media.ts zig-out --rotation
+          bun tests/ts/check-cli-rotation.ts
       - name: Build pinned standalone AAC codec
         if: runner.os == 'Linux'
         run: |
