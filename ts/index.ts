@@ -1,3 +1,4 @@
+import { RestartGroup, type GroupRestartMember } from './restart-group'
 import {
   SharedAudio,
   type AudioConsumerStats,
@@ -126,6 +127,7 @@ const prepareRecordingAudio = Symbol('prepareRecordingAudio')
 const writeSharedAudio = Symbol('writeSharedAudio')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
+const adoptCoordinatedFlush = Symbol('adoptCoordinatedFlush')
 const readableFrame = Symbol('readableFrame')
 const recorderInput = Symbol('recorderInput')
 const savePreparedImage = Symbol('savePreparedImage')
@@ -181,6 +183,14 @@ export interface ModeJobOptions<T = unknown> extends JobOptions<T> {
   autofocusPolicy?: 'cancel' | 'wait' | 'reject'
   /** Require a fresh successful scan in the target mode before capture/publication. */
   autofocus?: boolean
+}
+export interface RecordingModeMember {
+  recording: Recording
+  settings?: RecorderSessionOptions
+  output?: string | CustomOutput | null
+  /** Omitted keeps the current microphone when audio remains enabled; null detaches it. */
+  audio?: AudioCapture | null
+  backpressure?: RecordingBackpressure
 }
 export interface RecordingModeOptions extends ModeJobOptions<Recording> {
   audio?: AudioCapture
@@ -789,6 +799,7 @@ export class Camera {
   }
   private configuration: CameraOptions
   private modeActive = false
+  private coordinatedGroup?: { recorders: Recorder[]; initials: Recording[] }
   private coordinatedRecorder?: Recorder
   private coordinatedInitial?: Recording
   private modeJobs = new Set<{
@@ -869,7 +880,7 @@ export class Camera {
   }
   assertOpen() {
     guardOutputHook()
-    if (this.coordinatedRecorder)
+    if (this.coordinatedRecorder || this.coordinatedGroup)
       throw new CameraError(-4, 'coordinated recording mode pending')
     if (this.modeActive) throw new CameraError(-4, 'mode change active')
     if (!this.handle || this.closing || this.stopJob)
@@ -2145,48 +2156,7 @@ export class Camera {
           })
           this.handle = response.handle
           this.started = response.started
-          if (response.callbackError !== undefined)
-            throw Object.assign(response.callbackError as object, {
-              restoreCode: response.restoreCode,
-              controlCode: response.controlCode,
-              restoreControlCode: response.restoreControlCode,
-            })
-          if (
-            response.autofocusState !== undefined &&
-            response.code &&
-            response.code !== -5 &&
-            !response.restoreCode &&
-            !current.cancelRequested
-          )
-            throw Object.assign(
-              new CameraError(response.code, 'target autofocus'),
-              { autofocusState: response.autofocusState },
-            )
-          if (response.controlCode && !response.restoreCode)
-            throw Object.assign(
-              new CameraError(
-                response.code || response.controlCode,
-                'runtime control restoration',
-              ),
-              { controlCode: response.controlCode },
-            )
-          if (Date.now() >= deadline && !current.cancelRequested)
-            current.cancel(new CameraError(-3, 'mode deadline'))
-          if (response.restoreCode)
-            throw Object.assign(
-              new CameraError(
-                response.code || response.restoreCode,
-                'mode restoration',
-              ),
-              {
-                restoreCode: response.restoreCode,
-                controlCode: response.controlCode,
-                restoreControlCode: response.restoreControlCode,
-              },
-            )
-          if (response.code === -5 && current.cancelRequested) current.check()
-          check(response.code, 'recording camera mode')
-          current.check()
+          this.checkRecordingModeResponse(response, current, deadline)
           const info = this.readRecordingInput(candidate)
           const media = resolvedSession(
             candidate,
@@ -2340,6 +2310,510 @@ export class Camera {
     return job
   }
 
+  private checkRecordingModeResponse(
+    response: ModeResponse,
+    current: Pick<BunJob<unknown>, 'check' | 'cancel' | 'cancelRequested'>,
+    deadline: number,
+  ) {
+    if (response.callbackError !== undefined)
+      throw Object.assign(response.callbackError as object, {
+        restoreCode: response.restoreCode,
+        controlCode: response.controlCode,
+        restoreControlCode: response.restoreControlCode,
+      })
+    if (
+      response.autofocusState !== undefined &&
+      response.code &&
+      response.code !== -5 &&
+      !response.restoreCode &&
+      !current.cancelRequested
+    )
+      throw Object.assign(new CameraError(response.code, 'target autofocus'), {
+        autofocusState: response.autofocusState,
+      })
+    if (response.controlCode && !response.restoreCode)
+      throw Object.assign(
+        new CameraError(
+          response.code || response.controlCode,
+          'runtime control restoration',
+        ),
+        { controlCode: response.controlCode },
+      )
+    if (Date.now() >= deadline && !current.cancelRequested)
+      current.cancel(new CameraError(-3, 'mode deadline'))
+    if (response.restoreCode)
+      throw Object.assign(
+        new CameraError(
+          response.code || response.restoreCode,
+          'mode restoration',
+        ),
+        {
+          restoreCode: response.restoreCode,
+          controlCode: response.controlCode,
+          restoreControlCode: response.restoreControlCode,
+        },
+      )
+    if (response.code === -5 && current.cancelRequested) current.check()
+    check(response.code, 'recording camera mode')
+    current.check()
+  }
+  /** Switch every active encoder under one camera/media publication decision. */
+  switchRecordingsModeAsync(
+    options: CameraOptions,
+    members: readonly RecordingModeMember[],
+    jobOptions: ModeJobOptions<readonly Recording[]> = {},
+  ): BunJob<readonly Recording[]> {
+    guardRequestCallback()
+    this.assertOpen()
+    cameraIdentity(options)
+    const focusPolicy = this.modeFocusPolicy(jobOptions),
+      autofocus = jobOptions.autofocus ?? false
+    const effective = snapshotJobOptions(jobOptions, 10000),
+      deadline = Date.now() + effective.timeoutMs!
+    const dropFrames = uint(jobOptions.dropFrames ?? 0)
+    const count = uint(members.length, 8)
+    if (!count) throw new RangeError('recording group requires active members')
+    if (
+      (options.simulate !== undefined &&
+        options.simulate !== (this.configuration.simulate ?? false)) ||
+      (options.cameraIndex !== undefined &&
+        (this.configuration.cameraId !== undefined ||
+          options.cameraIndex !== (this.configuration.cameraIndex ?? 0))) ||
+      (options.cameraId !== undefined && options.cameraId !== this.selectedId)
+    )
+      throw new CameraError(-1, 'mode must retain camera/backend')
+    const target = copyConfiguration({
+      ...options,
+      simulate: this.configuration.simulate,
+      cameraIndex: this.configuration.cameraIndex,
+      cameraId: this.configuration.cameraId,
+    })
+    target.writable ??= this.configuration.writable
+    target.transform ??= this.configuration.transform
+      ? { ...this.configuration.transform }
+      : undefined
+    const encoded = cameraConfiguration(target)
+    const plans = Array.from({ length: count }, (_, index) => {
+      const member = members[index],
+        recording = member.recording,
+        settings = member.settings ?? {},
+        output = member.output ?? null
+      const recorder = recording.recorder,
+        proposed = mergeSessionOptions(recorder.options, settings)
+      const exact =
+        (settings.width !== undefined ? 1 : 0) |
+        (settings.height !== undefined ? 2 : 0)
+      const geometry = proposed.stream === 'lores' ? target.lores : target
+      if (
+        proposed.stream === 'lores' &&
+        (!geometry?.width || !geometry?.height)
+      )
+        throw new CameraError(-8, 'target lores recording stream disabled')
+      const candidate = resolvedSession(
+        proposed,
+        geometry?.width ?? proposed.width,
+        geometry?.height ?? proposed.height,
+        exact,
+      )
+      const requestedAudio = member.audio
+      const audio =
+        requestedAudio === undefined
+          ? candidate.audio
+            ? this.recordingAudio.get(recording)
+            : undefined
+          : (requestedAudio ?? undefined)
+      const backpressure = member.backpressure ?? recording.backpressure
+      if (backpressure !== 'wait' && backpressure !== 'drop')
+        throw new RangeError('invalid recording backpressure')
+      if (
+        audio &&
+        (!audio.handle ||
+          !candidate.audio ||
+          audio.sampleRate !== candidate.audio.sampleRate ||
+          audio.channels !== candidate.audio.channels)
+      )
+        throw new RangeError(
+          'audio capture format differs from recorder session',
+        )
+      if (typeof output === 'string') {
+        if (
+          !output.length ||
+          output.length > 4096 ||
+          cstring(output).length > 4097
+        )
+          throw new RangeError('recording output path length')
+        guardHostPath(output)
+      }
+      return {
+        recording,
+        recorder,
+        candidate,
+        exact,
+        output,
+        audio,
+        backpressure,
+      }
+    })
+    // All application accessors have run; reserve only this exact active set.
+    this.assertOpen()
+    if (
+      this.hasPendingModes() ||
+      this.requests.length ||
+      this.focusCaptureActive ||
+      this.failedRecordings.size ||
+      this.producers.size >
+        [...this.recordings].filter((r) => this.producers.has(r)).length
+    )
+      throw new CameraError(-4, 'camera jobs active')
+    if (this.modeJobs.size >= 32) throw new CameraError(-4, 'mode queue')
+    const initials = [...this.recordings]
+    if (
+      plans.length !== initials.length ||
+      new Set(plans.map((p) => p.recording)).size !== plans.length ||
+      plans.some((p) => !this.recordings.has(p.recording))
+    )
+      throw new CameraError(
+        -4,
+        'group must include every active recording exactly once',
+      )
+    const cadences = new Map<AudioCapture, number>()
+    for (const plan of plans)
+      if (plan.audio) {
+        const fps = plan.candidate.fps ?? 30,
+          previous = cadences.get(plan.audio)
+        if (previous !== undefined && previous !== fps)
+          throw new RangeError('shared audio requires the same recording FPS')
+        cadences.set(plan.audio, fps)
+      }
+    const context = { recorders: plans.map((p) => p.recorder), initials }
+    const reservations: ReturnType<Recorder[typeof coordinateRecorder]>[] = []
+    const holds: { source: AudioCapture; group: SharedAudio; id: bigint }[] = []
+    let claimed = false,
+      released = false
+    const release = () => {
+      if (released) return
+      released = true
+      for (const reservation of reservations) reservation.release()
+      for (const hold of holds) {
+        hold.group.releaseHold(hold.id)
+        this.closeIdleAudio(hold.source, hold.group, true)
+      }
+      if (this.coordinatedGroup === context) this.coordinatedGroup = undefined
+      if (
+        !this.closing &&
+        !this.stopJob &&
+        (this.previewHandle || this.recordings.size)
+      )
+        this.ensurePump()
+    }
+    const job = new BunJob<readonly Recording[]>(
+      async (current) => {
+        claimed = true
+        let response: ModeResponse | undefined, group: RestartGroup | undefined
+        const children: BunJob<void>[] = []
+        const prepared: ReturnType<Camera['prepareGroupRecording']>[] = []
+        let installed = false,
+          failure: unknown
+        const abortChildren = () => {
+          group?.abort(current.cancellationReason)
+          for (const child of children) child.cancel(current.cancellationReason)
+        }
+        current.check()
+        this.checkModeLeases()
+        await this.settleFocus(focusPolicy, current)
+        current.check()
+        const previous = this.options,
+          old = cameraConfiguration(previous),
+          started = this.started,
+          title = this.previewTitle,
+          controls = this.readModeControls(autofocus ? 2n : 0n)
+        const preview = () => {
+          if (!title || !this.handle || this.closing || this.stopJob) return
+          const info = this.readInfo(),
+            name = cstring(title),
+            out = outPointer()
+          check(n.zc_preview_open(ptr(name), info.width, info.height, ptr(out)))
+          this.previewHandle = handle(out)
+          this.previewTitle = title
+        }
+        current.signal.addEventListener('abort', abortChildren, { once: true })
+        try {
+          if (
+            initials.length !== this.recordings.size ||
+            initials.some((r) => !this.recordings.has(r))
+          )
+            throw new CameraError(-4, 'recording group changed before claim')
+          this.modeActive = true
+          if (this.timer !== undefined) {
+            clearTimeout(this.timer)
+            this.timer = undefined
+          }
+          while (
+            initials.some((r) => this.producers.has(r)) ||
+            reservations.some((r) => r.pending())
+          ) {
+            current.check()
+            await pause()
+          }
+          current.check()
+          const producerError = initials.find(
+            (r) => r.error !== undefined,
+          )?.error
+          if (producerError !== undefined) throw producerError
+          if (
+            initials.length !== this.recordings.size ||
+            initials.some((r) => !this.recordings.has(r))
+          )
+            throw new CameraError(-4, 'recording group changed before flush')
+          const flushes: BunJob<void>[] = []
+          // Reserve all flush jobs before detaching any old capture owner.
+          try {
+            for (const reservation of reservations)
+              flushes.push(reservation.flush())
+          } catch (error) {
+            for (const flush of flushes) flush.cancel(error)
+            await Promise.allSettled(flushes)
+            throw error
+          }
+          for (let i = 0; i < plans.length; i++)
+            plans[i].recording[adoptCoordinatedFlush](flushes[i])
+          const flushed = await Promise.allSettled(flushes)
+          const flushFailure = flushed.find((r) => r.status === 'rejected')
+          if (flushFailure?.status === 'rejected') throw flushFailure.reason
+          current.check()
+          this.stopPreviewOwned()
+          response = await this.runOwnedMode({
+            handle: this.handle,
+            ...encoded,
+            cameraId: this.selectedIdBytes,
+            previousConfig: old.config,
+            previousPipeline: old.pipeline,
+            previousWritable: old.writable,
+            previousOrientation: old.orientation,
+            previousStrictOrientation: old.strictOrientation,
+            previousStarted: started,
+            ...controls,
+            cancel: current.cancellation,
+            deadline,
+            dropFrames,
+            autofocus,
+          })
+          this.handle = response.handle
+          this.started = response.started
+          this.checkRecordingModeResponse(response, current, deadline)
+          const media = plans.map((plan) => {
+            const info = this.readRecordingInput(plan.candidate)
+            return resolvedSession(
+              plan.candidate,
+              info.width,
+              info.height,
+              plan.exact,
+            )
+          })
+          preview()
+          current.check()
+          group = new RestartGroup(plans.length, () => {
+            this.configuration = target
+          })
+          for (let i = 0; i < plans.length; i++) {
+            const plan = plans[i]
+            const child = reservations[i].restart(
+              media[i],
+              plan.output,
+              () => {},
+              () => {},
+              () => {},
+              { group, index: i },
+            )
+            children.push(child)
+            void Promise.resolve(child).catch((error) => {
+              group!.failed(i, error)
+              if (!group!.published)
+                for (const peer of children)
+                  if (peer !== child) peer.cancel(error)
+            })
+          }
+          await group.ready
+          current.check()
+          if (
+            this.closing ||
+            this.stopJob ||
+            plans.some((p) => p.recorder.closing)
+          )
+            throw new CameraError(
+              -2,
+              'recording group stopped before publication',
+            )
+          // Reserve all capture/audio owners before the native shared decision.
+          for (const [source, fps] of cadences) {
+            if (!source.handle)
+              throw new CameraError(-2, 'audio closed before group publication')
+            const audioGroup = this.audioGroups.get(source)
+            if (audioGroup) audioGroup.reconfigure(fps)
+          }
+          for (let i = 0; i < plans.length; i++)
+            prepared.push(
+              this.prepareGroupRecording(
+                plans[i].recorder,
+                plans[i].audio,
+                media[i].fps ?? 30,
+                plans[i].backpressure,
+              ),
+            )
+          current.check()
+          group.publish(() => current.seal())
+          const results = await Promise.allSettled(children)
+          for (const result of results)
+            if (result.status === 'rejected') failure ??= result.reason
+          failure ??= group.error
+          if (
+            this.closing ||
+            this.stopJob ||
+            plans.some((p) => p.recorder.closing)
+          )
+            throw new CameraError(
+              -2,
+              'recording group stopped after publication',
+            )
+          for (const value of prepared) value.install()
+          installed = true
+          const recordings = Object.freeze(prepared.map((p) => p.recording))
+          if (failure !== undefined)
+            throw Object.assign(
+              failure instanceof Error
+                ? failure
+                : new Error('recording group retirement failed', {
+                    cause: failure,
+                  }),
+              { published: true, recordings },
+            )
+          return recordings
+        } catch (error) {
+          failure = error
+          group?.abort(error)
+          if (!group?.published)
+            for (const child of children) child.cancel(error)
+          const settled = await Promise.allSettled(children)
+          for (const result of settled)
+            if (
+              result.status === 'rejected' &&
+              result.reason !== current.cancellationReason &&
+              failure === current.cancellationReason
+            )
+              failure = result.reason
+          if (error instanceof ModeWorkerFault) {
+            this.handle = 0 as Pointer
+            this.started = false
+          }
+          if (!group?.published && response?.target && this.handle) {
+            try {
+              this.stopPreviewOwned()
+              const restored = await this.runOwnedMode({
+                handle: this.handle,
+                ...old,
+                cameraId: this.selectedIdBytes,
+                previousConfig: encoded.config,
+                previousPipeline: encoded.pipeline,
+                previousWritable: encoded.writable,
+                previousOrientation: encoded.orientation,
+                previousStrictOrientation: encoded.strictOrientation,
+                previousStarted: true,
+                ...controls,
+                controlRevision: response.controlRevision,
+                cancel: new SharedArrayBuffer(8),
+                deadline: Infinity,
+                dropFrames: 0,
+              })
+              this.handle = restored.handle
+              this.started = restored.started
+              this.configuration = restored.target ? previous : target
+              check(
+                restored.restoreCode || restored.code,
+                'recording group camera rollback',
+              )
+              if (!started && this.handle) {
+                check(n.zc_stop(this.handle))
+                this.started = false
+              }
+            } catch (restorationError) {
+              if (restorationError instanceof ModeWorkerFault) {
+                this.handle = 0 as Pointer
+                this.started = false
+              }
+              failure = new AggregateError(
+                [failure, restorationError],
+                'recording group camera restoration failed',
+              )
+            }
+          }
+          if (!group?.published && !this.previewHandle) {
+            try {
+              preview()
+            } catch (previewError) {
+              failure = new AggregateError(
+                [failure, previewError],
+                'recording group preview restoration failed',
+              )
+            }
+          }
+          // All native decisions are new after publication, including stop-hook errors.
+          if (
+            group?.published &&
+            !installed &&
+            !this.closing &&
+            !this.stopJob &&
+            !plans.some((p) => p.recorder.closing)
+          ) {
+            for (const value of prepared) value.install()
+            installed = true
+          }
+          if (group?.published && failure && typeof failure === 'object')
+            Object.assign(failure, {
+              published: true,
+              recordings: Object.freeze(
+                installed ? prepared.map((p) => p.recording) : [],
+              ),
+            })
+          throw failure
+        } finally {
+          current.signal.removeEventListener('abort', abortChildren)
+          if (!installed)
+            for (const value of prepared) value.discard(!!group?.published)
+          this.modeActive = false
+          release()
+        }
+      },
+      () => {
+        this.modeJobs.delete(job)
+        if (!claimed) release()
+      },
+      effective,
+    )
+    try {
+      for (const plan of plans)
+        reservations.push(plan.recorder[coordinateRecorder](job, this))
+      for (const source of new Set(
+        initials
+          .map((r) => this.recordingAudio.get(r))
+          .filter((s): s is AudioCapture => !!s),
+      )) {
+        const group = this.audioGroups.get(source)!
+        holds.push({ source, group, id: group.hold() })
+      }
+      this.assertOpen()
+    } catch (error) {
+      job.cancel(error)
+      release()
+      throw error
+    }
+    this.coordinatedGroup = context
+    this.modeJobs.add(job)
+    void job.operationDone.then(release)
+    if (this.focusJobs) this.ensurePump()
+    this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
+    return job
+  }
+
   switchMode(
     options: CameraOptions,
     jobOptions: ModeJobOptions<ReturnType<Camera['info']>> = {},
@@ -2448,6 +2922,7 @@ export class Camera {
       throw new CameraError(-4, 'mode queue')
     if (
       this.coordinatedRecorder ||
+      this.coordinatedGroup ||
       this.recording ||
       this.failedRecordings.size ||
       this.focusCaptureActive ||
@@ -2673,6 +3148,65 @@ export class Camera {
     await Promise.all(jobs.map((job) => job.operationDone))
   }
 
+  private prepareGroupRecording(
+    recorder: Recorder,
+    audio: AudioCapture | undefined,
+    fps: number,
+    backpressure: RecordingBackpressure,
+  ) {
+    const fanout = (this.fanout ??= new FrameFanout()),
+      id = fanout.add(backpressure)
+    let binding: ReturnType<Camera['reserveAudio']> | undefined,
+      owned = false,
+      installed = false,
+      discarded = false
+    try {
+      recorder[recordingOwner](this, false, true)
+      owned = true
+      if (audio) {
+        if (!audio.handle)
+          throw new CameraError(-2, 'audio closed before group publication')
+        binding = this.reserveAudio(audio, fps)
+      }
+      const recording = new Recording(this, recorder, audio, fps, backpressure)
+      recording[consumerState] = fanout.state(id)
+      return {
+        recording,
+        install: () => {
+          if (installed || discarded) return
+          installed = true
+          this.recordingIds.set(recording, id)
+          if (audio) this.recordingAudio.set(recording, audio)
+          if (binding) this.audioBindings.set(recording, binding)
+          this.recordings.add(recording)
+        },
+        discard: (closeSource: boolean) => {
+          if (installed || discarded) return
+          discarded = true
+          recording[consumerState] = fanout.retire(id)
+          if (binding)
+            recording[audioState] = this.releaseAudio(binding, closeSource)
+          recorder[recordingOwner](this, true)
+        },
+      }
+    } catch (error) {
+      fanout.retire(id)
+      if (binding) this.releaseAudio(binding, false)
+      if (owned) recorder[recordingOwner](this, true)
+      throw error
+    }
+  }
+  private closeIdleAudio(
+    source: AudioCapture,
+    group: SharedAudio,
+    closeSource: boolean,
+  ) {
+    if (!group.count && !group.holds) {
+      group.close()
+      this.audioGroups.delete(source)
+      if (closeSource) source.close()
+    }
+  }
   private reserveAudio(source: AudioCapture, fps: number) {
     let group = this.audioGroups.get(source)
     if (group && group.fps !== fps)
@@ -2700,11 +3234,7 @@ export class Camera {
   ) {
     const { group, id, source } = binding
     const final = group.retire(id)
-    if (!group.count) {
-      group.close()
-      this.audioGroups.delete(source)
-      if (closeSource) source.close()
-    }
+    this.closeIdleAudio(source, group, closeSource)
     return final
   }
   [recordingAudioState](recording: Recording): AudioConsumerStats | undefined {
@@ -2852,7 +3382,7 @@ export class Camera {
       this.timer = undefined
       if (!this.handle || this.closing || this.modeActive || this.stopJob)
         return
-      if (this.coordinatedRecorder) {
+      if (this.coordinatedRecorder || this.coordinatedGroup) {
         if (this.focusJobs) {
           const frame = storage(456)
           const code = n.zc_acquire(this.handle, 0, ptr(frame))
@@ -3031,6 +3561,7 @@ export class Camera {
   private stopWork(): Promise<void> {
     if (this.stopJob) return this.stopJob
     const coordinated = this.coordinatedRecorder
+    const group = this.coordinatedGroup
     const recordings = [
       ...new Set([...this.recordings, ...this.failedRecordings]),
     ]
@@ -3039,6 +3570,9 @@ export class Camera {
       !recordings.includes(this.coordinatedInitial)
     )
       recordings.push(this.coordinatedInitial)
+    if (group)
+      for (const initial of group.initials)
+        if (!recordings.includes(initial)) recordings.push(initial)
     this.recordings.clear()
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
@@ -3077,6 +3611,13 @@ export class Camera {
         } catch (error) {
           failure ??= error
         }
+      }
+      if (group) {
+        const closed = await Promise.allSettled(
+          group.recorders.map((r) => r.close()),
+        )
+        for (const result of closed)
+          if (result.status === 'rejected') failure ??= result.reason
       }
       await Promise.all([...this.producers.values()])
       if (this.started) {
@@ -3558,7 +4099,7 @@ export class Recorder {
   private tasks = 0
   private producerTail: Promise<void> = Promise.resolve()
   private capturingCamera?: Camera
-  private coordinator?: BunJob<Recording>
+  private coordinator?: Pick<BunJob<unknown>, 'cancel' | 'operationDone'>
   private coordinatorEntry = false
   private producerJobs = new Set<object>()
   private restartPending = false
@@ -5247,7 +5788,10 @@ export class Recorder {
       throw new CameraError(-4, 'recorder already attached to camera')
     this.capturingCamera = camera
   }
-  [coordinateRecorder](job: BunJob<Recording>, camera: Camera) {
+  [coordinateRecorder](
+    job: Pick<BunJob<unknown>, 'cancel' | 'operationDone'>,
+    camera: Camera,
+  ) {
     this.assertOpen(true)
     if (
       (this.capturingCamera && this.capturingCamera !== camera) ||
@@ -5267,6 +5811,7 @@ export class Recorder {
       }
     }
     return {
+      pending: () => this.readProducerStats().ownedJobs !== 0n,
       flush: () => enter(() => this.flushAsync()),
       restart: (
         settings: RecorderOptions,
@@ -5274,6 +5819,7 @@ export class Recorder {
         onPublished: () => void,
         beforePublish: () => void,
         onInstalled: () => void,
+        group?: GroupRestartMember,
       ) =>
         enter(() =>
           this.restartSession(
@@ -5283,6 +5829,7 @@ export class Recorder {
             onPublished,
             beforePublish,
             onInstalled,
+            group,
           ),
         ),
       release: () => {
@@ -5313,6 +5860,7 @@ export class Recorder {
     onPublished?: () => void,
     beforePublish?: () => void,
     onInstalled?: () => void,
+    group?: GroupRestartMember,
   ): BunJob<void> {
     this.assertOpen(true)
     if (this.restartPending)
@@ -5434,33 +5982,48 @@ export class Recorder {
                 if (bridge) await bridge.drain()
                 job.check()
                 if (bridge?.error !== undefined) throw bridge.error
-                beforePublish?.()
-                check(
-                  n.zc_producer_job_restart_publish(native),
-                  'restart publication',
-                )
+                if (group)
+                  await group.group.prepared(group.index, native, () => {
+                    job.check()
+                    if (bridge?.error !== undefined) throw bridge.error
+                  })
+                else {
+                  beforePublish?.()
+                  check(
+                    n.zc_producer_job_restart_publish(native),
+                    'restart publication',
+                  )
+                }
                 published = true
                 job.seal()
                 onPublished?.()
               }
               await pause()
             }
-            this.currentOptions = candidate
-            onInstalled?.()
-            this.sessionEpoch = this.readSessionState().id
             const old = [...this.deliveryBridges]
-            this.objectOutputs.clear()
-            this.deliveryBridges.clear()
-            this.factories.clear()
-            this.outputErrors.clear()
-            this.hostReports.clear()
-            this.deliveryFailure = undefined
-            this.finalStats = undefined
-            if (bridge) {
-              const state = storage(24)
-              check(n.zc_video_output_state(this.handle, 0n, ptr(state)))
-              this.setHostOutput(0n, { bridge, generation: u64(state) })
+            const install = () => {
+              try {
+                this.currentOptions = candidate
+                onInstalled?.()
+                this.sessionEpoch = this.readSessionState().id
+                this.objectOutputs.clear()
+                this.deliveryBridges.clear()
+                this.factories.clear()
+                this.outputErrors.clear()
+                this.hostReports.clear()
+                this.deliveryFailure = undefined
+                this.finalStats = undefined
+                if (bridge) {
+                  const state = storage(24)
+                  check(n.zc_video_output_state(this.handle, 0n, ptr(state)))
+                  this.setHostOutput(0n, { bridge, generation: u64(state) })
+                }
+              } catch (error) {
+                failure ??= error
+              }
             }
+            if (group) await group.group.installed(group.index, install)
+            else install()
             for (const previous of old) {
               try {
                 await previous.retire()
@@ -5862,11 +6425,14 @@ export class Recording {
     )
       return this.flushJob
     const job = flush()
+    this[adoptCoordinatedFlush](job)
+    return job
+  }
+  [adoptCoordinatedFlush](job: BunJob<void>) {
     this.flushJob = job
     this.stopped = true
     this.retainedRecorder = true
     this.camera.detach(this)
-    return job
   }
   close() {
     guardOutputHook()

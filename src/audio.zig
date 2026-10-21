@@ -93,6 +93,7 @@ test "synthetic PCM sample clock and exact ramp; truncation and overflow reject"
 const shared_pcm = @import("home/pcm_fanout.zig");
 const Shared = struct {
     source: *Handle,
+    holds: @import("home/packet_output.zig").Slots(u8, 8) = .{},
     fanout: shared_pcm.Fanout(8),
     scratch: []u8,
     pending: ?c.zc_audio_block = null,
@@ -138,11 +139,19 @@ pub export fn zc_audio_fanout_open(source: *c.zc_audio, config: *const c.zc_audi
 }
 pub export fn zc_audio_fanout_close(p: *c.zc_audio_fanout) c_int {
     const s = shared(p);
-    if (s.fanout.slots.count != 0) return c.ZC_BUSY;
+    if (s.fanout.slots.count != 0 or s.holds.count != 0) return c.ZC_BUSY;
     s.source.shared = false;
     s.fanout.deinit();
     std.heap.c_allocator.free(s.scratch);
     std.heap.c_allocator.destroy(s);
+    return c.ZC_OK;
+}
+pub export fn zc_audio_fanout_hold(p: *c.zc_audio_fanout, id: *u64) c_int {
+    id.* = shared(p).holds.add(0) catch |err| return pcmStatus(err);
+    return c.ZC_OK;
+}
+pub export fn zc_audio_fanout_release_hold(p: *c.zc_audio_fanout, id: u64) c_int {
+    _ = shared(p).holds.remove(id) orelse return c.ZC_STALE;
     return c.ZC_OK;
 }
 pub export fn zc_audio_fanout_add(p: *c.zc_audio_fanout, out: *u64) c_int {
@@ -219,4 +228,31 @@ pub export fn zc_audio_fanout_stats(p: *c.zc_audio_fanout, out: *c.zc_pcm_fanout
     const f = &s.fanout;
     out.* = .{ .frames = f.queue.used, .blocks = f.queue.count, .max_frames = f.queue.capacity, .max_blocks = f.queue.entries.len, .high_frames = f.high_frames, .high_blocks = f.high_blocks, .pushed_frames = f.pushed_frames, .evicted_frames = f.queue.trimmed, .sample_rate = f.queue.rate, .channels = f.queue.channels, .clock_error_ns = s.clock_error, .reads = s.reads, .pending_future = @intFromBool(s.pending != null), .error_code = s.failure };
     return c.ZC_OK;
+}
+
+test "audio transition holds are bounded and stale releases cannot close a replacement owner" {
+    var cfg: c.zc_audio_config = undefined;
+    zc_default_audio_config(&cfg);
+    cfg.backend = 0;
+    cfg.block_frames = 48;
+    var source: ?*c.zc_audio = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_open(&cfg, "", &source));
+    const config = c.zc_audio_fanout_config{ .struct_size = @sizeOf(c.zc_audio_fanout_config), .max_frames = 480, .max_blocks = 16, .reserved = 0 };
+    var group: ?*c.zc_audio_fanout = null;
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_open(source.?, &config, &group));
+    var ids: [8]u64 = undefined;
+    for (&ids) |*id| try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_hold(group.?, id));
+    var extra: u64 = 0;
+    try std.testing.expectEqual(c.ZC_BUSY, zc_audio_fanout_hold(group.?, &extra));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_audio_fanout_close(group.?));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_audio_close(source.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_release_hold(group.?, ids[0]));
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_hold(group.?, &extra));
+    try std.testing.expect(extra > ids[7]);
+    try std.testing.expectEqual(c.ZC_STALE, zc_audio_fanout_release_hold(group.?, ids[0]));
+    for (ids[1..]) |id| try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_release_hold(group.?, id));
+    try std.testing.expectEqual(c.ZC_BUSY, zc_audio_fanout_close(group.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_release_hold(group.?, extra));
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_fanout_close(group.?));
+    try std.testing.expectEqual(c.ZC_OK, zc_audio_close(source.?));
 }

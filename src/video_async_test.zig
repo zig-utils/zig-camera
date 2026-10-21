@@ -953,3 +953,52 @@ test "selected I420 admission owns compact planes and color and rejects before o
     try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
     try std.testing.expectEqual(@as(usize, 2), delivered);
 }
+
+test "restart group validates every participant before one irrevocable shared decision" {
+    const m = @import("media.zig");
+    var counts = [_]usize{0} ** 2;
+    const first = try recorder(&counts[0]);
+    const second = try recorder(&counts[1]);
+    defer _ = v.close(first);
+    defer _ = v.close(second);
+    try frameWrite(first, 0);
+    try frameWrite(second, 0);
+    try flushSession(first);
+    try flushSession(second);
+    var cfg = c.zc_video_config{ .width = 32, .height = 24, .fps_num = 20, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 60, .gop = 0 };
+    var audio = v.defaultRecordingOptions();
+    for ([_]bool{ false, true }) |commit| {
+        var jobs: [2]?*c.zc_producer_job = @splat(null);
+        for ([_]*c.zc_recorder{ first, second }, 0..) |rec, i| {
+            try std.testing.expectEqual(c.ZC_OK, m.zc_video_producer_restart(rec, 0, null, &jobs[i]));
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_configure(jobs[i].?, &cfg, &audio, 0));
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_start(jobs[i].?));
+        }
+        for (jobs) |job| try restartStage(job.?, 2);
+        try std.testing.expectEqual(c.ZC_INVALID, m.zc_producer_jobs_restart_publish(null, 1));
+        const duplicate = [_]?*c.zc_producer_job{ jobs[0], jobs[0] };
+        try std.testing.expectEqual(c.ZC_INVALID, m.zc_producer_jobs_restart_publish(&duplicate, 2));
+        const missing = [_]?*c.zc_producer_job{ jobs[0], null };
+        try std.testing.expectEqual(c.ZC_INVALID, m.zc_producer_jobs_restart_publish(&missing, 2));
+        try std.testing.expectEqual(c.ZC_INVALID, m.zc_producer_jobs_restart_publish(&jobs, 0));
+        if (!commit) try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(jobs[1].?));
+        try std.testing.expectEqual(if (commit) c.ZC_OK else c.ZC_STATE, m.zc_producer_jobs_restart_publish(&jobs, 2));
+        if (!commit) {
+            var stage: u32 = 0;
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_restart_stage(jobs[0].?, &stage));
+            try std.testing.expectEqual(@as(u32, 2), stage);
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_cancel(jobs[0].?));
+        } else for (jobs) |job| try std.testing.expectEqual(c.ZC_STATE, m.zc_producer_job_cancel(job.?));
+        for (jobs) |job| {
+            try std.testing.expectEqual(if (commit) c.ZC_OK else c.ZC_CANCELLED, try finishProducer(job.?));
+            try std.testing.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        }
+        for ([_]*c.zc_recorder{ first, second }) |rec| {
+            var result: c.zc_video_config = undefined;
+            var options: c.zc_recording_options = undefined;
+            var bitrate: u32 = 0;
+            try std.testing.expectEqual(c.ZC_OK, m.zc_video_session_config(rec, &result, &options, &bitrate));
+            try std.testing.expectEqual(@as(u32, if (commit) 32 else 16), result.width);
+        }
+    }
+}

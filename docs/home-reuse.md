@@ -389,3 +389,13 @@ and decoded audio/video against independent references. Existing Home codecs,
 containers and producer queues remain the implementations; no PCM payload queue
 is duplicated in Bun. Physical drift/latency and multi-encoder mode transactions
 remain acceptance/implementation work.
+
+The 0.48 audit adds Home async publication_batch, contributed on main at
+854d00fb613fd06b5739764b5aca9bdaf009ddb7 and reused verbatim. It validates bounded,
+unique lock-owner identities, stable ordering and every candidate state without
+allocation. The camera retains lock acquisition, all-member commit flags, worker
+joins and resource cleanup. Standalone Debug/ReleaseSafe tests pass with pinned
+Zig 0.15.2 and Home development Zig. Native shared PCM holds compose the existing
+Home stable slots; no second capture cursor or codec implementation is introduced.
+Home OS filesystem journaling and architecture-specific spinlocks do not provide
+a portable hosted multi-recorder publication primitive; see the OS audit.

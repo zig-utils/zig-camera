@@ -19,6 +19,7 @@ export interface AudioConsumerStats {
 }
 export interface SharedAudioStats {
   closed: boolean
+  holds: number
   frames: bigint
   blocks: bigint
   maxFrames: bigint
@@ -56,13 +57,16 @@ function state(out: Uint8Array): AudioConsumerStats {
 export class SharedAudio {
   private handle: Pointer
   count = 0
+  holds = 0
+  private originTime = 0n
+  private lastCut = 0n
   private originFrame?: bigint
   private final?: SharedAudioStats
   constructor(
     source: Pointer,
     frames: number,
     blocks: number,
-    readonly fps: number,
+    public fps: number,
   ) {
     const cfg = storage(16),
       d = view(cfg),
@@ -76,6 +80,23 @@ export class SharedAudio {
     )
     this.handle = handle(out)
   }
+  hold() {
+    const out = new BigUint64Array(1)
+    check(n.zc_audio_fanout_hold(this.handle, ptr(out)))
+    this.holds++
+    return out[0]
+  }
+  releaseHold(id: bigint) {
+    check(n.zc_audio_fanout_release_hold(this.handle, id))
+    this.holds--
+  }
+  reconfigure(fps: number) {
+    if (this.count)
+      throw new Error('audio consumers must retire before cadence changes')
+    this.originTime = this.lastCut
+    this.originFrame = undefined
+    this.fps = fps
+  }
   add() {
     const out = new BigUint64Array(1)
     check(n.zc_audio_fanout_add(this.handle, ptr(out)))
@@ -85,7 +106,8 @@ export class SharedAudio {
   timestamp(offered: bigint, real: bigint, synthetic: boolean) {
     this.originFrame ??= offered
     return synthetic
-      ? ((offered - this.originFrame) * 1_000_000_000n) / BigInt(this.fps)
+      ? this.originTime +
+          ((offered - this.originFrame) * 1_000_000_000n) / BigInt(this.fps)
       : real
   }
   fill(timestamp: bigint) {
@@ -97,6 +119,7 @@ export class SharedAudio {
       ),
       'shared audio capture',
     )
+    this.lastCut = timestamp + 1_000_000_000n / BigInt(this.fps)
   }
   prepare(id: bigint, minimum: bigint): NativeAudioBatch {
     const inputs = storage(256 * 24),
@@ -157,6 +180,7 @@ export class SharedAudio {
     check(n.zc_audio_fanout_stats(this.handle, ptr(out)))
     return {
       closed: false,
+      holds: this.holds,
       frames: u(0),
       blocks: u(8),
       maxFrames: u(16),

@@ -73,6 +73,13 @@ static void typed_put32(uint8_t *p,uint32_t value){for(unsigned i=0;i<4;i++)p[i]
 static uint32_t typed_get32(const uint8_t *p){uint32_t value=0;for(unsigned i=0;i<4;i++)value|=(uint32_t)p[i]<<(i*8);return value;}
 int main(void) {
     {
+        zc_producer_job *invalid[1]={NULL};
+        assert(zc_producer_jobs_restart_publish(invalid,0)==ZC_INVALID);
+        assert(zc_producer_jobs_restart_publish(invalid,1)==ZC_INVALID);
+        assert(zc_producer_jobs_restart_publish(NULL,1)==ZC_INVALID);
+        assert(zc_producer_jobs_restart_publish(invalid,9)==ZC_INVALID);
+    }
+    {
         zc_audio_config config;zc_default_audio_config(&config);config.backend=0;config.channels=2;config.block_frames=48;
         zc_audio *source=NULL;assert(zc_audio_open(&config,"",&source)==ZC_OK);
         zc_audio_fanout_config cfg={sizeof(cfg),192,8,0};zc_audio_fanout *shared=NULL,*duplicate=NULL;
@@ -104,7 +111,11 @@ int main(void) {
         assert(zc_audio_fanout_retire(shared,a,&state)==ZC_OK && !(state.flags&1));
         assert(zc_audio_fanout_state(shared,a,&state)==ZC_STALE);
         assert(zc_audio_fanout_check(shared,b)==ZC_OK);
+        uint64_t hold;assert(zc_audio_fanout_hold(shared,&hold)==ZC_OK);
         assert(zc_audio_fanout_retire(shared,b,&state)==ZC_OK);
+        assert(zc_audio_fanout_close(shared)==ZC_BUSY && zc_audio_close(source)==ZC_BUSY);
+        assert(zc_audio_fanout_release_hold(shared,hold)==ZC_OK);
+        assert(zc_audio_fanout_release_hold(shared,hold)==ZC_STALE);
         assert(zc_audio_fanout_close(shared)==ZC_OK && zc_audio_can_share(source)==ZC_OK);
         assert(zc_audio_read(source,untouched,sizeof(untouched),0,&meta)==ZC_OK && meta.timestamp_ns==3000000);
         assert(zc_audio_close(source)==ZC_OK);

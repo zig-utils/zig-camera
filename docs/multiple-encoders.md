@@ -62,13 +62,13 @@ Current boundaries:
   [Shared audio](shared-audio.md) retains PCM within bounded history, isolates
   overruns and releases the microphone after the last consumer. Sharing across
   cameras or using raw read/close while attached rejects.
-- Coordinated camera/recorder mode switching requires other encoders to be
-  stopped and detached producer turns to have settled. Rejection precedes flush.
-  The one-recorder job waits cancellably for its last copied producer before
-  flush; cancellation during that wait preserves the original recording.
+- [Group mode jobs](recording-groups.md) switch every active encoder under one
+  shared publication decision. The legacy single-recorder method still rejects
+  other active encoders before flush. Both wait cancellably for copied producers;
+  cancellation during that wait preserves the original recordings.
 - Queue byte limits persist across session reconfiguration; provision them for
-  the largest intended input and audio catch-up burst. Multi-encoder atomic mode
-  transactions, hardware encoding and measured Pi throughput remain parity work.
+  the largest intended input and audio catch-up burst. Hardware encoding and
+  measured Pi throughput remain parity work.
 
 The additive C `zc_fanout_*` API exposes this caller-serialized, frame-free native
 admission registry. C callers still perform frame copying, encoding, cleanup and

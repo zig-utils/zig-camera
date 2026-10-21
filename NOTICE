@@ -366,3 +366,9 @@ Home bounded shared PCM sample windows (0.47):
   Source commit: 53fdf28d5b1aa07a71d3b917f15c6a11f686dd2d.
   The Home MIT license above applies.
   https://github.com/home-lang/home/commit/53fdf28d5b1aa07a71d3b917f15c6a11f686dd2d
+
+Home shared publication preflight (0.48):
+- src/home/publication_batch.zig is verbatim packages/async/src/publication_batch.zig.
+  Source commit: 854d00fb613fd06b5739764b5aca9bdaf009ddb7.
+  The Home MIT license above applies.
+  https://github.com/home-lang/home/commit/854d00fb613fd06b5739764b5aca9bdaf009ddb7

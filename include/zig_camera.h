@@ -468,6 +468,10 @@ typedef struct {
 } zc_pcm_fanout_stats;
 int zc_audio_fanout_open(zc_audio *,const zc_audio_fanout_config *,zc_audio_fanout **);
 int zc_audio_fanout_close(zc_audio_fanout *);
+/* Bounded stable holds keep capture/history alive while consumers are replaced.
+ * Close remains BUSY until every hold is released; stale hold IDs never match. */
+int zc_audio_fanout_hold(zc_audio_fanout *,uint64_t *id);
+int zc_audio_fanout_release_hold(zc_audio_fanout *,uint64_t id);
 int zc_audio_fanout_add(zc_audio_fanout *,uint64_t *id);
 /* Bounded nonblocking reads through cut; one future block remains owned in the
  * source scratch. A read-budget exhaustion is a terminal source error. */
@@ -714,6 +718,12 @@ int zc_producer_job_restart_stage(zc_producer_job *,uint32_t *stage);
 int zc_producer_job_restart_headers(zc_producer_job *,uint8_t *,uint32_t capacity,uint32_t *size);
 int zc_producer_job_restart_bind(zc_producer_job *,const zc_output_callbacks *);
 int zc_producer_job_restart_publish(zc_producer_job *);
+/* One all-or-none publication decision for 1..8 prepared jobs from distinct
+ * recorders. Locks follow stable owner order; cancelled/unready members reject
+ * before any commit flag changes. No callbacks under group locks. After success
+ * every job is uncancellable; finish/join all jobs before accessing media state.
+ * This commits media sessions, not external file/hook side effects. */
+int zc_producer_jobs_restart_publish(zc_producer_job *const *jobs,uint32_t count);
 /* Cancellation is cooperative between PCM blocks/frames. An operation already
  * entered finishes; accepted bytes are not rolled back. Always finish+close.
  * Returns STATE after completion or a previous request. A real operation failure

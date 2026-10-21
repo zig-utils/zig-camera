@@ -67,7 +67,8 @@ bound catch-up; unlimited stall recovery is unsupported.
 AudioCapture is owned by its automatic recording group after successful start.
 Direct `read()` and `close()` return BUSY while attached, enforced in native code.
 Stopping/flushing one consumer leaves peers and source alive; the last retirement
-closes the shared history and microphone once. A flushed recorder can restart
+closes the shared history and microphone once, unless a coordinated group mode
+job holds the source across the transition. A flushed recorder can restart
 and rejoin a still-live group with a new consumer ID at the current source clock;
 closing its old Recording cannot release the replacement owner. Failed start releases the capture
 claim and leaves the caller's source open. Camera stop/close joins copied producers
@@ -75,7 +76,8 @@ after source retirement; their owned PCM remains valid independently of capture.
 A future microphone supplied to a mode job stays caller-owned until attachment.
 Already claimed candidates reject before flush/publication. A competing claim
 that occurs after media publication reports an error without stranding recorder
-ownership. Atomic multi-encoder mode transactions remain outstanding parity work.
+ownership. [Group mode jobs](recording-groups.md) reserve every pixel/audio owner before
+publishing any replacement media session.
 
 `Recording.audioStats()` returns an owned snapshot or undefined without a source:
 
@@ -86,7 +88,7 @@ ownership. Atomic multi-encoder mode transactions remain outstanding parity work
   group errorCode. Admitted samples count producer copies, not output delivery.
 
 `AudioCapture.sharedStats()` returns undefined before sharing, then copied native
-statistics, including after close: current `frames`/`blocks`, `maxFrames`/`maxBlocks`,
+statistics, including after close: Bun transition `holds`, current `frames`/`blocks`, `maxFrames`/`maxBlocks`,
 `highFrames`/`highBlocks`, cumulative `capturedFrames` copied into shared history,
 `evictedFrames`, `sampleRate`, `channels`, last `clockErrorNs`, successful capture
 `reads`, `pendingFuture` and terminal `errorCode`. The pending future block is

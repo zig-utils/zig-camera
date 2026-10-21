@@ -531,6 +531,13 @@ pub export fn zc_producer_job_restart_bind(p: *c.zc_producer_job, cb: *const c.z
 pub export fn zc_producer_job_restart_publish(p: *c.zc_producer_job) c_int {
     return @import("video.zig").restartPublish(@ptrCast(@alignCast(p)));
 }
+pub export fn zc_producer_jobs_restart_publish(jobs: ?[*]const ?*c.zc_producer_job, count: u32) c_int {
+    if (count == 0 or count > 8) return c.ZC_INVALID;
+    var values: [8]*@import("producer.zig").Job = undefined;
+    const pointers = jobs orelse return c.ZC_INVALID;
+    for (pointers[0..count], 0..) |value, i| values[i] = @ptrCast(@alignCast(value orelse return c.ZC_INVALID));
+    return @import("video.zig").restartPublishGroup(values[0..count]);
+}
 pub export fn zc_video_producer_drain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
     return @import("video.zig").producerDrain(p, out);
 }

@@ -35,3 +35,11 @@ supply userspace capture cursors or sample-accurate consumer windows. The new
 shared-microphone implementation therefore reuses and improves Home stdlib's PCM
 timeline and stable slots, with one native capture claim and bounded producer
 copies. No HomeOS hardware capability or synchronization result is inferred.
+
+The 0.48 audit also inspects kernel/src/fs/journal.home and
+kernel/src/sync/spinlock.home. Filesystem journal commits and architecture-specific
+kernel lock routines cannot coordinate hosted libcamera recorder workers or
+make arbitrary output hooks transactional. Shared publication therefore improves
+Home stdlib async with bounded ordering/readiness preflight, while the camera
+keeps its existing userspace mutexes, owned producer workers and joined cleanup.
+No OS implementation was copied or modified for this feature.

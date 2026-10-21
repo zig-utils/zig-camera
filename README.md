@@ -6,9 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.47 adds [shared microphone audio](docs/shared-audio.md) across independent
-encoders, continuous PCM catch-up when video drops, native cursor ownership and
-bounded history with isolated overrun handling. See
+Version 0.48 adds [coordinated recording groups](docs/recording-groups.md): one
+camera mode job prepares every active encoder, publishes their sessions together,
+and preserves shared microphone ownership through geometry, codec and FPS changes.
+See [shared microphone audio](docs/shared-audio.md),
 [multiple encoders](docs/multiple-encoders.md) and the
 [Home OS reuse audit](docs/home-os-reuse.md).
 See [recording streams](docs/recording-streams.md), [still images](docs/still-images.md)

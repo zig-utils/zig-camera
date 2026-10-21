@@ -2766,12 +2766,37 @@ pub fn restartHeaders(job: *@import("producer.zig").Job, data: [*]u8, capacity: 
     return c.ZC_OK;
 }
 pub fn restartPublish(job: *@import("producer.zig").Job) c_int {
-    job.owner.mutex.lock();
-    defer job.owner.mutex.unlock();
-    if (job.operation != .restart or job.restart_stage.load(.acquire) != 2 or job.restart_published or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
-    job.restart_published = true;
-    job.restart_stage.store(3, .release);
-    job.owner.changed.broadcast();
+    return restartPublishGroup(&.{job});
+}
+/// Shared decision only after every candidate is ready. Workers retain exclusive
+/// turns while installing; callers join every job before observing media state.
+/// No locks are dropped and no callbacks run between preflight and publication.
+pub fn restartPublishGroup(jobs: []const *@import("producer.zig").Job) c_int {
+    const Batch = @import("home/publication_batch.zig");
+    if (jobs.len == 0 or jobs.len > 8) return c.ZC_INVALID;
+    var keys: [8]usize = undefined;
+    for (jobs, 0..) |job, i| keys[i] = @intFromPtr(job.owner);
+    const plan = Batch.Plan(8).init(keys[0..jobs.len]) catch return c.ZC_INVALID;
+    for (plan.order[0..plan.count]) |i| jobs[i].owner.mutex.lock();
+    defer {
+        var i = plan.count;
+        while (i != 0) {
+            i -= 1;
+            jobs[plan.order[i]].owner.mutex.unlock();
+        }
+    }
+    var states: [8]Batch.State = undefined;
+    for (jobs, 0..) |job, i| states[i] = .{
+        .ready = job.operation == .restart and job.started and !job.released and !job.done.load(.acquire) and job.owner.active.load(.acquire) and job.restart_stage.load(.acquire) == 2 and job.restart_candidate != null,
+        .published = job.restart_published,
+        .cancelled = job.cancel_requested.load(.acquire),
+    };
+    plan.validate(states[0..jobs.len]) catch return c.ZC_STATE;
+    for (jobs) |job| {
+        job.restart_published = true;
+        job.restart_stage.store(3, .release);
+    }
+    for (jobs) |job| job.owner.changed.broadcast();
     return c.ZC_OK;
 }
 pub fn sessionState(p: *c.zc_recorder, out: *c.zc_session_state) c_int {
