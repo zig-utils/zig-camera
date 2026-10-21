@@ -36,7 +36,7 @@ preview(
       },
     })
     try {
-      c.startPreview()
+      c.startPreview('')
       const input = rgba()
       c.setOverlay(input)
       input.data.fill(0) // Source ownership ends when setOverlay returns.
@@ -59,7 +59,7 @@ preview(
       expect(retired).toEqual([])
       c.stopPreview()
       expect(retired).toEqual([owner])
-      c.startPreview()
+      c.startPreview('')
       expect(applied.length).toBeGreaterThanOrEqual(3)
       c.stopPreview()
       expect(retired).toEqual([owner])
@@ -93,7 +93,7 @@ preview(
       },
     })
     try {
-      c.startPreview()
+      c.startPreview('')
       c.setOverlay(rgba())
       const owner = applied[0]
       for (const invalid of [
@@ -147,7 +147,7 @@ preview(
       },
     })
     try {
-      c.startPreview()
+      c.startPreview('')
       c.setOverlay(rgba())
       fail = true
       await expect(
@@ -190,7 +190,7 @@ preview(
       },
     })
     try {
-      c.startPreview()
+      c.startPreview('')
       c.setOverlay(rgba())
       c.startRecording(a)
       const second = await c.switchRecordingModeAsync(a, {

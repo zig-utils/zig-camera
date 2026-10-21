@@ -2145,7 +2145,13 @@ export class Camera {
           resumed: Recording | undefined
         let failure: unknown
         const preview = () => {
-          if (!title || !this.handle || this.closing || this.stopJob) return
+          if (
+            title === undefined ||
+            !this.handle ||
+            this.closing ||
+            this.stopJob
+          )
+            return
           const info = this.readInfo()
           this.openPreviewOwned(title, info.width, info.height)
         }
@@ -2597,7 +2603,13 @@ export class Camera {
           title = this.previewTitle,
           controls = this.readModeControls(autofocus ? 2n : 0n)
         const preview = () => {
-          if (!title || !this.handle || this.closing || this.stopJob) return
+          if (
+            title === undefined ||
+            !this.handle ||
+            this.closing ||
+            this.stopJob
+          )
+            return
           const info = this.readInfo()
           this.openPreviewOwned(title, info.width, info.height)
         }
@@ -3045,7 +3057,13 @@ export class Camera {
         let value: unknown
         let failure: unknown
         const preview = () => {
-          if (!title || !this.handle || this.closing || this.stopJob) return
+          if (
+            title === undefined ||
+            !this.handle ||
+            this.closing ||
+            this.stopJob
+          )
+            return
           const info = storage(680)
           check(n.zc_get_info(this.handle, ptr(info)))
           this.openPreviewOwned(
