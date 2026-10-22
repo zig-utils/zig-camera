@@ -81,6 +81,9 @@ comptime {
 pub const raw = @import("raw.zig");
 pub const ImageTransform = @import("home/orientation.zig").Transform;
 pub const still = @import("still.zig");
+/// Home animation encoding over borrowed or owned raster copies. Capture
+/// scheduling and sink staging remain explicit caller-owned operations.
+pub const ApngEncoder = @import("home/apng_encoder.zig");
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;
@@ -673,6 +676,7 @@ test {
     _ = pixels;
     _ = raw;
     _ = dng;
+    _ = ApngEncoder;
     _ = @import("video.zig");
     _ = output_mailbox;
 }
@@ -1089,6 +1093,57 @@ test "Zig ICC image profiles retain owned blobs and reject mismatched or invalid
     try std.testing.expectError(error.UnsupportedProfile, still.checkProfileSource(&profile, color));
     try frame.release();
     try std.testing.expectError(error.StaleFrame, frame.encodeStreamImageProfile(std.testing.allocator, c.ZC_MAIN, opts, &profile));
+}
+
+test "public Home APNG encodes copied RGB and RGB16 captures after camera retirement" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    inline for (.{ c.ZC_RGB24, c.ZC_RGB48 }) |format| {
+        var cfg = defaultConfig();
+        cfg.width = 16;
+        cfg.height = 16;
+        cfg.buffer_count = 2;
+        const bits: u8 = if (format == c.ZC_RGB48) 16 else 8;
+        const bytes_per_pixel: usize = 3 * @as(usize, bits / 8);
+        var copies: [2][16 * 16 * bytes_per_pixel]u8 = undefined;
+        {
+            var pipeline: c.zc_pipeline_options = undefined;
+            core.zc_default_pipeline_options(&pipeline);
+            const camera = try Camera.initFormattedPipeline(cfg, pipeline, format, .{}, false);
+            defer camera.deinit() catch unreachable;
+            try camera.start();
+            defer camera.stop() catch unreachable;
+            for (&copies) |*copy| {
+                var frame = try camera.acquire(1000);
+                defer frame.release() catch unreachable;
+                if (bits == 16) try frame.copyStreamRgb16(c.ZC_MAIN, copy) else try frame.copyStreamRgb(c.ZC_MAIN, copy);
+            }
+        }
+        var frames: [2]ApngEncoder.Frame = undefined;
+        for (&frames, &copies) |*frame, *copy| frame.* = .{
+            .view = .{ .data = copy, .width = 16, .height = 16, .stride = 16 * bytes_per_pixel, .bits = bits },
+            .delay = try ApngEncoder.Delay.fromMilliseconds(40),
+        };
+        const encoded = try ApngEncoder.encode(a, .{ .width = 16, .height = 16, .frames = &frames });
+        defer a.free(encoded);
+        const saved = std.hash.Crc32.hash(encoded);
+        for (&copies) |*copy| @memset(copy, 0xee);
+        try std.testing.expectEqual(saved, std.hash.Crc32.hash(encoded));
+        try std.testing.expectEqualSlices(u8, &.{ 137, 80, 78, 71, 13, 10, 26, 10 }, encoded[0..8]);
+        try std.testing.expectEqual(bits, encoded[24]);
+        var at: usize = 8;
+        var controls: usize = 0;
+        var ended = false;
+        while (at < encoded.len) {
+            const length = std.mem.readInt(u32, encoded[at..][0..4], .big);
+            const kind = encoded[at + 4 ..][0..4];
+            if (std.mem.eql(u8, kind, "fcTL")) controls += 1;
+            if (std.mem.eql(u8, kind, "IEND")) ended = true;
+            at += 12 + length;
+        }
+        try std.testing.expectEqual(@as(usize, 2), controls);
+        try std.testing.expect(ended);
+    }
 }
 
 test "staged encoded files publish after the source camera and every frame are destroyed" {

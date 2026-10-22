@@ -421,3 +421,14 @@ stored-block gzip read path; it is not a hosted deflate encoder or pinned zlib
 owner. container/image manages OCI layers, not raster images. These sources do
 not replace the checked Home streaming adapter. The owner cleanup fix improves
 Home stdlib and is reused here; no OS source is copied, changed or executed.
+
+The 0.81 APNG audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches camera/media/drivers/RPi
+sources plus ADR-MC3 for GIF, PNG, palettes and LZW. Mailbox palette tags and VGA
+palette writes control displays, not raster image encoding. Camera capture and
+nominal media decoder routines supply no working APNG encoder or hosted frame
+ownership. ADR-MC3 keeps shared media algorithms in Home stdlib; checked animation
+encoding improves Home and is reused verbatim here. No OS source is copied,
+modified or executed. Kernel buffers/hardware support remain distinct from
+libcamera leases and borrowed host raster views, and no hardware acceptance or
+performance result follows from these software tests.

@@ -65,3 +65,11 @@ copies, full-precision PNG/TIFF/PPM and explicit high-byte preview/JPEG/video in
 see rgb16.md. Physical format/bit-depth support, higher-bit-depth video, general
 transfer/gamut conversion and the broader required families above remain open.
 This feature does not complete Picamera2 capability or hardware parity.
+
+The 0.81 APNG foundation exposes the checked Home encoder through Zig over owned
+or borrowed capture raster views, with frame rectangles, rational delays,
+disposal/blend and separate default-image support; see apng.md. Home's Image API
+also receives corrected animated PNG encoding. Camera Bun/C animation capture
+and joined file/job publication, GIF, decoded objects/compositing and the broader
+still-media requirements above remain open. The shared encoder alone does not
+complete capture-facing animation parity.

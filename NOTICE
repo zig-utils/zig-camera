@@ -604,3 +604,12 @@ Home native zlib initialization cleanup (0.80.1):
   Native initialization failure destroys its pinned owner once. The private test
   seam covers error results outside the caller's Zig allocator; public ABI stays
   unchanged. Existing Home/Bun MIT attribution applies.
+
+Home checked APNG and shared PNG streaming (0.81):
+- src/home/apng_encoder.zig, src/home/raster_encoder.zig,
+  tests/apng_fixture.zig and tests/apng_libpng.c are copied verbatim from
+  Home packages/image/src/formats/{apng_encoder,raster_encoder}.zig and
+  packages/image/tests/apng_{fixture.zig,libpng.c} at
+  924bbf199cc3a7ffed382fb5c8d44f891eb8b786. The raster copy supersedes its
+  earlier version. Home MIT attribution above applies. libpng/zlib readback
+  in the C harness is test-only and retains those projects' own licenses.

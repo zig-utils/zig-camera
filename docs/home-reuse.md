@@ -1261,3 +1261,41 @@ its literal LZW path never grows code width, and the APNG path bypasses checked
 raster row encoding. Those capabilities remain in the parity worklist; their
 presence in a source file is not completion evidence. This patch fixes the
 shared native PNG initialization prerequisite without claiming animation support.
+
+The 0.81 still-animation audit starts at Home
+fdd4c7e2c20444a6db35f16bda9a980618f353b0 and Home OS at the recorded revision.
+Home's preceding GIF correction fixes dictionary code widths, video quantizer
+palette ownership and frame-control scope; those source corrections supersede
+this document's earlier fixed-width GIF finding. Palette quality, Image GIF
+animation and camera GIF capture remain separate work.
+
+The APNG audit finds the Image path bypasses checked raster encoding: little-
+endian 16-bit samples are copied as native bytes, short frames leave filtered
+scratch uninitialized, first-frame control/pixels come from different owners,
+rectangles lack dimensions and delay_ms is clamped. Home contribution
+924bbf199cc3a7ffed382fb5c8d44f891eb8b786 adds a portable checked APNG encoder,
+shares PNG row/header/chunk functions, corrects the Image adapter and indexed
+alpha expansion, and preserves PNG/WebP decoded rectangle sizes. A local copy of
+the previous encoder fails the first-frame regression (zero main-image pixels
+instead of the supplied frame). The current complete Home Image API passes 140
+tests on development Zig. Home hosted Actions remains unavailable; its configured
+workflow is not presented as an executed pass.
+
+The APNG and raster modules and independent test fixtures are copied verbatim to
+camera, with public Zig ApngEncoder and copied-capture ownership coverage. Seven
+new helper tests plus existing raster/zlib tests pass pinned/development Zig in
+Debug and ReleaseSafe. Each of those four builds passes 216 C/libpng fixtures for
+frame samples, independent CRC/order/sequence/control checks, rectangles, static
+image participation, gray/RGB/RGBA, 8/16 bits, every filter, mixed endian, padded
+unaligned rows, source retirement and multi-chunk data. The C harness reconstructs
+static frame PNGs; it is not an APNG compositor. Camera still PNG uses the shared
+refactor without changing C/Bun format selections. Bun/C animation capture,
+joined jobs/atomic animated files, metadata and GIF remain parity work. No Python
+or FFmpeg dependency is added; no physical camera result is inferred.
+
+Camera-local validation for this reuse passes 373 target-qualified ReleaseSafe
+native tests, all 965 Bun tests with image/ICC/Exif/AAC/preview decoders enabled,
+C ABI checks, typecheck/fmt and 216 copied independent libpng fixtures. The normal
+local build runner still fails macOS SDK/libSystem linkage before compilation;
+the direct library and native-test builds succeed. These local results do not
+substitute for Linux real-backend CI or attached Pi/camera measurements.

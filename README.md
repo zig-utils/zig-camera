@@ -6,6 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.81 exposes Home's checked [APNG encoder](docs/apng.md) to Zig callers
+over copied capture rasters and reuses its shared PNG row/chunk implementation.
+It supports frame rectangles, exact rational delays, disposal/blend controls,
+8/16-bit gray/RGB/RGBA and a separate optional static image. Bun/C animation
+capture scheduling remains open.
+
 Version 0.80.1 fixes duplicate owner cleanup when native zlib stream initialization
 fails. The Home adapter now tests native initialization errors independently of
 host allocation failures; normal PNG encoding is unchanged.
