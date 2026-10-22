@@ -854,3 +854,23 @@ snapshot/replay provide cancellation/publication and owned exact settings. The
 portable policy is tested on pinned/development Zig; the C-import ABI is tested
 on camera's pinned 0.15.2, since development Zig has removed @cImport. No Home
 source is changed for this feature, and no physical reconnect result is inferred.
+
+The 0.69 coordinated-recovery audit fetches and fast-forwards clean Home main to
+c57880cd4ae3d878777df940bea14953aac9eb84. Changes since the previous 0cb789 audit
+are TypeScript compiler ambient-merge/barrel work; the inspected media/async/env
+helpers are unchanged. Camera's publication_batch, pcm_timeline, pcm_fanout and
+rgba_view copies compare byte-for-byte with this revision. Existing native
+RestartGroup/shared publication and held PCM consumers already provide bounded
+all-member commit, fractional sample phase and future-block retention. Recovery
+reuses them across fresh camera ownership instead of adding a second transaction
+scheduler, queue or audio clock. The existing Home RGBA View validates/copies only
+active rows for an independently owned overlay snapshot; the camera adds only a
+small C clone owner and Bun admission/retirement. No new portable primitive is
+missing from Home for this step, so no Home source changes are needed.
+
+Synthetic tests cover all eight encoders, separate main/lores inputs, changed
+AVC/HEVC/AAC sessions and FPS, shared microphone phase through failed preparation,
+old retained frame independence, joined host hooks/cancellation and exclusive file
+disposal. Independent AAC checks run locally; Linux CI additionally supplies the
+independent AVC/HEVC decoder. These tests establish software ownership and media
+semantics, not physical hotplug timing, ALSA continuity or optical acceptance.

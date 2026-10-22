@@ -278,6 +278,7 @@ const writeSharedAudio = Symbol('writeSharedAudio')
 const coordinateRecorder = Symbol('coordinateRecorder')
 const coordinatedFlush = Symbol('coordinatedFlush')
 const adoptCoordinatedFlush = Symbol('adoptCoordinatedFlush')
+const recordingRecovery = Symbol('recordingRecovery')
 const readableFrame = Symbol('readableFrame')
 const recorderInput = Symbol('recorderInput')
 const rgbMainFrame = Symbol('rgbMainFrame')
@@ -352,6 +353,10 @@ export interface RecordingModeMember {
   /** Omitted keeps the current microphone when audio remains enabled; null detaches it. */
   audio?: AudioCapture | null
   backpressure?: RecordingBackpressure
+}
+export interface RecoveredRecordingSession {
+  readonly camera: Camera
+  readonly recordings: readonly Recording[]
 }
 export interface RecordingModeOptions extends ModeJobOptions<Recording> {
   audio?: AudioCapture
@@ -1008,13 +1013,20 @@ export class Camera {
   }
   /** Recover into a separate owner. Old leases/maps stay with this lost camera. */
   reconnect(options: ReconnectOptions<Camera> = {}) {
+    return this.submitReconnect(options)
+  }
+  private submitReconnect(
+    options: ReconnectOptions<Camera>,
+    owner?: object,
+    schedulePump = true,
+  ) {
     guardRequestCallback()
     guardOutputHook()
     const settings = reconnectOptions(options, this.started)
     const admit = () => {
       this.assertOpen()
       if (
-        this.hasPendingModes() ||
+        this.hasPendingModes(owner) ||
         (this.reconnectJob && !this.reconnectJob.done) ||
         (this.captureFilesJob && !this.captureFilesJob.done)
       )
@@ -1032,147 +1044,169 @@ export class Camera {
       controls = this.readModeControls(settings.autofocus ? 2n : 0n),
       callbacks = this.requestCallbacks,
       retry = new RecoveryRetry(settings)
-    const job = new ReconnectJob<Camera>(
-      async (current) => {
-        let watch: CameraWatch | undefined,
-          candidate: Camera | undefined,
-          published = false
-        let failure: unknown
-        const request: ModeRequest = {
-          handle: 0 as Pointer,
-          fresh: true,
-          targetStarted: settings.start,
-          ...encoded,
-          cameraId: this.selectedIdBytes.slice(),
-          previousConfig: encoded.config,
-          previousPipeline: encoded.pipeline,
-          previousStarted: false,
-          ...controls,
-          cancel: current.cancellation,
-          deadline: Infinity,
-          dropFrames: settings.dropFrames,
-          autofocus: settings.autofocus,
-        }
-        try {
-          current.check()
-          this.assertOpen()
-          watch = new CameraWatch({ simulate: target.simulate ?? false })
-          while (true) {
+    if (settings.preview && this.previewConfiguration && !settings.start)
+      throw new RangeError('preview recovery requires a started camera')
+    const preview = this.prepareRecoveryPreview(
+      settings.preview &&
+        !settings.job.signal?.aborted &&
+        settings.job.timeoutMs !== 0,
+    )
+    let job: ReconnectJob<Camera>
+    try {
+      job = new ReconnectJob<Camera>(
+        async (current) => {
+          let watch: CameraWatch | undefined,
+            candidate: Camera | undefined,
+            published = false
+          let failure: unknown
+          const request: ModeRequest = {
+            handle: 0 as Pointer,
+            fresh: true,
+            targetStarted: settings.start,
+            ...encoded,
+            cameraId: this.selectedIdBytes.slice(),
+            previousConfig: encoded.config,
+            previousPipeline: encoded.pipeline,
+            previousStarted: false,
+            ...controls,
+            cancel: current.cancellation,
+            deadline: Infinity,
+            dropFrames: settings.dropFrames,
+            autofocus: settings.autofocus,
+          }
+          try {
             current.check()
-            if (retry.state.exhausted)
-              throw (
-                retry.lastError ??
-                new CameraError(-9, 'reconnection attempts exhausted')
-              )
-            const available = watch
-              .discover()
-              .some((entry) => entry.id === this.selectedId)
-            if (available && retry.claim()) {
-              const response = await runModeWorker(request)
-              if (response.code || response.restoreCode) {
-                const error = Object.assign(
-                  cameraError(
-                    response.code || response.restoreCode,
-                    'camera reconnection',
-                  ),
-                  {
-                    controlCode: response.controlCode,
-                    restoreCode: response.restoreCode,
-                    restoreControlCode: response.restoreControlCode,
-                  },
+            this.assertOpen()
+            this.stopPreviewOwned()
+            watch = new CameraWatch({ simulate: target.simulate ?? false })
+            while (true) {
+              current.check()
+              if (retry.state.exhausted)
+                throw (
+                  retry.lastError ??
+                  new CameraError(-9, 'reconnection attempts exhausted')
                 )
-                if (response.handle) {
-                  const owner = recoveryCleanup(request, response.handle)
-                  try {
-                    await owner.close()
-                  } catch (cleanup) {
-                    throw new CameraCleanupError([error, cleanup], [owner])
+              const available = watch
+                .discover()
+                .some((entry) => entry.id === this.selectedId)
+              if (available && retry.claim()) {
+                const response = await runModeWorker(request)
+                if (response.code || response.restoreCode) {
+                  const error = Object.assign(
+                    cameraError(
+                      response.code || response.restoreCode,
+                      'camera reconnection',
+                    ),
+                    {
+                      controlCode: response.controlCode,
+                      restoreCode: response.restoreCode,
+                      restoreControlCode: response.restoreControlCode,
+                    },
+                  )
+                  if (response.handle) {
+                    const owner = recoveryCleanup(request, response.handle)
+                    try {
+                      await owner.close()
+                    } catch (cleanup) {
+                      throw new CameraCleanupError([error, cleanup], [owner])
+                    }
                   }
+                  current.check()
+                  retry.lastError = error
+                  if (
+                    (response.controlCode &&
+                      ![-9, -11].includes(response.controlCode)) ||
+                    response.restoreCode ||
+                    ![-9, -11, -4].includes(error.code)
+                  )
+                    throw error
+                  retry.complete(true)
+                  continue
                 }
-                current.check()
-                retry.lastError = error
-                if (
-                  (response.controlCode &&
-                    ![-9, -11].includes(response.controlCode)) ||
-                  response.restoreCode ||
-                  ![-9, -11, -4].includes(error.code)
-                )
+                // Until the constructor claims it, the worker result is our owner.
+                const admission: CameraAdmission = {
+                  [nativeAdmission]: response.handle,
+                  started: response.started,
+                  claimed: false,
+                }
+                try {
+                  candidate = new Camera(target, admission)
+                } catch (error) {
+                  if (!admission.claimed) {
+                    const owner = recoveryCleanup(request, response.handle)
+                    try {
+                      await owner.close()
+                    } catch (cleanup) {
+                      throw new CameraCleanupError([error, cleanup], [owner])
+                    }
+                  }
                   throw error
-                retry.complete(true)
-                continue
-              }
-              // Until the constructor claims it, the worker result is our owner.
-              const admission: CameraAdmission = {
-                [nativeAdmission]: response.handle,
-                started: response.started,
-                claimed: false,
+                }
+                if (candidate.cameraId !== this.selectedId)
+                  throw new CameraError(
+                    -9,
+                    'reconnection changed camera identity',
+                  )
+                candidate.requestCallbacks = callbacks
+                preview.apply(candidate)
+                current.check()
+                await watch.close()
+                watch = undefined
+                current.check()
+                retry.complete(false)
+                preview.close()
+                if (
+                  schedulePump &&
+                  (candidate.previewActive ||
+                    (candidate.started && candidate.hasRequestCallbacks))
+                )
+                  candidate.ensurePump()
+                current.seal()
+                published = true
+                return candidate
               }
               try {
-                candidate = new Camera(target, admission)
+                await watch.next({
+                  timeoutMs: retry.waitMs(settings.pollMs),
+                  signal: current.signal,
+                })
               } catch (error) {
-                if (!admission.claimed) {
-                  const owner = recoveryCleanup(request, response.handle)
-                  try {
-                    await owner.close()
-                  } catch (cleanup) {
-                    throw new CameraCleanupError([error, cleanup], [owner])
-                  }
-                }
-                throw error
+                current.check()
+                if (!(error instanceof CameraError && error.code === -3))
+                  throw error
               }
-              if (candidate.cameraId !== this.selectedId)
-                throw new CameraError(
-                  -9,
-                  'reconnection changed camera identity',
-                )
-              candidate.requestCallbacks = callbacks
-              current.check()
-              await watch.close()
-              watch = undefined
-              current.check()
-              retry.complete(false)
-              if (candidate.started && candidate.hasRequestCallbacks)
-                candidate.ensurePump()
-              current.seal()
-              published = true
-              return candidate
             }
-            try {
-              await watch.next({
-                timeoutMs: retry.waitMs(settings.pollMs),
-                signal: current.signal,
-              })
-            } catch (error) {
-              current.check()
-              if (!(error instanceof CameraError && error.code === -3))
-                throw error
-            }
-          }
-        } catch (error) {
-          failure = error
-        }
-        const owners = [!published ? candidate : undefined, watch].filter(
-          (owner): owner is Camera | CameraWatch => !!owner,
-        )
-        const failed: (Camera | CameraWatch)[] = [],
-          errors: unknown[] = []
-        for (const owner of owners) {
-          try {
-            await owner.close()
           } catch (error) {
-            failed.push(owner)
-            errors.push(error)
+            failure = error
           }
-        }
-        if (errors.length)
-          throw new CameraCleanupError([failure, ...errors], failed)
-        throw failure
-      },
-      () => {},
-      settings.job,
-      this.selectedId,
-      retry,
-    )
+          const owners = [!published ? candidate : undefined, watch].filter(
+            (owner): owner is Camera | CameraWatch => !!owner,
+          )
+          const failed: (Camera | CameraWatch)[] = [],
+            errors: unknown[] = []
+          for (const owner of owners) {
+            try {
+              await owner.close()
+            } catch (error) {
+              failed.push(owner)
+              errors.push(error)
+            }
+          }
+          preview.close()
+          if (errors.length)
+            throw new CameraCleanupError([failure, ...errors], failed)
+          throw failure
+        },
+        () => {},
+        settings.job,
+        this.selectedId,
+        retry,
+      )
+    } catch (error) {
+      preview.close()
+      throw error
+    }
+    void job.operationDone.then(() => preview.close())
     // Signal registration may have re-entered stop/close or filled this slot.
     try {
       admit()
@@ -1183,6 +1217,435 @@ export class Camera {
     this.reconnectJob = job
     void job.operationDone.then(() => {
       if (this.reconnectJob === job) this.reconnectJob = undefined
+    })
+    void job.start()
+    return job
+  }
+  private prepareRecoveryPreview(enabled: boolean) {
+    const configuration = enabled ? this.previewConfiguration : undefined
+    let overlay = 0 as Pointer
+    if (configuration && this.overlayHandle) {
+      const out = outPointer()
+      check(
+        n.zc_preview_overlay_clone(this.overlayHandle, ptr(out)),
+        'snapshot recovery overlay',
+      )
+      overlay = handle(out)
+    }
+    return {
+      apply: (camera: Camera) => {
+        if (!configuration) return
+        camera.openPreviewOwned(configuration)
+        if (overlay) {
+          check(
+            n.zc_preview_set_overlay(camera.previewHandle, overlay),
+            'restore recovery overlay',
+          )
+          camera.overlayHandle = overlay
+          overlay = 0 as Pointer
+        }
+      },
+      close: () => {
+        if (overlay) {
+          n.zc_preview_overlay_close(overlay)
+          overlay = 0 as Pointer
+        }
+      },
+    }
+  }
+  /** Flush every selected lost session and commit replacement sessions together. */
+  reconnectRecordingsAsync(
+    members: readonly RecordingModeMember[],
+    options: ReconnectOptions<RecoveredRecordingSession> = {},
+  ): BunJob<RecoveredRecordingSession> {
+    guardRequestCallback()
+    guardOutputHook()
+    this.assertOpen()
+    if (readDeviceState(this.handle).connected)
+      throw new CameraError(-2, 'recovery requires a disconnected camera')
+    const settings = reconnectOptions(options, true)
+    if (!settings.start)
+      throw new RangeError('recording recovery requires a started camera')
+    const count = uint(members.length, 8)
+    if (!count) throw new RangeError('recording recovery requires members')
+    const plans = Array.from({ length: count }, (_, index) => {
+      const member = members[index],
+        recording = member.recording,
+        state = recording[recordingRecovery](),
+        recorder = recording.recorder,
+        change = member.settings ?? {},
+        proposed = mergeSessionOptions(recorder.options, change),
+        exact =
+          (change.width !== undefined ? 1 : 0) |
+          (change.height !== undefined ? 2 : 0),
+        output = member.output ?? null,
+        audio =
+          member.audio === undefined
+            ? proposed.audio
+              ? state.audio
+              : undefined
+            : (member.audio ?? undefined),
+        backpressure = member.backpressure ?? recording.backpressure
+      if (state.camera !== this || state.closed)
+        throw new CameraError(-4, 'recording belongs to another lifecycle')
+      if (backpressure !== 'wait' && backpressure !== 'drop')
+        throw new RangeError('invalid recording backpressure')
+      if (
+        audio &&
+        (!audio.handle ||
+          !proposed.audio ||
+          audio.sampleRate !== proposed.audio.sampleRate ||
+          audio.channels !== proposed.audio.channels)
+      )
+        throw new RangeError(
+          'audio capture format differs from recorder session',
+        )
+      if (typeof output === 'string') {
+        if (!output.length || cstring(output).length > 4097)
+          throw new RangeError('recording output path length')
+        guardHostPath(output)
+      }
+      this.assertOpen()
+      const input = this.readRecordingInput(proposed),
+        candidate = resolvedSession(proposed, input.width, input.height, exact)
+      return {
+        recording,
+        recorder,
+        candidate,
+        exact,
+        output,
+        audio,
+        backpressure,
+      }
+    })
+    const admit = (reserved = false) => {
+      this.assertOpen()
+      if (readDeviceState(this.handle).connected)
+        throw new CameraError(-2, 'recovery requires a disconnected camera')
+      if (
+        this.hasPendingModes() ||
+        (this.reconnectJob && !this.reconnectJob.done) ||
+        (this.captureFilesJob && !this.captureFilesJob.done)
+      )
+        throw new CameraError(-4, 'camera lifecycle job active')
+      const known = new Set([...this.recordings, ...this.failedRecordings])
+      if (
+        new Set(plans.map((p) => p.recorder)).size !== plans.length ||
+        [...known].some((r) => !plans.some((p) => p.recording === r)) ||
+        plans.some((p) => {
+          const state = p.recording[recordingRecovery]()
+          return (
+            state.closed ||
+            state.camera !== this ||
+            (!known.has(p.recording) && !state.retained)
+          )
+        })
+      )
+        throw new CameraError(
+          -4,
+          'recovery must include every attached recording exactly once',
+        )
+      if (this.modeJobs.size >= 32) throw new CameraError(-4, 'mode queue')
+      if (
+        [...this.audioGroups.values()].some(
+          (group) =>
+            group.holds !==
+            (reserved && holds.some((hold) => hold.group === group) ? 1 : 0),
+        )
+      )
+        throw new CameraError(
+          -4,
+          'previous microphone recovery cleanup pending',
+        )
+    }
+    const cadences = new Map<AudioCapture, number>()
+    for (const plan of plans)
+      if (plan.audio) {
+        const fps = plan.candidate.fps ?? 30,
+          previous = cadences.get(plan.audio)
+        if (previous !== undefined && previous !== fps)
+          throw new RangeError('shared audio requires the same recording FPS')
+        cadences.set(plan.audio, fps)
+      }
+    admit()
+    const preview = this.prepareRecoveryPreview(
+      settings.preview &&
+        !settings.job.signal?.aborted &&
+        settings.job.timeoutMs !== 0,
+    )
+    const reservations: ReturnType<Recorder[typeof coordinateRecorder]>[] = []
+    const holds: {
+      source: AudioCapture
+      group: SharedAudio
+      id: bigint
+      released: boolean
+    }[] = []
+    let claimed = false,
+      released = false,
+      camera: Camera | undefined,
+      installed = false
+    const release = () => {
+      if (released) return
+      for (const reservation of reservations) reservation.release()
+      for (const hold of holds) {
+        if (!hold.released) {
+          hold.group.releaseHold(hold.id)
+          hold.released = true
+        }
+        if (installed) {
+          if (camera?.audioGroups.get(hold.source) === hold.group)
+            this.audioGroups.delete(hold.source)
+          this.closeIdleAudio(hold.source, hold.group, true)
+        }
+        // Before publication retain the old cursor/history for an explicit retry.
+        // Source stop/close retires such idle groups if recovery is abandoned.
+      }
+      preview.close()
+      released = true
+    }
+    let job: BunJob<RecoveredRecordingSession>
+    try {
+      job = new BunJob<RecoveredRecordingSession>(
+        async (current) => {
+          claimed = true
+          let child: ReconnectJob<Camera> | undefined,
+            group: RestartGroup | undefined,
+            result: RecoveredRecordingSession | undefined,
+            failure: unknown
+          const children: BunJob<void>[] = [],
+            prepared: ReturnType<Camera['prepareGroupRecording']>[] = []
+          const abort = () => {
+            child?.cancel(current.cancellationReason)
+            group?.abort(current.cancellationReason)
+            for (const next of children) next.cancel(current.cancellationReason)
+          }
+          current.signal.addEventListener('abort', abort, { once: true })
+          this.sessionRecoveryActive = true
+          if (this.timer !== undefined) {
+            clearTimeout(this.timer)
+            this.timer = undefined
+          }
+          try {
+            current.check()
+            while (
+              this.pumping ||
+              plans.some((p) => this.producers.has(p.recording)) ||
+              reservations.some((r) => r.pending())
+            ) {
+              current.check()
+              await pause()
+            }
+            this.failRecordings(
+              new CameraDisconnectedError('source camera lost before recovery'),
+            )
+            const flushes: BunJob<void>[] = []
+            try {
+              for (const reservation of reservations)
+                flushes.push(reservation.flush())
+            } catch (error) {
+              for (const flush of flushes) flush.cancel(error)
+              await Promise.allSettled(flushes)
+              throw error
+            }
+            for (let i = 0; i < plans.length; i++)
+              plans[i].recording[adoptCoordinatedFlush](flushes[i])
+            children.push(...flushes)
+            const flushed = await Promise.allSettled(flushes)
+            const rejected = flushed.find(
+              (value) => value.status === 'rejected',
+            )
+            if (rejected?.status === 'rejected') throw rejected.reason
+            current.check()
+            child = this.submitReconnect(
+              {
+                ...settings.job,
+                signalFunction: undefined,
+                signal: current.signal,
+                maxAttempts: settings.maxAttempts,
+                initialDelayMs: settings.initialDelayMs,
+                maximumDelayMs: settings.maximumDelayMs,
+                pollMs: settings.pollMs,
+                start: true,
+                autofocus: settings.autofocus,
+                dropFrames: settings.dropFrames,
+                preview: false,
+              },
+              current,
+              false,
+            )
+            camera = await child
+            camera.sessionRecoveryActive = true
+            current.check()
+            const media = plans.map((plan) => {
+              const input = camera!.readRecordingInput(plan.candidate)
+              return resolvedSession(
+                plan.candidate,
+                input.width,
+                input.height,
+                plan.exact,
+              )
+            })
+            preview.apply(camera)
+            group = new RestartGroup(plans.length, () => {
+              for (const value of prepared) value.install()
+              installed = true
+              result = Object.freeze({
+                camera: camera!,
+                recordings: Object.freeze(
+                  prepared.map((value) => value.recording),
+                ),
+              })
+            })
+            const restarts: BunJob<void>[] = []
+            for (let i = 0; i < plans.length; i++) {
+              const next = reservations[i].restart(
+                media[i],
+                plans[i].output,
+                () => {},
+                () => {},
+                () => {},
+                { group, index: i },
+              )
+              restarts.push(next)
+              children.push(next)
+              void Promise.resolve(next).catch((error) => {
+                group!.failed(i, error)
+                if (!group!.published)
+                  for (const peer of restarts)
+                    if (peer !== next) peer.cancel(error)
+              })
+            }
+            await group.ready
+            current.check()
+            if (plans.some((p) => p.recorder.closing))
+              throw new CameraError(
+                -2,
+                'recorder closed before recovery publication',
+              )
+            for (const hold of holds)
+              if (cadences.has(hold.source)) {
+                hold.group.reconfigure(cadences.get(hold.source)!)
+                camera.audioGroups.set(hold.source, hold.group)
+              }
+            for (let i = 0; i < plans.length; i++)
+              prepared.push(
+                camera.prepareGroupRecording(
+                  plans[i].recorder,
+                  plans[i].audio,
+                  media[i].fps ?? 30,
+                  plans[i].backpressure,
+                ),
+              )
+            current.check()
+            group.publish(() => current.seal())
+            const outcomes = await Promise.allSettled(restarts)
+            for (const value of outcomes)
+              if (value.status === 'rejected') failure ??= value.reason
+            failure ??= group.error
+            if (plans.some((plan) => plan.recorder.closing))
+              failure ??= new CameraError(
+                -2,
+                'recorder closed after recovery publication',
+              )
+            if (!result)
+              throw (
+                failure ??
+                Error('recovery publication did not install capture owners')
+              )
+          } catch (error) {
+            failure = error
+            group?.abort(error)
+            if (!group?.published)
+              for (const next of children) next.cancel(error)
+            await Promise.allSettled(children)
+          } finally {
+            current.signal.removeEventListener('abort', abort)
+            const cleanupErrors: unknown[] = [],
+              cleanupOwners: { close(): Promise<void> }[] = []
+            if (!group?.published) {
+              for (const value of prepared) {
+                try {
+                  value.discard(false)
+                } catch (error) {
+                  cleanupErrors.push(error)
+                }
+              }
+              for (const hold of holds)
+                if (camera?.audioGroups.get(hold.source) === hold.group)
+                  camera.audioGroups.delete(hold.source)
+              if (camera) {
+                try {
+                  await camera.close()
+                } catch (error) {
+                  cleanupErrors.push(error)
+                  cleanupOwners.push(camera)
+                }
+              }
+            }
+            try {
+              release()
+            } catch (error) {
+              cleanupErrors.push(error)
+              cleanupOwners.push({ close: async () => release() })
+            }
+            this.sessionRecoveryActive = false
+            if (camera && installed) {
+              camera.sessionRecoveryActive = false
+              if (!camera.closing) {
+                try {
+                  camera.ensurePump()
+                } catch (error) {
+                  failure ??= error
+                }
+              }
+            }
+            if (cleanupErrors.length)
+              failure = new CameraCleanupError(
+                [failure, ...cleanupErrors],
+                cleanupOwners,
+              )
+          }
+          if (failure !== undefined) {
+            if (group?.published && camera)
+              throw Object.assign(
+                failure instanceof Error
+                  ? failure
+                  : Error('published recording recovery failed', {
+                      cause: failure,
+                    }),
+                {
+                  published: true,
+                  session:
+                    result ??
+                    Object.freeze({ camera, recordings: Object.freeze([]) }),
+                },
+              )
+            throw failure
+          }
+          return result!
+        },
+        () => {},
+        settings.job,
+      )
+    } catch (error) {
+      release()
+      throw error
+    }
+    try {
+      for (const plan of plans)
+        reservations.push(plan.recorder[coordinateRecorder](job, this))
+      for (const [source, group] of this.audioGroups)
+        holds.push({ source, group, id: group.hold(), released: false })
+      admit(true)
+    } catch (error) {
+      job.cancel(error)
+      release()
+      throw error
+    }
+    this.modeJobs.add(job)
+    void job.operationDone.then(() => {
+      this.modeJobs.delete(job)
+      if (!claimed) release()
     })
     void job.start()
     return job
@@ -1382,6 +1845,7 @@ export class Camera {
   private configuration: CameraOptions
   private tuningSession?: TuningSession
   private modeActive = false
+  private sessionRecoveryActive = false
   private coordinatedGroup?: { recorders: Recorder[]; initials: Recording[] }
   private coordinatedRecorder?: Recorder
   private coordinatedInitial?: Recording
@@ -2747,7 +3211,10 @@ export class Camera {
     if (this.hasPendingModes() || this.focusCaptureActive)
       throw new CameraError(-4, 'camera jobs active')
     if (drops)
-      return this.submitCapture(() => {}, { ...options, dropFrames: drops - 1 })
+      return this.submitCapture(() => {}, {
+        ...options,
+        dropFrames: drops - 1,
+      })
     const admitted = captureSelection<void>(options).options
     this.assertOpen()
     if (this.hasPendingModes() || this.focusCaptureActive)
@@ -4596,7 +5063,7 @@ export class Camera {
     if (error !== undefined && !cancelled) this.failRecording(recording, error)
   }
   private ensurePump() {
-    if (this.lastDeviceError) return
+    if (this.lastDeviceError || this.sessionRecoveryActive) return
     if (
       this.timer === undefined &&
       !this.pumping &&
@@ -4609,7 +5076,13 @@ export class Camera {
     this.pumping = true
     try {
       this.timer = undefined
-      if (!this.handle || this.closing || this.modeActive || this.stopJob)
+      if (
+        !this.handle ||
+        this.closing ||
+        this.modeActive ||
+        this.stopJob ||
+        this.sessionRecoveryActive
+      )
         return
       if (this.coordinatedRecorder || this.coordinatedGroup) {
         if (this.focusJobs) {
@@ -4773,7 +5246,9 @@ export class Camera {
           for (const job of this.requests) job.reject(error)
           this.requests = []
           this.failRecordings(error)
-          this.stopPreview()
+          if (error instanceof CameraError && error.code === -11)
+            this.stopPreviewOwned()
+          else this.stopPreview()
         }
       } finally {
         try {
@@ -4791,7 +5266,7 @@ export class Camera {
         }
       }
       selected?.resolve(capturedValue)
-      if (this.lastDeviceError) return
+      if (this.lastDeviceError || this.sessionRecoveryActive) return
       if (!this.handle || this.closing || this.stopJob) return
       if (
         this.recording ||
@@ -4881,6 +5356,19 @@ export class Camera {
           if (result.status === 'rejected') failure ??= result.reason
       }
       await Promise.all([...this.producers.values()])
+      for (const [source, group] of [...this.audioGroups]) {
+        if (!group.count && !group.holds) {
+          try {
+            this.closeIdleAudio(source, group, true)
+          } catch (error) {
+            failure ??= error
+          }
+        } else
+          failure ??= new CameraError(
+            -4,
+            'shared microphone owners still pending',
+          )
+      }
       if (this.started) {
         try {
           check(n.zc_stop(this.handle))
@@ -4910,6 +5398,7 @@ export class Camera {
       !this.previewConfiguration &&
       !this.overlayHandle &&
       !this.tuningSession &&
+      this.audioGroups.size === 0 &&
       this.disconnectJobs.size === 0 &&
       (!this.reconnectJob || this.reconnectJob.done)
     )
@@ -4946,7 +5435,12 @@ export class Camera {
         if (failure) throw failure
       })
       .finally(() => {
-        if (this.handle || this.fanout || this.tuningSession) {
+        if (
+          this.handle ||
+          this.fanout ||
+          this.tuningSession ||
+          this.audioGroups.size
+        ) {
           this.closing = false
           this.closeJob = undefined
         }
@@ -6678,7 +7172,10 @@ export class Recorder {
       native = handle(out)
       if (bridge) {
         this.bindBridge(id, generation + 1n, bridge)
-        this.pendingHostOutputs.set(id, { bridge, generation: generation + 1n })
+        this.pendingHostOutputs.set(id, {
+          bridge,
+          generation: generation + 1n,
+        })
         await bridge.enable()
       }
       while (true) {
@@ -7719,6 +8216,15 @@ export class AudioCapture {
   }
 }
 export class Recording {
+  [recordingRecovery]() {
+    return {
+      camera: this.camera,
+      audio: this.audio,
+      fps: this.fps,
+      retained: this.retainedRecorder,
+      closed: !!this.closeJob,
+    }
+  }
   [consumerState]?: CaptureConsumerStats
   private originFrame?: bigint;
   [audioState]?: AudioConsumerStats

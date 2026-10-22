@@ -29,6 +29,10 @@ pub export fn zc_preview_overlay_close(p: ?*c.zc_preview_overlay) void {
     std.heap.c_allocator.free(result.data);
     std.heap.c_allocator.destroy(result);
 }
+pub export fn zc_preview_overlay_clone(p: *const c.zc_preview_overlay, out: *?*c.zc_preview_overlay) c_int {
+    const src = image(p);
+    return zc_preview_overlay_create(src.data.ptr, src.data.len, src.width, src.height, src.width * 4, out);
+}
 extern fn zcm_preview_overlay(*c.zc_preview, ?[*]const u8, u32, u32, u32) c_int;
 pub export fn zc_preview_set_overlay(p: *c.zc_preview, overlay: ?*const c.zc_preview_overlay) c_int {
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
@@ -51,4 +55,18 @@ test "overlay owns only active RGBA bytes and clears result on failed creation" 
     try std.testing.expectEqual(c.ZC_INVALID, zc_preview_overlay_create(null, 4, 1, 1, 4, &bad));
     try std.testing.expectEqual(c.ZC_INVALID, zc_preview_overlay_create(&src, src.len, 4097, 1, 16388, &bad));
     zc_preview_overlay_close(null);
+}
+test "overlay snapshot owns exact compact alpha bytes after source retirement" {
+    const t = std.testing;
+    const pixels = [_]u8{ 1, 2, 3, 0, 4, 5, 6, 128, 99, 99, 99, 99, 7, 8, 9, 255, 10, 11, 12, 1 };
+    var src: ?*c.zc_preview_overlay = null;
+    try t.expectEqual(c.ZC_OK, zc_preview_overlay_create(&pixels, pixels.len, 2, 2, 12, &src));
+    var copy: ?*c.zc_preview_overlay = null;
+    try t.expectEqual(c.ZC_OK, zc_preview_overlay_clone(src.?, &copy));
+    defer zc_preview_overlay_close(copy);
+    try t.expect(src != copy);
+    zc_preview_overlay_close(src);
+    try t.expectEqual(@as(u32, 2), image(copy.?).width);
+    try t.expectEqual(@as(u32, 2), image(copy.?).height);
+    try t.expectEqualSlices(u8, &.{ 1, 2, 3, 0, 4, 5, 6, 128, 7, 8, 9, 255, 10, 11, 12, 1 }, image(copy.?).data);
 }

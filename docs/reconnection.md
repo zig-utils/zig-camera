@@ -85,7 +85,7 @@ replacement is independent: closing the old source does not stop it. Completion
 callbacks may close the source and use the replacement; source close waits for
 operation cleanup rather than waiting on the callback that invoked it.
 
-## Restored state and remaining integration
+## Restored camera and preview state
 
 Admission snapshots main/raw/lores, role/sensor selection, writable policy,
 orientation, processed color request and tuning JSON, plus exact legacy/native
@@ -109,14 +109,89 @@ opens and hotplug gaps. The replacement takes its own tuning reservation and
 manager lease before the watch retires, so it can outlive the source. Existing
 profile conflicts or external environment changes remain errors.
 
-Recorder/output/microphone objects, active preview windows/overlays, failed source
-jobs and frame leases stay with the original owner. They are not automatically
-attached to the replacement. Coordinated recorder/preview recovery and continuous
-background reconnect supervision remain required parity work; this job provides
-the fresh-owner transaction those integrations need. Synthetic tests inject
-absence/open failures and ownership races; synthetic discovery is not USB topology.
+Version 0.69 restores the admitted preview recipe by default: backend, selected
+main/lores/background source, window options, view transforms, aspect policy and
+overlay placement. The owned RGBA overlay is cloned at admission using Home's
+checked compact RGBA copy. Caller byte mutation or explicit source preview close
+cannot invalidate it. Native device loss suspends the old display while retaining
+its recipe; explicit `stopPreview()` clears that intent. A replacement creates its
+own preview and overlay owner. Failed preparation closes the candidate, preserves
+the old suspended recipe and permits an explicit retry. Pass `preview: false` to
+omit the display. A preserved preview requires `start: true`.
+
+Plain `reconnect()` leaves recorder/output/microphone objects with their source.
+Use the coordinated operation below to recover those sessions together. Failed
+source jobs and frame leases always remain with their original owner. Continuous
+background reconnect supervision remains required parity work. Synthetic tests
+inject absence/open failures and ownership races; synthetic discovery is not USB topology.
 No physical removal/readdition, DMA quiescence, Pi timing or image-quality claim
 is established here.
+
+## Coordinated recording recovery
+
+`Camera.reconnectRecordingsAsync(members, options)` returns a
+`BunJob<RecoveredRecordingSession>`, containing a fresh `camera` and ordered
+`recordings`. Supply every attached active/failed Recording exactly once, with
+one to eight distinct Recorders. Existing old frame/maps need not be released
+before recovery; they never move into the replacement. The operation requires a
+lost camera and a started replacement.
+
+```ts
+const lost = camera
+const recovered = await lost.reconnectRecordingsAsync([
+  { recording: archive, output: 'archive-recovered.mp4',
+    settings: { codec: 'hevc', fps: 25 } },
+  { recording: monitor, output: monitorOutput,
+    settings: { stream: 'lores', fps: 25 }, backpressure: 'drop' },
+], { timeoutMs: 30000 })
+camera = recovered.camera
+;[archive, monitor] = recovered.recordings
+// Release original frame/maps before closing their original owner.
+await lost.close()
+```
+
+Member settings and audio/output selection follow
+[recording group mode jobs](recording-groups.md). Omitted audio preserves the old
+microphone if the new settings enable it; null detaches it. Omitted/null output
+creates no primary output. Supply a fresh path or custom output explicitly;
+finalized files are never appended implicitly. All consumers of a microphone must
+use the same FPS. Explicit geometry must match the selected negotiated stream.
+Paths, formats, member uniqueness and shared cadence are checked before flushing.
+
+The job reserves all recorders and native microphone holds, stops source
+production, joins copied producers, then admits every terminal codec flush before
+detaching any old Recording. It joins those drains before opening one replacement
+camera. Every candidate encoder/container/header/custom start hook and capture
+consumer must be ready before the existing native shared publication gate commits
+all sessions. The replacement pump starts only after installation, old output
+retirement and coordinator release. Preview preparation is reversible; creating
+display windows is not an atomic multi-window operation.
+
+Home's bounded PCM history and timeline retain the shared microphone cursor,
+fractional block phase and future block through old-consumer retirement. New
+consumers receive fresh IDs, and a changed FPS rebases the offered-frame epoch at
+the completed sample cut. The replacement owns reused microphone groups after
+publication. Closing the source or its old Recording descriptors cannot detach
+new consumers or close the replacement microphone. This preserves logical sample
+continuity; it does not calibrate physical clock drift, ALSA overrun or unplug gaps.
+
+Cancellation before publication joins child camera/codec/output preparation and
+discards candidates, including exclusively created files. Accepted flush tails
+cannot be undone: once flushing starts the old sessions remain stopped with their
+reusable Recorders. After failed preparation, pass those retained old Recording
+descriptors to an explicit retry; held PCM history stays with the source until
+retry or source stop/close. No retry automatically reuses a finalized output path.
+Cancellation after shared publication returns false. A later retirement or
+recorder-close error exposes `published: true` and `session` on the rejection;
+that session retains the committed camera/recordings for explicit cleanup or use
+of healthy peers. `CameraCleanupError` still owns any failed disposal resources.
+
+Validation includes eight simultaneous encoders, source close on both sides of
+publication, held host hooks, discarded files, explicit retry, old live frames,
+preview pumping/overlays, 44.1 kHz fractional history, and AVC/HEVC/AAC MP4 recovery
+with changed FPS. Independent audio decoding checks sample phase; independent
+video decoding runs where the CI decoder is installed. Hardware reconnect, focus,
+preview timing and continuous unattended supervision remain unverified.
 
 ## Failure ownership and native policy API
 

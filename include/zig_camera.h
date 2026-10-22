@@ -552,6 +552,9 @@ int zc_preview_set_view(zc_preview *,const zc_preview_view *);
  * overlay independently of previews. Serialize use/close; NULL close is safe. */
 typedef struct zc_preview_overlay zc_preview_overlay;
 int zc_preview_overlay_create(const uint8_t *data,uint64_t length,uint32_t width,uint32_t height,uint32_t stride,zc_preview_overlay **out);
+/* Independent owned compact snapshot. Source remains valid and may be closed
+ * after success. Serialize with source close; failed clone clears *out. */
+int zc_preview_overlay_clone(const zc_preview_overlay *,zc_preview_overlay **out);
 void zc_preview_overlay_close(zc_preview_overlay *);
 /* Upload synchronously on the preview UI thread. NULL clears. Failure preserves
  * the old texture. No overlay pointer is retained; caller can immediately close.

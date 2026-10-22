@@ -264,7 +264,10 @@ test('preview and multiple encoder producers stop on loss while recorder cleanup
     await until(() => c.activeRecordings.length === 0)
     expect(first.error).toMatchObject({ code: -11 })
     expect(second.error).toMatchObject({ code: -11 })
-    expect(c.previewInfo()).toBeUndefined()
+    expect(c.previewInfo()).toMatchObject({
+      backend: 'headless',
+      suspended: true,
+    })
     expect(c.deviceError).toBeInstanceOf(CameraDisconnectedError)
   } finally {
     const outcomes = await Promise.allSettled([c.close(), a.close(), b.close()])

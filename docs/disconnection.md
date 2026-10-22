@@ -4,8 +4,9 @@ Version 0.66 handles libcamera's per-camera disconnected signal. Reported device
 loss is terminal for that native handle, distinct from stop or a generic device
 error. It never resets on start. Reconnection needs a new native camera instance;
 [manager hotplug watches](hotplug.md) are available in 0.67 and bounded
-[fresh-owner reconnect jobs](reconnection.md) in 0.68. Coordinated recorder/preview
-recovery, background supervision and physical acceptance remain parity work.
+[fresh-owner reconnect jobs](reconnection.md) in 0.68. Version 0.69 adds coordinated
+recorder/preview recovery; background supervision and physical acceptance remain
+parity work.
 
 ```ts
 import { Camera } from '@zig-utils/camera'

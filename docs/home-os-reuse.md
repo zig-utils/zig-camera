@@ -282,3 +282,17 @@ retry admission or Bun/native cancellation. Existing Home stdlib Retry therefore
 supplies shared portable arithmetic, while the camera owns SDK discovery, fresh
 handle adoption and joined disposal. No kernel sources are copied, changed or
 executed, and no clock calibration, USB reconnect, sensor or DMA result is claimed.
+
+The 0.69 recorder/preview-recovery audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads camera.home,
+framebuffer_double.home, audio/mixer.home and ADR-MC3. The camera stub still
+returns a nominal capture size. The framebuffer manager owns fixed physical and
+virtual kernel buffers with free/drawing/ready/displayed states; the mixer stores
+channel volume/pan/mute state. Neither supplies independent hosted RGBA snapshots,
+libcamera generations, shared encoder publication or a retained PCM sample
+cursor across reconnect. ADR-MC3 puts shared media algorithms in Home packages.
+Existing Home publication_batch, pcm_fanout/pcm_timeline and rgba_view therefore
+remain the reusable implementation, with fresh camera/preview/native lifetime
+coordination here. No OS source is copied, changed or executed. The kernel files
+are not evidence of working camera/audio hardware, decoded media, physical A/V
+continuity or a performance improvement.

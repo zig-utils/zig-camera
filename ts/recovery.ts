@@ -10,6 +10,8 @@ export interface ReconnectOptions<T = unknown> extends JobOptions<T> {
   start?: boolean
   dropFrames?: number
   autofocus?: boolean
+  /** Restore the source preview/view/owned overlay snapshot. Default: true. */
+  preview?: boolean
 }
 export function reconnectOptions<T>(
   source: ReconnectOptions<T>,
@@ -22,6 +24,7 @@ export function reconnectOptions<T>(
     start = source.start ?? started,
     dropFrames = source.dropFrames ?? 0,
     autofocus = source.autofocus ?? false,
+    preview = source.preview ?? true,
     job = snapshotJobOptions(source, 30000)
   if (
     !Number.isInteger(maxAttempts) ||
@@ -41,6 +44,7 @@ export function reconnectOptions<T>(
     dropFrames > 0xffffffff ||
     typeof start !== 'boolean' ||
     typeof autofocus !== 'boolean' ||
+    typeof preview !== 'boolean' ||
     (!start && (dropFrames !== 0 || autofocus))
   )
     throw new RangeError('invalid camera reconnection policy')
@@ -52,6 +56,7 @@ export function reconnectOptions<T>(
     start,
     dropFrames,
     autofocus,
+    preview,
     job,
   }
 }

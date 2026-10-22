@@ -6,6 +6,11 @@ Supply each active Recording exactly once, with one to eight members. Pending
 camera capture/mode work, live frame leases and conflicting recorder work reject.
 An idle recorder cannot be added through this operation.
 
+For device loss, [reconnectRecordingsAsync](reconnection.md) uses the shared
+publication gate to recover into a separate camera owner, keeping old retained
+frames valid and preserving shared microphone history. It also restores the
+admitted preview and owned overlay unless opted out.
+
 ```ts
 const next = await camera.switchRecordingsModeAsync(
   { width: 1920, height: 1080, role: 'video',

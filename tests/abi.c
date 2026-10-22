@@ -605,6 +605,12 @@ int main(void) {
     assert(zc_recovery_retry_observe(&retry,1,1)==ZC_OK && retry.armed);
     assert(zc_recovery_retry_poll(&retry,1,1)==1 && retry.attempts==2);
     assert(zc_recovery_retry_poll(&retry,2,1)==0);
+    zc_preview_overlay *snapshot_source=NULL,*snapshot_copy=NULL;
+    const uint8_t snapshot_rgba[4]={1,2,3,4};
+    assert(zc_preview_overlay_create(snapshot_rgba,4,1,1,4,&snapshot_source)==ZC_OK && snapshot_source);
+    assert(zc_preview_overlay_clone(snapshot_source,&snapshot_copy)==ZC_OK && snapshot_copy && snapshot_copy!=snapshot_source);
+    zc_preview_overlay_close(snapshot_source);
+    zc_preview_overlay_close(snapshot_copy);
 
     zc_output_mailbox *mailbox=NULL;
     assert(zc_output_mailbox_open(3,2,&mailbox)==ZC_OK);

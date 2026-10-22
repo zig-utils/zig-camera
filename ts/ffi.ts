@@ -232,6 +232,7 @@ export const native = dlopen(library, {
   zc_preview_show_background: { args: [p], returns: i },
   zc_preview_show: { args: [p, p], returns: i },
   zc_preview_overlay_create: { args: [p, n, u, u, u, p], returns: i },
+  zc_preview_overlay_clone: { args: [p, p], returns: i },
   zc_preview_overlay_close: { args: [p], returns: v },
   zc_preview_set_overlay: { args: [p, p], returns: i },
   zc_preview_close: { args: [p], returns: i },
