@@ -31,6 +31,8 @@ width/height adapt to the selected stream's negotiated geometry; explicit sizes
 must match. Main and lores may be exchanged. The camera identity/backend stays
 fixed. Settings, geometry, source format and output paths are checked before
 reservation. Native negotiation validates the actual target before codec setup.
+Per-session [encoder policies](encoder-options.md) are copied with those settings;
+codec changes reset omitted policies, while unchanged codecs retain them.
 The usual runtime-control replay, autofocus policy, optional fresh autofocus,
 dropFrames and preview restoration apply to the single shared camera switch.
 

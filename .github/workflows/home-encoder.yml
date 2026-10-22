@@ -1,0 +1,31 @@
+name: Home encoder policy
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/native_encoder.*', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
+  pull_request:
+    paths: ['src/home/native_encoder.*', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Portable codec policy and profile-specific container configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" src/home/native_encoder.zig
+            zig test -lc -O "$mode" src/home/mp4_stream.zig
+          done

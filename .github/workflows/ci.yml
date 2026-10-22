@@ -134,6 +134,7 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags x264 x265) -c src/home/native_encoder.c -o zig-out/home-encoder-test.o
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" -lc zig-out/home-encoder-test.o $(pkg-config --libs x264 x265) --dep encoder --dep mp4 --dep color -Mroot=tests/home_color_signal.zig -Mencoder=src/home/native_encoder.zig -Mmp4=src/home/mp4_stream.zig -Mcolor=src/home/color_description.zig
+            zig test -O "$mode" -lc zig-out/home-encoder-test.o $(pkg-config --libs x264 x265) --dep encoder -Mroot=tests/home_encoder_idr.zig -Mencoder=src/home/native_encoder.zig
           done
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/preview.c -Lzig-out/lib -lzigcamera $(pkg-config --cflags --libs sdl2) -o zig-out/preview-test
           LD_LIBRARY_PATH=zig-out/lib ./zig-out/preview-test

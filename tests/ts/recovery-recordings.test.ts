@@ -529,6 +529,7 @@ test.skipIf(!process.env.ZC_TEST_CODECS || !process.env.ZC_TEST_AAC)(
         width: 64,
         height: 48,
         codec: 'h264',
+        encoder: { profile: 'baseline', preset: 'slow', qp: 12 },
       }),
       b = new Recorder(paths[1], {
         ...common,
@@ -536,6 +537,7 @@ test.skipIf(!process.env.ZC_TEST_CODECS || !process.env.ZC_TEST_AAC)(
         height: 24,
         stream: 'lores',
         codec: 'hevc',
+        encoder: { profile: 'main', qp: 12 },
       })
     c.preCallback = (frame) => {
       frame.withMappedStream((map) => {
@@ -562,7 +564,11 @@ test.skipIf(!process.env.ZC_TEST_CODECS || !process.env.ZC_TEST_AAC)(
           {
             recording: old[1],
             output: paths[3],
-            settings: { codec: 'h264', fps: 20 },
+            settings: {
+              codec: 'h264',
+              fps: 20,
+              encoder: { profile: 'main', qp: 12 },
+            },
           },
         ],
         fast,

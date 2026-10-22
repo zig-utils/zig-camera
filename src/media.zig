@@ -99,6 +99,20 @@ pub export fn zc_video_get_color(p: *c.zc_recorder, color: *c.zc_color_space) c_
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
     return @import("video.zig").getColor(p, color);
 }
+pub export fn zc_default_codec_options(out: *c.zc_codec_options) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_codec_options), .profile = 0, .preset = 0, .qp = 0 };
+}
+pub export fn zc_video_check_codec_options(cfg: *const c.zc_video_config, value: ?*const c.zc_codec_options) c_int {
+    return @import("video.zig").checkCodecOptions(cfg, value);
+}
+pub export fn zc_video_set_codec_options(p: *c.zc_recorder, value: ?*const c.zc_codec_options) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").setCodecOptions(p, value);
+}
+pub export fn zc_video_get_codec_options(p: *c.zc_recorder, out: *c.zc_codec_options) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").getCodecOptions(p, out);
+}
 pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
@@ -542,6 +556,9 @@ pub export fn zc_producer_job_restart_configure(p: *c.zc_producer_job, cfg: *con
 }
 pub export fn zc_producer_job_restart_color(p: *c.zc_producer_job, color: ?*const c.zc_color_space) c_int {
     return @import("video.zig").restartColor(@ptrCast(@alignCast(p)), color);
+}
+pub export fn zc_producer_job_restart_codec_options(p: *c.zc_producer_job, value: ?*const c.zc_codec_options) c_int {
+    return @import("video.zig").restartCodecOptions(@ptrCast(@alignCast(p)), value);
 }
 pub export fn zc_producer_job_restart_stage(p: *c.zc_producer_job, stage: *u32) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));

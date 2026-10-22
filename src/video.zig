@@ -410,6 +410,7 @@ const Recorder = struct {
     ring: ?Ring = null,
     codec: ?native.Encoder = null,
     color: c.zc_color_space = recording_color.legacy(),
+    codec_options: native.Options = .{},
     headers: []u8 = &.{},
     i420: []u8 = &.{},
     input_rgb: []u8 = &.{},
@@ -776,14 +777,18 @@ fn init(cfg: *const c.zc_video_config) !*Recorder {
     return initWithColor(cfg, recording_color.legacy());
 }
 fn initWithColor(cfg: *const c.zc_video_config, color: c.zc_color_space) !*Recorder {
+    return initWithRecipe(cfg, color, .{});
+}
+fn initWithRecipe(cfg: *const c.zc_video_config, color: c.zc_color_space, codec_options: native.Options) !*Recorder {
+    try validateCodecOptions(cfg, codec_options);
     _ = try recording_color.description(color);
     if (cfg.codec == c.ZC_MJPEG and !recording_color.eql(color, recording_color.legacy())) return error.Unsupported;
     try validate(if (cfg.codec == c.ZC_MJPEG) "check.mkv" else "check.mp4", cfg, false);
     const self = try A.create(Recorder);
-    self.* = .{ .encoder = jpeg.Encoder.init(A), .config = cfg.*, .color = color, .recording = defaultRecordingOptions() };
+    self.* = .{ .encoder = jpeg.Encoder.init(A), .config = cfg.*, .color = color, .codec_options = codec_options, .recording = defaultRecordingOptions() };
     errdefer self.deinit();
     if (options.codecs and cfg.codec != c.ZC_MJPEG) {
-        self.codec = try native.Encoder.initWithColor(.{ .codec = cfg.codec, .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .bitrate = cfg.bitrate, .quality = cfg.quality, .gop = cfg.gop }, try recording_color.encoder(color));
+        self.codec = try native.Encoder.initWithOptions(.{ .codec = cfg.codec, .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .bitrate = cfg.bitrate, .quality = cfg.quality, .gop = cfg.gop }, try recording_color.encoder(color), codec_options);
         self.headers = try A.dupe(u8, try self.codec.?.headers());
         self.i420 = try A.alloc(u8, @as(usize, cfg.width) * cfg.height * 3 / 2);
     }
@@ -812,6 +817,50 @@ pub fn getColor(p: *c.zc_recorder, out: *c.zc_color_space) c_int {
     out.* = self.color;
     return c.ZC_OK;
 }
+fn codecRecipe(value: ?*const c.zc_codec_options) native.Options {
+    return if (value) |v| .{ .struct_size = v.struct_size, .profile = v.profile, .preset = v.preset, .qp = v.qp } else .{};
+}
+fn validateCodecOptions(cfg: *const c.zc_video_config, value: native.Options) !void {
+    try @import("home/session_config.zig").validateVideo(cfg.*);
+    if (value.struct_size != @sizeOf(native.Options) or value.profile > 4 or value.preset > 9 or value.qp > 51) return error.InvalidConfiguration;
+    if (cfg.codec == c.ZC_MJPEG) {
+        if (value.profile != 0 or value.preset != 0 or value.qp != 0) return error.Unsupported;
+    } else try value.validate(cfg.codec, cfg.bitrate);
+}
+pub fn checkCodecOptions(cfg: *const c.zc_video_config, value: ?*const c.zc_codec_options) c_int {
+    validateCodecOptions(cfg, codecRecipe(value)) catch |err| return status(err);
+    return c.ZC_OK;
+}
+pub fn getCodecOptions(p: *c.zc_recorder, out: *c.zc_codec_options) c_int {
+    const value = recorder(p).codec_options;
+    out.* = .{ .struct_size = value.struct_size, .profile = value.profile, .preset = value.preset, .qp = value.qp };
+    return c.ZC_OK;
+}
+pub fn setCodecOptions(p: *c.zc_recorder, requested: ?*const c.zc_codec_options) c_int {
+    const self = recorder(p);
+    if (self.failed or !self.finalization.accepting()) return c.ZC_STATE;
+    if (self.frames != 0 or self.audio_frames != 0 or self.count() != 0 or self.next != null or self.producer != null) return c.ZC_BUSY;
+    const value = codecRecipe(requested);
+    validateCodecOptions(&self.config, value) catch |err| return status(err);
+    if (std.meta.eql(value, self.codec_options)) return c.ZC_OK;
+    if (options.codecs) {
+        var next = native.Encoder.initWithOptions(.{ .codec = self.config.codec, .width = self.config.width, .height = self.config.height, .fps_num = self.config.fps_num, .fps_den = self.config.fps_den, .bitrate = self.config.bitrate, .quality = self.config.quality, .gop = self.config.gop }, recording_color.encoder(self.color) catch |err| return status(err), value) catch |err| return status(err);
+        const headers = A.dupe(u8, next.headers() catch |err| {
+            next.deinit();
+            return status(err);
+        }) catch |err| {
+            next.deinit();
+            return status(err);
+        };
+        if (self.codec) |*old| old.deinit();
+        A.free(self.headers);
+        self.codec = next;
+        self.headers = headers;
+        self.codec_options = value;
+        return c.ZC_OK;
+    }
+    return c.ZC_UNSUPPORTED;
+}
 /// Configure only an untouched, unattached recorder. All allocations complete
 /// before the existing encoder/headers change; no output can observe mixed tags.
 pub fn setColor(p: *c.zc_recorder, requested: ?*const c.zc_color_space) c_int {
@@ -823,7 +872,7 @@ pub fn setColor(p: *c.zc_recorder, requested: ?*const c.zc_color_space) c_int {
     const color = if (requested) |value| value.* else recording_color.legacy();
     if (recording_color.eql(color, self.color)) return c.ZC_OK;
     if (options.codecs) {
-        var next = native.Encoder.initWithColor(.{ .codec = self.config.codec, .width = self.config.width, .height = self.config.height, .fps_num = self.config.fps_num, .fps_den = self.config.fps_den, .bitrate = self.config.bitrate, .quality = self.config.quality, .gop = self.config.gop }, recording_color.encoder(color) catch |err| return status(err)) catch |err| return status(err);
+        var next = native.Encoder.initWithOptions(.{ .codec = self.config.codec, .width = self.config.width, .height = self.config.height, .fps_num = self.config.fps_num, .fps_den = self.config.fps_den, .bitrate = self.config.bitrate, .quality = self.config.quality, .gop = self.config.gop }, recording_color.encoder(color) catch |err| return status(err), self.codec_options) catch |err| return status(err);
         const headers = A.dupe(u8, next.headers() catch |err| {
             next.deinit();
             return status(err);
@@ -2234,7 +2283,7 @@ const Replay = struct {
 };
 fn cloneHistory(self: *Recorder, start: usize, end: u64) !*Recorder {
     const copy = try A.create(Recorder);
-    copy.* = .{ .encoder = jpeg.Encoder.init(A), .config = self.config, .recording = self.recording, .color = self.color, .audio_bitrate = self.audio_bitrate, .first_ns = self.first_ns, .last_ns = self.last_ns, .last_packet_ns = self.last_packet_ns, .frames = self.frames };
+    copy.* = .{ .encoder = jpeg.Encoder.init(A), .config = self.config, .recording = self.recording, .color = self.color, .codec_options = self.codec_options, .audio_bitrate = self.audio_bitrate, .first_ns = self.first_ns, .last_ns = self.last_ns, .last_packet_ns = self.last_packet_ns, .frames = self.frames };
     errdefer copy.deinit();
     copy.headers = try A.dupe(u8, self.headers);
     copy.ring = try self.ring.?.cloneFrom(A, start);
@@ -2719,11 +2768,22 @@ pub fn restartColor(job: *@import("producer.zig").Job, color: ?*const c.zc_color
     job.restart_color = value;
     return c.ZC_OK;
 }
+pub fn restartCodecOptions(job: *@import("producer.zig").Job, value: ?*const c.zc_codec_options) c_int {
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.started or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    const next = codecRecipe(value);
+    // Codec/bitrate may still be changed by restartConfigure; validate them
+    // together in runRestart, before any candidate output construction.
+    if (next.struct_size != @sizeOf(native.Options) or next.profile > 4 or next.preset > 9 or next.qp > 51) return c.ZC_INVALID;
+    job.restart_codec_options = next;
+    return c.ZC_OK;
+}
 fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
     const next = self.finalization.nextSession() catch |err| return status(err);
     const generation = std.math.add(u64, @max(self.primary_generation, if (self.output) |out| out.generation else 0), 1) catch return c.ZC_STATE;
     const cfg = if (job.restart_config) |settings| settings.video else self.config;
-    const candidate = initWithColor(&cfg, job.restart_color orelse self.color) catch |err| return status(err);
+    const candidate = initWithRecipe(&cfg, job.restart_color orelse self.color, job.restart_codec_options orelse self.codec_options) catch |err| return status(err);
     var committed = false;
     defer {
         job.owner.mutex.lock();

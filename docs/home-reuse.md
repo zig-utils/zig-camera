@@ -874,3 +874,29 @@ old retained frame independence, joined host hooks/cancellation and exclusive fi
 disposal. Independent AAC checks run locally; Linux CI additionally supplies the
 independent AVC/HEVC decoder. These tests establish software ownership and media
 semantics, not physical hotplug timing, ALSA continuity or optical acceptance.
+
+The 0.70 encoder-policy audit fetches unchanged Home main c57880cd4, inspects
+native_encoder.{c,h,zig}, h264_encoder.zig/hevc_encoder.zig, mp4_stream.zig and the
+native test runner, and improves Home on main at
+cf2c30911736e8c31e4a674c26884ab9d73df94c. Existing pure encoder configuration
+fields alone do not prove a conformant emitted stream. The working header-checked
+adapter therefore gains copied validated profile ceilings, preset selection and
+CQP policy, with the legacy scalar ABI/defaults preserved. Slow HEVC presets are
+constrained to valid transform depths for the existing shared CTU16 policy.
+Home's MP4/Matroska configuration builder now supports emitted Baseline/Main AVC
+headers with their shorter configuration records, preserving High extensions and
+failure atomicity. Camera copies all four implementation files and the standalone
+IDR/C-admission test verbatim, retaining attribution.
+
+Home's focused native-media suite passes Debug/ReleaseSafe on pinned Zig 0.15.2
+and development 0.18; the new raw C failure-admission test also passes on pinned
+Zig. Pure policy tests check rejected combinations on both compilers. Camera
+adds only additive C owners/setters and copied Bun session admission/transaction
+plumbing. Its matrix checks portable copied policies/container records on both
+compilers and all three hosts; main Linux CI checks actual adapters and
+independent decoders. Bun tests inspect real AVC SPS compatibility and PPS QP
+endpoints, all presets, copied/rejected/cancelled policies, session reuse,
+coordinated modes and AVC/HEVC/AAC reconnect. Local video decoding is unavailable;
+local AAC checks and header/container tests are distinct from Linux video-decode
+coverage. Home's own workflow remains disabled rather than claimed as run.
+No speed, physical-camera quality or full codec conformance result is inferred.

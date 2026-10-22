@@ -296,3 +296,13 @@ remain the reusable implementation, with fresh camera/preview/native lifetime
 coordination here. No OS source is copied, changed or executed. The kernel files
 are not evidence of working camera/audio hardware, decoded media, physical A/V
 continuity or a performance improvement.
+
+The 0.70 encoder-policy audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads media/video_decoder.home,
+drivers/camera.home and ADR-MC3. The decoder source's hardware check/nominal success
+returns do not supply hosted AVC encoder profile/rate-control/preset behavior or
+valid MP4 sample descriptions; the camera stub has no encoding path. ADR-MC3
+places these algorithms in Home's shared media packages. Native adapter policy
+and Baseline/Main container fixes therefore improve Home first and are reused
+verbatim here. No OS file is copied, modified or executed; kernel capability
+assertions are not evidence of a working codec, GPU acceleration or Pi throughput.

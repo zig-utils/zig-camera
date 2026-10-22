@@ -8,6 +8,17 @@ import {
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
 import {
+  encodeEncoderOptions,
+  snapshotEncoderOptions,
+  readEncoderOptions,
+  type EncoderOptions,
+} from './encoder-options'
+export {
+  EncoderProfile,
+  EncoderPreset,
+  type EncoderOptions,
+} from './encoder-options'
+import {
   readDeviceState,
   pollDisconnected,
   DisconnectObserver,
@@ -5471,6 +5482,7 @@ export interface RecorderOptions {
   height: number
   fps?: number
   codec?: keyof typeof Codec
+  encoder?: EncoderOptions
   bitrate?: number
   quality?: number
   gop?: number
@@ -5495,7 +5507,7 @@ export interface RecorderOptions {
   io?: { maxBytes: number; maxOperations: number; waitMs?: number }
 }
 /** Session media settings. Omitted fields retain their value; audio:null disables
- * audio. Changing codec resets omitted bitrate/GOP to that codec's defaults. */
+ * audio. Changing codec resets omitted bitrate/GOP/encoder policy to codec defaults. */
 export type RecorderSessionOptions = Partial<
   Pick<
     RecorderOptions,
@@ -5511,6 +5523,7 @@ export type RecorderSessionOptions = Partial<
 > & {
   audio?: RecorderOptions['audio'] | null
   colorSpace?: ColorSpaceRequest | null
+  encoder?: EncoderOptions | null
 }
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   options = { ...options }
@@ -5518,6 +5531,10 @@ function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   const colorSpace = snapshotColorSpace(options.colorSpace)
   return Object.freeze({
     ...options,
+    encoder:
+      options.encoder === undefined
+        ? undefined
+        : snapshotEncoderOptions(options.encoder),
     colorSpace:
       typeof colorSpace === 'object' ? Object.freeze(colorSpace) : colorSpace,
     audio: options.audio && Object.freeze({ ...options.audio }),
@@ -5541,6 +5558,7 @@ function mergeSessionOptions(
   ) {
     merged.bitrate = undefined
     merged.gop = undefined
+    merged.encoder = undefined
   }
   for (const key of [
     'width',
@@ -5557,6 +5575,8 @@ function mergeSessionOptions(
   if (settings.audio !== undefined) merged.audio = settings.audio ?? undefined
   if (settings.colorSpace !== undefined)
     merged.colorSpace = settings.colorSpace ?? undefined
+  if (settings.encoder !== undefined)
+    merged.encoder = settings.encoder ?? undefined
   return snapshotRecorderOptions(merged)
 }
 function resolvedSession(
@@ -5614,6 +5634,7 @@ function sessionFields(options: RecorderOptions) {
       options.colorSpace === undefined
         ? undefined
         : encodeColorSpace(options.colorSpace),
+    encoder: encodeEncoderOptions(options.encoder),
   }
   check(
     n.zc_video_check_color(
@@ -5621,6 +5642,10 @@ function sessionFields(options: RecorderOptions) {
       result.color ? ptr(result.color) : null,
     ),
     'recording color configuration',
+  )
+  check(
+    n.zc_video_check_codec_options(ptr(result.video), ptr(result.encoder)),
+    'encoder configuration',
   )
   return result
 }
@@ -5942,9 +5967,10 @@ export class Recorder {
     if (producerLimits && (!producerLimits.bytes || !producerLimits.jobs))
       throw new RangeError('invalid producer queue bounds')
     this.currentOptions = options
-    const { video: cfg, audio: opts, color } = sessionFields(options)
+    const { video: cfg, audio: opts, color, encoder } = sessionFields(options)
     this.recordingColorBytes = color
-    const coloredPath = path !== null && color !== undefined
+    const configuredPath =
+      path !== null && (color !== undefined || options.encoder !== undefined)
     const out = outPointer()
     if (options.circular) {
       const ring = fields(24, n.zc_default_buffer_config, [
@@ -5972,14 +5998,14 @@ export class Recorder {
             )
           : n.zc_video_open_circular(ptr(cfg), ptr(ring), ptr(out)),
       )
-    } else if (path === null || coloredPath)
+    } else if (path === null || configuredPath)
       check(
         n.zc_video_create(
           ptr(cfg),
           ptr(opts),
           uint(
             options.audio?.bitrate ??
-              (coloredPath && options.audio && path!.endsWith('.mp4')
+              (configuredPath && options.audio && path!.endsWith('.mp4')
                 ? 128000
                 : 0),
           ),
@@ -6002,6 +6028,11 @@ export class Recorder {
     }
     this.handle = handle(out)
     try {
+      if (options.encoder)
+        check(
+          n.zc_video_set_codec_options(this.handle, ptr(encoder)),
+          'encoder configuration',
+        )
       if (color)
         check(
           n.zc_video_set_color(this.handle, ptr(color)),
@@ -6021,7 +6052,7 @@ export class Recorder {
         check(
           n.zc_video_set_delay(this.handle, nanos(options.circular.delayMs)),
         )
-      if ((options.circular || coloredPath) && path !== null) {
+      if ((options.circular || configuredPath) && path !== null) {
         const name = cstring(path)
         check(n.zc_video_open_output(this.handle, ptr(name)))
       }
@@ -6036,6 +6067,10 @@ export class Recorder {
     if (this.coordinator && !this.coordinatorEntry)
       throw new CameraError(-4, 'coordinated mode owns recorder')
     this.assertOwned(allowProducer)
+  }
+  encoderOptions() {
+    this.assertOpen()
+    return readEncoderOptions(this.handle)
   }
   private assertOwned(allowProducer = false) {
     guardOutputHook()
@@ -7792,6 +7827,11 @@ export class Recorder {
             config.color ? ptr(config.color) : null,
           ),
           'session color settings',
+        )
+      if (config)
+        check(
+          n.zc_producer_job_restart_codec_options(native, ptr(config.encoder)),
+          'session encoder settings',
         )
       if (typeof output === 'string' && this.options.io) {
         const io = this.options.io
