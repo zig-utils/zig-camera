@@ -57,6 +57,7 @@ jobs:
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
           bun test tests/ts
+          bun tests/ts/check-alignment-cli.ts zig-out/bin/zig-camera
           ./zig-out/bin/zig-camera list --simulate
           ./zig-out/bin/zig-camera info --simulate --camera-id synthetic
           if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi

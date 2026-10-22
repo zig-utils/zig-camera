@@ -1,4 +1,4 @@
-# Feature coverage in 0.62
+# Feature coverage in 0.63
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -28,6 +28,11 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
+
+[Processed-stream alignment](stream-alignment.md) adds explicit VC4/PiSP/minimum
+planning through C/Zig/Bun/CLI, with atomic configuration outputs and preserved
+automatic/raw geometry. Actual device modes, strides and physical benefits remain
+hardware acceptance work; additional capture formats remain in scope.
 
 [Software-sync selection](synchronization.md) consumes exact backend SyncReady
 and signed SyncTimer metadata, preserves retained snapshots and combines with

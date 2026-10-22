@@ -7,6 +7,7 @@
 _Static_assert(sizeof(zc_packed_stream)==64,"packed stream ABI");
 _Static_assert(offsetof(zc_packed_stream,offset)==48,"packed stream range ABI");
 _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
+_Static_assert(sizeof(zc_stream_alignment)==20,"stream alignment ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
 _Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
 _Static_assert(sizeof(zc_pcm_span)==24,"shared PCM span ABI");
@@ -164,6 +165,23 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_stream_alignment plan={0};
+        assert(zc_align_stream_geometry(1919,1081,ZC_ALIGN_PLANAR420,ZC_ALIGN_PISP,1,&plan)==ZC_OK);
+        assert(plan.struct_size==20 && plan.width==1792 && plan.height==1080 && plan.width_alignment==128 && plan.height_alignment==2);
+        zc_stream_alignment before=plan;
+        assert(zc_align_stream_geometry(1,3,ZC_ALIGN_PACKED,ZC_ALIGN_PISP,1,&plan)==ZC_INVALID);
+        assert(memcmp(&before,&plan,sizeof(plan))==0);
+        zc_config cfg;zc_default_config(&cfg);cfg.width=1919;cfg.height=1081;
+        zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=1;pipe.lores_height=3;
+        zc_processed_options processed;zc_default_processed_options(&processed);
+        zc_config cfg_before=cfg;zc_pipeline_options pipe_before=pipe;
+        assert(zc_align_camera_configuration(&cfg,&pipe,&processed,ZC_ALIGN_PISP,1,&cfg,&pipe)==ZC_INVALID);
+        assert(memcmp(&cfg_before,&cfg,sizeof(cfg))==0 && memcmp(&pipe_before,&pipe,sizeof(pipe))==0);
+        pipe.lores_width=641;pipe.lores_height=481;
+        assert(zc_align_camera_configuration(&cfg,&pipe,&processed,ZC_ALIGN_PISP,1,&cfg,&pipe)==ZC_OK);
+        assert(cfg.width==1856 && cfg.height==1080 && pipe.lores_width==640 && pipe.lores_height==480);
+    }
     {
         zc_config cfg;zc_default_config(&cfg);cfg.width=8;cfg.height=6;cfg.policy=ZC_FIFO;
         zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK && zc_start(camera)==ZC_OK);

@@ -16,6 +16,8 @@ export const native = dlopen(library, {
   zc_color_space_preset: { args: [u, p], returns: i },
   zc_check_processed_options: { args: [p, p], returns: i },
   zc_check_camera_configuration: { args: [p, p, p, u, u], returns: i },
+  zc_align_stream_geometry: { args: [u, u, u, u, u, p], returns: i },
+  zc_align_camera_configuration: { args: [p, p, p, u, u, p, p], returns: i },
   zc_open_processed_pipeline: { args: [p, p, p, u, u, p], returns: i },
   zc_open_id_processed_pipeline: { args: [p, p, p, u, u, p, u, p], returns: i },
   zc_get_color_negotiation: { args: [p, u, p], returns: i },

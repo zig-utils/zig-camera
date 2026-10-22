@@ -70,6 +70,16 @@ comptime {
 pub const pixels = @import("pixels.zig");
 pub const Config = c.zc_config;
 pub const ProcessedOptions = c.zc_processed_options;
+pub const StreamAlignment = @import("home/stream_alignment.zig");
+pub const AlignedConfiguration = struct { config: Config, pipeline: c.zc_pipeline_options };
+pub fn alignStream(width: u32, height: u32, layout: StreamAlignment.Layout, profile: StreamAlignment.Profile, optimal: bool) Error!StreamAlignment.Plan {
+    return StreamAlignment.aligned(width, height, layout, profile, optimal) catch return error.Invalid;
+}
+pub fn alignConfiguration(config: Config, pipeline: c.zc_pipeline_options, processed: ProcessedOptions, profile: StreamAlignment.Profile, optimal: bool) Error!AlignedConfiguration {
+    var result: AlignedConfiguration = undefined;
+    try check(core.zc_align_camera_configuration(&config, &pipeline, &processed, @intFromEnum(profile), @intFromBool(optimal), &result.config, &result.pipeline));
+    return result;
+}
 pub fn defaultProcessedOptions() ProcessedOptions {
     return color_policy.defaults();
 }
@@ -809,6 +819,37 @@ test "Zig capture filters transfer one request after exact frame drops" {
     try std.testing.expectEqual(@as(u64, 3), frame.value.sequence);
     try std.testing.expect(frame.value.timestamp_ns >= before);
     try std.testing.expectEqual(@as(u32, 0), filter.remaining);
+}
+test "Zig alignment plans open the requested paired processed and raw stream geometry" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 191;
+    cfg.height = 101;
+    cfg.raw = 1;
+    var pipe: c.zc_pipeline_options = undefined;
+    core.zc_default_pipeline_options(&pipe);
+    pipe.capture.unpacked_raw = 1;
+    pipe.lores_width = 129;
+    pipe.lores_height = 65;
+    const geometry = try alignStream(191, 101, .packed_pixels, .pisp, true);
+    try t.expectEqual(@as(u32, 128), geometry.width);
+    try t.expectEqual(@as(u32, 100), geometry.height);
+    const plan = try alignConfiguration(cfg, pipe, defaultProcessedOptions(), .pisp, true);
+    try t.expectEqual(@as(u32, 191), cfg.width);
+    try t.expectEqual(@as(u32, 129), pipe.lores_width);
+    const camera = try Camera.initPipeline(plan.config, plan.pipeline);
+    defer camera.deinit() catch unreachable;
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch unreachable;
+    try t.expectEqual(@as(u32, 128), frame.value.main.width);
+    try t.expectEqual(@as(u32, 100), frame.value.main.height);
+    const lores = try frame.stream(c.ZC_LORES);
+    try t.expectEqual(@as(u32, 128), lores.width);
+    try t.expectEqual(@as(u32, 64), lores.height);
+    try t.expectEqual(@as(u32, 128), frame.value.raw.width);
+    try t.expectEqual(@as(u32, 100), frame.value.raw.height);
 }
 test "Zig synchronized acquisition composes typed controls filters and retained request metadata" {
     if (@import("options").libcamera) return error.SkipZigTest;

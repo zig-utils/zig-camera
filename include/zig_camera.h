@@ -94,6 +94,17 @@ int zc_check_processed_options(const zc_processed_options *,const zc_pipeline_op
 /* Allocation-free structural preflight shared by open. Does not negotiate with
  * hardware or validate a camera identity/sensor's available modes. */
 int zc_check_camera_configuration(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation);
+/* Explicit geometry planning, without opening/negotiating a device or changing
+ * pixels/strides. Profiles use Picamera2's VC4/PiSP recipes. optimal=0 uses 2x2.
+ * Positive extents which round to zero reject. Failure preserves every output. */
+enum { ZC_ALIGN_VC4=0, ZC_ALIGN_PISP=1 };
+enum { ZC_ALIGN_PACKED=0, ZC_ALIGN_PLANAR420=1, ZC_ALIGN_WIDE=2 };
+typedef struct { uint32_t struct_size,width,height,width_alignment,height_alignment; } zc_stream_alignment;
+int zc_align_stream_geometry(uint32_t width,uint32_t height,uint32_t layout,uint32_t profile,uint32_t optimal,zc_stream_alignment *out);
+/* Align explicit main/lores geometry, preserve auto 0/0 and raw/sensor settings,
+ * then run structural preflight. Outputs must be disjoint from each other; they
+ * may replace their respective input objects in place. No hardware acceptance. */
+int zc_align_camera_configuration(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t profile,uint32_t optimal,zc_config *out_config,zc_pipeline_options *out_pipeline);
 /* Existing config/stream/frame layouts remain ABI v1. Strict color rejects
  * backend adjustments against the format-normalized effective request. */
 int zc_open_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,zc_camera **out);

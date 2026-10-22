@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.63 adds [processed stream alignment](docs/stream-alignment.md): explicit
+PiSP/VC4/minimum geometry recipes, atomic configuration planning and C/Zig/Bun/CLI
+helpers that preserve automatic dimensions and raw sensor modes.
+
 Version 0.62 adds [software-sync request selection](docs/synchronization.md):
 backend SyncReady/SyncTimer metadata, atomic sync controls, cancellable synchronized
 capture jobs and readiness combined with frame dropping, timing and focus locks.

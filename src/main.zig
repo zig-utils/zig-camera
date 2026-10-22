@@ -16,6 +16,7 @@ const help =
     \\  --strict-color-space     Reject backend color adjustments; requires --color-space
     \\  --video-color-space NAME AVC/HEVC output profile; source gamut/transfer must match
     \\  --main-format NAME       BGR888 (default, RGB bytes) or YUV420
+    \\  --align PROFILE          Round explicit processed sizes down: pisp/vc4/minimum
     \\  --lores-format NAME      YUV420 (default) or BGR888
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
     \\  --strict-transform       Reject adjusted camera orientation
@@ -95,6 +96,8 @@ fn run() !void {
     var fps: u32 = 30;
     var preview_stream: ?u32 = camera.c.ZC_MAIN;
     var main_format: u32 = camera.c.ZC_RGB24;
+    var alignment_profile: ?camera.StreamAlignment.Profile = null;
+    var alignment_optimal = true;
     var processed = camera.defaultProcessedOptions();
     var video_color: ?camera.c.zc_color_space = null;
     var codec: u32 = camera.c.ZC_MJPEG;
@@ -197,6 +200,9 @@ fn run() !void {
             if (eq(key, "--video-color-space")) video_color = color else processed.color_space = color;
         } else if (eq(key, "--main-format")) {
             main_format = if (eq(value, "BGR888")) camera.c.ZC_RGB24 else if (eq(value, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidMainFormat;
+        } else if (eq(key, "--align")) {
+            alignment_profile = if (eq(value, "pisp") or eq(value, "minimum")) .pisp else if (eq(value, "vc4")) .vc4 else return error.InvalidAlignment;
+            alignment_optimal = !eq(value, "minimum");
         } else if (eq(key, "--preview-stream")) {
             preview_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "none")) null else return error.InvalidPreviewStream;
         } else if (eq(key, "--record-stream")) {
@@ -306,6 +312,11 @@ fn run() !void {
     var transform = try camera.ImageTransform.fromRotation(rotation, hflip, vflip);
     if (transpose) transform.transpose = !transform.transpose;
     processed.main_format = main_format;
+    if (alignment_profile) |profile| {
+        const aligned = try camera.alignConfiguration(cfg, pipeline, processed, profile, alignment_optimal);
+        cfg = aligned.config;
+        pipeline = aligned.pipeline;
+    }
     if (eq(command, "record")) {
         var check_cfg: camera.c.zc_video_config = undefined;
         camera.media.zc_default_video_config(&check_cfg);

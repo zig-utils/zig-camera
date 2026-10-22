@@ -220,3 +220,14 @@ The media-stdlib ADR still directs shared algorithms into Home packages. Home
 video's existing frame barrier is therefore extended with explicit observation
 readiness. Kernel pointers, allocators, timers and device state are not copied or
 executed, and no physical cross-camera synchronization result is inferred.
+
+The 0.63 alignment audit fetches unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads camera.home, the HVS source-pitch
+setup in rpi/videocore7.home and ADR-MC5-display.md. The camera stub's resolution
+setter stores dimensions; HVS computes an XRGB pitch from width*4. Neither supplies
+VC4/PiSP processed capture recipes, planar chroma geometry or hosted structural
+preflight. The display ADR records uncompiled/unverified register work and
+separates display ownership from shared media algorithms. Home video's planner
+therefore supplies the reusable arithmetic, with camera-specific configuration
+publication here. OS remains unmodified and unexecuted. Kernel pitch/register
+code is not evidence of libcamera alignment, working Pi display or a speedup.

@@ -492,3 +492,11 @@ Home per-observation capture readiness (0.62):
   or device ownership.
   https://github.com/home-lang/home/commit/1f1c8690507bf14e71c8c5ea273ade18366493a1
 The Home MIT license and copyright reproduced above apply.
+
+Home processed-stream geometry planning (0.63):
+- src/home/stream_alignment.zig is copied verbatim from Home video
+  core/stream_alignment.zig at 34aa602dfba2bd6af982c5e6b4887550a5da70b2. It supplies
+  explicit VC4/PiSP layout recipes and minimum geometry without pixel/device
+  ownership or allocation.
+  https://github.com/home-lang/home/commit/34aa602dfba2bd6af982c5e6b4887550a5da70b2
+The Home MIT license and copyright reproduced above apply.

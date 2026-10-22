@@ -8,6 +8,19 @@ import {
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
 import {
+  alignStream,
+  alignConfiguration,
+  type StreamGeometry,
+  type AlignmentOptions,
+} from './alignment'
+export {
+  alignStream,
+  alignConfiguration,
+  type StreamGeometry,
+  type AlignmentOptions,
+  type AlignedStream,
+} from './alignment'
+import {
   readFrameSynchronization,
   synchronizationControls,
   synchronizationOptions,
@@ -725,6 +738,15 @@ type CaptureRequest = {
   signal?: AbortSignal
 }
 export class Camera {
+  static alignStream(source: StreamGeometry, options: AlignmentOptions = {}) {
+    return alignStream(source, options)
+  }
+  static alignConfiguration(
+    source: CameraOptions,
+    options: AlignmentOptions = {},
+  ) {
+    return alignConfiguration(source, options)
+  }
   private selectedId!: string
   private selectedIdBytes!: Uint8Array
   /** Full backend ID, retained even after close. Mode jobs always pin this ID. */

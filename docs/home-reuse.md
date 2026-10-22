@@ -731,3 +731,22 @@ observations with the shared gate. It does not infer readiness from a timestamp
 matcher, use a second queue, or import a new network sync algorithm. libcamera
 owns the real server/client algorithm. Virtual server countdown/client-pending
 behavior tests control and request association, not network or exposure alignment.
+
+The 0.63 alignment audit improves Home video at
+34aa602dfba2bd6af982c5e6b4887550a5da70b2. New stream_alignment.zig supplies explicit
+VC4/PiSP processed layout recipes and minimum alignment without allocation,
+pixel changes or device negotiation. Positive extents that would round to zero
+reject; subtraction/remainder arithmetic stays exact at u32 limits. Three
+standalone tests pass in Debug/ReleaseSafe with pinned 0.15.2 and development
+0.17 Zig. Camera copies the source verbatim; its copied-source matrix checks
+pinned/master Zig on Linux x86/ARM and macOS, with C ABI checks on the pinned
+compiler. Home's own Actions dispatch remains disabled.
+
+Existing Home region/orientation helpers validate bounds and transforms, while
+plane_pack validates/copies already negotiated planes. They do not encode these
+output-size recipes, so alignment is a separate small planner. Native camera
+configuration aligns local main/lores copies, then shares existing structural
+preflight before publishing either output. Bun owns copied options and CLI calls
+the same native operation. Raw/sensor modes and backend stride negotiation remain
+separate contracts. No additional pixel format or ISP performance is inferred
+from an advisory geometry plan.

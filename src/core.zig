@@ -7,6 +7,7 @@ comptime {
     _ = @import("capture_delay.zig").zc_default_capture_delay;
     _ = @import("capture_delay.zig").zc_capture_delay_arm;
     _ = @import("capture_delay.zig").zc_capture_delay_remaining;
+    _ = @import("alignment.zig").zc_align_stream_geometry;
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
@@ -222,6 +223,27 @@ pub export fn zc_check_camera_configuration(cfg: *const c.zc_config, pipeline: *
         (pipeline.lores_format == c.ZC_YUV420 and (pipeline.lores_width | pipeline.lores_height) & 1 != 0)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
+    return c.ZC_OK;
+}
+pub export fn zc_align_camera_configuration(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, profile: u32, optimal: u32, out_config: *c.zc_config, out_pipeline: *c.zc_pipeline_options) c_int {
+    const selected = @import("alignment.zig").policy(profile, optimal) catch return c.ZC_INVALID;
+    var config = cfg.*;
+    var pipe = pipeline.*;
+    const color = processed.*;
+    if (config.width != 0 or config.height != 0) {
+        const plan = selected.aligned(config.width, config.height, if (color.main_format == c.ZC_YUV420) .planar420 else .packed_pixels) catch return c.ZC_INVALID;
+        config.width = plan.width;
+        config.height = plan.height;
+    }
+    if (pipe.lores_width != 0 or pipe.lores_height != 0) {
+        const plan = selected.aligned(pipe.lores_width, pipe.lores_height, if (pipe.lores_format == c.ZC_YUV420) .planar420 else .packed_pixels) catch return c.ZC_INVALID;
+        pipe.lores_width = plan.width;
+        pipe.lores_height = plan.height;
+    }
+    const rc = zc_check_camera_configuration(&config, &pipe, &color, c.ZC_ROTATE0, 0);
+    if (rc != c.ZC_OK) return rc;
+    out_config.* = config;
+    out_pipeline.* = pipe;
     return c.ZC_OK;
 }
 fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
@@ -1506,6 +1528,58 @@ test "configuration rejects invalid and nonfinite input" {
     cfg.analogue_gain = std.math.nan(f32);
     try std.testing.expectEqual(c.ZC_INVALID, zc_open(&cfg, &p));
     try std.testing.expect(p == null);
+}
+test "configuration alignment preserves raw auto geometry and both outputs on late failures" {
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    var pipe: c.zc_pipeline_options = undefined;
+    zc_default_config(&cfg);
+    zc_default_pipeline_options(&pipe);
+    var processed = colors.defaults();
+    cfg.width = 1919;
+    cfg.height = 1081;
+    cfg.raw = 1;
+    pipe.capture.unpacked_raw = 1;
+    pipe.sensor_width = 4056;
+    pipe.sensor_height = 3040;
+    pipe.sensor_bit_depth = 12;
+    pipe.lores_width = 1;
+    pipe.lores_height = 3;
+    const before_cfg = cfg;
+    const before_pipe = pipe;
+    try t.expectEqual(c.ZC_INVALID, zc_align_camera_configuration(&cfg, &pipe, &processed, c.ZC_ALIGN_PISP, 1, &cfg, &pipe));
+    try t.expectEqualDeep(before_cfg, cfg);
+    try t.expectEqualDeep(before_pipe, pipe);
+    pipe.lores_width = 641;
+    pipe.lores_height = 481;
+    const valid_pipe = pipe;
+    processed.strict_color = 1; // Missing color request is a late preflight error.
+    try t.expectEqual(c.ZC_INVALID, zc_align_camera_configuration(&cfg, &pipe, &processed, c.ZC_ALIGN_PISP, 1, &cfg, &pipe));
+    try t.expectEqualDeep(before_cfg, cfg);
+    try t.expectEqualDeep(valid_pipe, pipe);
+    processed.strict_color = 0;
+    processed.main_format = c.ZC_YUV420;
+    try t.expectEqual(c.ZC_OK, zc_align_camera_configuration(&cfg, &pipe, &processed, c.ZC_ALIGN_PISP, 1, &cfg, &pipe));
+    var expected_cfg = before_cfg;
+    expected_cfg.width = 1792;
+    expected_cfg.height = 1080;
+    var expected_pipe = valid_pipe;
+    expected_pipe.lores_width = 640;
+    expected_pipe.lores_height = 480;
+    try t.expectEqualDeep(expected_cfg, cfg);
+    try t.expectEqualDeep(expected_pipe, pipe);
+    cfg.width = 0;
+    cfg.height = 0;
+    pipe.lores_width = 0;
+    pipe.lores_height = 0;
+    const auto_cfg = cfg;
+    const auto_pipe = pipe;
+    try t.expectEqual(c.ZC_OK, zc_align_camera_configuration(&cfg, &pipe, &processed, c.ZC_ALIGN_PISP, 1, &cfg, &pipe));
+    try t.expectEqualDeep(auto_cfg, cfg);
+    try t.expectEqualDeep(auto_pipe, pipe);
+    try t.expectEqual(c.ZC_INVALID, zc_align_camera_configuration(&cfg, &pipe, &processed, 2, 1, &cfg, &pipe));
+    try t.expectEqualDeep(auto_cfg, cfg);
+    try t.expectEqualDeep(auto_pipe, pipe);
 }
 test "sync readiness belongs to a leased request and survives retain stop and later completions" {
     if (options.libcamera) return error.SkipZigTest;
