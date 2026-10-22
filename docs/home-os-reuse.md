@@ -316,3 +316,9 @@ Bitrate fields in kernel state are not an implemented VBV controller. Per the
 shared-media boundary, the working Home adapter gains the reusable limits policy
 first. No OS source is copied, changed or executed, and no hardware encoding,
 physical quality, clock or throughput result is inferred from these files.
+
+The 0.71.1 AVC-level follow-up rechecks clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65. Its camera/decoder stubs do not supply
+userspace SPS level selection or independent decoder acceptance. The correction
+therefore stays in Home's working codec bridge, with the copied camera fixture
+and existing decoder oracle. No OS source or hardware claim is changed.

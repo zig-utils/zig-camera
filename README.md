@@ -6,6 +6,8 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.71.1 preserves automatic AVC level selection under high ceilings so
+small streams do not advertise unnecessarily high decoder requirements.
 Version 0.71 adds [decoder-level ceilings and VBV policies](docs/encoder-limits.md):
 checked nominal resources and emitted headers, explicit rate/buffer limits,
 transactional session propagation and coordinated policy resets.

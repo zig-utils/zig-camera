@@ -22,7 +22,11 @@ async function until(fn: () => boolean) {
   }
 }
 function level(video: Track) {
-  return video.codec === 'avc1' ? video.config[3] : video.config[12] / 3
+  return video.codec === 'avc1'
+    ? video.config[3] === 9
+      ? 10.5
+      : video.config[3]
+    : video.config[12] / 3
 }
 function checkVideo(path: string, ceiling: number, frames?: number) {
   const video = mp4(path).get(1)!
@@ -158,7 +162,9 @@ for (const codec of ['h264', 'hevc'] as const)
           const recording = camera.startRecording(r)
           await until(() => recording.stats().completed >= 3n)
           await recording.flushAsync()
-          checkVideo(path, ceiling, recording.frames)
+          const video = checkVideo(path, ceiling, recording.frames)
+          if (codec === 'h264' && ceiling >= 50)
+            expect(level(video)).toBeLessThanOrEqual(20)
           await r.close()
         }
       } finally {
@@ -484,6 +490,57 @@ media(
         a.close(),
         b.close(),
       ])
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+media(
+  'AVC auto level 1b is above a 1.0 ceiling and a bounded 1.0 stream still independently decodes',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zc-level-1b-')),
+      path = join(dir, 'bounded.mp4'),
+      camera = new Camera({
+        simulate: true,
+        writable: true,
+        width: 64,
+        height: 48,
+        format: 'YUV420',
+        colorSpace: 'sycc',
+        fifo: true,
+      })
+    fill(camera)
+    try {
+      expect(
+        () =>
+          new Recorder(path, {
+            width: 64,
+            height: 48,
+            codec: 'h264',
+            bitrate: 64000,
+            limits: { level: 10 },
+          }),
+      ).toThrow()
+      expect(existsSync(path)).toBe(false)
+      const recorder = new Recorder(path, {
+          width: 64,
+          height: 48,
+          codec: 'h264',
+          colorSpace: 'sycc',
+          bitrate: 64000,
+          limits: { level: 10, maxBitrate: 64000, bufferBits: 128000 },
+        }),
+        recording = camera.startRecording(recorder)
+      try {
+        await until(() => recording.stats().completed >= 3n)
+        await recording.flushAsync()
+        const video = checkVideo(path, 10, recording.frames)
+        expect(video.config[3]).toBe(10)
+      } finally {
+        await recorder.close()
+      }
+    } finally {
+      await camera.close()
       rmSync(dir, { recursive: true, force: true })
     }
   },

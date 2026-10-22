@@ -931,3 +931,17 @@ for the contributed head and manual native-media dispatch still returns HTTP422
 "Actions has been disabled for this repository". Local focused suites and camera's
 copied-source/adapter CI are separate evidence; an unrun Home workflow is not
 counted as passing. No Actions settings are changed.
+
+The 0.71.1 follow-up fast-forwards Home's unrelated TypeScript work through
+b5ea012c6715b7055328c1c2481c889e2e35b6d7 and contributes the codec fix at
+929f20b776aba80f2f4fbe0da0ee3a04f4a81f31. The first Linux independent-decode run
+caught that a small AVC stream under a 6.2 ceiling advertised raw level 62.
+OpenH264 rejects that unsupported requirement. Home now preserves automatic
+minimum-level and motion-range selection after the resource bounds, then checks
+the emitted level against the ceiling. High ceilings no longer inflate small
+streams. The raw High-profile IDC 9 (level 1b) is compared semantically above 1.0,
+preventing numeric ordering from bypassing the ceiling. Camera copies the source
+and seven-case native fixture verbatim; strict independent decoding is retained.
+Pinned Debug/ReleaseSafe full Home suites and development-compiler native tests
+pass, along with camera's native/C/Bun checks. No codec capability is removed and
+no decoder rejection is hidden by skipping high-ceiling cases.

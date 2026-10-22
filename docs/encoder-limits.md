@@ -18,11 +18,15 @@ await recorder.reconfigureAsync({ limits: null }, 'unrestricted-next.mp4')
 `level` is a decoder-requirement ceiling multiplied by ten: 41 means level 4.1;
 zero keeps automatic behavior. AVC accepts 1.0, 1.1, 1.2, 1.3, 2.0, 2.1, 2.2,
 3.0, 3.1, 3.2, 4.0, 4.1, 4.2, 5.0, 5.1, 5.2, 6.0, 6.1 and 6.2. Level 1b is
-not represented by a decimal integer and is rejected. HEVC accepts 1.0, 2.0,
+not represented by a decimal integer and is rejected as an explicit request.
+Automatically selected AVC 1b is allowed only with a ceiling of 1.1 or above;
+its raw High-profile ID 9 does not make it lower than 1.0. HEVC accepts 1.0, 2.0,
 2.1, 3.0, 3.1, 4.0, 4.1, 5.0, 5.1, 5.2, 6.0, 6.1 and 6.2 as ceilings,
 using Main tier. A simpler stream can signal a lower level; this does not force
 an exact SPS label. Construction checks that the actual emitted requirement is
 positive, recognizable by the supported path, and within the selected ceiling.
+AVC keeps automatic minimum-level selection after bounding resources; a high
+ceiling does not unnecessarily raise a small stream's advertised requirement.
 
 AVC checks macroblock-rounded geometry, nominal rational frame rate, per-axis
 limits, profile-aware bitrate/CPB capacity, reference count and motion range
