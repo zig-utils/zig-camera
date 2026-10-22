@@ -585,6 +585,15 @@ int zc_fanout_state_get(zc_fanout *,uint64_t id,zc_fanout_state *);
 int zc_fanout_finish(zc_fanout *,uint64_t id,uint64_t ticket,uint32_t outcome /* completed=0,failed=1,cancelled=2 */,zc_fanout_state *);
 int zc_fanout_fail(zc_fanout *fanout, uint64_t id, zc_fanout_state *state);
 int zc_fanout_retire(zc_fanout *,uint64_t id,zc_fanout_state *);
+/* Named software capture quality: JPEG 25/35/50/65/80; AVC reference rates
+ * 3/4/7/10/14 Mbps at 1080p30, scaled by sqrt(pixel-rate ratio). HEVC uses the
+ * same Home heuristic. Target rates floor to 1000 bit/sec units, min 1000;
+ * overflow/invalid shape rejects without mutation. Explicit tier replaces AVC/
+ * HEVC bitrate; MJPEG bitrate/GOP remain unsupported. No SDK or I/O is opened.
+ * Existing numeric defaults are unchanged. Validate codec options/limits after
+ * applying a tier; fixed QP conflicts with a derived nonzero target bitrate. */
+enum {ZC_QUALITY_VERY_LOW=0,ZC_QUALITY_LOW=1,ZC_QUALITY_MEDIUM=2,ZC_QUALITY_HIGH=3,ZC_QUALITY_VERY_HIGH=4};
+int zc_video_apply_quality_tier(zc_video_config *,uint32_t tier);
 void zc_default_video_config(zc_video_config *);
 int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
 /* Synchronous bounded conversion/encode; the input lease can be released after

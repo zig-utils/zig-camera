@@ -38,6 +38,7 @@ const help =
     \\  --rotate-ms N --rotate-bytes N  Soft duration/size rotation limits
     \\  --preview                Also display while recording
     \\  --noise-reduction N      0 off, 1 fast, 2 high quality, 3 minimal
+    \\  --quality-tier NAME      Record: very-low, low, medium, high, very-high
     \\  --quality N              Quality 1..100 (still 98, video 90); CRF AVC 51..1, HEVC 51..0
     \\  --warmup N               Frames discarded before capture/bench (default 30)
     \\  --frames N               bench frame count (default 300)
@@ -114,6 +115,7 @@ fn run() !void {
     var warmup: u32 = 30;
     var frames: u32 = 300;
     var quality: u32 = if (eq(command, "record")) 90 else 98;
+    var quality_tier: ?camera.capture_quality.Tier = null;
     var timeout_ms: u32 = 5000;
     var image_options = camera.defaultImageOptions();
     var image_format: ?u32 = null;
@@ -177,7 +179,9 @@ fn run() !void {
         i += 1;
         if (i >= args.len) return error.MissingOptionValue;
         const value = args[i];
-        if (eq(key, "--image-format")) {
+        if (eq(key, "--quality-tier")) {
+            quality_tier = try camera.capture_quality.fromName(value);
+        } else if (eq(key, "--image-format")) {
             image_format = try camera.still.formatFromName(value);
         } else if (eq(key, "--icc-profile")) {
             if (image_profile != null) return error.DuplicateImageProfile;
@@ -287,6 +291,7 @@ fn run() !void {
         output = try (try @import("camera").recording_path.Pattern.init(pattern)).format(&rotation_name, 0);
     } else if (rotate_ns != 0 or rotate_bytes != 0) return error.MissingRotationPattern;
     if ((frames == 0 and !eq(command, "preview")) or quality == 0 or quality > 100 or fps == 0 or fps > 1000) return error.InvalidArgument;
+    if (quality_tier != null and !eq(command, "record")) return error.InvalidQualityTierCommand;
     if (eq(command, "capture")) {
         image_options.format = image_format orelse try camera.still.formatFromPath(output);
         image_options.quality = quality;
@@ -444,6 +449,7 @@ fn run() !void {
             video_cfg.codec = codec;
             video_cfg.bitrate = bitrate;
             video_cfg.gop = gop;
+            if (quality_tier) |tier| try camera.check(camera.media.zc_video_apply_quality_tier(&video_cfg, @intFromEnum(tier)));
             var recording_opts: camera.c.zc_recording_options = undefined;
             camera.media.zc_default_recording_options(&recording_opts);
             recording_opts.exclusive = @intFromBool(rotate_pattern != null);

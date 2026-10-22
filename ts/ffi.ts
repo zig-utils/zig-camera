@@ -122,6 +122,7 @@ export const native = dlopen(library, {
   zc_video_producer_frame: { args: [p, p, n, p], returns: i },
   zc_video_producer_audio: { args: [p, p, n, n, p], returns: i },
   zc_producer_job_start: { args: [p], returns: i },
+  zc_video_apply_quality_tier: { args: [p, u], returns: i },
   zc_video_set_repeat_headers: { args: [p, u], returns: i },
   zc_video_get_repeat_headers: { args: [p, p], returns: i },
   zc_producer_job_restart_repeat_headers: { args: [p, u], returns: i },

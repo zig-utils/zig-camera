@@ -531,3 +531,8 @@ Home repeated packet headers (0.74):
 - src/home/packet_output.zig additionally supplies checked parameter-set filtering
   and atomic Annex B prefix/access-unit assembly, copied verbatim from Home.
   The Home MIT license and copyright above apply.
+
+Home named capture quality (0.75):
+- src/home/capture_quality.zig is the verbatim Home allocation-free tier policy,
+  reusing session_config and standard integer square root for rational estimates.
+  The Home MIT license and copyright above apply.

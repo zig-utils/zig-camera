@@ -351,3 +351,12 @@ header lifetimes. ADR-MC3 retains the shared-media-library boundary, so the chec
 filter/assembly improvements go to Home and are reused verbatim here. No OS code
 is copied, modified or executed, and no hardware decode, camera timing or Pi
 throughput result follows from these inspections.
+
+The 0.75 named-quality audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and checks camera/media sources and
+ADR-MC3. The decoder's bitrate field and nominal camera capture routine do not
+supply software encoder quality tiers, bitrate control or a rational scaling
+implementation. Per the shared-media boundary, the reusable policy belongs in
+Home's library; hosted session negotiation and owner publication remain here.
+No OS code is copied, modified or executed, and no physical image quality,
+rate-control conformance, hardware acceleration or Pi throughput is inferred.

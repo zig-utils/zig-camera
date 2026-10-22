@@ -1036,3 +1036,39 @@ before project compilation, while the direct target-qualified native build
 passes. Home-hosted Actions remain distinct from local checks and copied camera
 CI; no Home-hosted success is inferred. See repeated-headers.md for policy and
 remaining codec/hardware limitations.
+
+The 0.75 named-quality audit inspects clean Home through
+f071c988992aa76bd2feeadb18c128fb5c77ed2a and contributes capture_quality at
+fb8be0b3432316743e74b99ebc880ddf5876f4d0. It reads codec/config and core/types
+quality presets, native_encoder's ABR/CRF/CQP policy and session_config. The broad
+CRF/bit-per-pixel presets do not implement Picamera2's software capture tier tables
+or rational square-root scaling. The new standalone helper therefore reuses
+session_config validation and the standard integer square root, with a checked
+u128 ratio and explicit vendor-unit rounding. It is copied verbatim here.
+
+The inspected Picamera2 reference remains
+5e2a35d3bb230825c98c56d98e01b41ddeb43e86: software JpegEncoder uses JPEG values
+25/35/50/65/80 and LibavH264Encoder uses 3/4/7/10/14 Mbps at 1080p30 with square-root
+complexity scaling. These are implemented without executing Python or using
+Libav/FFmpeg. HEVC sharing the rate policy is an explicit Home extension. The
+upstream hardware encoders' different linear policies and remaining rate/default
+semantics are not declared implemented by this software feature.
+
+C/Bun/CLI apply the same helper. Named video tiers derive ABR targets and are
+validated with codec options/limits before output construction. Numeric quality
+and defaults remain unchanged. Session geometry is resolved before applying the
+tier and VBV checks; an integration case shrinks geometry to fit a newly supplied
+CPB cap that would reject the inherited geometry. Fully resolved quality resets
+are passed explicitly through coordinated publication so an old tier cannot be
+re-inherited. Requested tiers remain copied for later geometry/fps recomputation.
+No second rate-control formula is implemented in Bun or the CLI.
+
+Home focused tests pass pinned/development Zig Debug/ReleaseSafe. Local camera
+validation passes 803 Bun and 345 native tests, C ABI, CLI tier/numeric byte
+comparisons, format and type checks. JPEG tier output matches its numeric quality
+bytes; video fixtures provide independent Linux I420 decoding across tiers,
+mode/reset/limit admission and fresh-camera recovery. Pure plans open no SDK,
+file or hook. The local normal build runner still fails SDK linkage before
+project compilation; direct target-qualified native/CLI builds succeed.
+Home-hosted Actions remain distinct from these local checks and the copied
+camera matrix. See quality-tiers.md for units and remaining hardware limitations.

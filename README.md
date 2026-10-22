@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.75 adds [named software quality tiers](docs/quality-tiers.md): exact
+Home bitrate planning, JPEG tier values, C/Bun/CLI selection and recomputation
+from negotiated geometry across recording sessions and recovery.
+
 Version 0.74 adds [repeated packet parameter headers](docs/repeated-headers.md):
 AVC/HEVC packet keyframes carry cached parameter sets by default, with a copied
 first-only opt-out across snapshots, splits and session transactions.

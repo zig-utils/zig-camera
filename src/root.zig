@@ -133,6 +133,7 @@ pub const preview_overlay = @import("preview_overlay.zig");
 comptime {
     _ = preview_overlay;
 }
+pub const capture_quality = @import("home/capture_quality.zig");
 pub const media = @import("media.zig");
 pub const fanout = @import("fanout.zig");
 comptime {

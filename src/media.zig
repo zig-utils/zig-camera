@@ -57,6 +57,13 @@ pub export fn zc_preview_close(p: *c.zc_preview) c_int {
     if (!options.preview) return c.ZC_UNSUPPORTED;
     return zcm_preview_close(p);
 }
+pub export fn zc_video_apply_quality_tier(cfg: *c.zc_video_config, value: u32) c_int {
+    const policy = @import("home/capture_quality.zig");
+    const tier = @import("std").meta.intToEnum(policy.Tier, value) catch return c.ZC_INVALID;
+    const next = policy.apply(cfg.*, tier) catch |err| return if (err == error.Unsupported) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+    cfg.* = next;
+    return c.ZC_OK;
+}
 pub export fn zc_default_video_config(out: *c.zc_video_config) void {
     out.* = .{ .width = 1920, .height = 1080, .fps_num = 30, .fps_den = 1, .codec = c.ZC_MJPEG, .bitrate = 0, .quality = 90, .gop = 0 };
 }

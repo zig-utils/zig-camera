@@ -1,3 +1,10 @@
+import { qualityTierCode, type RecordingQuality } from './quality'
+export {
+  QualityTier,
+  planRecordingQuality,
+  type RecordingQuality,
+  type QualityTierName,
+} from './quality'
 import {
   CaptureFilesJob,
   CaptureFilesState,
@@ -5494,7 +5501,7 @@ export interface RecorderOptions {
   /** Repeat parameter sets at AVC/HEVC packet keyframes; default true. */
   repeatHeaders?: boolean
   bitrate?: number
-  quality?: number
+  quality?: RecordingQuality
   gop?: number
   audio?: {
     sampleRate: number
@@ -5517,20 +5524,14 @@ export interface RecorderOptions {
   io?: { maxBytes: number; maxOperations: number; waitMs?: number }
 }
 /** Session media settings. Omitted fields retain their value; audio:null disables
- * audio. Changing codec resets omitted bitrate/GOP/encoder policy to codec defaults. */
+ * audio, quality:null restores legacy numeric quality. Changing codec resets omitted bitrate/GOP/encoder policy to codec defaults. */
 export type RecorderSessionOptions = Partial<
   Pick<
     RecorderOptions,
-    | 'width'
-    | 'height'
-    | 'fps'
-    | 'codec'
-    | 'bitrate'
-    | 'quality'
-    | 'gop'
-    | 'stream'
+    'width' | 'height' | 'fps' | 'codec' | 'bitrate' | 'gop' | 'stream'
   >
 > & {
+  quality?: RecordingQuality | null
   audio?: RecorderOptions['audio'] | null
   colorSpace?: ColorSpaceRequest | null
   encoder?: EncoderOptions | null
@@ -5539,6 +5540,7 @@ export type RecorderSessionOptions = Partial<
 }
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   options = { ...options }
+  qualityTierCode(options.quality)
   if (
     options.repeatHeaders !== undefined &&
     typeof options.repeatHeaders !== 'boolean'
@@ -5588,12 +5590,14 @@ function mergeSessionOptions(
     'fps',
     'codec',
     'bitrate',
-    'quality',
     'gop',
     'stream',
-  ] as const)
-    if (settings[key] !== undefined)
-      Object.assign(merged, { [key]: settings[key] })
+  ] as const) {
+    const value = settings[key]
+    if (value !== undefined) Object.assign(merged, { [key]: value })
+  }
+  const quality = settings.quality
+  if (quality !== undefined) merged.quality = quality ?? undefined
   if (settings.audio !== undefined) merged.audio = settings.audio ?? undefined
   if (settings.colorSpace !== undefined)
     merged.colorSpace = settings.colorSpace ?? undefined
@@ -5612,21 +5616,14 @@ function resolvedSession(
   height: number,
   exact: number,
 ) {
-  const config = sessionFields(options)
-  check(
-    n.zc_video_resolve_session_config(
-      ptr(config.video),
-      ptr(config.audio),
-      config.bitrate,
-      width,
-      height,
-      exact,
-    ),
-    'camera/recorder configuration',
-  )
+  sessionFields(options, { width, height, exact })
   return snapshotRecorderOptions({ ...options, width, height })
 }
-function sessionFields(options: RecorderOptions) {
+function sessionFields(
+  options: RecorderOptions,
+  geometry?: { width: number; height: number; exact: number },
+) {
+  const tier = qualityTierCode(options.quality)
   if (
     options.audio &&
     (!Number.isInteger(options.audio.sampleRate) ||
@@ -5645,7 +5642,7 @@ function sessionFields(options: RecorderOptions) {
       1,
       Codec[options.codec ?? 'mjpeg'],
       options.bitrate,
-      options.quality,
+      typeof options.quality === 'number' ? options.quality : undefined,
       options.gop,
     ]),
     audio: fields(24, n.zc_default_recording_options, [
@@ -5665,6 +5662,32 @@ function sessionFields(options: RecorderOptions) {
     limits: encodeEncoderLimits(options.limits),
     repeatHeaders: options.repeatHeaders ?? true,
   }
+  if (geometry) {
+    // A named video tier overrides target bitrate; resolve that target from the
+    // actual geometry before level/CPB validation, preserving native exactness.
+    if (
+      tier !== undefined &&
+      options.codec !== undefined &&
+      options.codec !== 'mjpeg'
+    )
+      view(result.video).setUint32(20, 0, true)
+    check(
+      n.zc_video_resolve_session_config(
+        ptr(result.video),
+        ptr(result.audio),
+        result.bitrate,
+        geometry.width,
+        geometry.height,
+        geometry.exact,
+      ),
+      'camera/recorder configuration',
+    )
+  }
+  if (tier !== undefined)
+    check(
+      n.zc_video_apply_quality_tier(ptr(result.video), tier),
+      'quality tier',
+    )
   check(
     n.zc_video_check_color(
       ptr(result.video),
@@ -6127,6 +6150,42 @@ export class Recorder {
     if (this.coordinator && !this.coordinatorEntry)
       throw new CameraError(-4, 'coordinated mode owns recorder')
     this.assertOwned(allowProducer)
+  }
+  qualityPolicy() {
+    this.assertOpen()
+    const video = storage(32),
+      audio = storage(24),
+      audioBitrate = new Uint32Array(1)
+    check(
+      n.zc_video_session_config(
+        this.handle,
+        ptr(video),
+        ptr(audio),
+        ptr(audioBitrate),
+      ),
+      'recording quality policy',
+    )
+    const cfg = view(video),
+      codec = cfg.getUint32(16, true),
+      bitrate = cfg.getUint32(20, true),
+      quality = cfg.getUint32(24, true)
+    const qp = this.encoderOptions().qp
+    return Object.freeze({
+      tier:
+        typeof this.options.quality === 'string'
+          ? this.options.quality
+          : undefined,
+      numericQuality: quality,
+      targetBitrate: bitrate,
+      mode:
+        codec === 3
+          ? ('jpeg' as const)
+          : qp
+            ? ('cqp' as const)
+            : bitrate
+              ? ('abr' as const)
+              : ('crf' as const),
+    })
   }
   repeatedHeaders(): boolean {
     this.assertOpen()
@@ -7822,6 +7881,7 @@ export class Recorder {
               ...settings,
               audio: settings.audio ?? null,
               colorSpace: settings.colorSpace ?? null,
+              quality: settings.quality ?? null,
               encoder: settings.encoder ?? null,
               limits: settings.limits ?? null,
               repeatHeaders: settings.repeatHeaders ?? true,

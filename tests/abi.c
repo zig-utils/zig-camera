@@ -238,7 +238,24 @@ static void keyframe_abi(void) {
     assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && state.applied==1 && state.pending==2);
     assert(zc_video_close(recorder)==ZC_OK);
 }
+static void quality_abi(void) {
+    zc_video_config cfg;zc_default_video_config(&cfg);cfg.codec=ZC_H264;cfg.bitrate=123000;
+    zc_video_config original=cfg;
+    assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_MEDIUM)==ZC_OK && cfg.bitrate==7000000 && cfg.quality==90);
+    assert(cfg.width==original.width && cfg.gop==original.gop);
+    original=cfg;assert(zc_video_apply_quality_tier(&cfg,99)==ZC_INVALID && !memcmp(&cfg,&original,sizeof(cfg)));
+    cfg.width=17;original=cfg;assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_HIGH)==ZC_INVALID && !memcmp(&cfg,&original,sizeof(cfg)));
+    cfg.width=1920;cfg.fps_num=30000;cfg.fps_den=1001;
+    assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_MEDIUM)==ZC_OK && cfg.bitrate==6996000);
+    cfg.codec=ZC_HEVC;assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_MEDIUM)==ZC_OK && cfg.bitrate==6996000);
+    cfg.width=8192;cfg.height=8192;cfg.fps_num=1000000;cfg.fps_den=1;original=cfg;
+    assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_VERY_HIGH)==ZC_INVALID && !memcmp(&cfg,&original,sizeof(cfg)));
+    zc_default_video_config(&cfg);cfg.width=33;cfg.height=25;
+    assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_LOW)==ZC_OK && cfg.bitrate==0 && cfg.quality==35);
+    cfg.bitrate=1000;original=cfg;assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_LOW)==ZC_INVALID && !memcmp(&cfg,&original,sizeof(cfg)));
+}
 int main(void) {
+    quality_abi();
     keyframe_abi();
     {
         zc_config config;zc_default_config(&config);config.width=16;config.height=16;config.policy=ZC_FIFO;
