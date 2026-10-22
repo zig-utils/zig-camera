@@ -470,3 +470,10 @@ The Home MIT license and copyright reproduced above apply.
 The capture JSON reader is updated verbatim from Home image
 77b7b7340c6671b59249b3821f6b7cc1d84a0768 for GCC warning-free seek/bounds
 statements; production sources remain at d0abb3777 above.
+
+Home heterogeneous capture plane bundles (0.59):
+- src/home/plane_pack.zig is copied verbatim from Home video core/plane_pack.zig
+  at 44bf4e911437251479a4a535fc311e1471cc93d5. It supplies checked all-plane preflight and
+  allocation-free packing shared by rows, I420 and request stream bundles.
+  https://github.com/home-lang/home/commit/44bf4e911437251479a4a535fc311e1471cc93d5
+The Home MIT license and copyright reproduced above apply.

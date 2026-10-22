@@ -165,6 +165,7 @@ export const native = dlopen(library, {
   zc_acquire: { args: [p, u, p], returns: i },
   zc_retain: { args: [p, n, p], returns: i },
   zc_frame_references: { args: [p, n, p], returns: i },
+  zc_copy_frame_streams: { args: [p, n, p, u, p, u, p, n, p, p], returns: i },
   zc_stream_copy_size: { args: [p, p], returns: i },
   zc_release: { args: [p, n], returns: i },
   zc_get_info: { args: [p, p], returns: i },

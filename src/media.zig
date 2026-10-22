@@ -131,40 +131,48 @@ pub export fn zc_stream_copy_size(m: *const c.zc_stream, out: *u64) c_int {
     out.* = size;
     return c.ZC_OK;
 }
-/// Descriptors and DMA access remain borrowed for the duration of this call.
-pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_int {
+/// Borrowed plane plan shared by single-stream and atomic bundle copies.
+/// No pixel is read here. Caller retains the request and serializes CPU access.
+pub fn streamPlanes(m: *const c.zc_stream, out: *[3]@import("home/plane_pack.zig").Plane) !usize {
     const std = @import("std");
-    const pack = @import("home/plane_pack.zig");
-    if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384 or m.plane_count == 0 or m.plane_count > c.ZC_MAX_PLANES or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    if (m.plane_count == 0 or m.plane_count > c.ZC_MAX_PLANES) return error.InvalidGeometry;
     var required: u64 = 0;
-    const size_rc = zc_stream_copy_size(m, &required);
-    if (size_rc != 0) return size_rc;
-    if (length < required) return c.ZC_INVALID;
+    const rc = zc_stream_copy_size(m, &required);
+    if (rc != 0) return if (rc == c.ZC_UNSUPPORTED) error.UnsupportedFormat else error.InvalidGeometry;
     for (m.planes[0..m.plane_count]) |p| {
-        if (p.data == null or p.bytes_used > p.length or p.bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
+        if (p.data == null or p.bytes_used > p.length or p.bytes_used > std.math.maxInt(usize)) return error.InvalidGeometry;
     }
     const name = std.mem.sliceTo(&m.format, 0);
-    if (std.mem.eql(u8, name, "BGR888")) {
-        if (m.plane_count != 1) return c.ZC_INVALID;
-        pack.rows(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.stride, @as(usize, m.width) * 3, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
-    } else if (std.mem.eql(u8, name, "YUV420")) {
-        if ((m.stride | m.width | m.height) & 1 != 0) return c.ZC_INVALID;
+    if (std.mem.eql(u8, name, "YUV420")) {
+        if ((m.stride | m.width | m.height) & 1 != 0) return error.InvalidGeometry;
         var planes: [3][]const u8 = undefined;
         if (m.plane_count == 3) {
             for (0..3) |i| planes[i] = m.planes[i].data[0..@intCast(m.planes[i].bytes_used)];
         } else if (m.plane_count == 1) {
-            const ysize = @as(usize, m.stride) * m.height;
+            const ysize = std.math.mul(usize, m.stride, m.height) catch return error.InvalidGeometry;
             const data = m.planes[0].data[0..@intCast(m.planes[0].bytes_used)];
-            if (data.len < ysize + ysize / 4) return c.ZC_INVALID;
-            planes = .{ data[0..ysize], data[ysize..][0 .. ysize / 4], data[ysize + ysize / 4 ..] };
-        } else return c.ZC_UNSUPPORTED;
-        pack.packI420(planes, .{ m.stride, m.stride / 2, m.stride / 2 }, m.width, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
-    } else {
-        if (m.plane_count != 1) return c.ZC_INVALID;
-        const format = @import("raw.zig").Format.parse(name) catch return c.ZC_UNSUPPORTED;
-        const row = format.rowBytes(m.width) catch return c.ZC_INVALID;
-        pack.rows(m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], m.stride, row, m.height, out[0..@intCast(length)]) catch return c.ZC_INVALID;
+            const u_end = std.math.add(usize, ysize, ysize / 4) catch return error.InvalidGeometry;
+            if (data.len < u_end) return error.InvalidGeometry;
+            planes = .{ data[0..ysize], data[ysize..u_end], data[u_end..] };
+        } else return error.UnsupportedFormat;
+        for (0..3) |i| out[i] = .{ .source = planes[i], .stride = if (i == 0) m.stride else m.stride / 2, .row_bytes = if (i == 0) m.width else m.width / 2, .height = if (i == 0) m.height else m.height / 2 };
+        return 3;
     }
+    if (m.plane_count != 1) return error.InvalidGeometry;
+    const row: usize = if (std.mem.eql(u8, name, "BGR888")) @as(usize, m.width) * 3 else blk: {
+        const format = @import("raw.zig").Format.parse(name) catch return error.UnsupportedFormat;
+        break :blk format.rowBytes(m.width) catch return error.InvalidGeometry;
+    };
+    out[0] = .{ .source = m.planes[0].data[0..@intCast(m.planes[0].bytes_used)], .stride = m.stride, .row_bytes = row, .height = m.height };
+    return 1;
+}
+/// Descriptors and DMA access remain borrowed for the duration of this call.
+pub export fn zc_copy_stream(m: *const c.zc_stream, out: [*]u8, length: u64) c_int {
+    if (length > @import("std").math.maxInt(usize)) return c.ZC_INVALID;
+    const pack = @import("home/plane_pack.zig");
+    var planes: [3]pack.Plane = undefined;
+    const count = streamPlanes(m, &planes) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+    _ = pack.pack(planes[0..count], out[0..@intCast(length)]) catch return c.ZC_INVALID;
     return c.ZC_OK;
 }
 

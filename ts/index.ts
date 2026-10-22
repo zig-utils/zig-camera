@@ -1,3 +1,11 @@
+import {
+  streamNames,
+  copyNativeStreams,
+  type StreamName,
+  type PackedStream,
+  type CapturedStreams,
+} from './streams'
+export type { StreamName, PackedStream, CapturedStreams } from './streams'
 import { withStagedImageFile } from './staged-image'
 import {
   readColorNegotiation,
@@ -430,28 +438,6 @@ export interface CameraOptions {
   sensor?: { width: number; height: number; bitDepth: number }
   lores?: { width: number; height: number; rgb?: boolean }
 }
-export type StreamName = 'main' | 'raw' | 'lores'
-export interface PackedStream {
-  width: number
-  height: number
-  format: string
-  rowBytes: number
-  data: Uint8Array
-}
-export interface CapturedStreams {
-  streams: Partial<Record<StreamName, PackedStream>>
-  metadata: ReturnType<Frame['metadata']>
-}
-function streamNames(streams: readonly StreamName[]): StreamName[] {
-  if (
-    !streams.length ||
-    streams.length > 3 ||
-    new Set(streams).size !== streams.length ||
-    streams.some((name) => !['main', 'raw', 'lores'].includes(name))
-  )
-    throw new RangeError('1..3 distinct stream names required')
-  return [...streams]
-}
 type FrameSource = {
   handle: Pointer
   assertOpen(): void
@@ -564,36 +550,17 @@ export class Frame {
     )
     return data
   }
-  copyStream(stream: 'main' | 'raw' | 'lores' = 'main') {
+  copyStream(stream: StreamName = 'main'): PackedStream {
+    const names = streamNames([stream])
     this.open()
-    const data = storage(208)
-    check(
-      n.zc_get_stream(
-        this.camera.handle,
-        this.token,
-        { main: 0, raw: 1, lores: 2 }[stream],
-        ptr(data),
-      ),
-    )
-    const d = view(data),
-      width = d.getUint32(0, true),
-      height = d.getUint32(4, true)
-    const format = text(data, 16, 32)
-    const size = new BigUint64Array(1)
-    check(n.zc_stream_copy_size(ptr(data), ptr(size)), 'stream copy size')
-    if (size[0] > BigInt(Number.MAX_SAFE_INTEGER))
-      throw new RangeError('stream too large')
-    const out = storage(Number(size[0]))
-    check(n.zc_copy_stream(ptr(data), ptr(out), BigInt(out.length)))
-    const rowBytes = format === 'YUV420' ? width : out.length / height
-    return { width, height, format, rowBytes, data: out }
+    return copyNativeStreams(this.camera.handle, this.token, names).streams[
+      stream
+    ]!
   }
   copyStreams(streams: readonly StreamName[] = ['main']): CapturedStreams {
+    const names = streamNames(streams)
     this.open()
-    const names = streamNames(streams),
-      result: CapturedStreams = { streams: {}, metadata: this.metadata() }
-    for (const name of names) result.streams[name] = this.copyStream(name)
-    return result
+    return copyNativeStreams(this.camera.handle, this.token, names)
   }
   retain() {
     this.open()
@@ -3296,6 +3263,18 @@ export class Camera {
       data: Uint8Array
     }>
   }
+  switchModeAndCaptureStreams(
+    options: CameraOptions,
+    streams: readonly StreamName[] = ['main'],
+    jobOptions: ModeJobOptions<CapturedStreams> = {},
+  ) {
+    const names = streamNames(streams)
+    return this.submitMode(
+      options,
+      { kind: 'streams', streams: names },
+      jobOptions,
+    ) as BunJob<CapturedStreams>
+  }
   switchModeAndCaptureFile(
     options: CameraOptions,
     path: string,
@@ -3503,6 +3482,11 @@ export class Camera {
                 value = response.value
                 if (capture.kind === 'metadata' || capture.kind === 'file')
                   value = decodeMetadata(response.value!)
+                if (capture.kind === 'streams') {
+                  if (!response.bundle)
+                    throw new CameraError(-6, 'missing stream bundle')
+                  value = response.bundle
+                }
                 if (capture.kind === 'stream')
                   value = { ...response.stream!, data: response.value! }
               }

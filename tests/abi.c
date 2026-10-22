@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_packed_stream)==64,"packed stream ABI");
+_Static_assert(offsetof(zc_packed_stream,offset)==48,"packed stream range ABI");
 _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
 _Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
@@ -158,6 +160,23 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;cfg.raw=1;
+        zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.capture.unpacked_raw=1;pipe.lores_width=8;pipe.lores_height=6;
+        zc_camera *camera=NULL;assert(zc_open_pipeline(&cfg,&pipe,&camera)==ZC_OK && zc_start(camera)==ZC_OK);
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        const uint32_t ids[]={ZC_LORES,ZC_MAIN,ZC_RAW};zc_packed_stream layouts[3];zc_metadata metadata;uint64_t size=0;
+        assert(zc_copy_frame_streams(camera,frame.token,ids,3,layouts,3,NULL,0,&size,&metadata)==ZC_OK && size==972);
+        assert(metadata.sequence==frame.sequence && layouts[0].length==72 && layouts[1].offset==72 && layouts[2].offset==612);
+        uint8_t bytes[974];memset(bytes,42,sizeof(bytes));
+        assert(zc_copy_frame_streams(camera,frame.token,ids,3,layouts,3,bytes,sizeof(bytes),&size,&metadata)==ZC_OK && size==972);
+        assert(bytes[972]==42 && bytes[973]==42);
+        assert(zc_copy_frame_streams(camera,frame.token,ids,3,layouts,2,NULL,0,&size,&metadata)==ZC_INVALID && size==0);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        assert(zc_copy_frame_streams(camera,frame.token,ids,3,layouts,3,NULL,0,&size,&metadata)==ZC_STALE && size==0);
+        assert(zc_stop(camera)==ZC_OK && zc_close(camera)==ZC_OK);
+    }
+
     {
         const unsigned char model[]="ABI camera";
         const zc_exif_field field={ZC_EXIF_IMAGE,0x0110,2,0,sizeof(model),0,model,sizeof(model)};

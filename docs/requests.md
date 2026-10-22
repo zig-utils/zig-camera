@@ -60,7 +60,8 @@ stream copies and metadata. See [continuous AF](controls.md#continuous-autofocus
 for restoration deadlines, buffer pressure and explicit recovery semantics.
 
 captureStreams(['main', 'raw', 'lores']) copies all selected streams and metadata
-from one completed request. Results own their arrays, so later captures cannot
+from one completed request. Results own compact ranges in one backing allocation,
+so later captures cannot
 change them. Names are validated/copied at admission. copyStreams on a retained
 Frame offers the same operation. Each stream includes width, height, format,
 rowBytes and data. BGR888 bytes are RGB; YUV420 bytes are tight I420. Bayer buffers
@@ -81,3 +82,9 @@ native mapped plane descriptors remain borrowed. [Scoped mapped streams](mapped-
 add independent owners, write exclusivity and Bun view invalidation. Native tests exercise concurrent retains/releases, DMA failures,
 reference pressure and generation exhaustion; C/Bun tests cover parent release,
 recording coexistence, stop/close, cancellation handoff and paired stream copies.
+
+Temporary paired copies are available as `switchModeAndCaptureStreams`, including
+metadata, request hooks, autofocus/deadline policy and prior-mode restoration.
+The additive native bundle API validates all selected streams before writing;
+Zig exposes an allocator-owned StreamBundle. See [stream bundles](stream-bundles.md)
+for backing-buffer ownership, layouts and failure contracts.

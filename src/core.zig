@@ -359,6 +359,50 @@ pub export fn zc_get_stream(p: *c.zc_camera, token: u64, stream: u32, out: *c.zc
     if (self.slots[i].access.writer) return c.ZC_BUSY;
     return streamLocked(self, i, stream, out);
 }
+pub export fn zc_copy_frame_streams(p: *c.zc_camera, token: u64, streams: ?[*]const u32, count: u32, layouts: ?[*]c.zc_packed_stream, layout_capacity: u32, data: ?[*]u8, capacity: u64, size: *u64, metadata: *c.zc_metadata) c_int {
+    size.* = 0;
+    if (count == 0 or count > 3 or streams == null or layouts == null or layout_capacity < count or capacity > std.math.maxInt(usize) or (data == null and capacity != 0)) return c.ZC_INVALID;
+    var ids: [3]u32 = undefined;
+    var seen: u32 = 0;
+    for (0..count) |i| {
+        const id = streams.?[i];
+        if (id > c.ZC_LORES) return c.ZC_INVALID;
+        const bit = @as(u32, 1) << @as(u5, @intCast(id));
+        if (seen & bit != 0) return c.ZC_INVALID;
+        seen |= bit;
+        ids[i] = id;
+    }
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    const pack = @import("home/plane_pack.zig");
+    var planes: [9]pack.Plane = undefined;
+    var plane_count: usize = 0;
+    var descriptions: [3]c.zc_packed_stream = undefined;
+    var total: usize = 0;
+    for (ids[0..count], 0..) |id, i| {
+        var source: c.zc_stream = undefined;
+        const rc = streamLocked(self, index, id, &source);
+        if (rc != 0) return rc;
+        var selected: [3]pack.Plane = undefined;
+        const selected_count = @import("media.zig").streamPlanes(&source, &selected) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+        const length = pack.packedSize(selected[0..selected_count]) catch return c.ZC_INVALID;
+        descriptions[i] = .{ .stream = id, .width = source.width, .height = source.height, .row_bytes = @intCast(selected[0].row_bytes), .format = source.format, .offset = total, .length = length };
+        total = std.math.add(usize, total, length) catch return c.ZC_INVALID;
+        @memcpy(planes[plane_count..][0..selected_count], selected[0..selected_count]);
+        plane_count += selected_count;
+    }
+    if (data) |out| {
+        if (capacity < total) return c.ZC_INVALID;
+        _ = pack.pack(planes[0..plane_count], out[0..@intCast(capacity)]) catch return c.ZC_INVALID;
+    }
+    @memcpy(layouts.?[0..count], descriptions[0..count]);
+    metadata.* = self.slots[index].metadata;
+    size.* = total;
+    return c.ZC_OK;
+}
 pub export fn zc_get_stream_color_space(p: *c.zc_camera, stream: u32, out: *c.zc_color_space) c_int {
     const self = session(p);
     self.operation.lock();
@@ -2862,4 +2906,71 @@ test "explicit processed colors normalize per stream and strict metadata remains
         try std.testing.expectEqual(c.ZC_OK, zc_get_color_negotiation(camera.?, c.ZC_MAIN, &changed));
         try std.testing.expectEqual(@as(u32, 8), changed.flags & 8);
     };
+}
+
+test "bundle copy validates every stream before output, preserves metadata and excludes writers" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    try t.expectEqual(@as(usize, 64), @sizeOf(c.zc_packed_stream));
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    cfg.raw = 1;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_pipeline_options(&pipeline);
+    pipeline.capture.unpacked_raw = 1;
+    pipeline.lores_width = 8;
+    pipeline.lores_height = 6;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open_pipeline(&cfg, &pipeline, &camera));
+    defer _ = zc_close(camera.?);
+    try t.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    defer _ = zc_stop(camera.?);
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    defer _ = zc_release(camera.?, frame.token);
+    const ids = [_]u32{ c.ZC_LORES, c.ZC_MAIN, c.ZC_RAW };
+    var layouts: [3]c.zc_packed_stream = undefined;
+    var meta: c.zc_metadata = undefined;
+    var size: u64 = 0;
+    try t.expectEqual(c.ZC_OK, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, null, 0, &size, &meta));
+    try t.expectEqual(@as(u64, 72 + 540 + 360), size);
+    try t.expectEqual(frame.sequence, meta.sequence);
+    const before_layouts = layouts;
+    const before_meta = meta;
+    var data: [972]u8 = @splat(42);
+    try t.expectEqual(c.ZC_INVALID, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, &data, data.len - 1, &size, &meta));
+    try t.expectEqual(@as(u64, 0), size);
+    try t.expectEqualSlices(u8, &@as([972]u8, @splat(42)), &data);
+    try t.expectEqualDeep(before_layouts, layouts);
+    try t.expectEqualDeep(before_meta, meta);
+    // A late malformed raw plane cannot publish earlier lores/main pixels.
+    const self = session(camera.?);
+    const index = self.leaseIndex(frame.token).?;
+    const original = self.slots[index].frame.raw.planes[0].bytes_used;
+    self.slots[index].frame.raw.planes[0].bytes_used = 1;
+    try t.expectEqual(c.ZC_INVALID, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, &data, data.len, &size, &meta));
+    try t.expectEqualSlices(u8, &@as([972]u8, @splat(42)), &data);
+    try t.expectEqualDeep(before_layouts, layouts);
+    try t.expectEqualDeep(before_meta, meta);
+    self.slots[index].frame.raw.planes[0].bytes_used = original;
+    try t.expectEqual(c.ZC_OK, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, &data, data.len, &size, &meta));
+    try t.expectEqual(@as(u64, 0), layouts[0].offset);
+    try t.expectEqual(@as(u64, 72), layouts[1].offset);
+    try t.expectEqual(@as(u64, 612), layouts[2].offset);
+    for (ids, layouts) |id, layout| {
+        var selected: c.zc_stream = undefined;
+        try t.expectEqual(c.ZC_OK, zc_get_stream(camera.?, frame.token, id, &selected));
+        var expected: [540]u8 = undefined;
+        try t.expectEqual(c.ZC_OK, @import("media.zig").zc_copy_stream(&selected, &expected, expected.len));
+        try t.expectEqualSlices(u8, expected[0..@intCast(layout.length)], data[@intCast(layout.offset)..][0..@intCast(layout.length)]);
+    }
+    try t.expectEqual(c.ZC_INVALID, zc_copy_frame_streams(camera.?, frame.token, &.{ 0, 0 }, 2, &layouts, 3, null, 0, &size, &meta));
+    var map: ?*c.zc_frame_map = null;
+    try t.expectEqual(c.ZC_OK, zc_frame_map_open(camera.?, frame.token, c.ZC_MAIN, 1, &map));
+    try t.expectEqual(c.ZC_BUSY, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, null, 0, &size, &meta));
+    try t.expectEqual(c.ZC_OK, zc_frame_map_close(map.?));
+    try t.expectEqual(c.ZC_STALE, zc_copy_frame_streams(camera.?, frame.token + 1000, &ids, 3, &layouts, 3, null, 0, &size, &meta));
 }

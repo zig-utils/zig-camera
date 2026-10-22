@@ -181,3 +181,11 @@ is OCI image management, not photography. Decoder stubs provide no metadata
 serializer. Per ADR-MC3, missing-default Exif merging and inline JPEG markers
 therefore improve Home image first and are reused here. OS stays unchanged;
 no kernel, optical or capture-hardware claims are inferred from these files.
+
+The 0.59 paired-stream audit fetches Home OS main at unchanged
+151269666bc09aa15a271f1c1f4603f681132e65 and rechecks camera.home plus ADR-MC3.
+The fixed RGB buffer and nominal capture-size return do not supply multi-stream
+request association, validated source planes or hosted copy ownership. Per the
+media-stdlib boundary, aggregate plane preflight therefore improves Home video
+first and is reused verbatim here. No kernel allocator, stub capture or decoder
+return is treated as a working implementation or hardware acceptance result.

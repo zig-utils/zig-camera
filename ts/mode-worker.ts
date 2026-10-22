@@ -1,3 +1,8 @@
+import {
+  copyNativeStreams,
+  type CapturedStreams,
+  type StreamName,
+} from './streams'
 import type { PreparedExif } from './exif'
 import { decodeMetadata } from './metadata'
 import {
@@ -40,7 +45,8 @@ export interface ModeRequest {
   cancel: SharedArrayBuffer
   deadline: number
   capture?: {
-    kind: 'rgb' | 'stream' | 'metadata' | 'file' | 'encoded'
+    kind: 'rgb' | 'stream' | 'streams' | 'metadata' | 'file' | 'encoded'
+    streams?: StreamName[]
     imageOptions?: Uint8Array
     imageProfile?: ImageProfile
     imageExif?: PreparedExif
@@ -72,13 +78,17 @@ export interface ModeResponse {
   target: boolean
   started: boolean
   value?: Uint8Array
+  bundle?: CapturedStreams
   stream?: { width: number; height: number; format: string }
   /** Main-thread-only enrichment; never transported by the worker. */
   callbackError?: unknown
 }
 declare const self: {
   onmessage: (event: { data: ModeRequest }) => void
-  postMessage: (value: ModeResponse | ModeRequestHook) => void
+  postMessage: (
+    value: ModeResponse | ModeRequestHook,
+    transfer?: ArrayBuffer[],
+  ) => void
   close: () => void
 }
 self.onmessage = ({ data: request }) => {
@@ -348,7 +358,13 @@ self.onmessage = ({ data: request }) => {
         hook('pre', frame)
         prepared = true
         const capture = request.capture
-        if (capture.kind === 'rgb') {
+        if (capture.kind === 'streams') {
+          result.bundle = copyNativeStreams(
+            result.handle,
+            token,
+            capture.streams!,
+          )
+        } else if (capture.kind === 'rgb') {
           const stream = storage(208)
           check(
             n.zc_get_stream(
@@ -413,33 +429,15 @@ self.onmessage = ({ data: request }) => {
             n.zc_get_frame_metadata(result.handle, token, ptr(result.value)),
           )
         } else {
-          const stream = storage(208)
-          check(
-            n.zc_get_stream(
-              result.handle,
-              token,
-              capture.stream ?? 0,
-              ptr(stream),
-            ),
-          )
-          const d = view(stream),
-            width = d.getUint32(0, true),
-            height = d.getUint32(4, true)
-          const name = new TextDecoder()
-            .decode(stream.subarray(16, 48))
-            .split('\0')[0]
-          const size = new BigUint64Array(1)
-          check(n.zc_stream_copy_size(ptr(stream), ptr(size)))
-          if (size[0] > BigInt(Number.MAX_SAFE_INTEGER)) throw -1
-          result.value = storage(Number(size[0]))
-          check(
-            n.zc_copy_stream(
-              ptr(stream),
-              ptr(result.value),
-              BigInt(result.value.length),
-            ),
-          )
-          result.stream = { width, height, format: name }
+          const name = (['main', 'raw', 'lores'] as const)[capture.stream ?? 0]
+          const selected = copyNativeStreams(result.handle, token, [name])
+            .streams[name]!
+          result.value = selected.data
+          result.stream = {
+            width: selected.width,
+            height: selected.height,
+            format: selected.format,
+          }
         }
       } finally {
         try {
@@ -481,6 +479,14 @@ self.onmessage = ({ data: request }) => {
     }
   }
   Atomics.store(new Int32Array(request.cancel), 1, 5)
-  self.postMessage(result)
+  // Paired stream views share one owned buffer. Move it once rather than
+  // cloning every pixel during worker publication; no DMA backing escapes.
+  const transfers = new Set<ArrayBuffer>()
+  if (result.bundle)
+    for (const stream of Object.values(result.bundle.streams)) {
+      if (stream && stream.data.buffer instanceof ArrayBuffer)
+        transfers.add(stream.data.buffer)
+    }
+  self.postMessage(result, [...transfers])
   self.close()
 }

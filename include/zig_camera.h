@@ -190,6 +190,22 @@ typedef struct {
  float analogue_gain,lens_position,red_gain,blue_gain;
  uint64_t frame_duration_us; int32_t crop[4];
 } zc_metadata;
+/* Tight multi-stream request snapshot. Layouts are in caller-selected order;
+ * offsets/lengths index one caller-owned byte buffer. No camera pointers escape.
+ * 1..3 distinct enabled main/raw/lores IDs are required. All sources and output
+ * capacity are validated under the request lock before any pixel is copied.
+ * data=NULL/capacity=0 queries size and layouts; other insufficient capacity
+ * returns INVALID. On failure only *size becomes zero; other outputs stay intact.
+ * The caller owns the lease across query/copy and provides disjoint output
+ * buffers which do not alias source pixels, IDs or each other. */
+typedef struct {
+    uint32_t stream,width,height,row_bytes; char format[32];
+    uint64_t offset,length;
+} zc_packed_stream;
+int zc_copy_frame_streams(zc_camera *,uint64_t token,const uint32_t *streams,uint32_t count,
+    zc_packed_stream *layouts,uint32_t layout_capacity,uint8_t *data,uint64_t capacity,
+    uint64_t *size,zc_metadata *metadata);
+
 /* Consumer-owned bounded selection state; initialize once, serialize access and
  * use within one camera completion timeline. Never edits/recycles a request.
  * Timestamp is inclusive; EXPOSURE_GUARD subtracts exposure_us*1000, saturating

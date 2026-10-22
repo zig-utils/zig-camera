@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.59 adds [owned stream bundles](docs/stream-bundles.md): paired main/raw/lores
+copies during temporary mode capture, shared native preflight, and one compact
+owned allocation through C/Zig and Bun.
+
 Version 0.58 adds [capture Exif](docs/capture-exif.md): request-derived JPEG
 metadata, copied typed/raw overrides, PNG/TIFF opt-in, and shared Home JPEG
 metadata encoding without a second image copy.

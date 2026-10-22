@@ -98,6 +98,22 @@ pub const ControlSnapshot = struct {
         return self.values[0..self.count];
     }
 };
+/// Owned compact stream ranges and request metadata; no borrowed camera pointer.
+pub const StreamBundle = struct {
+    layouts: [3]c.zc_packed_stream,
+    count: u32,
+    data: []u8,
+    metadata: c.zc_metadata,
+    pub fn bytes(self: StreamBundle, id: u32) ?[]const u8 {
+        for (self.layouts[0..self.count]) |layout| if (layout.stream == id) return self.data[@intCast(layout.offset)..][0..@intCast(layout.length)];
+        return null;
+    }
+    pub fn deinit(self: *StreamBundle, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+        self.data = &.{};
+        self.count = 0;
+    }
+};
 pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device };
 pub fn check(rc: c_int) Error!void {
     return switch (rc) {
@@ -484,6 +500,18 @@ pub const Frame = struct {
     pub fn copyStreamRgb(self: *const Frame, id: u32, out: []u8) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, out.ptr, out.len));
+    }
+    pub fn copyStreams(self: *const Frame, allocator: std.mem.Allocator, ids: []const u32) Error!StreamBundle {
+        if (self.value.token == 0) return error.StaleFrame;
+        if (ids.len == 0 or ids.len > 3) return error.Invalid;
+        var result: StreamBundle = .{ .layouts = undefined, .count = @intCast(ids.len), .data = &.{}, .metadata = undefined };
+        var size: u64 = 0;
+        try check(core.zc_copy_frame_streams(self.camera.handle, self.value.token, ids.ptr, result.count, &result.layouts, 3, null, 0, &size, &result.metadata));
+        if (size > std.math.maxInt(usize)) return error.Invalid;
+        result.data = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(result.data);
+        try check(core.zc_copy_frame_streams(self.camera.handle, self.value.token, ids.ptr, result.count, &result.layouts, 3, result.data.ptr, result.data.len, &size, &result.metadata));
+        return result;
     }
     pub fn writeVideo(self: *const Frame, recorder: *c.zc_recorder, id: u32, timestamp_ns: u64) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
@@ -935,4 +963,36 @@ test "Zig capture Exif uses selected stream dimensions and returns owned metadat
     descriptor = customImageExif("broken", false);
     opts.format = c.ZC_IMAGE_JPEG;
     try t.expectError(error.Invalid, checkImageMetadata(opts, null, &descriptor));
+}
+
+test "Zig stream bundles retain compact source ranges and metadata after camera destruction" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    cfg.raw = 1;
+    cfg.policy = c.ZC_FIFO;
+    var pipeline: c.zc_pipeline_options = undefined;
+    core.zc_default_pipeline_options(&pipeline);
+    pipeline.capture.unpacked_raw = 1;
+    pipeline.lores_width = 8;
+    pipeline.lores_height = 6;
+    const camera = try Camera.initPipeline(cfg, pipeline);
+    var live = true;
+    defer if (live) camera.deinit() catch {};
+    try camera.start();
+    var frame = try camera.acquire(0);
+    errdefer frame.release() catch {};
+    var bundle = try frame.copyStreams(t.allocator, &.{ c.ZC_RAW, c.ZC_LORES, c.ZC_MAIN });
+    defer bundle.deinit(t.allocator);
+    try t.expectEqual(frame.value.sequence, bundle.metadata.sequence);
+    try t.expectEqual(@as(usize, 360), bundle.bytes(c.ZC_RAW).?.len);
+    try t.expectEqual(@as(usize, 72), bundle.bytes(c.ZC_LORES).?.len);
+    try t.expectEqual(@as(?[]const u8, null), bundle.bytes(3));
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    live = false;
+    try t.expectEqualSlices(u8, &.{ 0, 0, 0, 1, 0, 0 }, bundle.bytes(c.ZC_MAIN).?[0..6]);
 }

@@ -660,3 +660,22 @@ from the preceding conditional; camera copies that fix verbatim and the Exif
 matrix now compiles this additional reader too. Production Exif/JPEG code is
 unchanged. Both reader compilation and the eleven actual capture regressions
 pass locally after the fix; GCC CI supplies Linux acceptance.
+
+The 0.59 stream-bundle audit improves Home video at 44bf4e911437251479a4a535fc311e1471cc93d5.
+plane_pack.zig gains a borrowed Plane description, checked aggregate packedSize
+and allocation-free pack. Every source and complete destination are validated
+before any row is copied; heterogeneous plane bundles concatenate in order and
+leave unused output suffix bytes untouched. Existing rows and I420 helpers share
+the same preflight/copy implementation. Four standalone tests cover padded final
+rows, late truncation, mixed shapes, short output and aggregate overflow without
+pixel reads. Debug/ReleaseSafe pass with pinned 0.15.2 and development 0.17 Zig.
+The copied-source camera matrix supplies pinned/master Linux x86/ARM and macOS
+checks while Home workflow dispatch remains disabled.
+
+Camera adapts RGB/I420/Bayer descriptors to up to nine borrowed planes, snapshots
+selected geometry/metadata under one request lock, and copies into one owned
+allocation. Existing frame copies and temporary worker copies now share that C
+operation rather than duplicating format/size code in Bun. Home's generic plane
+helper owns no capture token or DMA pointer; request callbacks, cancellation and
+mode/preview restoration remain camera policy. No generic async scheduler or
+image streaming decoder was imported for this ownership operation.
