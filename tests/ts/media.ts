@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 export type Box = { kind: string; start: number; end: number }
 export function boxes(data: Buffer, start = 0, end = data.length): Box[] {
   const result: Box[] = []
@@ -367,15 +374,56 @@ export function decodeVideoI420(
     manifest,
     Buffer.concat(frames.map((frame) => Buffer.from(frame))),
   )
-  const result = Bun.spawnSync([
-    decoder,
-    video.codec === 'avc1' ? 'h264' : 'hevc',
-    units(path, video),
-    String(frames.length),
-    '--i420',
-    String(video.width),
-    String(video.height),
-    manifest,
-  ])
+  const accessUnits = units(path, video)
+  const decodedFailure = `${path}.decoded-i420`
+  const result = Bun.spawnSync(
+    [
+      decoder,
+      video.codec === 'avc1' ? 'h264' : 'hevc',
+      accessUnits,
+      String(frames.length),
+      '--i420',
+      String(video.width),
+      String(video.height),
+      manifest,
+    ],
+    { env: { ...process.env, ZC_DECODED_I420_FAILURE: decodedFailure } },
+  )
+  if (result.exitCode !== 0 && process.env.ZC_MEDIA_FAILURE_DIR) {
+    // Retain evidence before each owning test removes its temporary directory.
+    // Diagnostic failure must never replace the decoder's original assertion.
+    try {
+      const destination = join(
+        process.env.ZC_MEDIA_FAILURE_DIR,
+        basename(dirname(path)),
+        basename(path),
+      )
+      mkdirSync(dirname(destination), { recursive: true })
+      for (const [source, suffix] of [
+        [path, ''],
+        [manifest, '.i420'],
+        [accessUnits, '.aus'],
+        [decodedFailure, '.decoded-i420'],
+      ] as const)
+        if (existsSync(source)) copyFileSync(source, `${destination}${suffix}`)
+      writeFileSync(`${destination}.decoder.txt`, result.stderr)
+      writeFileSync(
+        `${destination}.reference.json`,
+        JSON.stringify(
+          {
+            codec: video.codec,
+            width: video.width,
+            height: video.height,
+            frames: frames.length,
+            exitCode: result.exitCode,
+          },
+          null,
+          2,
+        ),
+      )
+    } catch (error) {
+      console.error('could not retain failed video fixture', error)
+    }
+  }
   assert.equal(result.exitCode, 0, new TextDecoder().decode(result.stderr))
 }

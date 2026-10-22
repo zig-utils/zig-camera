@@ -34,12 +34,28 @@ static void checkFrame(const uint8_t *const planes[3],const int strides[3],int w
     require(width==(int)reference_width && height==(int)reference_height,"reference dimensions differ");
     const size_t pixels=(size_t)width*height,frame_size=pixels+pixels/2;
     require((size_t)(count+1)<=reference_i420.size()/frame_size,"unexpected reference frame");
+    for(unsigned p=0;p<3;p++) require(planes[p] && strides[p]>=(int)(p ? reference_width/2 : reference_width),"invalid decoded plane");
     size_t offset=(size_t)count*frame_size;
     for(unsigned component=0;component<3;component++) {
         const unsigned w=component ? reference_width/2 : reference_width,h=component ? reference_height/2 : reference_height;
-        require(planes[component] && strides[component]>=(int)w,"invalid decoded plane");
-        uint64_t error=0;
-        for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++)error+=(unsigned)std::abs((int)planes[component][(size_t)y*strides[component]+x]-(int)reference_i420[offset+(size_t)y*w+x]);
+        uint64_t error=0;unsigned maximum=0,max_x=0,max_y=0;
+        for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++) {
+            const unsigned difference=(unsigned)std::abs((int)planes[component][(size_t)y*strides[component]+x]-(int)reference_i420[offset+(size_t)y*w+x]);
+            error+=difference;
+            if(difference>maximum) {maximum=difference;max_x=x;max_y=y;}
+        }
+        if(error>(uint64_t)w*h*4) {
+            std::fprintf(stderr,"frame=%d component=%u geometry=%ux%u stride=%d sum_abs=%llu mean_abs=%.6f max_abs=%u max_at=%u,%u actual=%u expected=%u\n",count,component,w,h,strides[component],(unsigned long long)error,(double)error/(w*h),maximum,max_x,max_y,planes[component][(size_t)max_y*strides[component]+max_x],reference_i420[offset+(size_t)max_y*w+max_x]);
+            if(const char *path=std::getenv("ZC_DECODED_I420_FAILURE")) {
+                std::ofstream dump(path,std::ios::binary);
+                for(unsigned p=0;p<3;p++) {
+                    const unsigned width=p ? reference_width/2 : reference_width,height=p ? reference_height/2 : reference_height;
+                    for(unsigned y=0;y<height;y++) dump.write((const char*)planes[p]+(size_t)y*strides[p],width);
+                }
+                dump.close();
+                if(!dump.good()) std::fprintf(stderr,"could not retain decoded frame: %s\n",path);
+            }
+        }
         require(error<=(uint64_t)w*h*4,"decoded I420 component differs from independent reference");
         offset+=(size_t)w*h;
     }

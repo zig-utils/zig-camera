@@ -139,6 +139,7 @@ jobs:
           ZC_TEST_PREVIEW: '1'
           ZC_TEST_CODECS: '1'
           ZC_TEST_AAC: '1'
+          ZC_MEDIA_FAILURE_DIR: ${{ github.workspace }}/zig-out/media-failures
         run: |
           zig build test -Dlibcamera=false -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=false -Dcodecs=true -Dpreview=true -Daudio=true -Daac=true -Doptimize=ReleaseSafe
@@ -153,6 +154,7 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tests/decode_aac.c -lfaad -o zig-out/decode-aac
           cc -std=c11 -Wall -Wextra -Werror tests/decode_jpeg.c -ljpeg -o zig-out/decode-jpeg
           ZC_AAC_DECODER="$PWD/zig-out/decode-aac" ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts
+          ZC_INDEPENDENT_DECODER="$PWD/zig-out/decode-codecs" bun test tests/ts/recording-streams.test.ts -t 'hevc RGB lores sync/async' --rerun-each 30
           for codec in h264 hevc; do
             for color in rec709 rec2020 smpte170m; do
               ./zig-out/bin/zig-camera record --simulate --fifo --main-format YUV420 --color-space "$color" --video-color-space "$color" --width 64 --height 48 --fps 25 --codec "$codec" --frames 4 --warmup 0 --output "zig-out/record-color-$codec-$color.mp4"
@@ -198,3 +200,11 @@ jobs:
           ./zig-out/catalog-bridge-test
           ./zig-out/bin/zig-camera list
           bun tests/ts/native-smoke.ts
+      - name: Retain independent decoder failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: media-failures-${{ matrix.os }}
+          path: zig-out/media-failures
+          if-no-files-found: ignore
+          retention-days: 7
