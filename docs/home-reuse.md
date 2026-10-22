@@ -679,3 +679,17 @@ operation rather than duplicating format/size code in Bun. Home's generic plane
 helper owns no capture token or DMA pointer; request callbacks, cancellation and
 mode/preview restoration remain camera policy. No generic async scheduler or
 image streaming decoder was imported for this ownership operation.
+
+The 0.60 retained-request audit reads Home main at
+44bf4e911437251479a4a535fc311e1471cc93d5, including video core/lease_pool.zig,
+frame_access.zig and async preparation_gate.zig. The generation-checked pool
+already keeps each retained reference distinct and the access gate distinguishes
+BUSY from consumed ownership; BunJob already reuses the preparation gate for
+publication. No new pool, scheduler or artificial Home API is needed. Camera
+adds request-specific sequencing: post hooks retire, the target stops, the
+original token moves to the main thread, cancellation releases it before rollback,
+and publication seals before exposing the Frame. Exceptional BUSY cleanup keeps
+an explicit retry owner instead of losing its token. The C helper similarly
+releases a private acquisition when stopping fails. These policies stay in camera;
+Home sources are reused unchanged for this step. Fault-injected hosted tests do
+not establish physical DMA or process-crash recovery.

@@ -548,6 +548,22 @@ pub export fn zc_capture_filter_accept(p: *c.zc_camera, token: u64, filter: *c.z
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     return CaptureFilter.observe(filter, &self.slots[index].metadata);
 }
+pub export fn zc_acquire_and_stop(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_int {
+    out.* = std.mem.zeroes(c.zc_frame);
+    var candidate: c.zc_frame = undefined;
+    const rc = zc_acquire(p, timeout_ms, &candidate);
+    if (rc != 0) return rc;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const stopped = stopLocked(self);
+    if (stopped != 0) {
+        const cleanup = releaseLocked(self, candidate.token);
+        return if (cleanup != 0) cleanup else stopped;
+    }
+    out.* = candidate;
+    return c.ZC_OK;
+}
 pub export fn zc_acquire_filtered(p: *c.zc_camera, filter: *c.zc_capture_filter, timeout_ms: u32, out: *c.zc_frame) c_int {
     if (!CaptureFilter.valid(filter)) return c.ZC_INVALID;
     var timer = std.time.Timer.start() catch return c.ZC_IO;
@@ -2973,4 +2989,52 @@ test "bundle copy validates every stream before output, preserves metadata and e
     try t.expectEqual(c.ZC_BUSY, zc_copy_frame_streams(camera.?, frame.token, &ids, 3, &layouts, 3, null, 0, &size, &meta));
     try t.expectEqual(c.ZC_OK, zc_frame_map_close(map.?));
     try t.expectEqual(c.ZC_STALE, zc_copy_frame_streams(camera.?, frame.token + 1000, &ids, 3, &layouts, 3, null, 0, &size, &meta));
+}
+
+test "acquire-and-stop publishes one readable lease and clears every failed private candidate" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 8;
+    cfg.height = 6;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer _ = zc_close(camera.?);
+    const self = session(camera.?);
+    var frame: c.zc_frame = undefined;
+    @memset(std.mem.asBytes(&frame), 42);
+    try t.expectEqual(c.ZC_STATE, zc_acquire_and_stop(camera.?, 0, &frame));
+    try t.expectEqual(@as(u64, 0), frame.token);
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_acquire_and_stop(camera.?, 0, &frame));
+    try t.expect(frame.token != 0);
+    try t.expectEqual(@as(u32, 1), self.stats.leased);
+    try t.expectEqual(c.ZC_OK, zc_frame_readable(camera.?, frame.token));
+    try t.expectEqual(c.ZC_BUSY, zc_start(camera.?));
+    try t.expectEqual(c.ZC_BUSY, zc_close(camera.?));
+    var rgb: [8 * 6 * 3]u8 = undefined;
+    try t.expectEqual(c.ZC_OK, zc_copy_frame_rgb(camera.?, frame.token, &rgb, rgb.len));
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    for ([_]bool{ false, true }) |sync_failure| {
+        try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+        self.device.?.fail_stop_once = true;
+        self.device.?.fail_sync_end = sync_failure;
+        @memset(std.mem.asBytes(&frame), 42);
+        try t.expectEqual(c.ZC_IO, zc_acquire_and_stop(camera.?, 0, &frame));
+        try t.expectEqual(@as(u32, 0), self.stats.leased);
+        for (std.mem.asBytes(&frame)) |byte| try t.expectEqual(@as(u8, 0), byte);
+        self.device.?.fail_sync_end = false;
+        try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    }
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    const stops = self.device.?.stop_calls;
+    self.device.?.fail_sync_begin = true;
+    try t.expectEqual(c.ZC_IO, zc_acquire_and_stop(camera.?, 0, &frame));
+    try t.expectEqual(stops, self.device.?.stop_calls);
+    try t.expectEqual(@as(u64, 0), frame.token);
+    try t.expectEqual(@as(u32, 0), self.stats.leased);
+    self.device.?.fail_sync_begin = false;
+    try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
 }

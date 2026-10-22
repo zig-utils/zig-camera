@@ -300,6 +300,12 @@ int zc_save_dng(zc_camera *, uint64_t token, const char *path);
 int zc_get_info(zc_camera *, zc_info *out);
 int zc_start(zc_camera *);
 int zc_acquire(zc_camera *, uint32_t timeout_ms, zc_frame *out);
+/* Acquire one owned request and stop the camera without copying pixels.
+ * Success leaves a readable lease; release it before restart/close/reconfigure.
+ * Failure clears out and releases a private acquired candidate before returning;
+ * a cleanup error takes precedence over the stop error. Lifecycle is serialized
+ * by the caller as for acquire/stop. No request callbacks run in this C helper. */
+int zc_acquire_and_stop(zc_camera *,uint32_t timeout_ms,zc_frame *out);
 /* Distinct token for the same completed request, without copying pixels.
  * Release each token once. Final release ends DMA access and recycles.
  * Stats.leased counts pinned buffers, not references. Capacity is reserved for

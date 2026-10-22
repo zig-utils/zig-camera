@@ -189,3 +189,12 @@ request association, validated source planes or hosted copy ownership. Per the
 media-stdlib boundary, aggregate plane preflight therefore improves Home video
 first and is reused verbatim here. No kernel allocator, stub capture or decoder
 return is treated as a working implementation or hardware acceptance result.
+
+The 0.60 request-handoff audit fetches unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rechecks its camera stub plus the
+media-stdlib boundary. A fixed RGB allocation and nominal byte-count return do
+not implement retained request generations, stopped DMA access, publication
+ownership or recoverable handoff. Existing Home video leases/access gates and
+Home async publication gates remain the reusable hosted components. No kernel
+source is copied, modified or executed, and no physical sensor/DMA result is
+inferred from a stub.

@@ -162,6 +162,7 @@ export const native = dlopen(library, {
   zc_start: { args: [p], returns: i },
   zc_stop: { args: [p], returns: i },
   zc_close: { args: [p], returns: i },
+  zc_acquire_and_stop: { args: [p, u, p], returns: i },
   zc_acquire: { args: [p, u, p], returns: i },
   zc_retain: { args: [p, n, p], returns: i },
   zc_frame_references: { args: [p, n, p], returns: i },

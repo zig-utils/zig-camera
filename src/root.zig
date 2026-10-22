@@ -362,6 +362,11 @@ pub const Camera = struct {
         try check(core.zc_acquire(self.handle, timeout_ms, &f));
         return .{ .camera = self, .value = f };
     }
+    pub fn acquireAndStop(self: Camera, timeout_ms: u32) Error!Frame {
+        var frame: c.zc_frame = undefined;
+        try check(core.zc_acquire_and_stop(self.handle, timeout_ms, &frame));
+        return .{ .camera = self, .value = frame };
+    }
     pub fn acquireFiltered(self: Camera, filter: *CaptureFilter, timeout_ms: u32) Error!Frame {
         var frame: c.zc_frame = undefined;
         try check(core.zc_acquire_filtered(self.handle, filter, timeout_ms, &frame));
@@ -995,4 +1000,30 @@ test "Zig stream bundles retain compact source ranges and metadata after camera 
     try camera.deinit();
     live = false;
     try t.expectEqualSlices(u8, &.{ 0, 0, 0, 1, 0, 0 }, bundle.bytes(c.ZC_MAIN).?[0..6]);
+}
+
+test "Zig acquireAndStop transfers readable ownership without an extra native reference" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 8;
+    cfg.height = 6;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch {};
+    try camera.start();
+    var request = try camera.acquireAndStop(0);
+    defer request.release() catch {};
+    try t.expectEqual(@as(u32, 1), try request.referenceCount());
+    const rgb = try request.rgb();
+    try t.expectEqual(@as(usize, 8), rgb.width);
+    try t.expectEqual(@as(usize, 6), rgb.height);
+    try t.expectEqual(@as(usize, 24), rgb.row(0).len);
+    try t.expectError(error.Busy, camera.start());
+    var sibling = try request.retain();
+    defer sibling.release() catch {};
+    try request.release();
+    try t.expectEqual(@as(u32, 1), try sibling.referenceCount());
+    try sibling.release();
+    try camera.start();
+    try camera.stop();
 }

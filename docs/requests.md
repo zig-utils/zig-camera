@@ -73,8 +73,9 @@ captureFile saves JPEG or DNG from the current mode; DNG requires an enabled raw
 stream. The synchronous encoder/file operation cannot be interrupted once entered;
 cancelling a job does not undo a file already written. Temporary mode buffer
 capture now uses the same native sizing/packing path, including supported Bayer
-formats. Retained returns from temporary mode jobs are not implemented: a retained
-request would prevent restoring the prior mode until its owner releases it.
+formats. Retained target requests are available through `switchModeCaptureRequestAndStop`: the
+target remains stopped and readable until final release. Restoring the previous
+mode is explicit after release; see [capture and stop](capture-request-stop.md).
 
 The additive C APIs zc_retain, zc_frame_references and zc_stream_copy_size preserve
 ABI v1 layouts. Zig Frame.retain/referenceCount expose the same ownership. Existing

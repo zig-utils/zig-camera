@@ -45,7 +45,14 @@ export interface ModeRequest {
   cancel: SharedArrayBuffer
   deadline: number
   capture?: {
-    kind: 'rgb' | 'stream' | 'streams' | 'metadata' | 'file' | 'encoded'
+    kind:
+      | 'rgb'
+      | 'stream'
+      | 'streams'
+      | 'metadata'
+      | 'file'
+      | 'encoded'
+      | 'request-stop'
     streams?: StreamName[]
     imageOptions?: Uint8Array
     imageProfile?: ImageProfile
@@ -78,6 +85,8 @@ export interface ModeResponse {
   target: boolean
   started: boolean
   value?: Uint8Array
+  requestFrame?: Uint8Array
+  requestCleanupCode?: number
   bundle?: CapturedStreams
   stream?: { width: number; height: number; format: string }
   /** Main-thread-only enrichment; never transported by the worker. */
@@ -300,6 +309,7 @@ self.onmessage = ({ data: request }) => {
       if (code !== -3) throw code
     }
   }
+  let retainedFrame: Uint8Array | undefined
   let oldConsumed = false
   try {
     if (cancelled()) throw -5
@@ -354,11 +364,14 @@ self.onmessage = ({ data: request }) => {
       const frame = acquire(),
         token = view(frame).getBigUint64(0, true)
       let prepared = false
+      let complete = false
       try {
         hook('pre', frame)
         prepared = true
         const capture = request.capture
-        if (capture.kind === 'streams') {
+        if (capture.kind === 'request-stop') {
+          // Transfer the existing acquisition only after the post hook retires.
+        } else if (capture.kind === 'streams') {
           result.bundle = copyNativeStreams(
             result.handle,
             token,
@@ -439,19 +452,47 @@ self.onmessage = ({ data: request }) => {
             format: selected.format,
           }
         }
+        complete = true
       } finally {
         try {
           if (prepared) hook('post', frame)
+          if (complete && request.capture.kind === 'request-stop')
+            retainedFrame = frame
         } finally {
-          check(n.zc_release(result.handle, token))
+          if (retainedFrame !== frame) {
+            const rc = n.zc_release(result.handle, token)
+            if (rc === -4) {
+              retainedFrame = frame
+              result.requestCleanupCode = rc
+            }
+            check(rc)
+          }
         }
+      }
+      if (retainedFrame) {
+        check(n.zc_stop(result.handle))
+        result.started = false
       }
     }
     if (cancelled()) throw -5
   } catch (code) {
     result.code = status(code)
   }
-  if (oldConsumed && (request.capture || result.code !== 0)) {
+  if (result.code !== 0 && retainedFrame) {
+    const rc = n.zc_release(
+      result.handle,
+      view(retainedFrame).getBigUint64(0, true),
+    )
+    if (rc !== 0) result.requestCleanupCode = rc
+    // BUSY leaves ownership intact; expose it to the main-thread cleanup path.
+    if (rc !== -4) retainedFrame = undefined
+  }
+  if (retainedFrame) result.requestFrame = retainedFrame
+  if (
+    oldConsumed &&
+    ((request.capture && request.capture.kind !== 'request-stop') ||
+      result.code !== 0)
+  ) {
     try {
       Atomics.store(new Int32Array(request.cancel), 1, 4)
       close()

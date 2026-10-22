@@ -2228,6 +2228,9 @@ export class Camera {
     guardRequestCallback()
     guardOutputHook()
     if (this.modeActive) throw new CameraError(-4, 'mode change active')
+    this.clearPreviewOwned()
+  }
+  private clearPreviewOwned() {
     this.stopPreviewOwned()
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = 0 as Pointer
@@ -3263,6 +3266,16 @@ export class Camera {
       data: Uint8Array
     }>
   }
+  switchModeCaptureRequestAndStop(
+    options: CameraOptions,
+    jobOptions: ModeJobOptions<Frame> = {},
+  ) {
+    return this.submitMode(
+      options,
+      { kind: 'request-stop' },
+      jobOptions,
+    ) as BunJob<Frame>
+  }
   switchModeAndCaptureStreams(
     options: CameraOptions,
     streams: readonly StreamName[] = ['main'],
@@ -3397,6 +3410,7 @@ export class Camera {
               this.timer = undefined
             }
             let response: ModeResponse | undefined
+            let retainedRequest: Frame | undefined
             let value: unknown
             let failure: unknown
             const preview = () => {
@@ -3434,11 +3448,14 @@ export class Camera {
               })
               this.handle = response.handle
               this.started = response.started
+              if (response.requestFrame)
+                retainedRequest = new Frame(this, response.requestFrame)
               if (response.callbackError !== undefined)
                 throw Object.assign(response.callbackError as object, {
                   restoreCode: response.restoreCode,
                   controlCode: response.controlCode,
                   restoreControlCode: response.restoreControlCode,
+                  requestCleanupCode: response.requestCleanupCode,
                 })
               if (
                 response.autofocusState !== undefined &&
@@ -3470,9 +3487,23 @@ export class Camera {
                 Object.assign(error, {
                   controlCode: response.controlCode,
                   restoreControlCode: response.restoreControlCode,
+                  requestCleanupCode: response.requestCleanupCode,
                 })
                 throw error
               }
+              if (response.requestCleanupCode)
+                throw Object.assign(
+                  new CameraError(
+                    response.code || response.requestCleanupCode,
+                    'request handoff cleanup',
+                  ),
+                  {
+                    requestCleanupCode: response.requestCleanupCode,
+                    cancellationReason: current.cancelRequested
+                      ? current.cancellationReason
+                      : undefined,
+                  },
+                )
               if (response.code === -5 && current.cancelRequested)
                 current.check()
               check(response.code, 'mode switch')
@@ -3480,6 +3511,11 @@ export class Camera {
               this.configuration = response.target ? target : previous
               if (capture) {
                 value = response.value
+                if (capture.kind === 'request-stop') {
+                  if (!retainedRequest || !response.target || response.started)
+                    throw new CameraError(-6, 'invalid stopped request handoff')
+                  value = retainedRequest
+                }
                 if (capture.kind === 'metadata' || capture.kind === 'file')
                   value = decodeMetadata(response.value!)
                 if (capture.kind === 'streams') {
@@ -3490,9 +3526,30 @@ export class Camera {
                 if (capture.kind === 'stream')
                   value = { ...response.stream!, data: response.value! }
               }
-              preview()
+              if (capture?.kind === 'request-stop') {
+                this.clearPreviewOwned()
+                current.seal()
+                retainedRequest = undefined // the published Frame now owns release
+              } else preview()
             } catch (error) {
               failure = error
+              if (retainedRequest) {
+                try {
+                  retainedRequest.release()
+                } catch (cleanupError) {
+                  failure = Object.assign(
+                    new AggregateError(
+                      [error, cleanupError],
+                      'request handoff and cleanup failed',
+                    ),
+                    {
+                      requestCleanup: retainedRequest.token
+                        ? retainedRequest
+                        : undefined,
+                    },
+                  )
+                }
+              }
               if (error instanceof ModeWorkerFault) {
                 this.handle = 0 as Pointer
                 this.started = false
@@ -3530,11 +3587,11 @@ export class Camera {
                     this.handle = 0 as Pointer
                     this.started = false
                   }
-                  if (error && typeof error === 'object')
-                    Object.assign(error, { restorationError })
+                  if (failure && typeof failure === 'object')
+                    Object.assign(failure, { restorationError })
                   else
                     failure = new AggregateError(
-                      [error, restorationError],
+                      [failure, restorationError],
                       'mode and restoration failed',
                     )
                 }
@@ -3543,8 +3600,8 @@ export class Camera {
                 try {
                   preview()
                 } catch (restorationError) {
-                  if (error && typeof error === 'object')
-                    Object.assign(error, { previewError: restorationError })
+                  if (failure && typeof failure === 'object')
+                    Object.assign(failure, { previewError: restorationError })
                 }
               }
             } finally {

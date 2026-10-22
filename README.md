@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.60 adds [retained capture-and-stop](docs/capture-request-stop.md): a live
+target request remains readable while stopped, with cancellation cleanup and
+explicit restoration after release through Bun and additive C/Zig helpers.
+
 Version 0.59 adds [owned stream bundles](docs/stream-bundles.md): paired main/raw/lores
 copies during temporary mode capture, shared native preflight, and one compact
 owned allocation through C/Zig and Bun.

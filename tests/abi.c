@@ -164,7 +164,8 @@ int main(void) {
         zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;cfg.raw=1;
         zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.capture.unpacked_raw=1;pipe.lores_width=8;pipe.lores_height=6;
         zc_camera *camera=NULL;assert(zc_open_pipeline(&cfg,&pipe,&camera)==ZC_OK && zc_start(camera)==ZC_OK);
-        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        zc_frame frame;assert(zc_acquire_and_stop(camera,0,&frame)==ZC_OK);
+        assert(zc_start(camera)==ZC_BUSY);
         const uint32_t ids[]={ZC_LORES,ZC_MAIN,ZC_RAW};zc_packed_stream layouts[3];zc_metadata metadata;uint64_t size=0;
         assert(zc_copy_frame_streams(camera,frame.token,ids,3,layouts,3,NULL,0,&size,&metadata)==ZC_OK && size==972);
         assert(metadata.sequence==frame.sequence && layouts[0].length==72 && layouts[1].offset==72 && layouts[2].offset==612);
