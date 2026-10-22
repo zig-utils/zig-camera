@@ -322,3 +322,14 @@ The 0.71.1 AVC-level follow-up rechecks clean unchanged Home OS main at
 userspace SPS level selection or independent decoder acceptance. The correction
 therefore stays in Home's working codec bridge, with the copied camera fixture
 and existing decoder oracle. No OS source or hardware claim is changed.
+
+The 0.72 HEVC geometry audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, searches the tree for codec/HEVC/bitstream
+implementations and rereads drivers/camera.home, media/video_decoder.home and
+ADR-MC3. The nominal capture result and success-returning H.265 decoder do not
+provide SPS conformance-window edits, a hosted encoder or mixed-size CTU lifetime
+management. ADR-MC3 explicitly puts media algorithms in Home's shared libraries
+and requires corpus results rather than source size for codec claims. Therefore
+the shared bit-reader/SPS/encoder improvements go to Home and are reused here;
+no kernel code is copied, modified or executed. Kernel capability declarations
+are not evidence of physical 4K capture, decoding, acceleration or performance.

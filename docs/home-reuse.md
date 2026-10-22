@@ -945,3 +945,32 @@ and seven-case native fixture verbatim; strict independent decoding is retained.
 Pinned Debug/ReleaseSafe full Home suites and development-compiler native tests
 pass, along with camera's native/C/Bun checks. No codec capability is removed and
 no decoder rejection is hidden by skipping high-ceiling cases.
+
+The 0.72 HEVC geometry audit fast-forwards unrelated Home TypeScript fixes through
+0b4411745 (full upstream hash retained in Git ancestry) and improves the shared
+codec path at c66ce6bb8c6bde84adf0d684eb9399660e3e7428. It inspects util/bitstream,
+core/nal_convert, codecs/video/hevc, codec/hevc_analysis and the working native
+encoder bridge. The broad decoder/parser imports do not supply a bounded encoder
+crop transaction; the existing bit reader is extracted as an allocation-free leaf
+with cursor-preserving failures, retaining its legacy public alias and tests.
+
+The bounded SPS conformance editor, its scalar Zig/C bridge, the fixed CTU32
+native encoder and mixed tiny/4K fixture are copied verbatim. Only tiny inputs
+need edge-padding copies. Native HEVC headers are generated once and cached,
+avoiding the duplicate parameter sets exposed by repeated x265 header calls.
+Larger requested levels no longer inherit the old CTU16/effective-4.1 restriction.
+Nominal admission includes padded/4-aligned geometry and rational sample rates.
+Home and camera keep the vendor's process-global CTU rule explicit; unrelated
+external x265 users still need compatible CTU settings.
+
+Local pinned and development Zig pass Home's focused suite in Debug/ReleaseSafe,
+including the legacy bitstream wrapper. Camera passes 334 native tests, C ABI and
+770 Bun tests with the rebuilt codec/AAC/preview library. The new Bun fixture
+keeps seven visible sizes, including 3840x2160, alive together; Linux CI supplies
+independent Y/U/V decode checks. Local media tests without that decoder establish
+encoding/container behavior only. The standard local macOS build runner still
+fails SDK libSystem linkage before the project build; direct target-qualified
+native tests succeed. No physical camera, Pi throughput or quality claim follows.
+Home-hosted Actions have previously returned disabled despite enabled repository
+permission metadata; this local suite and the copied camera CI are distinct from
+claiming a Home-hosted run succeeded. See hevc-geometry.md for scope and ownership.

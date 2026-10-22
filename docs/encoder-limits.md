@@ -36,14 +36,11 @@ Integer cross-multiplication avoids truncating fractional frame rates or wrappin
 extreme sample rates. The checks use configured rate; applications must still
 supply truthful timestamps and pace/capture within the declared envelope.
 
-The existing shared HEVC adapter uses CTU16 for simultaneous small-stream
-encoders. x265 changes that to CTU32 for a level 5+ request, conflicting with the
-shared instance policy. Higher ceilings therefore construct a stream constrained
-to at most 4.1; they do not lift the existing geometry/rate capacity. Inputs that
-need CTU32/higher effective levels reject before output publication. A separate
-safe higher-resolution HEVC path remains required parity work. This restriction
-is explicit rather than silently allowing vendor CTU mutation or a Level-NONE
-header.
+The shared HEVC adapter uses CTU32 for simultaneous tiny and larger streams.
+Level 5.0 can admit 3840x2160 at 30 fps; 60 fps exceeds that ceiling and rejects.
+Tiny inputs are edge-padded with their exact visible dimensions restored in the
+SPS conformance window. Level admission includes the padded/4-aligned picture
+size and rational sample rate. See [HEVC geometry](hevc-geometry.md).
 
 `maxBitrate` is bits/sec and `bufferBits` is coded-picture-buffer capacity in
 bits. Both are zero/default, or both are positive multiples of 1000 so conversion

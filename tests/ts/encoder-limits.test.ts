@@ -197,6 +197,7 @@ media(
           new Recorder(path, {
             width: 3840,
             height: 2160,
+            fps: 60,
             codec: 'hevc',
             limits: { level: 50 },
           }),

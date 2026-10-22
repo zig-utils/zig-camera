@@ -634,7 +634,7 @@ int zc_video_get_codec_options(zc_recorder *,zc_codec_options *);
  * positive multiples of 1000. VBV requires qp=0 and target <= max_bitrate.
  * Nominal geometry/rate and actual emitted SPS level are checked on construct.
  * Buffer covers at least one nominal frame. HEVC explicit level rejects CQP;
- * shared CTU16 limits effective HEVC requirements to <=4.1 even for higher ceilings.
+ * shared CTU32 supports tiny padded inputs and larger HEVC pictures; see geometry docs.
  * Level/VBV is not a per-packet network cap or complete conformance guarantee.
  * Existing codec-options/video layouts remain unchanged. */
 typedef struct { uint32_t struct_size,level,max_bitrate,buffer_bits; } zc_codec_limits;

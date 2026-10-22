@@ -515,3 +515,9 @@ Home processed-stream geometry planning (0.63):
   ownership or allocation.
   https://github.com/home-lang/home/commit/34aa602dfba2bd6af982c5e6b4887550a5da70b2
 The Home MIT license and copyright reproduced above apply.
+
+Home HEVC picture geometry (0.72):
+- src/home/bit_reader.zig, hevc_conformance.zig and hevc_conformance_c.zig are
+  verbatim Home portable codec helpers. The native encoder and copied fixture
+  use them for bounded SPS edits, tiny-input padding and shared CTU32 sessions.
+  The Home MIT license and copyright above apply.

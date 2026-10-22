@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.72 adds [mixed tiny and 4K HEVC recording](docs/hevc-geometry.md):
+shared CTU32, edge padding with exact visible crops for tiny I420 inputs, and
+stable parameter-set caching through Home's encoder bridge.
+
 Version 0.71.1 preserves automatic AVC level selection under high ceilings so
 small streams do not advertise unnecessarily high decoder requirements.
 Version 0.71 adds [decoder-level ceilings and VBV policies](docs/encoder-limits.md):

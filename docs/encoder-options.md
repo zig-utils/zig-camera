@@ -26,8 +26,8 @@ the actual stream profile; `encoderOptions()` reports the admitted policy.
 `preset` accepts `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`,
 `slow`, `slower`, `veryslow` and `placebo`. The default stays `veryfast`. These
 select encoder search/compression work, subject to the existing no-B-frame,
-no-lookahead, single-thread and fixed HEVC CTU16 policy. HEVC transform depths are
-capped to fit CTU16, including slower presets. Presets are not measured Pi FPS,
+no-lookahead, single-thread and fixed HEVC CTU32 policy. HEVC transform depths are
+capped to fit CTU32, including slower presets. Presets are not measured Pi FPS,
 latency or image-quality guarantees.
 
 `qp: 1..51` selects constant quantization and disables adaptive QP and I/P/B
