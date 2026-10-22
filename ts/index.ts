@@ -8,6 +8,20 @@ import {
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
 import {
+  loadTuningFile,
+  findTuningAlgorithm,
+  type TuningDocument,
+  type LoadTuningOptions,
+} from './tuning'
+export {
+  TuningDocument,
+  loadTuningFile,
+  findTuningAlgorithm,
+  TUNING_MAX_BYTES,
+  type TuningValue,
+  type LoadTuningOptions,
+} from './tuning'
+import {
   alignStream,
   alignConfiguration,
   type StreamGeometry,
@@ -738,6 +752,12 @@ type CaptureRequest = {
   signal?: AbortSignal
 }
 export class Camera {
+  static loadTuningFile(name: string, options: LoadTuningOptions = {}) {
+    return loadTuningFile(name, options)
+  }
+  static findTuningAlgorithm(document: TuningDocument, name: string) {
+    return findTuningAlgorithm(document, name)
+  }
   static alignStream(source: StreamGeometry, options: AlignmentOptions = {}) {
     return alignStream(source, options)
   }

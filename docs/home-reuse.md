@@ -750,3 +750,26 @@ preflight before publishing either output. Bun owns copied options and CLI calls
 the same native operation. Raw/sensor modes and backend stride negotiation remain
 separate contracts. No additional pixel format or ISP performance is inferred
 from an advisory geometry plan.
+
+The 0.64 tuning-document audit improves Home image at
+960700eb74abd292d86bc884b2f667e3862a38dd. New metadata/tuning.zig uses Zig's
+strict JSON scanner/parser with explicit byte/token/depth budgets and owned
+trees, preserving unknown fields and exact numeric lexemes. Version comparison
+is decimal-exact rather than rounded through f64. Both tuning layouts, missing
+and ambiguous algorithm lookup, transactional edits and exhaustive allocation
+failures are covered by five pure tests in Debug/ReleaseSafe on pinned 0.15.2 and
+development 0.17 Zig. Camera copies this source verbatim and tests pinned/master
+on Linux x86/ARM and macOS. Home's workflow dispatch explicitly returns HTTP422
+"Actions has been disabled for this repository"; local/copied-source coverage is
+recorded separately from an unrun Home workflow.
+
+Audited packages/json, basics JSON wrappers and tsconfig's JSONC parser. Their
+f64 value conversion or recovery behavior does not supply strict lossless tuning
+edits. The shared helper therefore uses the standard JSON implementation rather
+than adding another parser or importing lossy conversions. Home owns portable
+data and transactional allocation; camera adds the mutex-protected C owner and
+Bun owns bounded search, descriptor reads and staged publication. Existing Home
+codec/container, request and job helpers remain in place. OS kernel ownership is
+not imported, and no ISP application or physical quality result is inferred from
+document editing. Native tuning application still requires an explicit shared
+manager/environment lifetime policy, including worker reopens and restoration.

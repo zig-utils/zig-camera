@@ -166,6 +166,31 @@ static void color_requests(void) {
 }
 int main(void) {
     {
+        uint8_t source[]="{\"version\":2,\"algorithms\":[{\"rpi.af\":9007199254740993}]}";
+        zc_tuning_document *doc=NULL;
+        assert(zc_tuning_document_open(source,sizeof(source)-1,&doc)==ZC_OK && doc);
+        memset(source,0,sizeof(source));
+        uint32_t version=0;
+        assert(zc_tuning_document_version(doc,&version)==ZC_OK && version==2);
+        uint64_t length=0;
+        const uint8_t name[]="rpi.af";
+        assert(zc_tuning_document_find(doc,name,sizeof(name)-1,NULL,0,&length)==ZC_OK && length==16);
+        uint8_t value[80];memset(value,0x5a,sizeof(value));
+        assert(zc_tuning_document_find(doc,name,sizeof(name)-1,value,1,&length)==ZC_INVALID);
+        for(size_t i=0;i<sizeof(value);++i)assert(value[i]==0x5a);
+        assert(zc_tuning_document_find(doc,name,sizeof(name)-1,value,sizeof(value),&length)==ZC_OK);
+        assert(length==16 && memcmp(value,"9007199254740993",16)==0 && value[16]==0x5a);
+        assert(zc_tuning_document_replace(doc,name,sizeof(name)-1,(const uint8_t*)"[",1)==ZC_INVALID);
+        assert(zc_tuning_document_replace(doc,name,sizeof(name)-1,(const uint8_t*)"false",5)==ZC_OK);
+        assert(zc_tuning_document_copy(doc,value,sizeof(value),&length)==ZC_OK);
+        const char expected[]="{\"version\":2,\"algorithms\":[{\"rpi.af\":false}]}";
+        assert(length==sizeof(expected)-1 && memcmp(value,expected,length)==0);
+        assert(zc_tuning_document_find(doc,(const uint8_t*)"missing",7,NULL,0,&length)==ZC_UNSUPPORTED && length==0);
+        zc_tuning_document_close(doc);zc_tuning_document_close(NULL);
+        doc=NULL;
+        assert(zc_tuning_document_open((const uint8_t*)"[",1,&doc)==ZC_INVALID && !doc);
+    }
+    {
         zc_stream_alignment plan={0};
         assert(zc_align_stream_geometry(1919,1081,ZC_ALIGN_PLANAR420,ZC_ALIGN_PISP,1,&plan)==ZC_OK);
         assert(plan.struct_size==20 && plan.width==1792 && plan.height==1080 && plan.width_alignment==128 && plan.height_alignment==2);

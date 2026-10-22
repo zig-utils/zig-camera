@@ -1,4 +1,5 @@
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;
+pub const Tuning = @import("home/tuning.zig");
 const std = @import("std");
 pub const c = @import("abi.zig").c;
 pub const core = @import("core.zig");

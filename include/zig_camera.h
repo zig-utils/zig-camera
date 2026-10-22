@@ -119,6 +119,19 @@ int zc_get_color_negotiation(zc_camera *,uint32_t stream,zc_color_negotiation *o
  * Old config/ABI layouts remain unchanged. Copy returns the full selected ID;
  * null/zero queries length, short buffers reject without writing a prefix. */
 #define ZC_MAX_CAMERA_ID 4096
+/* Owned JSON tuning data; does not apply an ISP policy. Native limits are
+ * 16 MiB, 262144 scanner tokens and 64 container levels. Number text is exact.
+ * Copy/find NULL+0 queries required length; short outputs remain untouched.
+ * Mutations are serialized and transactional. Close requires caller lifetime
+ * coordination. Missing algorithms return UNSUPPORTED; ambiguous/invalid data
+ * returns INVALID. Old ABI layouts are unchanged. */
+typedef struct zc_tuning_document zc_tuning_document;
+int zc_tuning_document_open(const uint8_t *,uint64_t length,zc_tuning_document **out);
+int zc_tuning_document_version(zc_tuning_document *,uint32_t *out);
+int zc_tuning_document_copy(zc_tuning_document *,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_tuning_document_find(zc_tuning_document *,const uint8_t *name,uint32_t name_length,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_tuning_document_replace(zc_tuning_document *,const uint8_t *name,uint32_t name_length,const uint8_t *json,uint64_t length);
+void zc_tuning_document_close(zc_tuning_document *);
 int zc_open_id_pipeline(const zc_config *, const zc_pipeline_options *, const uint8_t *id, uint32_t length, zc_camera **out);
 int zc_get_camera_id(zc_camera *, uint8_t *data, uint32_t capacity, uint32_t *length);
 int zc_open_pipeline(const zc_config *,const zc_pipeline_options *,zc_camera **);

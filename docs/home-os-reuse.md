@@ -231,3 +231,14 @@ separates display ownership from shared media algorithms. Home video's planner
 therefore supplies the reusable arithmetic, with camera-specific configuration
 publication here. OS remains unmodified and unexecuted. Kernel pitch/register
 code is not evidence of libcamera alignment, working Pi display or a speedup.
+
+The 0.64 tuning-document audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads camera.home, the media-stdlib
+ADR and JSON/tuning-related paths. The camera driver is still a fixed RGB
+allocation with nominal capture-size return, without IPA configuration, tuning
+JSON ownership or manager discovery lifecycle. The identified sdmmc/zram tuning
+code concerns storage/memory; container/image.home concerns OCI images. None
+supplies a hosted ISP tuning document implementation. ADR-MC3 places shared media
+algorithms in Home's libraries, so the portable bounded editor improves Home
+image, then is copied here with attribution. OS remains unmodified and unexecuted.
+Data edits are not evidence of working sensor tuning, Pi quality or performance.

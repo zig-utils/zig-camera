@@ -1,4 +1,4 @@
-# Feature coverage in 0.63
+# Feature coverage in 0.64
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -10,6 +10,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens; native exact timestamp/drop filters; retained read/shared and write/exclusive mapped streams | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs with flush/dropFrames; scoped writable RGB/I420/Bayer rows and plane views with detach-on-close; synchronized multi-camera requests remain incomplete |
 | Request callbacks | Home leases/access gates pin scopes, exclude writers and prevent requeue under live maps; existing native metadata/control APIs | Scoped synchronous pre/copy/post/encode/display order on the main Bun thread; mode-worker warmup/AF/capture handoff; failure isolation, retained owners, map cleanup recovery and ownership reentry guards; arbitrary dispatch remains incomplete |
 | Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata | Camera.discover, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; hotplug watches missing |
+| Tuning documents | Home owned bounded strict JSON for both layouts, exact numeric text, algorithm lookup and transactional edits; opaque serialized C owner | TuningDocument, loadTuningFile/Camera.loadTuningFile, findTuningAlgorithm and same-directory staged save; actual ISP application, manager policy and mode restoration remain required |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; RGB/I420 main and paired lores | Constructor format selection, sensorModes, copyStream; measured FPS/crop catalog missing |
 | Color configuration | Home portable descriptions, RGB normalization, explicit shared processed-stream requests and requested/effective/actual negotiation; strict open/reopen policy | Presets/custom Bun options, copied negotiation queries, camera/recorder mode restoration and verified RGB recording admission; copied recording profiles, matching conversion/VUI/nclx through output/session/mode jobs; general gamut/transfer conversion, ICC/profile insertion and MJPEG/Matroska color metadata options remain |
 | Camera orientation | Native orientation configuration, requested/actual result, optional strict negotiation; Home exact transform geometry and CFA phase | Rotation/flip/transpose options, C/Zig/Bun/CLI, mode and recording rollback propagation; all eight synthetic transforms, real capability adjustments reported; hardware chart acceptance pending |
@@ -28,6 +29,11 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
+
+[Tuning documents](tuning.md) add bounded strict loading, exact numeric text,
+transactional edits and staged file publication with injected cleanup failures.
+These data APIs change no camera or process tuning state. Actual ISP application
+and safe manager/worker lifetime policy remain in the scope worklist.
 
 [Processed-stream alignment](stream-alignment.md) adds explicit VC4/PiSP/minimum
 planning through C/Zig/Bun/CLI, with atomic configuration outputs and preserved

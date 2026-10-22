@@ -8,6 +8,7 @@ comptime {
     _ = @import("capture_delay.zig").zc_capture_delay_arm;
     _ = @import("capture_delay.zig").zc_capture_delay_remaining;
     _ = @import("alignment.zig").zc_align_stream_geometry;
+    _ = @import("tuning.zig");
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };

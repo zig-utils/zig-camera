@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.64 adds [owned tuning documents](docs/tuning.md): bounded loading,
+lossless JSON algorithm edits and atomic saves through Home and Zig/C/Bun.
+Applying tuning to the real ISP remains required work.
+
 Version 0.63 adds [processed stream alignment](docs/stream-alignment.md): explicit
 PiSP/VC4/minimum geometry recipes, atomic configuration planning and C/Zig/Bun/CLI
 helpers that preserve automatic dimensions and raw sensor modes.
