@@ -127,6 +127,18 @@ export class CameraWatch {
       () => {},
       effective,
     )
+    // AbortSignal methods are application-accessible too. Construction may
+    // re-enter stop/close or fill this queue; retire the unclaimed job instead
+    // of adding work after close has captured its operation prefix.
+    if (!this.handle || this.closing || this.stopped || this.jobs.size >= 32) {
+      job.cancel(
+        new CameraError(
+          this.jobs.size >= 32 ? -4 : -2,
+          'camera watch admission changed',
+        ),
+      )
+      return job
+    }
     this.jobs.add(job)
     void job.operationDone.then(() => this.jobs.delete(job))
     void job.start()

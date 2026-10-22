@@ -68,6 +68,10 @@ JavaScript turn, so later cancellation cannot revoke delivery. Values are frozen
 owned snapshots. A watch remains responsible for its native manager lease until
 `stop()` or `close()`; use `await using` or a finally block.
 
+Version 0.67.1 rechecks admission after job construction,
+including reentry through customized AbortSignal methods: stopped/closing or full
+watches return a cancelled unclaimed job without adding a waiter or poll timer.
+
 `stop()` synchronously retires native subscription and cancels Bun waits. Bun
 rejects new waits/discovery after stop; state remains queryable until close.
 `close()` joins operation cleanup and frees the watch, is idempotent, and supports

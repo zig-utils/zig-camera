@@ -170,3 +170,45 @@ test('job callbacks can join close without retaining a native owner or consuming
   expect(callback).toBe(true)
   await watch.close()
 })
+
+test('AbortSignal registration reentry cannot admit a wait after stop or close', async () => {
+  for (const action of ['stop', 'close'] as const) {
+    const watch = new CameraWatch({ simulate: true })
+    const controller = new AbortController(),
+      signal = controller.signal
+    const add = signal.addEventListener.bind(signal)
+    let closing: Promise<void> | undefined
+    Object.defineProperty(signal, 'addEventListener', {
+      value: (...args: Parameters<typeof add>) => {
+        if (action === 'close') closing = watch.close()
+        else watch.stop()
+        return add(...args)
+      },
+    })
+    const job = watch.next({ signal })
+    await expect(job.wait()).rejects.toMatchObject({ code: -2 })
+    await job.operationDone
+    expect(job.done).toBe(true)
+    if (closing) await closing
+    await watch.close()
+  }
+})
+
+test('AbortSignal registration cannot overbook the bounded watch job queue', async () => {
+  await using watch = new CameraWatch({ simulate: true })
+  const controller = new AbortController(),
+    signal = controller.signal
+  const add = signal.addEventListener.bind(signal)
+  const jobs: ReturnType<CameraWatch['next']>[] = []
+  Object.defineProperty(signal, 'addEventListener', {
+    value: (...args: Parameters<typeof add>) => {
+      jobs.push(...Array.from({ length: 32 }, () => watch.next()))
+      return add(...args)
+    },
+  })
+  const overflow = watch.next({ signal })
+  await expect(overflow.wait()).rejects.toMatchObject({ code: -4 })
+  expect(jobs.length).toBe(32)
+  await watch.close()
+  await Promise.all(jobs.map((job) => job.operationDone))
+})
