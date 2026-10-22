@@ -78,7 +78,8 @@ pub fn controls(h: *@import("synthetic.zig").Handle, s: *const Sink) c_int {
     }
     return @import("typed_synthetic.zig").capabilities(h, s);
 }
-pub fn metadata(s: *const Sink, m: c.zc_metadata) c_int {
+pub fn metadata(s: *const Sink, m: c.zc_metadata, wallclock_ns: i64) c_int {
+    const digital_gain: f32 = 1;
     const timestamp: i64 = @intCast(m.timestamp_ns);
     const duration: i64 = @intCast(m.frame_duration_us);
     const exposure: i32 = @intCast(m.exposure_us);
@@ -97,6 +98,8 @@ pub fn metadata(s: *const Sink, m: c.zc_metadata) c_int {
         .{ .id = 107, .name = "AfState", .kind = 3, .data = std.mem.asBytes(&m.af_state) },
         .{ .id = 108, .name = "ColourCorrectionMatrix", .kind = 5, .count = 9, .data = std.mem.asBytes(&matrix), .is_array = true },
         .{ .id = 109, .name = "SensorBlackLevels", .kind = 3, .count = 4, .data = std.mem.asBytes(&black), .is_array = true },
+        .{ .id = 111, .name = "DigitalGain", .kind = 5, .data = std.mem.asBytes(&digital_gain) },
+        .{ .id = 112, .name = "FrameWallClock", .kind = 4, .data = std.mem.asBytes(&wallclock_ns) },
         .{ .id = 0xf0000001, .name = "SyntheticOpaque", .kind = 255, .count = 2, .data = &.{ 0, 255, 127 }, .is_array = true },
     };
     for (fields) |f| {

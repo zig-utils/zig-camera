@@ -6,13 +6,17 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.58 adds [capture Exif](docs/capture-exif.md): request-derived JPEG
+metadata, copied typed/raw overrides, PNG/TIFF opt-in, and shared Home JPEG
+metadata encoding without a second image copy.
+
 Version 0.57 adds [staged temporary-mode files](docs/staged-files.md): publication
 after request callbacks and camera/preview restoration, coordinated cancellation
 and deadlines, and joined native I/O cleanup.
 
 Version 0.56 adds [still-image ICC profiles](docs/still-metadata.md): copied custom
 profiles or checked built-in sRGB for JPEG/PNG/TIFF, including async, focus-locked
-and temporary-mode captures. Exif options remain in progress.
+and temporary-mode captures. Capture Exif is available in 0.58.
 
 Version 0.55 adds [recording color profiles](docs/recording-color.md): copied
 AVC/HEVC VUI and MP4 nclx settings, matching matrix/range conversion, and propagation

@@ -25,6 +25,7 @@ const help =
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
     \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
     \\  --image-stream NAME      Select main/lores for images, raw for DNG
+    \\  --exif auto|none|PATH  JPEG defaults to request Exif; PATH supplies raw TIFF/Exif
     \\  --icc-profile srgb|PATH  Embed an RGB ICC profile in JPEG/PNG/TIFF
     \\  --record-stream NAME     Select main/lores for video, independent of preview
     \\  --png-compression N --png-filter NAME  zlib 0..9; adaptive/none/sub/up/average/paeth
@@ -115,6 +116,10 @@ fn run() !void {
     var image_format: ?u32 = null;
     var image_stream: ?u32 = null;
     var image_profile: ?camera.ImageProfile = null;
+    var image_exif: ?camera.ImageExif = null;
+    var exif_set = false;
+    var exif_data: ?[]u8 = null;
+    defer if (exif_data) |data| std.heap.page_allocator.free(data);
     var profile_data: ?[]u8 = null;
     defer if (profile_data) |data| std.heap.page_allocator.free(data);
     var record_stream: u32 = camera.c.ZC_MAIN;
@@ -176,6 +181,13 @@ fn run() !void {
             if (eq(value, "srgb")) image_profile = camera.srgbImageProfile() else {
                 profile_data = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, value, 16 * 1024 * 1024);
                 image_profile = camera.customImageProfile(profile_data.?);
+            }
+        } else if (eq(key, "--exif")) {
+            if (exif_set) return error.DuplicateExif;
+            exif_set = true;
+            if (eq(value, "auto")) image_exif = camera.defaultImageExif() else if (!eq(value, "none")) {
+                exif_data = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, value, 16 * 1024 * 1024);
+                image_exif = camera.customImageExif(exif_data.?, false);
             }
         } else if (eq(key, "--image-stream")) {
             image_stream = if (eq(value, "main")) camera.c.ZC_MAIN else if (eq(value, "lores")) camera.c.ZC_LORES else if (eq(value, "raw")) camera.c.ZC_RAW else return error.InvalidImageStream;
@@ -262,6 +274,7 @@ fn run() !void {
         }
     }
     var rotation_name: [4097]u8 = undefined;
+    if (exif_set and !eq(command, "capture")) return error.InvalidExifCommand;
     if (image_profile != null and !eq(command, "capture")) return error.InvalidImageProfileCommand;
     if (rotate_pattern) |pattern| {
         if (!eq(command, "record") or (rotate_ns == 0 and rotate_bytes == 0)) return error.InvalidRotation;
@@ -272,7 +285,8 @@ fn run() !void {
         image_options.format = image_format orelse try camera.still.formatFromPath(output);
         image_options.quality = quality;
         if (!camera.still.valid(&image_options)) return error.InvalidImageOptions;
-        try camera.still.checkProfile(&image_options, if (image_profile) |*profile| profile else null);
+        if (!exif_set and image_options.format == camera.c.ZC_IMAGE_JPEG) image_exif = camera.defaultImageExif();
+        try camera.checkImageMetadata(image_options, if (image_profile) |*profile| profile else null, if (image_exif) |*value| value else null);
         image_stream = image_stream orelse if (image_options.format == camera.c.ZC_IMAGE_DNG) camera.c.ZC_RAW else camera.c.ZC_MAIN;
         if ((image_options.format == camera.c.ZC_IMAGE_DNG) != (image_stream.? == camera.c.ZC_RAW)) return error.InvalidImageStream;
     }
@@ -354,7 +368,7 @@ fn run() !void {
         defer frame.release() catch {};
         const selected_stream = try frame.stream(image_stream.?);
         const selected_color = try frame.colorSpace(image_stream.?);
-        try frame.saveStreamImageProfile(output, image_stream.?, image_options, if (image_profile) |*profile| profile else null);
+        try frame.saveStreamImageMetadata(output, image_stream.?, image_options, if (image_profile) |*profile| profile else null, if (image_exif) |*value| value else null);
         if (frame.value.raw.plane_count > 0 and image_options.format != camera.c.ZC_IMAGE_DNG) {
             for (0..frame.value.raw.plane_count) |p| {
                 const raw_path = try std.fmt.allocPrint(a, "{s}.raw.{d}", .{ output, p });

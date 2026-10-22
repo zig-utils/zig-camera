@@ -630,3 +630,26 @@ reader descriptor at 917c796e0b37acc9f018bf802bcc90c3f6a95547; that C fixture is
 copied verbatim here. Both local toolchains' 16 independent cases pass again.
 The production embedding implementation is unchanged. The reader workflow also
 watches the JPEG/raster/zlib sources it exercises, so codec-only changes run it.
+
+The 0.58 capture audit contributes Home image d0abb3777b6255843ffe2364f1bd09e660c36ced:
+Exif.withDefaults appends only missing primary image/Exif defaults while retaining
+caller bytes/value locations, endian and secondary directory graphs. Shared
+ISO/GPS helpers and allocation-free GPS domain checks prevent divergent capture
+writers. jpeg_metadata.zig supplies checked APP1/APP2 markers without codec or
+zlib dependencies; Home Encoder.encodeMetadata writes them inline and
+encodeOwned transfers its output allocation, avoiding a second JPEG-sized copy.
+Exif numeric endian conversion is shared by defaults and TIFF relocation.
+
+Five defaults/value, twelve JPEG/dependency, twenty-nine embedding/dependency
+and thirteen separate Exif tests pass in Debug/ReleaseSafe with Zig 0.15.2 and
+installed 0.17 development Zig. Sixteen independent container/endian/profile cases
+plus replacements and four inline JPEG combinations pass with both toolchains.
+Libexif/libjpeg/libpng/libtiff/LCMS are test dependencies only. Home's dispatch
+returns HTTP 422 Actions disabled despite the permissions endpoint saying enabled;
+local checks and the copied-source camera matrix supply validation.
+
+Sources and tests are copied verbatim except the two existing flat format imports
+in metadata_embed and the raster import in the test facade. Camera owns request
+lease, clock/gain policy, C ABI and Bun admission snapshots; those do not belong
+in Home's serializer. The independent JSON inspector is reused verbatim for
+actual capture outputs. No kernel stub, Python or FFmpeg path is imported.

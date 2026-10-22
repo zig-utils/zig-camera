@@ -43,6 +43,10 @@ _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
 _Static_assert(sizeof(zc_orientation_info)==16,"orientation ABI");
 _Static_assert(sizeof(zc_image_options)==20,"image options ABI");
 _Static_assert(sizeof(zc_image_profile)==24,"image profile ABI");
+_Static_assert(sizeof(zc_image_exif)==24,"image Exif ABI");
+_Static_assert(sizeof(zc_exif_field)==32,"typed Exif field ABI");
+_Static_assert(offsetof(zc_exif_field,data)==16,"Exif field pointer ABI");
+_Static_assert(offsetof(zc_image_exif,data)==8,"Exif bytes pointer ABI");
 _Static_assert(sizeof(zc_image_file_state)==32,"staged file state ABI");
 _Static_assert(offsetof(zc_image_profile,data)==8,"image profile pointer ABI");
 _Static_assert(sizeof(zc_color_space)==24,"stream color ABI");
@@ -154,6 +158,22 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        const unsigned char model[]="ABI camera";
+        const zc_exif_field field={ZC_EXIF_IMAGE,0x0110,2,0,sizeof(model),0,model,sizeof(model)};
+        zc_image_blob *blob=(zc_image_blob *)1;
+        assert(zc_exif_build(NULL,1,NULL,0,&blob)==ZC_INVALID && !blob);
+        assert(zc_exif_build(&field,1,NULL,0,&blob)==ZC_OK && blob);
+        uint64_t length=0; assert(zc_image_blob_copy(blob,NULL,0,&length)==ZC_OK && length>14);
+        unsigned char *bytes=malloc((size_t)length);assert(bytes);
+        assert(zc_image_blob_copy(blob,bytes,length,&length)==ZC_OK && !memcmp(bytes,"II",2));
+        free(bytes);zc_image_blob_close(blob);
+        zc_image_exif metadata; zc_default_image_exif(&metadata);
+        assert(metadata.struct_size==24 && metadata.flags==ZC_IMAGE_EXIF_CAPTURE && !metadata.data && !metadata.length);
+        zc_image_options options; zc_default_image_options(&options);
+        assert(zc_check_image_metadata(&options,NULL,&metadata)==ZC_OK);
+        metadata.flags=2;assert(zc_check_image_metadata(&options,NULL,&metadata)==ZC_INVALID);
+    }
     {
         zc_image_file *file=NULL;
         assert(zc_image_file_create("/zig-camera-missing-directory/unused.png",&file)==ZC_OK && file);
@@ -316,6 +336,13 @@ int main(void) {
         zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
         zc_image_options options;zc_default_image_options(&options);options.format=ZC_IMAGE_PNG;
         zc_image_blob *blob=NULL;assert(zc_encode_image(camera,frame.token,&options,&blob)==ZC_OK && blob);
+        zc_image_exif capture_exif;zc_default_image_exif(&capture_exif);
+        zc_image_blob *with_exif=NULL;
+        assert(zc_encode_stream_image_metadata(camera,frame.token,ZC_MAIN,&options,NULL,&capture_exif,&with_exif)==ZC_OK && with_exif);
+        uint64_t exif_size=0;assert(zc_image_blob_copy(with_exif,NULL,0,&exif_size)==ZC_OK && exif_size>45);
+        uint8_t *exif_bytes=malloc(exif_size);assert(exif_bytes);
+        assert(zc_image_blob_copy(with_exif,exif_bytes,exif_size,&exif_size)==ZC_OK && !memcmp(exif_bytes+37,"eXIf",4));
+        free(exif_bytes);zc_image_blob_close(with_exif);
         zc_image_profile profile={sizeof(profile),ZC_IMAGE_PROFILE_SRGB,NULL,0};
         assert(zc_check_image_profile(&options,&profile)==ZC_OK);
         zc_image_blob *tagged=NULL;

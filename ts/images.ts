@@ -1,4 +1,10 @@
 import {
+  prepareExif,
+  imageExifDescriptor,
+  type ImageExif,
+  type PreparedExif,
+} from './exif'
+import {
   native as n,
   storage,
   ptr,
@@ -66,6 +72,8 @@ export interface ImageOptions {
    * Built-in sRGB requires matching source primaries/transfer; custom RGB ICC
    * bytes are structurally checked and their pixel match is caller-owned. */
   iccProfile?: ImageProfile
+  /** JPEG defaults to request-derived Exif. false disables; typed fields override defaults. */
+  exif?: ImageExif
 }
 export interface PreparedImage {
   options: Uint8Array
@@ -73,6 +81,7 @@ export interface PreparedImage {
   format: number
   stream: number
   profile?: ImageProfile
+  exif?: PreparedExif
 }
 const formats: Record<LowerImageFormat, number> = {
   jpeg: 1,
@@ -105,6 +114,7 @@ export function prepareImage(
     compressLevel: source.compressLevel,
     pngFilter: source.pngFilter,
     iccProfile: source.iccProfile,
+    exif: source.exif,
   }
   const requested =
     options.format ??
@@ -156,9 +166,15 @@ export function prepareImage(
     throw new RangeError('ICC profile size must be 1..16 MiB')
   const ownedProfile =
     profile instanceof Uint8Array ? new Uint8Array(profile) : profile
+  const exif = prepareExif(options.exif, format)
+  const exifDescriptor = imageExifDescriptor(exif)
   const descriptor = imageProfileDescriptor(ownedProfile)
   check(
-    n.zc_check_image_profile(ptr(data), descriptor ? ptr(descriptor) : null),
+    n.zc_check_image_metadata(
+      ptr(data),
+      descriptor ? ptr(descriptor) : null,
+      exifDescriptor ? ptr(exifDescriptor) : null,
+    ),
   )
   return {
     options: data,
@@ -166,6 +182,7 @@ export function prepareImage(
     format,
     stream,
     profile: ownedProfile,
+    exif,
   }
 }
 function imageProfileDescriptor(profile?: ImageProfile) {
@@ -187,16 +204,19 @@ export function saveNativeImage(
   stream: number,
   path: Uint8Array,
   profile?: ImageProfile,
+  exif?: PreparedExif,
 ) {
   const descriptor = imageProfileDescriptor(profile)
+  const exifDescriptor = imageExifDescriptor(exif)
   check(
-    n.zc_save_stream_image_profile(
+    n.zc_save_stream_image_metadata(
       camera,
       token,
       stream,
       ptr(path),
       ptr(options),
       descriptor ? ptr(descriptor) : null,
+      exifDescriptor ? ptr(exifDescriptor) : null,
     ),
   )
 }
@@ -207,16 +227,19 @@ export function stageNativeImage(
   options: Uint8Array,
   stream: number,
   profile?: ImageProfile,
+  exif?: PreparedExif,
 ) {
   const descriptor = imageProfileDescriptor(profile)
+  const exifDescriptor = imageExifDescriptor(exif)
   check(
-    n.zc_image_file_prepare(
+    n.zc_image_file_prepare_metadata(
       output,
       camera,
       token,
       stream,
       ptr(options),
       descriptor ? ptr(descriptor) : null,
+      exifDescriptor ? ptr(exifDescriptor) : null,
     ),
   )
 }
@@ -226,16 +249,19 @@ export function encodeNativeImage(
   options: Uint8Array,
   stream = view(options).getUint32(4, true) === 6 ? 1 : 0,
   profile?: ImageProfile,
+  exif?: PreparedExif,
 ): Uint8Array {
   const out = outPointer()
   const descriptor = imageProfileDescriptor(profile)
+  const exifDescriptor = imageExifDescriptor(exif)
   check(
-    n.zc_encode_stream_image_profile(
+    n.zc_encode_stream_image_metadata(
       camera,
       token,
       stream,
       ptr(options),
       descriptor ? ptr(descriptor) : null,
+      exifDescriptor ? ptr(exifDescriptor) : null,
       ptr(out),
     ),
   )

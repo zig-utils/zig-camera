@@ -6,6 +6,14 @@ import {
   type ColorSpaceRequest,
 } from './color-config'
 export type {
+  ImageExif,
+  ExifOptions,
+  ExifTag,
+  ExifRational,
+  ExifGroup,
+  ExifType,
+} from './exif'
+export type {
   ColorSpacePreset,
   ColorSpaceDescription,
   ColorSpaceRequest,
@@ -638,11 +646,7 @@ export class Frame {
     return decodeMetadata(data)
   }
   saveJPEG(path: string, quality = 98) {
-    this.open()
-    const name = cstring(path)
-    check(
-      n.zc_save_jpeg(this.camera.handle, this.token, ptr(name), uint(quality)),
-    )
+    this.saveFile(path, { format: 'jpeg', quality })
   }
   saveFile(path: string, options: ImageOptions = {}) {
     this[savePreparedImage](prepareImage(options, path))
@@ -659,6 +663,7 @@ export class Frame {
       prepared.stream,
       prepared.path!,
       prepared.profile,
+      prepared.exif,
     )
   }
   [encodePreparedImage](prepared: PreparedImage) {
@@ -669,6 +674,7 @@ export class Frame {
       prepared.options,
       prepared.stream,
       prepared.profile,
+      prepared.exif,
     )
   }
   saveDNG(path: string) {
@@ -3306,6 +3312,7 @@ export class Camera {
         path: prepared.path,
         imageOptions: prepared.options,
         imageProfile: prepared.profile,
+        imageExif: prepared.exif,
         stream: prepared.stream,
       },
       jobOptions,
@@ -3324,6 +3331,7 @@ export class Camera {
         kind: 'encoded',
         imageOptions: prepared.options,
         imageProfile: prepared.profile,
+        imageExif: prepared.exif,
         stream: prepared.stream,
       },
       jobOptions,

@@ -50,3 +50,6 @@ pub extern fn zcd_close_native_controls(*PreparedControls) void;
 pub const prepareNative = zcd_prepare_native_controls;
 pub const commitNative = zcd_commit_native_controls;
 pub const closeNative = zcd_close_native_controls;
+
+pub extern fn zcd_photo_values(*Handle, u32, *@import("catalog.zig").bridge.zcd_photo_metadata) c_int;
+pub const photoValues = zcd_photo_values;

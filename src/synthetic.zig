@@ -18,6 +18,7 @@ pub const Handle = struct {
     info: c.zc_info,
     raw_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     catalog_metadata: [c.ZC_MAX_BUFFERS]c.zc_metadata = @splat(std.mem.zeroes(c.zc_metadata)),
+    photo_wallclock_ns: [c.ZC_MAX_BUFFERS]i64 = @splat(0),
     sequence: u64 = 0,
     revision: u64 = 0,
     applied_revision: u64 = 0,
@@ -303,6 +304,8 @@ pub fn queue(h: *Handle, index: u32) c_int {
     f.sequence = h.sequence;
     h.sequence += 1;
     f.timestamp_ns = @import("capture_filter.zig").clockNs() catch return c.ZC_IO;
+    const wall = std.time.nanoTimestamp();
+    h.photo_wallclock_ns[index] = if (wall > 0 and wall <= std.math.maxInt(i64)) @intCast(wall) else 0;
     f.exposure_us = @intFromFloat(h.active[c.ZC_EXPOSURE_TIME].values[0]);
     f.analogue_gain = @floatCast(h.active[c.ZC_ANALOGUE_GAIN].values[0]);
     f.red_gain = @floatCast(h.active[c.ZC_COLOUR_GAINS].values[0]);
@@ -521,7 +524,7 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
         3 => implementation.controls(h, sink),
         4 => blk: {
             if (index >= h.info.buffer_count) break :blk c.ZC_INVALID;
-            const rc = implementation.metadata(sink, h.catalog_metadata[index]);
+            const rc = implementation.metadata(sink, h.catalog_metadata[index], h.photo_wallclock_ns[index]);
             break :blk if (rc != 0) rc else @import("typed_synthetic.zig").metadata(h, index, sink);
         },
         else => c.ZC_INVALID,
@@ -546,3 +549,15 @@ pub const PreparedControls = @import("typed_synthetic.zig").Prepared;
 pub const prepareNative = @import("typed_synthetic.zig").prepare;
 pub const commitNative = @import("typed_synthetic.zig").commit;
 pub const closeNative = @import("typed_synthetic.zig").close;
+
+pub fn photoValues(h: *Handle, index: u32, out: *@import("catalog.zig").bridge.zcd_photo_metadata) c_int {
+    out.* = std.mem.zeroes(@import("catalog.zig").bridge.zcd_photo_metadata);
+    if (index >= h.info.buffer_count) return c.ZC_INVALID;
+    out.digital_gain = 1;
+    out.valid = 1;
+    if (h.photo_wallclock_ns[index] > 0) {
+        out.wallclock_ns = h.photo_wallclock_ns[index];
+        out.valid |= 2;
+    }
+    return c.ZC_OK;
+}

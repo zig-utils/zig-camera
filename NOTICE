@@ -456,3 +456,13 @@ Home combined ICC/Exif embedding:
   Independent container, Exif and CMM libraries remain test-only dependencies.
   https://github.com/home-lang/home/commit/ee61d81948836c7c2e1943d9fd402f8d178ce674
 The Home MIT license and copyright reproduced above apply.
+
+Home capture Exif and inline JPEG metadata (0.58):
+- jpeg_encoder.zig, jpeg_metadata.zig, metadata/exif.zig, exif_defaults.zig,
+  exif_layout.zig, exif_value.zig and metadata_tiff.zig are verbatim copies of
+  Home packages/image/src at d0abb3777b6255843ffe2364f1bd09e660c36ced.
+- metadata_embed.zig changes only the two flat format imports; the test facade
+  changes only its raster import. The updated Exif/metadata fixtures and readers
+  are verbatim; tests/read_image_exif.c is Home tests/exif_inspect.c.
+  https://github.com/home-lang/home/commit/d0abb3777b6255843ffe2364f1bd09e660c36ced
+The Home MIT license and copyright reproduced above apply.

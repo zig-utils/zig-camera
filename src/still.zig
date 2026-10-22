@@ -59,6 +59,23 @@ const Buffer = struct {
     }
 };
 pub fn encode(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options) ![]u8 {
+    return encodeMetadata(allocator, frame, raw_metadata, options, null, null);
+}
+pub fn encodeMetadata(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
+    try checkProfile(options, profile);
+    if (exif != null and options.format != c.ZC_IMAGE_JPEG and options.format != c.ZC_IMAGE_PNG and options.format != c.ZC_IMAGE_TIFF) return error.UnsupportedFormat;
+    const generated = if (profile != null and profile.?.flags == c.ZC_IMAGE_PROFILE_SRGB) try @import("home/metadata/icc.zig").createSRGBProfile(allocator) else null;
+    defer if (generated) |data| allocator.free(data);
+    const metadata: @import("home/jpeg_metadata.zig").Metadata = .{ .icc = generated orelse if (profile) |p| p.data[0..@intCast(p.length)] else null, .exif = exif };
+    if (options.format == c.ZC_IMAGE_JPEG) return encodePixels(allocator, frame, raw_metadata, options, metadata);
+    if (metadata.icc == null and metadata.exif == null) return encodePixels(allocator, frame, raw_metadata, options, .{});
+    const format: @import("home/metadata_embed.zig").Format = if (options.format == c.ZC_IMAGE_PNG) .png else .tiff;
+    _ = try @import("home/metadata_embed.zig").check(format, metadata);
+    const base = try encodePixels(allocator, frame, raw_metadata, options, .{});
+    defer allocator.free(base);
+    return @import("home/metadata_embed.zig").embedMetadata(allocator, format, base, metadata);
+}
+fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
     if (!valid(options)) return error.InvalidOptions;
     if (options.format == c.ZC_IMAGE_DNG) {
         var buffer = Buffer{ .allocator = allocator };
@@ -79,8 +96,7 @@ pub fn encode(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metada
         c.ZC_IMAGE_JPEG => block: {
             var encoder = @import("home/jpeg_encoder.zig").Encoder.init(allocator);
             defer encoder.deinit();
-            const bytes = try encoder.encode(view.data, view.width, view.height, view.stride, 3, @intCast(options.quality));
-            break :block allocator.dupe(u8, bytes);
+            break :block encoder.encodeOwned(view.data, view.width, view.height, view.stride, 3, @intCast(options.quality), metadata);
         },
         c.ZC_IMAGE_PPM => block: {
             var buffer = Buffer{ .allocator = allocator };

@@ -23,12 +23,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev liblcms2-dev
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev liblcms2-dev libexif-dev
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
         run: |
-          brew install zlib pkgconf
-          echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          brew install zlib pkgconf libexif jpeg-turbo libpng
+          echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:$(brew --prefix jpeg-turbo)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
       - name: Build independent image decoder
         shell: bash
         run: |
@@ -40,6 +40,8 @@ jobs:
             cc -std=c11 -Wall -Wextra -Werror tests/read_image_icc.c $(pkg-config --cflags --libs libpng libtiff-4 libjpeg lcms2) -o zig-out/read-image-icc
             echo "ZC_ICC_READER=$PWD/zig-out/read-image-icc" >> "$GITHUB_ENV"
           fi
+          cc -std=c11 -Wall -Wextra -Werror tests/read_image_exif.c $(pkg-config --cflags --libs libexif libjpeg libpng) -o zig-out/read-image-exif
+          echo "ZC_EXIF_READER=$PWD/zig-out/read-image-exif" >> "$GITHUB_ENV"
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
@@ -79,6 +81,12 @@ jobs:
               ./zig-out/read-image-icc "$format" "zig-out/cli-icc.$format" > "zig-out/cli-$format.icc"
             fi
           done
+          ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --output zig-out/cli-exif.jpeg
+          ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --exif none --output zig-out/cli-no-exif.jpeg
+          ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --exif auto --output zig-out/cli-exif.png
+          bun tests/ts/check-image-exif.ts zig-out
+          if ./zig-out/bin/zig-camera capture --simulate --exif auto --output zig-out/rejected-exif.bmp; then exit 1; fi
+          test ! -e zig-out/rejected-exif.bmp
           bun tests/ts/check-image-profile.ts zig-out/cli-icc.png zig-out/cli-srgb.icc
           ./zig-out/bin/zig-camera capture --simulate --fifo --width 18 --height 10 --warmup 0 --icc-profile zig-out/cli-srgb.icc --output zig-out/cli-custom-icc.png
           bun tests/ts/check-image-profile.ts zig-out/cli-custom-icc.png zig-out/cli-copy.icc
@@ -168,7 +176,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
-          bun test tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/staged-files.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
+          bun test tests/ts/image-exif.test.ts tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/staged-files.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

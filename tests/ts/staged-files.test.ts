@@ -147,7 +147,9 @@ test('restoration failure leaves the destination unchanged and discards the work
       return worker
     } as unknown as typeof Worker
     const error = await fail(
-      c.switchModeAndCaptureFile({ width: 32, height: 24 }, path),
+      c.switchModeAndCaptureFile({ width: 32, height: 24 }, path, {
+        exif: { artist: 'Chris' },
+      }),
     )
     expect(error).toHaveProperty('restoreCode')
     expect((error as { restoreCode: number }).restoreCode).not.toBe(0)

@@ -208,6 +208,11 @@ template<class T> int enumCatalog(const zcd_catalog_sink &s, const T *id) {
     }
     return ZC_OK;
 }
+template<class T> bool standardMetadataName(const T *id,const char *name) {
+    if(id->name()!=name)return false;
+    if constexpr(HasCatalogInfo<T>::value) return id->vendor()=="libcamera";
+    return true;
+}
 int catalogList(const zcd_catalog_sink &s, const ControlList &list, uint32_t group=0) {
     const auto *ids=list.idMap();
     for(const auto &entry:list) {
@@ -987,3 +992,19 @@ extern "C" int zcd_commit_native_controls(Device *device,PreparedControls *p,uin
     *revision=++device->control_revision;p->committed=true;return ZC_OK;
 }
 extern "C" void zcd_close_native_controls(PreparedControls *p){delete p;}
+
+extern "C" int zcd_photo_values(Device *device,uint32_t index,zcd_photo_metadata *out) {
+    *out={}; if(index>=device->slots.size()) return ZC_INVALID;
+    const auto &metadata=device->slots[index].request->metadata();
+    if(const auto gain=metadata.get(controls::DigitalGain)) { out->valid|=1; out->digital_gain=*gain; }
+    // Name lookup supports older headers without a FrameWallClock declaration.
+    const auto *ids=metadata.idMap();
+    if(ids) for(const auto &entry:metadata) {
+        const auto found=ids->find(entry.first);
+        if(found==ids->end() || !standardMetadataName(found->second,"FrameWallClock")) continue;
+        if(entry.second.type()!=ControlTypeInteger64 || entry.second.isArray()) continue;
+        const auto stamp=entry.second.get<int64_t>();
+        if(stamp>0) { out->valid|=2; out->wallclock_ns=stamp; } break;
+    }
+    return ZC_OK;
+}

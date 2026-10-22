@@ -1,3 +1,4 @@
+import type { PreparedExif } from './exif'
 import { decodeMetadata } from './metadata'
 import {
   encodeNativeImage,
@@ -42,6 +43,7 @@ export interface ModeRequest {
     kind: 'rgb' | 'stream' | 'metadata' | 'file' | 'encoded'
     imageOptions?: Uint8Array
     imageProfile?: ImageProfile
+    imageExif?: PreparedExif
     fileOutput?: Pointer
     stream?: number
     path?: Uint8Array
@@ -381,6 +383,10 @@ self.onmessage = ({ data: request }) => {
             capture.imageOptions!,
             capture.stream,
             capture.imageProfile,
+            capture.imageExif ??
+              (view(capture.imageOptions!).getUint32(4, true) === 1
+                ? { captureMetadata: true }
+                : undefined),
           )
         } else if (capture.kind === 'file') {
           if (!capture.fileOutput) throw -2
@@ -397,6 +403,10 @@ self.onmessage = ({ data: request }) => {
             options,
             capture.stream ?? (view(options).getUint32(4, true) === 6 ? 1 : 0),
             capture.imageProfile,
+            capture.imageExif ??
+              (view(options).getUint32(4, true) === 1
+                ? { captureMetadata: true }
+                : undefined),
           )
           result.value = storage(96)
           check(

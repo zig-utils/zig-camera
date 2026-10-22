@@ -306,8 +306,29 @@ enum { ZC_IMAGE_PROFILE_SRGB=1 };
  * Embedding describes samples; it never transforms their gamut or transfer. */
 typedef struct { uint32_t struct_size,flags; const uint8_t *data; uint64_t length; } zc_image_profile;
 int zc_check_image_profile(const zc_image_options *,const zc_image_profile *);
+/* Exif payload is borrowed, immutable classic TIFF (optional Exif prefix).
+ * CAPTURE fills missing fields from this request; raw caller fields win.
+ * Null/empty flags=0 disables Exif. JPEG defaults can be requested independently
+ * of custom bytes. Old image/profile APIs keep their existing behavior. */
+enum { ZC_IMAGE_EXIF_CAPTURE=1 };
+typedef struct { uint32_t struct_size,flags; const uint8_t *data; uint64_t length; } zc_image_exif;
+enum { ZC_EXIF_IMAGE=0,ZC_EXIF_PHOTO=1,ZC_EXIF_GPS=2,ZC_EXIF_INTEROP=3,ZC_EXIF_THUMBNAIL=4 };
+/* TIFF types 1..12 accept little-endian field bytes. Application value types
+ * GPS_DECIMAL (f64; GPS tags 2,4,6) and ISO (u32; photo tag 0x8833) expand
+ * through Home's shared typed builders. Reserved fields must be zero. */
+enum { ZC_EXIF_GPS_DECIMAL=256,ZC_EXIF_ISO=257 };
+typedef struct {
+ uint16_t group,tag,field_type,reserved_a; uint32_t count,reserved_b;
+ const uint8_t *data; uint64_t length;
+} zc_exif_field;
+void zc_default_image_exif(zc_image_exif *);
+int zc_check_image_metadata(const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
+
 typedef struct zc_image_blob zc_image_blob;
 void zc_default_image_options(zc_image_options *);
+/* Owned bare TIFF blob from typed fields. Does not read a camera, retain input
+ * pointers or add capture defaults. Thumbnail bytes, if present, are copied. */
+int zc_exif_build(const zc_exif_field *,uint32_t count,const uint8_t *thumbnail,uint64_t thumbnail_length,zc_image_blob **out);
 /* Synchronous encode of an owned readable lease. Blob owns its encoded bytes,
  * survives frame/camera release and keeps no native buffer. Caller serializes
  * blob operations and closes exactly once. Output is null on encode failure. */
@@ -316,6 +337,7 @@ int zc_encode_image(zc_camera *,uint64_t token,const zc_image_options *,zc_image
  * Disabled streams reject. Existing image option layouts remain unchanged. */
 int zc_encode_stream_image(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,zc_image_blob **out);
 int zc_encode_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,zc_image_blob **out);
+int zc_encode_stream_image_metadata(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,zc_image_blob **out);
 int zc_image_blob_copy(const zc_image_blob *,uint8_t *data,uint64_t capacity,uint64_t *length);
 void zc_image_blob_close(zc_image_blob *);
 /* Atomic file replacement; explicit format does not depend on path extension.
@@ -324,6 +346,7 @@ void zc_image_blob_close(zc_image_blob *);
 int zc_save_image(zc_camera *,uint64_t token,const char *path,const zc_image_options *);
 int zc_save_stream_image(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *);
 int zc_save_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *,const zc_image_profile *);
+int zc_save_stream_image_metadata(zc_camera *,uint64_t token,uint32_t stream,const char *path,const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
 /* Staged atomic still-file output. Create copies the path and reserves an I/O
  * thread without file I/O. Every created object needs finish (even if unused).
  * Prepare runs synchronously on the capture owner and retains no frame. Retire
@@ -336,6 +359,7 @@ typedef struct zc_image_file zc_image_file;
 typedef struct { uint32_t struct_size,phase,preparing,released,finished,committed; int32_t result,cleanup_code; } zc_image_file_state;
 int zc_image_file_create(const char *,zc_image_file **);
 int zc_image_file_prepare(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *);
+int zc_image_file_prepare_metadata(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
 int zc_image_file_cancel(zc_image_file *); /* 1 accepted, 0 too late/already cancelled */
 int zc_image_file_finish(zc_image_file *,uint32_t publish);
 int zc_image_file_state_get(zc_image_file *,zc_image_file_state *);

@@ -9,6 +9,19 @@ pub const ImageTransform = @import("home/orientation.zig").Transform;
 pub const still = @import("still.zig");
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
+pub const ImageExif = c.zc_image_exif;
+pub const Exif = @import("home/metadata/exif.zig");
+pub fn defaultImageExif() ImageExif {
+    var out: ImageExif = undefined;
+    @import("exif.zig").zc_default_image_exif(&out);
+    return out;
+}
+pub fn customImageExif(bytes: []const u8, capture_metadata: bool) ImageExif {
+    return .{ .struct_size = @sizeOf(ImageExif), .flags = if (capture_metadata) c.ZC_IMAGE_EXIF_CAPTURE else 0, .data = bytes.ptr, .length = bytes.len };
+}
+pub fn checkImageMetadata(options: ImageOptions, profile: ?*const ImageProfile, image_exif: ?*const ImageExif) Error!void {
+    try check(core.zc_check_image_metadata(&options, profile, image_exif));
+}
 pub fn srgbImageProfile() ImageProfile {
     return .{ .struct_size = @sizeOf(ImageProfile), .flags = c.ZC_IMAGE_PROFILE_SRGB, .data = null, .length = 0 };
 }
@@ -434,8 +447,11 @@ pub const Frame = struct {
         return self.saveStreamImageProfile(path, id, options, null);
     }
     pub fn saveStreamImageProfile(self: *const Frame, path: [:0]const u8, id: u32, options: ImageOptions, profile: ?*const ImageProfile) Error!void {
+        return self.saveStreamImageMetadata(path, id, options, profile, null);
+    }
+    pub fn saveStreamImageMetadata(self: *const Frame, path: [:0]const u8, id: u32, options: ImageOptions, profile: ?*const ImageProfile, image_exif: ?*const ImageExif) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
-        try check(core.zc_save_stream_image_profile(self.camera.handle, self.value.token, id, path, &options, profile));
+        try check(core.zc_save_stream_image_metadata(self.camera.handle, self.value.token, id, path, &options, profile, image_exif));
     }
     pub fn encodeImage(self: *const Frame, allocator: std.mem.Allocator, options: ImageOptions) Error![]u8 {
         return self.encodeStreamImage(allocator, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
@@ -444,9 +460,12 @@ pub const Frame = struct {
         return self.encodeStreamImageProfile(allocator, id, options, null);
     }
     pub fn encodeStreamImageProfile(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions, profile: ?*const ImageProfile) Error![]u8 {
+        return self.encodeStreamImageMetadata(allocator, id, options, profile, null);
+    }
+    pub fn encodeStreamImageMetadata(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions, profile: ?*const ImageProfile, image_exif: ?*const ImageExif) Error![]u8 {
         if (self.value.token == 0) return error.StaleFrame;
         var blob: ?*c.zc_image_blob = null;
-        try check(core.zc_encode_stream_image_profile(self.camera.handle, self.value.token, id, &options, profile, &blob));
+        try check(core.zc_encode_stream_image_metadata(self.camera.handle, self.value.token, id, &options, profile, image_exif, &blob));
         defer core.zc_image_blob_close(blob);
         var length: u64 = 0;
         try check(core.zc_image_blob_copy(blob.?, null, 0, &length));
@@ -885,4 +904,35 @@ test "staged encoded files publish after the source camera and every frame are d
     defer t.allocator.free(bytes);
     try t.expectEqualSlices(u8, "\x89PNG\r\n\x1a\n", bytes[0..8]);
     try t.expectEqualSlices(u8, "iCCP", bytes[37..41]);
+}
+
+test "Zig capture Exif uses selected stream dimensions and returns owned metadata" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch {};
+    try camera.start();
+    defer camera.stop() catch {};
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var opts = defaultImageOptions();
+    opts.format = c.ZC_IMAGE_TIFF;
+    var descriptor = defaultImageExif();
+    try checkImageMetadata(opts, null, &descriptor);
+    const encoded = try frame.encodeStreamImageMetadata(t.allocator, c.ZC_MAIN, opts, null, &descriptor);
+    defer t.allocator.free(encoded);
+    try frame.release();
+    var parsed = try Exif.parse(t.allocator, encoded);
+    defer parsed.deinit();
+    try t.expectEqualStrings("zig-camera", parsed.software.?);
+    try t.expectEqual(@as(u32, 18), parsed.width);
+    try t.expectEqual(@as(u32, 10), parsed.height);
+    opts.format = c.ZC_IMAGE_BMP;
+    try t.expectError(error.Unsupported, checkImageMetadata(opts, null, &descriptor));
+    descriptor = customImageExif("broken", false);
+    opts.format = c.ZC_IMAGE_JPEG;
+    try t.expectError(error.Invalid, checkImageMetadata(opts, null, &descriptor));
 }

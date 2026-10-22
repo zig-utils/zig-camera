@@ -28,4 +28,7 @@ typedef struct {
     zcd_catalog_record record;
     zcd_catalog_value value;
 } zcd_control_input;
+/* Internal request-local photo values; valid bits: digital gain=1, wall UTC=2.
+ * No heap allocation or metadata serialization is required to query these. */
+typedef struct { uint32_t valid; float digital_gain; int64_t wallclock_ns; } zcd_photo_metadata;
 #endif

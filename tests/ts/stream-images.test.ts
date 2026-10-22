@@ -89,8 +89,9 @@ for (const rgb of [false, true])
       expect(frame.copyRGB()).toEqual(main)
       for (const format of ['png', 'bmp', 'tiff', 'jpeg'] as ImageFormat[]) {
         const path = join(dir, `lores.${format}`),
-          bytes = frame.encodeImage({ format, stream: 'lores' })
-        frame.saveFile(path, { format, stream: 'lores' })
+          // Save timestamps differ across calls; compare pixels with Exif disabled.
+          bytes = frame.encodeImage({ format, stream: 'lores', exif: false })
+        frame.saveFile(path, { format, stream: 'lores', exif: false })
         expect(readFileSync(path)).toEqual(Buffer.from(bytes))
         if (decoder) {
           const result = Bun.spawnSync([decoder, format, path])

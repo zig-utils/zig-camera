@@ -103,8 +103,9 @@ fixture is SOI/EOI-delimited data, not an independently decoded picture. No comp
 Exif conformance or sensor/capture metadata accuracy is inferred. home-exif.yml
 covers pinned/master Zig on Linux x86/ARM and macOS.
 
-Camera-facing Exif options and image-container embedding remain implementation
-work. The shared helper alone changes no capture output or public camera ABI.
+Camera-facing Exif and container embedding are now available through the
+[scoped capture contract](capture-exif.md). The shared helper itself remains
+independent of capture policy.
 MakerNote internal offsets, complete tag semantics, image conformance and physical
 metadata/quality acceptance remain separate requirements. See the shared
 [Home Exif contract](https://github.com/home-lang/home/blob/05c131f97466cce6cb497aad5607e4dc77ad6ad6/packages/image/docs/exif.md).
@@ -121,8 +122,8 @@ Opaque MakerNote offsets and unsupported strip/tile thumbnail pointers are not
 silently reinterpreted. Old appended TIFF bytes remain, so this is not redaction.
 
 The helper reuses Home's existing ICC/Exif validators, codecs, raster encoders and
-zlib. The public camera API still exposes ICC embedding; Exif capture options and
-capture-derived fields remain implementation work. Existing ABI layouts and
+zlib. The public camera API exposes ICC embedding and the additive
+[capture Exif API](capture-exif.md). Existing ABI layouts and
 staged publication ownership are unchanged. Independent libexif/container readers,
 Little CMS and decoded sample comparisons cover the shared implementation, with
 pinned/master platform matrices. This does not establish hardware metadata

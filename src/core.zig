@@ -1051,16 +1051,21 @@ pub export fn zc_autofocus_wait(p: *c.zc_camera, id: u64, timeout_ms: u32, state
 }
 extern fn zcd_write_jpeg_fd(*const c.zc_frame, c_int, u32) c_int;
 const still = @import("still.zig");
+const exif = @import("exif.zig");
+extern fn zcd_write_jpeg_fd_markers(*const c.zc_frame, c_int, u32, ?[*]const u8, usize) c_int;
 const image_file = @import("image_file.zig");
 comptime {
     _ = image_file;
 }
 pub export fn zc_image_file_prepare(output: *c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
+    return zc_image_file_prepare_metadata(output, p, token, stream, opts, profile, null);
+}
+pub export fn zc_image_file_prepare_metadata(output: *c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) c_int {
     const start = image_file.begin(output);
     if (start != 0) return start;
-    if (options.jpeg and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN and profile == null) return image_file.prepared(output, stageSystemJpeg(output, p, token, opts));
+    if (options.jpeg and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN and profile == null) return image_file.prepared(output, systemJpegMetadata(output, p, token, stream, null, opts, metadata));
     var encoded: ?*c.zc_image_blob = null;
-    var rc = zc_encode_stream_image_profile(p, token, stream, opts, profile, &encoded);
+    var rc = zc_encode_stream_image_metadata(p, token, stream, opts, profile, metadata, &encoded);
     if (rc == c.ZC_OK) {
         const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));
         rc = image_file.write(output, blob.bytes);
@@ -1068,25 +1073,63 @@ pub export fn zc_image_file_prepare(output: *c.zc_image_file, p: *c.zc_camera, t
     }
     return image_file.prepared(output, rc);
 }
-fn stageSystemJpeg(output: *c.zc_image_file, p: *c.zc_camera, token: u64, opts: *const c.zc_image_options) c_int {
-    if (!still.valid(opts)) return c.ZC_INVALID;
+fn captureExifLocked(self: *Session, index: u32, selected: c.zc_stream, metadata: ?*const c.zc_image_exif) !?[]u8 {
+    if (!exif.enabled(metadata) or metadata.?.flags & c.ZC_IMAGE_EXIF_CAPTURE == 0) return null;
+    const before = std.time.nanoTimestamp();
+    const capture_now = @import("capture_filter.zig").clockNs() catch null;
+    const after = std.time.nanoTimestamp();
+    var photo = std.mem.zeroes(@import("catalog.zig").bridge.zcd_photo_metadata);
+    _ = driver.photoValues(self.device.?, index, &photo);
+    const frame_metadata = self.slots[index].metadata;
+    const stamp: ?i128 = if (photo.valid & 2 != 0 and photo.wallclock_ns > 0) photo.wallclock_ns else if (frame_metadata.valid & 16 != 0 and capture_now != null) exif.correlateUtc(before, capture_now.?, after, frame_metadata.timestamp_ns) else null;
+    var raw = std.mem.zeroes(c.zc_raw_metadata);
+    _ = driver.metadata(self.device.?, index, &raw);
+    const model = std.mem.sliceTo(&raw.model, 0);
+    return exif.generate(std.heap.c_allocator, metadata, .{
+        .width = selected.width,
+        .height = selected.height,
+        .model = if (model.len != 0) model else self.identity.bytes(),
+        .exposure_us = if (frame_metadata.valid & 64 != 0) frame_metadata.exposure_us else null,
+        .analogue_gain = self.slots[index].frame.analogue_gain,
+        .digital_gain = if (photo.valid & 1 != 0) photo.digital_gain else null,
+        .saved_utc_ns = after,
+        .captured_utc_ns = stamp,
+    });
+}
+fn systemJpegMetadata(output: ?*c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, path: ?[*:0]const u8, opts: *const c.zc_image_options, metadata: ?*const c.zc_image_exif) c_int {
+    const status = zc_check_image_metadata(opts, null, metadata);
+    if (status != 0) return status;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     if (self.slots[index].access.writer) return c.ZC_BUSY;
-    const slot = &self.slots[index];
+    var selected: c.zc_stream = undefined;
+    const stream_rc = streamLocked(self, index, stream, &selected);
+    if (stream_rc != 0) return stream_rc;
+    const generated = captureExifLocked(self, index, selected, metadata) catch |err| return still.status(err);
+    defer if (generated) |bytes| std.heap.c_allocator.free(bytes);
+    const markers = @import("home/jpeg_metadata.zig").encode(std.heap.c_allocator, .{ .exif = generated orelse exif.bytes(metadata) }) catch |err| return still.status(err);
+    defer std.heap.c_allocator.free(markers);
     var color = std.mem.zeroes(c.zc_color_space);
-    if (!std.mem.eql(u8, std.mem.sliceTo(&slot.frame.main.format, 0), "BGR888")) {
-        const rc = driver.colorSpace(self.device.?, c.ZC_MAIN, &color);
-        if (rc != c.ZC_OK) return rc;
+    if (!std.mem.eql(u8, std.mem.sliceTo(&selected.format, 0), "BGR888")) {
+        const rc = driver.colorSpace(self.device.?, stream, &color);
+        if (rc != 0) return rc;
     }
-    const source = @import("stream_rgb.zig").Selected.init(std.heap.c_allocator, slot.frame, slot.frame.main, color) catch |err| return still.status(err);
+    const source = @import("stream_rgb.zig").Selected.init(std.heap.c_allocator, self.slots[index].frame, selected, color) catch |err| return still.status(err);
     defer source.deinit(std.heap.c_allocator);
-    var fd: std.posix.fd_t = undefined;
-    const rc = image_file.open(output, &fd);
-    if (rc != c.ZC_OK) return rc;
-    return zcd_write_jpeg_fd(&source.frame, fd, opts.quality);
+    if (output) |target| {
+        var fd: std.posix.fd_t = undefined;
+        const rc = image_file.open(target, &fd);
+        if (rc != 0) return rc;
+        return zcd_write_jpeg_fd_markers(&source.frame, fd, opts.quality, if (markers.len != 0) markers.ptr else null, markers.len);
+    }
+    var atom = std.fs.cwd().atomicFile(std.mem.span(path.?), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+    defer atom.deinit();
+    const rc = zcd_write_jpeg_fd_markers(&source.frame, atom.file_writer.file.handle, opts.quality, if (markers.len != 0) markers.ptr else null, markers.len);
+    if (rc != 0) return rc;
+    atom.finish() catch return c.ZC_IO;
+    return c.ZC_OK;
 }
 pub export fn zc_default_image_options(out: *c.zc_image_options) void {
     out.* = .{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_JPEG, .quality = 98, .png_compression = 1, .png_filter = c.ZC_PNG_ADAPTIVE };
@@ -1106,11 +1149,20 @@ pub export fn zc_check_image_profile(opts: *const c.zc_image_options, profile: ?
     still.checkProfile(opts, profile) catch |err| return still.status(err);
     return c.ZC_OK;
 }
+pub export fn zc_check_image_metadata(opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) c_int {
+    const rc = zc_check_image_profile(opts, profile);
+    if (rc != 0) return rc;
+    exif.check(opts, metadata) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
 pub export fn zc_encode_stream_image_profile(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, out: *?*c.zc_image_blob) c_int {
+    return zc_encode_stream_image_metadata(p, token, stream, opts, profile, null, out);
+}
+pub export fn zc_encode_stream_image_metadata(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata_exif: ?*const c.zc_image_exif, out: *?*c.zc_image_blob) c_int {
     out.* = null;
     const source_status = imageStreamStatus(stream, opts);
     if (source_status != 0) return source_status;
-    const profile_status = zc_check_image_profile(opts, profile);
+    const profile_status = zc_check_image_metadata(opts, profile, metadata_exif);
     if (profile_status != 0) return profile_status;
     const self = session(p);
     self.operation.lock();
@@ -1126,6 +1178,17 @@ pub export fn zc_encode_stream_image_profile(p: *c.zc_camera, token: u64, stream
         if (rc != 0) return rc;
     }
     const allocator = std.heap.c_allocator;
+    const generated_exif = captureExifLocked(self, index, selected, metadata_exif) catch |err| return still.status(err);
+    defer if (generated_exif) |bytes| allocator.free(bytes);
+    const exif_bytes = generated_exif orelse exif.bytes(metadata_exif);
+    if (generated_exif) |bytes| {
+        _ = @import("home/metadata_embed.zig").check(switch (opts.format) {
+            c.ZC_IMAGE_JPEG => .jpeg,
+            c.ZC_IMAGE_PNG => .png,
+            c.ZC_IMAGE_TIFF => .tiff,
+            else => unreachable,
+        }, .{ .exif = bytes }) catch |err| return still.status(err);
+    }
     var source = @import("stream_rgb.zig").Selected{ .frame = self.slots[index].frame };
     if (opts.format != c.ZC_IMAGE_DNG) {
         var space: c.zc_color_space = undefined;
@@ -1136,17 +1199,11 @@ pub export fn zc_encode_stream_image_profile(p: *c.zc_camera, token: u64, stream
     }
     defer source.deinit(allocator);
     const blob = allocator.create(still.Blob) catch return c.ZC_NOMEM;
-    const bytes = still.encode(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts) catch |err| {
+    const bytes = still.encodeMetadata(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts, profile, exif_bytes) catch |err| {
         std.heap.c_allocator.destroy(blob);
         return still.status(err);
     };
-    if (profile) |value| {
-        defer allocator.free(bytes);
-        blob.bytes = still.embedProfile(allocator, opts, value, bytes) catch |err| {
-            allocator.destroy(blob);
-            return still.status(err);
-        };
-    } else blob.bytes = bytes;
+    blob.bytes = bytes;
     out.* = @ptrCast(blob);
     return c.ZC_OK;
 }
@@ -1245,14 +1302,18 @@ pub export fn zc_save_stream_image(p: *c.zc_camera, token: u64, stream: u32, pat
     return zc_save_stream_image_profile(p, token, stream, path, opts, null);
 }
 pub export fn zc_save_stream_image_profile(p: *c.zc_camera, token: u64, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
+    return zc_save_stream_image_metadata(p, token, stream, path, opts, profile, null);
+}
+pub export fn zc_save_stream_image_metadata(p: *c.zc_camera, token: u64, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) c_int {
     const source_status = imageStreamStatus(stream, opts);
     if (source_status != 0) return source_status;
-    const profile_status = zc_check_image_profile(opts, profile);
+    const profile_status = zc_check_image_metadata(opts, profile, metadata);
     if (profile_status != 0) return profile_status;
-    if (profile == null and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN) return zc_save_jpeg(p, token, path, opts.quality);
+    if (!exif.enabled(metadata) and profile == null and opts.format == c.ZC_IMAGE_JPEG and stream == c.ZC_MAIN) return zc_save_jpeg(p, token, path, opts.quality);
+    if (options.jpeg and profile == null and stream == c.ZC_MAIN and opts.format == c.ZC_IMAGE_JPEG) return systemJpegMetadata(null, p, token, stream, path, opts, metadata);
     if (opts.format == c.ZC_IMAGE_DNG) return zc_save_dng(p, token, path);
     var encoded: ?*c.zc_image_blob = null;
-    const rc = zc_encode_stream_image_profile(p, token, stream, opts, profile, &encoded);
+    const rc = zc_encode_stream_image_metadata(p, token, stream, opts, profile, metadata, &encoded);
     if (rc != 0) return rc;
     defer zc_image_blob_close(encoded);
     const blob: *const still.Blob = @ptrCast(@alignCast(encoded.?));

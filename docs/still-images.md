@@ -107,3 +107,7 @@ on the parity worklist. Hardware throughput and optical quality are unmeasured.
 References: [PNG specification](https://www.w3.org/TR/png-3/),
 [TIFF coverage and tags](https://libtiff.gitlab.io/libtiff/specification/coverage.html),
 [pinned Picamera2 save behavior](https://github.com/raspberrypi/picamera2/blob/5e2a35d3bb230825c98c56d98e01b41ddeb43e86/picamera2/request.py).
+
+JPEG in Bun and the CLI now defaults to request Exif; `exif: false` / `--exif none`
+disables it. PNG/TIFF opt in. See [capture Exif](capture-exif.md) for typed/raw
+options, UTC/ISO policy, compatibility and bounds.

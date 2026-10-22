@@ -171,3 +171,13 @@ image-library boundary remains applicable: Home image gains combined embedding,
 directory relocation and reader tests; camera reuses those sources. OS/device
 state is neither copied nor executed, and no stub is counted as working capture,
 codec or image-quality evidence.
+
+The 0.58 capture-Exif audit fetches Home OS main and confirms
+151269666bc09aa15a271f1c1f4603f681132e65. It rereads camera.home,
+video_decoder.home, container/image.home and ADR-MC3. The camera stub allocates
+a fixed RGB buffer and only returns a nominal capture size; its resolution setter
+does not supply a hosted request/metadata ownership contract. container/image.home
+is OCI image management, not photography. Decoder stubs provide no metadata
+serializer. Per ADR-MC3, missing-default Exif merging and inline JPEG markers
+therefore improve Home image first and are reused here. OS stays unchanged;
+no kernel, optical or capture-hardware claims are inferred from these files.
