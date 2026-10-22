@@ -25,6 +25,8 @@ _Static_assert(sizeof(zc_output_wait_state)==16,"host capacity wait ABI");
 _Static_assert(offsetof(zc_output_mailbox_stats,error_code)==160,"host queue error ABI");
 _Static_assert(sizeof(zc_pts_clock)==24,"shared PTS clock ABI");
 _Static_assert(sizeof(zc_capture_filter)==32,"capture filter ABI");
+_Static_assert(sizeof(zc_capture_delay)==32,"capture delay ABI");
+_Static_assert(offsetof(zc_capture_delay,armed)==24,"capture delay flag ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
 _Static_assert(sizeof(zc_automatic_state)==16,"automatic state ABI");
 _Static_assert(sizeof(zc_factory_config)==56,"factory config ABI");
@@ -160,6 +162,24 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_config cfg;zc_default_config(&cfg);
+        zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);
+        zc_processed_options processed;zc_default_processed_options(&processed);
+        assert(zc_check_camera_configuration(&cfg,&pipe,&processed,1,0)==ZC_OK);
+        cfg.height=6;
+        assert(zc_check_camera_configuration(&cfg,&pipe,&processed,1,0)==ZC_INVALID);
+        cfg.width=8;
+        assert(zc_check_camera_configuration(&cfg,&pipe,&processed,1,0)==ZC_OK);
+        zc_capture_delay delay;zc_default_capture_delay(&delay);uint64_t remaining=42;
+        assert(zc_capture_delay_remaining(&delay,0,&remaining)==ZC_STATE && remaining==0);
+        assert(zc_capture_delay_arm(&delay,100,20)==ZC_OK);
+        assert(zc_capture_delay_remaining(&delay,110,&remaining)==ZC_OK && remaining==10);
+        zc_capture_delay before=delay;
+        assert(zc_capture_delay_remaining(&delay,109,&remaining)==ZC_INVALID && remaining==0);
+        assert(memcmp(&delay,&before,sizeof(delay))==0);
+        assert(zc_capture_delay_remaining(&delay,120,&remaining)==ZC_OK && remaining==0);
+    }
     {
         zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;cfg.raw=1;
         zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.capture.unpacked_raw=1;pipe.lores_width=8;pipe.lores_height=6;

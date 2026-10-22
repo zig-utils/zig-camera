@@ -13,6 +13,16 @@ import type { BunJob } from './jobs'
 class StagedImageFile {
   handle?: Pointer
   private released = false
+  private outcome?: { committed: boolean; result: number; cleanup: number }
+  describe<T extends Error>(error: T): T {
+    return this.outcome
+      ? Object.assign(error, {
+          imageFilePublished: this.outcome.committed,
+          imageFileResultCode: this.outcome.result,
+          imageFileCleanupCode: this.outcome.cleanup,
+        })
+      : error
+  }
   constructor(path: Uint8Array) {
     const out = outPointer()
     check(n.zc_image_file_create(ptr(path), ptr(out)), 'stage image file')
@@ -28,12 +38,15 @@ class StagedImageFile {
       data = view(bytes)
     for (;;) {
       check(n.zc_image_file_state_get(this.handle!, ptr(bytes)))
-      if (data.getUint32(16, true))
-        return {
+      if (data.getUint32(16, true)) {
+        const outcome = {
           committed: !!data.getUint32(20, true),
           result: data.getInt32(24, true),
           cleanup: data.getInt32(28, true),
         }
+        this.outcome = outcome
+        return outcome
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 1))
     }
   }
@@ -47,10 +60,12 @@ class StagedImageFile {
     // rejects subsequent cancellation until the joined I/O result is observed.
     Atomics.store(new Int32Array(job.cancellation), 1, 6)
     const result = await this.wait()
-    check(result.result, 'publish image file')
-    check(result.cleanup, 'image file cleanup')
+    if (result.result)
+      throw this.describe(new CameraError(result.result, 'publish image file'))
+    if (result.cleanup)
+      throw this.describe(new CameraError(result.cleanup, 'image file cleanup'))
     if (!result.committed)
-      throw new CameraError(-2, 'image file was not committed')
+      throw this.describe(new CameraError(-2, 'image file was not committed'))
   }
   async close() {
     if (this.handle === undefined) return
@@ -68,9 +83,11 @@ class StagedImageFile {
       this.released = true
     }
     const result = await this.wait()
-    check(n.zc_image_file_close(this.handle), 'close image file')
+    const closed = n.zc_image_file_close(this.handle)
+    if (closed) throw this.describe(new CameraError(closed, 'close image file'))
     this.handle = undefined
-    check(result.cleanup, 'image file cleanup')
+    if (result.cleanup)
+      throw this.describe(new CameraError(result.cleanup, 'image file cleanup'))
   }
 }
 /** Main owns the native object before handing it to a worker, and joins its
@@ -95,9 +112,11 @@ export async function withStagedImageFile<T>(
       await file?.close()
     } catch (cleanupError) {
       if (failed)
-        throw new AggregateError(
-          [failure, cleanupError],
-          'capture and staged file cleanup failed',
+        throw file!.describe(
+          new AggregateError(
+            [failure, cleanupError],
+            'capture and staged file cleanup failed',
+          ),
         )
       else throw cleanupError
     } finally {

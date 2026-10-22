@@ -101,13 +101,10 @@ const filters: Record<PngFilter, number> = {
   average: 4,
   paeth: 5,
 }
-export function prepareImage(
-  source: ImageOptions = {},
-  path?: string,
-): PreparedImage {
+function snapshotImageOptions(source: ImageOptions): ImageOptions {
   if (!source || typeof source !== 'object' || Array.isArray(source))
     throw new RangeError('invalid image options')
-  const options = {
+  return {
     format: source.format,
     stream: source.stream,
     quality: source.quality,
@@ -116,16 +113,59 @@ export function prepareImage(
     iccProfile: source.iccProfile,
     exif: source.exif,
   }
-  const requested =
-    options.format ??
+}
+function selectedFormat(requested: ImageOptions['format'], path?: string) {
+  const raw =
+    requested ??
     (path === undefined
       ? 'jpeg'
       : path.slice(path.lastIndexOf('.') + 1).toLowerCase())
-  const name =
-    typeof requested === 'string' ? requested.toLowerCase() : requested
+  const name = typeof raw === 'string' ? raw.toLowerCase() : raw
   if (typeof name !== 'string' || !Object.hasOwn(formats, name))
     throw new CameraError(-8, 'image format')
-  const format = formats[name as LowerImageFormat],
+  return formats[name as LowerImageFormat]
+}
+interface SharedImageMetadata {
+  profile?: ImageProfile
+  exif?: PreparedExif
+  defaultExif: boolean
+}
+export function prepareImage(
+  source: ImageOptions = {},
+  path?: string,
+): PreparedImage {
+  return prepareImageSnapshot(snapshotImageOptions(source), path)
+}
+/** One copied metadata snapshot and at most one encoded template per format. */
+export function prepareImageFactory(source: ImageOptions = {}) {
+  const options = snapshotImageOptions(source),
+    templates = new Map<number, PreparedImage>()
+  let shared: SharedImageMetadata | undefined
+  return (path: string): PreparedImage => {
+    const format = selectedFormat(options.format, path)
+    let template = templates.get(format)
+    if (!template) {
+      template = prepareImageSnapshot(options, path, shared)
+      shared ??= {
+        profile: template.profile,
+        exif: template.exif,
+        defaultExif: options.exif === undefined,
+      }
+      // The owned metadata is now sufficient; release caller buffer/object references.
+      options.iccProfile = undefined
+      options.exif = undefined
+      templates.set(format, { ...template, path: undefined })
+      return template
+    }
+    return { ...template, path: cstring(path) }
+  }
+}
+function prepareImageSnapshot(
+  options: ImageOptions,
+  path?: string,
+  shared?: SharedImageMetadata,
+): PreparedImage {
+  const format = selectedFormat(options.format, path),
     quality = options.quality ?? 98,
     compression = options.compressLevel ?? 1,
     filter = options.pngFilter ?? 'adaptive'
@@ -152,7 +192,7 @@ export function prepareImage(
   v.setUint32(8, quality, true)
   v.setUint32(12, compression, true)
   v.setUint32(16, filters[filter as PngFilter], true)
-  const profile = options.iccProfile
+  const profile = shared ? shared.profile : options.iccProfile
   if (
     profile !== undefined &&
     profile !== 'srgb' &&
@@ -164,9 +204,16 @@ export function prepareImage(
     (profile.byteLength === 0 || profile.byteLength > 16 * 1024 * 1024)
   )
     throw new RangeError('ICC profile size must be 1..16 MiB')
-  const ownedProfile =
-    profile instanceof Uint8Array ? new Uint8Array(profile) : profile
-  const exif = prepareExif(options.exif, format)
+  const ownedProfile = shared
+    ? shared.profile
+    : profile instanceof Uint8Array
+      ? new Uint8Array(profile)
+      : profile
+  const exif = shared
+    ? shared.defaultExif
+      ? prepareExif(undefined, format)
+      : shared.exif
+    : prepareExif(options.exif, format)
   const exifDescriptor = imageExifDescriptor(exif)
   const descriptor = imageProfileDescriptor(ownedProfile)
   check(

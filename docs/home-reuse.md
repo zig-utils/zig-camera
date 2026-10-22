@@ -693,3 +693,22 @@ an explicit retry owner instead of losing its token. The C helper similarly
 releases a private acquisition when stopping fails. These policies stay in camera;
 Home sources are reused unchanged for this step. Fault-injected hosted tests do
 not establish physical DMA or process-crash recovery.
+
+The 0.61 file-series audit improves Home async at
+8779c7c861360540bcf1fe49f4329d8c5f0f2397. New relative_delay.zig supplies a checked
+u64 idle interval with atomic overflow failure, inclusive deadline, reset and
+clock-regression rejection. Its three standalone tests pass in Debug/ReleaseSafe
+with pinned 0.15.2 and development 0.17 Zig; the copied-source camera matrix
+tests both Zig channels on Linux x86/ARM and macOS. Home's workflow dispatch is
+still disabled. The helper is copied verbatim and gains a 32-byte camera C state
+wrapper. Home timer.zig is coupled to Future/Waker, while media PTS rebasing is a
+different clock policy; neither is imported as a second host scheduler.
+
+Bun owns serial camera mode/file jobs, bounded metadata history, cancellable
+host waits and filesystem publication. Existing Home preparation gates, leases,
+frame access, image metadata and encoders are reused. A single owned image-option
+factory shares Exif/ICC bytes across format templates while retaining JPEG's
+automatic capture-Exif default and PNG/TIFF opt-in. This avoids repeated metadata
+copies for each file. No video codec, container, kernel camera object or request
+queue is reimplemented for the series. Timing tests establish hosted ordering and
+ownership only; physical sensor cadence and focus acceptance remain unmeasured.

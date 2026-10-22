@@ -1,4 +1,4 @@
-# Feature coverage in 0.55
+# Feature coverage in 0.61
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -28,6 +28,11 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
+
+The [burst capture workflow](capture-series.md) adds lazy path patterns, fast
+single-mode capture and preview-restoring paced capture, bounded progress history,
+serial staged file publication and joined cancellation. Broader convenience,
+synchronization and physical acceptance requirements remain in the scope worklist.
 
 Native Zig tests exercise bounded queues, ownership, media clocks, codecs and
 preparation races and exclusive asynchronous producer turns. C checks preserve the ABI v1 layouts. Bun tests cover leases,

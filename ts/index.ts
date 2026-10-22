@@ -1,4 +1,21 @@
 import {
+  CaptureFilesJob,
+  CaptureFilesState,
+  prepareCaptureFiles,
+  waitCaptureInterval,
+  type CaptureFileTargets,
+  type CaptureFilesOptions,
+} from './capture-series'
+import { preparePreviewConfiguration } from './preview-options'
+export {
+  CaptureFilesJob,
+  type CaptureFilesOptions,
+  type CaptureFilePattern,
+  type CaptureFileTargets,
+  type CaptureFileRecord,
+  type CaptureFilesProgress,
+} from './capture-series'
+import {
   streamNames,
   copyNativeStreams,
   type StreamName,
@@ -100,6 +117,7 @@ export {
 import { decodeMetadata } from './metadata'
 import {
   prepareImage,
+  stageNativeImage,
   encodeNativeImage,
   saveNativeImage,
   imageStreamId,
@@ -921,6 +939,8 @@ export class Camera {
   private coordinatedGroup?: { recorders: Recorder[]; initials: Recording[] }
   private coordinatedRecorder?: Recorder
   private coordinatedInitial?: Recording
+  private captureFilesJob?: CaptureFilesJob
+  private captureProgressCallback = false
   private modeJobs = new Set<{
     cancel: (reason?: unknown) => boolean
     done: boolean
@@ -1163,6 +1183,9 @@ export class Camera {
     guardRequestCallback()
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    this.startOwned()
+  }
+  private startOwned() {
     if (!this.started) {
       check(n.zc_start(this.handle))
       this.started = true
@@ -1170,7 +1193,12 @@ export class Camera {
     if (this.hasRequestCallbacks) this.ensurePump()
   }
   acquire(timeoutMs = 0) {
+    if (this.captureFilesJob && !this.captureFilesJob.done)
+      throw new CameraError(-4, 'capture series active')
     guardRequestCallback()
+    return this.acquireOwned(timeoutMs)
+  }
+  private acquireOwned(timeoutMs: number) {
     this.assertOpen()
     const data = storage(456)
     check(n.zc_acquire(this.handle, uint(timeoutMs), ptr(data)), 'acquire')
@@ -1835,10 +1863,12 @@ export class Camera {
     options: CaptureOptions<T>,
     discard?: (value: T) => void,
     transfer = false,
+    owner?: object,
   ): BunJob<T> {
     guardRequestCallback()
     this.assertOpen()
-    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (this.hasPendingModes(owner))
+      throw new CameraError(-4, 'mode jobs pending')
     if (this.focusCaptureActive)
       throw new CameraError(-4, 'focus-locked capture active')
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
@@ -1847,7 +1877,7 @@ export class Camera {
     const selection = captureSelection(options)
     this.assertOpen()
     if (
-      this.hasPendingModes() ||
+      this.hasPendingModes(owner) ||
       this.focusCaptureActive ||
       this.requests.length >= 32
     )
@@ -1856,7 +1886,7 @@ export class Camera {
     const job = new BunJob<T>(
       async (current) => {
         current.check()
-        this.start()
+        this.startOwned()
         let captured = false,
           value: T | undefined
         try {
@@ -1914,6 +1944,218 @@ export class Camera {
     )
     if (selection.options.signal?.aborted)
       job.cancel(selection.options.signal.reason)
+    void job.start()
+    return job
+  }
+  /** Own one bounded serial file session; completion always joins camera stop. */
+  startAndCaptureFiles(
+    targets: CaptureFileTargets,
+    options: CaptureFilesOptions = {},
+  ): CaptureFilesJob {
+    guardRequestCallback()
+    this.assertOpen()
+    this.checkModeAdmission()
+    if (this.hasPendingModes())
+      throw new CameraError(-4, 'camera modes pending')
+    this.checkModeLeases()
+    const plan = prepareCaptureFiles(targets, options, this.options)
+    this.modeFocusPolicy(plan.modeOptions)
+    for (const configuration of [plan.previewMode, plan.captureMode]) {
+      cameraIdentity(configuration)
+      this.validateModeIdentity(configuration)
+      cameraConfiguration(configuration, true)
+    }
+    this.assertOpen()
+    this.checkModeAdmission()
+    if (this.hasPendingModes())
+      throw new CameraError(-4, 'camera admission changed')
+    this.checkModeLeases()
+    const state = new CaptureFilesState(plan.retainResults)
+    const job = new CaptureFilesJob(
+      async (current) => {
+        current.check()
+        state.stage = 'preparing'
+        let failed = false,
+          failure: unknown
+        const modeOptions = (focus: boolean) => ({
+          ...plan.modeOptions,
+          autofocus: focus ? plan.modeOptions.autofocus : false,
+          dropFrames: 0,
+          timeoutMs: plan.captureTimeoutMs,
+          signal: current.signal,
+        })
+        const openPreview = () => {
+          if (plan.preview && !this.previewConfiguration) {
+            this.openPreviewOwned(plan.preview)
+            this.startOwned()
+            this.ensurePump()
+          }
+        }
+        const idle = async (ms: number) => {
+          state.stage = 'waiting'
+          await waitCaptureInterval(ms, current)
+        }
+        try {
+          this.assertOpen()
+          this.checkModeLeases()
+          if (plan.intervalMs > 0 || plan.initialDelayMs > 0) {
+            await this.submitMode(
+              plan.previewMode,
+              undefined,
+              modeOptions(false),
+              current,
+            )
+            openPreview()
+            await idle(plan.initialDelayMs)
+          }
+          if (plan.intervalMs === 0) {
+            await this.submitMode(
+              plan.captureMode,
+              undefined,
+              modeOptions(true),
+              current,
+              false,
+            )
+          }
+          for (let i = 0; i < plan.count; i++) {
+            current.check()
+            const path = plan.path(i),
+              prepared = plan.image(path)
+            state.currentIndex = i
+            state.currentPath = path
+            if (i > 0) await idle(plan.intervalMs)
+            current.check()
+            state.stage = 'capturing'
+            const child =
+              plan.intervalMs > 0
+                ? this.submitMode<ReturnType<Frame['metadata']>>(
+                    plan.captureMode,
+                    {
+                      kind: 'file',
+                      path: prepared.path,
+                      imageOptions: prepared.options,
+                      imageProfile: prepared.profile,
+                      imageExif: prepared.exif,
+                      stream: prepared.stream,
+                    },
+                    {
+                      ...plan.modeOptions,
+                      timeoutMs: plan.captureTimeoutMs,
+                      signal: current.signal,
+                    },
+                    current,
+                  )
+                : this.captureSeriesFile(
+                    prepared,
+                    current,
+                    plan.captureTimeoutMs,
+                    plan.modeOptions.dropFrames,
+                  )
+            const metadata = await child.wait()
+            await child.cleanupDone
+            const file = state.record(i, path, metadata)
+            current.check()
+            state.stage = 'progress'
+            if (plan.onFile) {
+              this.captureProgressCallback = true
+              try {
+                const response = plan.onFile(file) as unknown
+                if (
+                  response &&
+                  typeof (response as { then?: unknown }).then === 'function'
+                ) {
+                  void Promise.resolve(response).catch(() => {})
+                  throw new TypeError(
+                    'capture progress callback must be synchronous',
+                  )
+                }
+              } finally {
+                this.captureProgressCallback = false
+              }
+            }
+            current.check()
+          }
+        } catch (error) {
+          failed = true
+          failure = error
+        }
+        state.stage = 'stopping'
+        const cleanup: unknown[] = []
+        try {
+          this.clearPreviewOwned()
+        } catch (error) {
+          cleanup.push(error)
+        }
+        if (this.handle) {
+          try {
+            check(n.zc_stop(this.handle), 'stop capture series')
+            state.stopped = true
+          } catch (error) {
+            cleanup.push(error)
+          }
+          this.started = false
+        }
+        state.stage = 'finished'
+        if (cleanup.length)
+          throw new AggregateError(
+            failed ? [failure, ...cleanup] : cleanup,
+            'capture series cleanup failed',
+          )
+        if (failed) throw failure
+        current.check()
+        current.seal()
+        return state.snapshot()
+      },
+      () => {
+        this.modeJobs.delete(job)
+        if (this.captureFilesJob === job) this.captureFilesJob = undefined
+      },
+      plan.jobOptions,
+      state.snapshot,
+    )
+    this.captureFilesJob = job
+    this.modeJobs.add(job)
+    void job.start()
+    return job
+  }
+  private captureSeriesFile<T>(
+    prepared: PreparedImage,
+    owner: BunJob<T>,
+    timeoutMs: number,
+    dropFrames: number,
+  ) {
+    const job = new BunJob<ReturnType<Frame['metadata']>>(
+      (current) =>
+        withStagedImageFile(prepared.path, current, async (file) => {
+          current.check()
+          const deadline = Date.now() + timeoutMs
+          const capture = this.submitCapture(
+            (frame) => {
+              stageNativeImage(
+                file!.handle!,
+                this.handle,
+                frame.token,
+                prepared.options,
+                prepared.stream,
+                prepared.profile,
+                prepared.exif,
+              )
+              return frame.metadata()
+            },
+            { signal: current.signal, timeoutMs, dropFrames },
+            undefined,
+            false,
+            owner,
+          )
+          const metadata = await capture.wait()
+          await capture.cleanupDone
+          await file!.publish(current, deadline)
+          current.seal()
+          return metadata
+        }),
+      () => {},
+      { signal: owner.signal, timeoutMs },
+    )
     void job.start()
     return job
   }
@@ -2030,37 +2272,12 @@ export class Camera {
   startPreview(options: string | PreviewOptions = 'zig-camera') {
     guardRequestCallback()
     this.assertOpen()
-    if (
-      options === null ||
-      (typeof options !== 'string' && typeof options !== 'object')
-    )
-      throw new TypeError('invalid preview options')
-    const backend =
-        typeof options === 'string' ? 'sdl' : (options.backend ?? 'sdl'),
-      title =
-        typeof options === 'string' ? options : (options.title ?? 'zig-camera')
-    if (backend !== 'sdl' && backend !== 'headless')
-      throw new RangeError('invalid preview backend')
-    if (typeof title !== 'string') throw new TypeError('invalid preview title')
-    cstring(title)
-    const stream = snapshotPreviewStream(
-      typeof options === 'string' ? undefined : options.stream,
-    )
-    const preparedView = preparePreviewView(
-      typeof options === 'string' ? {} : options,
-    )
+    const configuration = preparePreviewConfiguration(options)
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (this.previewConfiguration)
       throw new CameraError(-4, 'preview already active')
-    this.openPreviewOwned(
-      Object.freeze({
-        backend,
-        title,
-        view: preparedView,
-        ...(stream !== undefined ? { stream } : {}),
-      }),
-    )
+    this.openPreviewOwned(configuration)
     try {
       this.start()
       this.ensurePump()
@@ -3329,7 +3546,24 @@ export class Camera {
       jobOptions,
     ) as BunJob<Uint8Array>
   }
-  private checkModeAdmission() {
+  private validateModeIdentity(options: CameraOptions) {
+    if (
+      (options.simulate !== undefined &&
+        options.simulate !== (this.configuration.simulate ?? false)) ||
+      (options.cameraIndex !== undefined &&
+        (this.configuration.cameraId !== undefined ||
+          options.cameraIndex !== (this.configuration.cameraIndex ?? 0))) ||
+      (options.cameraId !== undefined && options.cameraId !== this.selectedId)
+    )
+      throw new CameraError(-1, 'mode must retain camera/backend')
+  }
+  private checkModeAdmission(owner?: object) {
+    if (
+      this.captureFilesJob &&
+      !this.captureFilesJob.done &&
+      owner !== this.captureFilesJob
+    )
+      throw new CameraError(-4, 'capture series active')
     if (!this.handle || this.closing || this.stopJob)
       throw new CameraError(-2, 'camera unavailable')
     if (this.modeJobs.size + this.requests.length >= 32)
@@ -3348,13 +3582,15 @@ export class Camera {
     options: CameraOptions,
     capture: ModeRequest['capture'],
     jobOptions: ModeJobOptions<T>,
+    owner?: object,
+    resumePreview = true,
   ) {
     guardRequestCallback()
     guardOutputHook()
     cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
     const autofocus = jobOptions.autofocus ?? false
-    this.checkModeAdmission()
+    this.checkModeAdmission(owner)
     const target = copyConfiguration({
       ...options,
       simulate: this.configuration.simulate,
@@ -3365,20 +3601,12 @@ export class Camera {
     target.transform ??= this.configuration.transform
       ? { ...this.configuration.transform }
       : undefined
-    if (
-      (options.simulate !== undefined &&
-        options.simulate !== (this.configuration.simulate ?? false)) ||
-      (options.cameraIndex !== undefined &&
-        (this.configuration.cameraId !== undefined ||
-          options.cameraIndex !== (this.configuration.cameraIndex ?? 0))) ||
-      (options.cameraId !== undefined && options.cameraId !== this.selectedId)
-    )
-      throw new CameraError(-1, 'mode must retain camera/backend')
+    this.validateModeIdentity(options)
     const encoded = cameraConfiguration(target),
       dropFrames = uint(jobOptions.dropFrames ?? 0)
     const effective = snapshotJobOptions(jobOptions, 5000)
     const deadline = Date.now() + (effective.timeoutMs ?? 5000)
-    this.checkModeAdmission()
+    this.checkModeAdmission(owner)
     const job = new BunJob<T>(
       (current) =>
         withStagedImageFile(
@@ -3530,7 +3758,7 @@ export class Camera {
                 this.clearPreviewOwned()
                 current.seal()
                 retainedRequest = undefined // the published Frame now owns release
-              } else preview()
+              } else if (resumePreview) preview()
             } catch (error) {
               failure = error
               if (retainedRequest) {
@@ -3623,11 +3851,12 @@ export class Camera {
       effective,
     )
     this.modeJobs.add(job)
-    this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
+    if (owner && owner === this.captureFilesJob) void job.start()
+    else this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})
     return job
   }
-  private hasPendingModes() {
-    return [...this.modeJobs].some((job) => !job.done)
+  private hasPendingModes(owner?: object) {
+    return [...this.modeJobs].some((job) => !job.done && job !== owner)
   }
   private async cancelModes() {
     const jobs = [...this.modeJobs]
@@ -3907,7 +4136,7 @@ export class Camera {
       let offered: bigint | undefined
       try {
         if (this.fanout && !this.fanout.ready()) return
-        frame = this.acquire(0)
+        frame = this.acquireOwned(0)
         offered = this.fanout?.offer()
         const callbacks = this.requestCallbacks
         let callbackFailed = false
@@ -4057,6 +4286,11 @@ export class Camera {
     }
   }
   stop(): Promise<void> {
+    if (this.captureProgressCallback)
+      throw new CameraError(
+        -4,
+        'cancel the capture series from its progress callback',
+      )
     guardRequestCallback()
     guardOutputHook()
     if (this.stopJob) return this.stopJob
@@ -4141,6 +4375,11 @@ export class Camera {
     return this.stopJob
   }
   close(): Promise<void> {
+    if (this.captureProgressCallback)
+      throw new CameraError(
+        -4,
+        'cancel the capture series from its progress callback',
+      )
     guardRequestCallback()
     guardOutputHook()
     if (this.closeJob) return this.closeJob

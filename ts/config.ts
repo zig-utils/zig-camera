@@ -35,7 +35,7 @@ export function cameraIdentity(options: CameraOptions) {
     throw new RangeError('camera ID exceeds 4096 UTF-8 bytes')
   return bytes
 }
-export function cameraConfiguration(options: CameraOptions) {
+export function cameraConfiguration(options: CameraOptions, preflight = false) {
   const cameraId = cameraIdentity(options)
   const format = options.format === undefined ? 'BGR888' : options.format
   if (format !== 'BGR888' && format !== 'YUV420')
@@ -116,16 +116,36 @@ export function cameraConfiguration(options: CameraOptions) {
     )
     orientation = encoded[0]
   }
+  const processed = prepareProcessedOptions(
+    mainFormat,
+    pipeline,
+    options.colorSpace,
+    options.strictColorSpace,
+  )
+  // Series admission validates every mode before it owns the camera lifecycle.
+  // Existing mode jobs keep reporting structural open failures on their jobs.
+  if (preflight) {
+    const checkedProcessed = processed ?? storage(36)
+    if (!processed) {
+      n.zc_default_processed_options(ptr(checkedProcessed))
+      view(checkedProcessed).setUint32(4, mainFormat, true)
+    }
+    check(
+      n.zc_check_camera_configuration(
+        ptr(config),
+        ptr(pipeline),
+        ptr(checkedProcessed),
+        orientation,
+        transform?.strict ? 1 : 0,
+      ),
+      'camera configuration',
+    )
+  }
   return {
     config,
     pipeline,
     mainFormat,
-    processed: prepareProcessedOptions(
-      mainFormat,
-      pipeline,
-      options.colorSpace,
-      options.strictColorSpace,
-    ),
+    processed,
     cameraId,
     writable: options.writable ?? false,
     orientation,

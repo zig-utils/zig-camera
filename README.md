@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.61 adds [burst and paced file capture](docs/capture-series.md): lazy
+patterns, bounded progress history, fast single-mode bursts, preview between
+paced shots, cancellation and joined staged publication using Home intervals.
+
 Version 0.60 adds [retained capture-and-stop](docs/capture-request-stop.md): a live
 target request remains readable while stopped, with cancellation cleanup and
 explicit restoration after release through Bun and additive C/Zig helpers.

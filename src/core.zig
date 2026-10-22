@@ -3,6 +3,11 @@
 const std = @import("std");
 const c = @import("abi.zig").c;
 const options = @import("options");
+comptime {
+    _ = @import("capture_delay.zig").zc_default_capture_delay;
+    _ = @import("capture_delay.zig").zc_capture_delay_arm;
+    _ = @import("capture_delay.zig").zc_capture_delay_remaining;
+}
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
 const Slot = struct { state: State = .idle, frame: c.zc_frame = std.mem.zeroes(c.zc_frame), metadata: c.zc_metadata = std.mem.zeroes(c.zc_metadata), access: @import("home/frame_access.zig").Gate = .{} };
@@ -204,8 +209,7 @@ pub export fn zc_open_id_processed_pipeline(cfg: *const c.zc_config, pipeline: *
     const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
     return openPipeline(cfg, pipeline, processed, requested.bytes(), orientation, strict, out);
 }
-fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
-    out.* = null;
+pub export fn zc_check_camera_configuration(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32) c_int {
     if (colors.zc_check_processed_options(processed, pipeline) != c.ZC_OK) return c.ZC_INVALID;
     const main_format = processed.main_format;
     if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_RGB24 or (main_format == c.ZC_YUV420 and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
@@ -218,6 +222,11 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
         (pipeline.lores_format == c.ZC_YUV420 and (pipeline.lores_width | pipeline.lores_height) & 1 != 0)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
+    return c.ZC_OK;
+}
+fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+    out.* = null;
+    if (zc_check_camera_configuration(cfg, pipeline, processed, orientation, strict) != c.ZC_OK) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
     self.* = .{ .config = cfg.*, .processed = processed.* };
     var actual: u32 = 0;
@@ -1471,6 +1480,29 @@ test "configuration rejects invalid and nonfinite input" {
     cfg.analogue_gain = std.math.nan(f32);
     try std.testing.expectEqual(c.ZC_INVALID, zc_open(&cfg, &p));
     try std.testing.expect(p == null);
+}
+test "structural preflight shares open validation without opening a device" {
+    var cfg: c.zc_config = undefined;
+    var pipeline: c.zc_pipeline_options = undefined;
+    zc_default_config(&cfg);
+    zc_default_pipeline_options(&pipeline);
+    var processed = colors.defaults();
+    try std.testing.expectEqual(c.ZC_OK, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    cfg.height = 6;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    cfg.width = 9;
+    processed.main_format = c.ZC_YUV420;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    cfg.width = 8;
+    try std.testing.expectEqual(c.ZC_OK, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    pipeline.lores_height = 4;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    pipeline.lores_width = 4;
+    try std.testing.expectEqual(c.ZC_OK, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 9, 0));
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 2));
+    cfg.buffer_count = 1;
+    try std.testing.expectEqual(c.ZC_INVALID, zc_check_camera_configuration(&cfg, &pipeline, &processed, 1, 0));
 }
 test "leases survive stop, reject double release and prevent close/restart" {
     if (options.libcamera) return error.SkipZigTest;

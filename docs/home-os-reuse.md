@@ -198,3 +198,14 @@ ownership or recoverable handoff. Existing Home video leases/access gates and
 Home async publication gates remain the reusable hosted components. No kernel
 source is copied, modified or executed, and no physical sensor/DMA result is
 inferred from a stub.
+
+The 0.61 burst-capture audit reads clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65. camera.home still allocates one fixed RGB
+buffer and returns a nominal size; video_decoder.home has placeholder decode
+returns, and container/image.home manages OCI images. These files supply no
+hosted burst queue, checked idle deadline, multi-mode request ownership or staged
+file publication to reuse. ADR-MC3 explicitly places working media algorithms in
+the Home shared libraries. Relative interval arithmetic therefore improves Home
+async, while mode selection, serial file ownership and cancellation stay in
+zig-camera. OS stays unmodified and unexecuted. Its stubs are not capture, codec,
+optical-quality or physical timing evidence.

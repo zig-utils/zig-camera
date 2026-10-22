@@ -394,6 +394,13 @@ Home shared-chroma I420 decoding (0.52):
   https://github.com/home-lang/home/commit/7ec5214016ca0486b48eb9ad48b2574726fa960a
 The Home MIT license and copyright reproduced above apply.
 
+Home relative capture intervals (0.61):
+- src/home/relative_delay.zig is copied verbatim from Home async's
+  src/relative_delay.zig at 8779c7c861360540bcf1fe49f4329d8c5f0f2397. It supplies
+  checked relative idle deadlines without allocation, sleeping or device ownership.
+  https://github.com/home-lang/home/commit/8779c7c861360540bcf1fe49f4329d8c5f0f2397
+The Home MIT license and copyright reproduced above apply.
+
 Home ICC profile foundation:
 - src/home/metadata/icc.zig, icc_curve.zig and icc_layout.zig are copied verbatim
   from packages/image/src/metadata at

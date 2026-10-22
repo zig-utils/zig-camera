@@ -91,6 +91,9 @@ enum { ZC_COLOR_SRGB=1,ZC_COLOR_SYCC=2,ZC_COLOR_SMPTE170M=3,ZC_COLOR_REC709=4,ZC
 void zc_default_processed_options(zc_processed_options *);
 int zc_color_space_preset(uint32_t preset,zc_color_space *out);
 int zc_check_processed_options(const zc_processed_options *,const zc_pipeline_options *);
+/* Allocation-free structural preflight shared by open. Does not negotiate with
+ * hardware or validate a camera identity/sensor's available modes. */
+int zc_check_camera_configuration(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation);
 /* Existing config/stream/frame layouts remain ABI v1. Strict color rejects
  * backend adjustments against the format-normalized effective request. */
 int zc_open_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,zc_camera **out);
@@ -219,6 +222,14 @@ typedef struct {
 int zc_capture_filter_init(zc_capture_filter *,uint32_t drop_frames,uint32_t flags,uint64_t after_ns);
 /* Linux BOOTTIME, Darwin virtual-camera MONOTONIC; never wall-clock time. */
 int zc_capture_clock_ns(uint64_t *out);
+/* Relative idle delay in one caller-supplied monotonic ns domain. Queries update
+ * the last observation; regression/overflow preserve state. Caller serializes.
+ * Initialize before use. Remaining is zeroed on failure; reserved must be zero. */
+typedef struct { uint64_t started_ns,last_ns,deadline_ns; uint32_t armed,reserved; } zc_capture_delay;
+void zc_default_capture_delay(zc_capture_delay *);
+int zc_capture_delay_arm(zc_capture_delay *,uint64_t now_ns,uint64_t duration_ns);
+int zc_capture_delay_remaining(zc_capture_delay *,uint64_t now_ns,uint64_t *remaining_ns);
+
 int zc_capture_filter_accept(zc_camera *,uint64_t token,zc_capture_filter *);
 /* Releases every rejected frame; success transfers one owner. timeout=0 tries
  * one frame. Filter progress is retained on TIMEOUT; out stays untouched. */
