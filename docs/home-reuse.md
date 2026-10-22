@@ -653,3 +653,10 @@ in metadata_embed and the raster import in the test facade. Camera owns request
 lease, clock/gain policy, C ABI and Bun admission snapshots; those do not belong
 in Home's serializer. The independent JSON inspector is reused verbatim for
 actual capture outputs. No kernel stub, Python or FFmpeg path is imported.
+
+The capture-reader Linux CI caught a misleading-indentation warning in its
+seek/bounds statements. Home's test-only JSON reader separates the declaration
+from the preceding conditional; camera copies that fix verbatim and the Exif
+matrix now compiles this additional reader too. Production Exif/JPEG code is
+unchanged. Both reader compilation and the eleven actual capture regressions
+pass locally after the fix; GCC CI supplies Linux acceptance.

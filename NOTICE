@@ -466,3 +466,7 @@ Home capture Exif and inline JPEG metadata (0.58):
   are verbatim; tests/read_image_exif.c is Home tests/exif_inspect.c.
   https://github.com/home-lang/home/commit/d0abb3777b6255843ffe2364f1bd09e660c36ced
 The Home MIT license and copyright reproduced above apply.
+
+The capture JSON reader is updated verbatim from Home image
+77b7b7340c6671b59249b3821f6b7cc1d84a0768 for GCC warning-free seek/bounds
+statements; production sources remain at d0abb3777 above.

@@ -2,9 +2,9 @@ name: Home Exif metadata
 on:
   push:
     branches: [main]
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/jpeg_metadata.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/jpeg_metadata.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', 'tests/read_image_exif.c', '.github/workflows/home-exif.yml']
   pull_request:
-    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/jpeg_metadata.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', '.github/workflows/home-exif.yml']
+    paths: ['src/home/metadata/exif*', 'tests/home_exif*', 'src/home/metadata*.zig', 'src/home/jpeg_encoder.zig', 'src/home/jpeg_metadata.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/home_metadata*', 'tests/read_image_exif.c', '.github/workflows/home-exif.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -49,3 +49,4 @@ jobs:
           zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep media -Mroot=tests/home_metadata_fixture.zig -Mmedia=src/home/metadata_test_exports.zig -femit-bin=/tmp/home-metadata.o
           cc -std=c11 -Wall -Wextra -Werror tests/home_metadata_readers.c /tmp/home-metadata.o $(pkg-config --cflags --libs libexif libjpeg libpng libtiff-4 lcms2 zlib) -lm -o /tmp/home-metadata-test
           /tmp/home-metadata-test
+          cc -std=c11 -Wall -Wextra -Werror tests/read_image_exif.c $(pkg-config --cflags --libs libexif libjpeg libpng) -o /tmp/home-exif-inspect
