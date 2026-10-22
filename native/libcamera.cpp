@@ -298,10 +298,11 @@ struct ManagerWatch {
     }
 };
 
-static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;default:return formats::YUV420; } }
+static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;case ZC_YVU420:return formats::YVU420;case ZC_NV12:return formats::NV12;case ZC_NV21:return formats::NV21;default:return formats::YUV420; } }
+static bool processedYuv(uint32_t format) { return format==ZC_YUV420 || format==ZC_YVU420 || format==ZC_NV12 || format==ZC_NV21; }
 static ColorSpace processedColorSpace(uint32_t format) {
     auto color=ColorSpace::Sycc;
-    if(format!=ZC_YUV420)color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
+    if(!processedYuv(format))color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
     return color;
 }
 static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,const zc_color_space &requested) {
@@ -330,8 +331,8 @@ static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,co
     if(requested.range==ZC_RANGE_FULL)color.range=ColorSpace::Range::Full;
     else if(requested.range==ZC_RANGE_LIMITED)color.range=ColorSpace::Range::Limited;
     else return std::nullopt;
-    if(format!=ZC_YUV420) { color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;color.range=ColorSpace::Range::Full; }
-    else if(format!=ZC_YUV420 || color.ycbcrEncoding==ColorSpace::YcbcrEncoding::None)return std::nullopt;
+    if(!processedYuv(format)) { color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;color.range=ColorSpace::Range::Full; }
+    else if(!processedYuv(format) || color.ycbcrEncoding==ColorSpace::YcbcrEncoding::None)return std::nullopt;
     return color;
 }
 struct Device;
@@ -568,7 +569,7 @@ struct Device {
         const int orientation_rc=negotiatedOrientation(orientation,config->orientation,strict,actual_orientation);
         if(orientation_rc)return orientation_rc;
         const auto &main = config->at(0);
-        if (main.pixelFormat != processedPixelFormat(main_format) || (main_format==ZC_YUV420 && ((main.size.width|main.size.height|main.stride)&1))) return ZC_UNSUPPORTED;
+        if (main.pixelFormat != processedPixelFormat(main_format) || (processedYuv(main_format) && ((main.size.width|main.size.height|main.stride)&1))) return ZC_UNSUPPORTED;
         if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format) {
             // A sensor flip can change CFA phase while preserving depth/packing.
             // The negotiated descriptor is authoritative for DNG and consumers.
@@ -586,7 +587,7 @@ struct Device {
         if(pipe.sensor_width && (pipeline.sensor_width!=pipe.sensor_width || pipeline.sensor_height!=pipe.sensor_height || pipeline.sensor_bit_depth!=pipe.sensor_bit_depth))return ZC_UNSUPPORTED;
         if(has_lores) {
             const auto &lores=config->at(1);
-            if(lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || (pipe.lores_format==ZC_YUV420 && ((lores.size.width|lores.size.height|lores.stride)&1)))return ZC_UNSUPPORTED;
+            if(lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || (processedYuv(pipe.lores_format) && ((lores.size.width|lores.size.height|lores.stride)&1)))return ZC_UNSUPPORTED;
             pipeline.lores=geometry(lores);
         }
         if (camera->configure(config.get()) < 0) return ZC_DEVICE;

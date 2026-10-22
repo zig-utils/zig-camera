@@ -1002,3 +1002,72 @@ test "restart group validates every participant before one irrevocable shared de
         }
     }
 }
+
+test "producer copies YVU and NV physical layouts without a producer-side chroma shuffle" {
+    const t = std.testing;
+    const m = @import("media.zig");
+    for ([_]u32{ c.ZC_YVU420, c.ZC_NV12, c.ZC_NV21 }) |format| {
+        var delivered: usize = 0;
+        const rec = try recorder(&delivered);
+        defer t.expectEqual(c.ZC_OK, m.zc_video_close(rec)) catch unreachable;
+        try t.expectEqual(c.ZC_OK, m.zc_video_set_producer_limits(rec, 384, 1));
+        var y: [316]u8 = @splat(80);
+        var u: [78]u8 = @splat(90);
+        var vp: [78]u8 = @splat(240);
+        var uv: [156]u8 = @splat(99);
+        const pf = @import("processed_format.zig");
+        var frame = std.mem.zeroes(c.zc_frame);
+        frame.token = 1;
+        frame.main.width = 16;
+        frame.main.height = 16;
+        frame.main.stride = 20;
+        frame.main.plane_count = pf.planes(format);
+        const name = pf.name(format);
+        @memcpy(frame.main.format[0..name.len], name);
+        frame.main.planes[0] = .{ .data = &y, .length = y.len, .bytes_used = y.len, .fd = -1 };
+        if (pf.semi(format)) {
+            for (0..8) |row| for (0..8) |x| {
+                uv[row * 20 + x * 2] = if (format == c.ZC_NV12) 90 else 240;
+                uv[row * 20 + x * 2 + 1] = if (format == c.ZC_NV12) 240 else 90;
+            };
+            frame.main.planes[1] = .{ .data = &uv, .length = uv.len, .bytes_used = uv.len, .fd = -1 };
+        } else {
+            frame.main.planes[1] = .{ .data = &vp, .length = vp.len, .bytes_used = vp.len, .fd = -1 };
+            frame.main.planes[2] = .{ .data = &u, .length = u.len, .bytes_used = u.len, .fd = -1 };
+        }
+        var color = c.zc_color_space{ .struct_size = @sizeOf(c.zc_color_space), .present = 1, .primaries = c.ZC_PRIMARIES_REC709, .transfer = c.ZC_TRANSFER_SRGB, .ycbcr_encoding = c.ZC_YCBCR_REC601, .range = c.ZC_RANGE_FULL };
+        var job: ?*c.zc_producer_job = null;
+        try t.expectEqual(c.ZC_OK, m.zc_video_producer_input_av(rec, &frame, &color, 0, null, 0, &job));
+        const owned: *@import("producer.zig").Job = @ptrCast(@alignCast(job.?));
+        try t.expectEqualStrings(name, std.mem.sliceTo(&owned.frame.main.format, 0));
+        try t.expectEqual(@as(usize, 384), owned.data.len);
+        try t.expectEqual(@as(u32, 16), owned.frame.main.stride);
+        try t.expectEqual(@as(u32, 1), owned.frame.main.plane_count);
+        if (pf.semi(format)) {
+            try t.expectEqual(@as(u8, if (format == c.ZC_NV12) 90 else 240), owned.data[256]);
+            try t.expectEqual(@as(u8, if (format == c.ZC_NV12) 240 else 90), owned.data[257]);
+            try t.expectEqual(owned.data[256], owned.data[382]);
+            try t.expectEqual(owned.data[257], owned.data[383]);
+        } else {
+            try t.expectEqual(@as(u8, 240), owned.data[256]);
+            try t.expectEqual(@as(u8, 90), owned.data[320]);
+        }
+        @memset(&y, 0);
+        @memset(&u, 0);
+        @memset(&vp, 0);
+        @memset(&uv, 0);
+        color.range = 0;
+        try t.expectEqual(@as(u32, c.ZC_RANGE_FULL), owned.input_color.?.range);
+        try t.expectEqual(@as(u8, 80), owned.data[0]);
+        try t.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        var timer = try std.time.Timer.start();
+        var result: c_int = undefined;
+        while (m.zc_producer_job_finish(job.?, &result) == c.ZC_TIMEOUT) {
+            try t.expect(timer.read() < 5 * std.time.ns_per_s);
+            std.Thread.sleep(std.time.ns_per_ms);
+        }
+        try t.expectEqual(c.ZC_OK, result);
+        try t.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        try t.expectEqual(@as(usize, 1), delivered);
+    }
+}

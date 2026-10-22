@@ -1104,3 +1104,42 @@ The normal local Zig build runner again fails macOS SDK/libSystem linkage before
 project compilation; target-qualified direct library/native/CLI builds pass.
 Independent video decoding and real-backend compilation are checked by Linux CI;
 no local independent AVC/HEVC decoder or physical camera is present.
+
+## 0.77 planar and semi-planar YUV
+
+The audit starts at clean Home main 321fe476c625d398d9b80abaaa8695e110025ae2
+and inspects video/core/pixel_convert, yuv_rgb, yuv_remap and plane_pack. Home
+already names NV12/NV21, but its RGB routes used unchecked per-pixel reads and
+selected one corner for subsampled chroma. The checked I420 decoder and remapper
+already implement shared block arithmetic and matrix/range policy worth reusing.
+
+Home commit 26f842190aa69a3d23ed73756ecc4815b0433e80 extends logical Y/U/V
+views with checked chroma step 1/2, zero-allocation semi-planar constructors,
+canonical packing and shared NV encoding. Public RGB24/NV12/NV21 routes use them,
+including four-pixel chroma averaging. RGB decode/encode and remapping preflight
+source/destination bounds and overlap; source U/V aliases remain intentional for
+interleaved input. Other Home conversion routes retain their existing behavior
+and are not declared fully checked. Pinned/development Zig both pass Debug and
+ReleaseSafe tests across every matrix/range, planar equivalence and failure case.
+Home-hosted Actions remain separate: no run is available for this published head.
+
+The yuv_rgb/remap improvements are copied verbatim here. Hosted C/Bun/CLI select
+YVU420/NV12/NV21 and preserve physical layout in raw copies and producer queues;
+workers use logical U/V views directly, avoiding a producer-side chroma shuffle.
+All async input still has explicit bounded copied ownership. Shared raw-copy
+plans serve capture bundles and encoder admission; no C ABI/module cycle is
+introduced. A native test inspects queued physical bytes before starting the
+worker and overwrites the original source. The C alignment planner also now
+checks format/color options before its layout switch, rejecting invalid codes
+without mutating either output. See yuv420-layouts.md for supported layouts and
+remaining physical acceptance requirements.
+
+Local checks pass the full 855-test Bun suite, C ABI and SDL matrix/range pixel
+readback, Home compiler matrix and CLI raw-layout/image/recording comparisons.
+The standard local build runner still fails SDK/libSystem linkage before
+project compilation; direct target-qualified native/CLI builds succeed. Local
+independent still decoding is available; Linux CI supplies independent AVC/HEVC
+decoding and real-backend compile/load/no-camera smoke. No camera is attached.
+The final native suite passes 353 tests, including the inspected YVU/NV producer
+payload after source overwrite and joined worker completion. This validates the
+physical-layout queue contract rather than inferring it from decoded pixels alone.

@@ -542,3 +542,10 @@ Home packed RGB input (0.76):
   converter, including explicit opaque-X handling and preflight overlap rejection.
   https://github.com/home-lang/home/commit/321fe476c625d398d9b80abaaa8695e110025ae2
   The Home MIT license and copyright above apply.
+
+Home semi-planar YUV (0.77):
+- src/home/yuv_rgb.zig and yuv_remap.zig include the verbatim Home checked
+  chroma-step views, semi-planar RGB encoding/decoding, canonical packing and
+  direct matrix/range remapping with overlap preflight.
+  https://github.com/home-lang/home/commit/26f842190aa69a3d23ed73756ecc4815b0433e80
+  The Home MIT license and copyright above apply.

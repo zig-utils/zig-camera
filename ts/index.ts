@@ -1,4 +1,8 @@
-import { processedFormatCode, type ProcessedFormat } from './processed-format'
+import {
+  processedFormatCode,
+  isYuv420,
+  type ProcessedFormat,
+} from './processed-format'
 export type { ProcessedFormat } from './processed-format'
 import { qualityTierCode, type RecordingQuality } from './quality'
 export {
@@ -2076,7 +2080,7 @@ export class Camera {
       const info = this.readInfo()
       const formatCode = processedFormatCode(info.format)
       if (
-        info.format !== 'YUV420' &&
+        !isYuv420(info.format) &&
         target === undefined &&
         !this[legacyRgbInput]()
       )

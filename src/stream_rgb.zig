@@ -41,8 +41,21 @@ pub fn rgbView(stream: c.zc_stream) !raster.View {
 }
 pub fn i420View(stream: c.zc_stream) !home.I420 {
     _ = try size(stream);
-    if (!std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420")) return error.UnsupportedFormat;
+    const format = @import("processed_format.zig").code(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
+    if (!@import("processed_format.zig").yuv(format)) return error.UnsupportedFormat;
     if ((stream.stride | stream.width | stream.height) & 1 != 0) return error.InvalidGeometry;
+    if (@import("processed_format.zig").semi(format)) {
+        var planes: [2][]const u8 = undefined;
+        if (stream.plane_count == 2) {
+            for (0..2) |i| planes[i] = try plane(stream.planes[i]);
+        } else if (stream.plane_count == 1) {
+            const data = try plane(stream.planes[0]);
+            const ysize = @as(usize, stream.stride) * stream.height;
+            if (data.len < ysize) return error.BufferTooSmall;
+            planes = .{ data[0..ysize], data[ysize..] };
+        } else return error.UnsupportedFormat;
+        return home.I420.semiPlanar(stream.width, stream.height, planes[0], stream.stride, planes[1], stream.stride, format == c.ZC_NV21);
+    }
     var planes: [3][]const u8 = undefined;
     if (stream.plane_count == 3) {
         for (0..3) |i| planes[i] = try plane(stream.planes[i]);
@@ -52,6 +65,7 @@ pub fn i420View(stream: c.zc_stream) !home.I420 {
         if (data.len < ysize + ysize / 4) return error.BufferTooSmall;
         planes = .{ data[0..ysize], data[ysize..][0 .. ysize / 4], data[ysize + ysize / 4 ..] };
     } else return error.UnsupportedFormat;
+    if (format == c.ZC_YVU420) std.mem.swap([]const u8, &planes[1], &planes[2]);
     const view = home.I420{ .width = stream.width, .height = stream.height, .planes = planes, .strides = .{ stream.stride, stream.stride / 2, stream.stride / 2 } };
     try view.validate();
     return view;
@@ -202,4 +216,55 @@ test "packed RGB conversion validates before allocation and normalizes unused X 
         try t.expectError(error.BufferTooSmall, copy(stream, std.mem.zeroes(c.zc_color_space), &out));
         try t.expectEqualSlices(u8, &@as([14]u8, @splat(79)), &out);
     }
+}
+
+test "planar VU and split or contiguous NV chroma support absent last padding and reject truncated tails atomically" {
+    const t = std.testing;
+    for ([_]u32{ c.ZC_YVU420, c.ZC_NV12, c.ZC_NV21 }) |format| for ([_]bool{ false, true }) |contiguous| {
+        const pf = @import("processed_format.zig");
+        var bytes: [48]u8 = @splat(99);
+        for (0..4) |y| @memset(bytes[y * 8 ..][0..4], 81);
+        const name = pf.name(format);
+        var stream = std.mem.zeroes(c.zc_stream);
+        stream.width = 4;
+        stream.height = 4;
+        stream.stride = 8;
+        stream.plane_count = if (contiguous) 1 else pf.planes(format);
+        @memcpy(stream.format[0..name.len], name);
+        var length: usize = 0;
+        if (pf.semi(format)) {
+            for (0..2) |y| for (0..2) |x| {
+                bytes[32 + y * 8 + x * 2] = if (format == c.ZC_NV12) 90 else 240;
+                bytes[32 + y * 8 + x * 2 + 1] = if (format == c.ZC_NV12) 240 else 90;
+            };
+            length = 44;
+            stream.planes[0] = testPlane(bytes[0..28]);
+            stream.planes[1] = testPlane(bytes[32..44]);
+        } else {
+            for (0..2) |y| {
+                @memset(bytes[32 + y * 4 ..][0..2], 240);
+                @memset(bytes[40 + y * 4 ..][0..2], 90);
+            }
+            length = 46;
+            stream.planes[0] = testPlane(bytes[0..28]);
+            stream.planes[1] = testPlane(bytes[32..38]);
+            stream.planes[2] = testPlane(bytes[40..46]);
+        }
+        if (contiguous) stream.planes[0] = testPlane(bytes[0..length]);
+        var out: [48]u8 = @splat(79);
+        try copy(stream, testColor(), &out);
+        try t.expectEqualSlices(u8, &([_]u8{ 254, 0, 0 } ** 16), &out);
+        const source = try i420View(stream);
+        var packed_out: [24]u8 = undefined;
+        try source.copyI420(&packed_out);
+        try t.expectEqualSlices(u8, &([_]u8{81} ** 16 ++ [_]u8{90} ** 4 ++ [_]u8{240} ** 4), &packed_out);
+        const last = stream.plane_count - 1;
+        stream.planes[last].bytes_used -= 1;
+        @memset(&out, 79);
+        try t.expectError(error.BufferTooSmall, copy(stream, testColor(), &out));
+        try t.expectEqualSlices(u8, &@as([48]u8, @splat(79)), &out);
+        stream.planes[last].bytes_used += 1;
+        stream.planes[last].length = 0;
+        try t.expectError(error.BufferTooSmall, copy(stream, testColor(), &out));
+    };
 }

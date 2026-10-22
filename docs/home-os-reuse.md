@@ -373,3 +373,13 @@ standard library and are reused here; kernel physical addresses and framebuffer
 owners stay out of the hosted camera boundary. No OS source is copied, changed or
 executed. Synthetic/decoder tests do not establish physical Pi format acceptance,
 DMA coherency, kernel video acceleration or performance.
+
+The 0.77 planar/semi-planar audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches camera, media and VideoCore7
+sources for NV12/NV21/YUV conversion. The nominal camera driver defines a YUV
+format constant, but its capture routine only returns a size; it does not provide
+pitched UV views, chroma averaging, checked layout conversion or hosted libcamera
+ownership. Video decoder declarations do not implement a substitute. ADR-MC3's
+media-stdlib boundary still applies, so checked sample views and codec conversion
+improve Home's Zig library and are reused here. No OS code is copied, changed or
+executed, and no kernel decode or physical camera result is inferred.

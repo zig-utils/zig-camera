@@ -25,7 +25,7 @@ pub export fn zc_color_space_preset(value: u32, out: *c.zc_color_space) c_int {
     return c.ZC_OK;
 }
 pub export fn zc_check_processed_options(value: *const c.zc_processed_options, pipeline: *const c.zc_pipeline_options) c_int {
-    if (value.struct_size != @sizeOf(c.zc_processed_options) or value.main_format > c.ZC_BGRX32 or value.strict_color > 1 or pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or pipeline.lores_format > c.ZC_BGRX32) return c.ZC_INVALID;
+    if (value.struct_size != @sizeOf(c.zc_processed_options) or value.main_format > c.ZC_NV21 or value.strict_color > 1 or pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or pipeline.lores_format > c.ZC_NV21) return c.ZC_INVALID;
     const space = value.color_space;
     if (space.struct_size != @sizeOf(c.zc_color_space) or space.present > 1) return c.ZC_INVALID;
     if (space.present == 0) {
@@ -33,15 +33,15 @@ pub export fn zc_check_processed_options(value: *const c.zc_processed_options, p
         return c.ZC_OK;
     }
     const requested = fromSpace(space) orelse return c.ZC_INVALID;
-    _ = requested.processed(value.main_format == c.ZC_YUV420) catch return c.ZC_INVALID;
-    if (pipeline.lores_width != 0) _ = requested.processed(pipeline.lores_format == c.ZC_YUV420) catch return c.ZC_INVALID;
+    _ = requested.processed(@import("processed_format.zig").yuv(value.main_format)) catch return c.ZC_INVALID;
+    if (pipeline.lores_width != 0) _ = requested.processed(@import("processed_format.zig").yuv(pipeline.lores_format)) catch return c.ZC_INVALID;
     return c.ZC_OK;
 }
 /// Synthetic source setup shares the backend-default sYCC recipe. Real hardware
 /// receives a request; its negotiated metadata is queried independently.
 pub fn effective(requested: c.zc_color_space, format: u32) !c.zc_color_space {
     const color = if (requested.present == 0) home.preset(.sycc) else fromSpace(requested) orelse return error.InvalidColorSpace;
-    return toSpace(try color.processed(format == c.ZC_YUV420));
+    return toSpace(try color.processed(@import("processed_format.zig").yuv(format)));
 }
 pub fn negotiation(value: c.zc_processed_options, actual: c.zc_color_space, format: u32, enforce: bool, out: *c.zc_color_negotiation) c_int {
     var result = std.mem.zeroes(c.zc_color_negotiation);
@@ -52,7 +52,7 @@ pub fn negotiation(value: c.zc_processed_options, actual: c.zc_color_space, form
     result.actual = actual;
     if (value.color_space.present == 1) {
         const requested = fromSpace(value.color_space) orelse return c.ZC_INVALID;
-        const policy = home.negotiate(requested, fromSpace(actual), format == c.ZC_YUV420, enforce and value.strict_color != 0) catch |err| return if (err == error.ColorSpaceAdjusted) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+        const policy = home.negotiate(requested, fromSpace(actual), @import("processed_format.zig").yuv(format), enforce and value.strict_color != 0) catch |err| return if (err == error.ColorSpaceAdjusted) c.ZC_UNSUPPORTED else c.ZC_INVALID;
         result.effective = toSpace(policy.effective);
         result.flags = 1 | (value.strict_color << 1) | (@as(u32, @intFromBool(policy.normalized)) << 2) | (@as(u32, @intFromBool(policy.adjusted)) << 3);
     }

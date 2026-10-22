@@ -142,7 +142,7 @@ static void formatted_main(void) {
     zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=2;
     zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=2;pipe.lores_format=ZC_RGB24;
     zc_camera *camera=NULL;
-    assert(zc_open_formatted_pipeline(&cfg,&pipe,5,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
+    assert(zc_open_formatted_pipeline(&cfg,&pipe,8,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
     cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);cfg.width=4;
     assert(zc_open_id_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
     zc_info info;assert(zc_get_info(camera,&info)==ZC_OK);assert(!strcmp(info.main.format,"YUV420") && info.main.plane_count==3);
@@ -281,7 +281,34 @@ static void packed_rgb_inputs(void) {
     }
 }
 
+static void yuv_processed_inputs(void) {
+    assert(ZC_YVU420==5 && ZC_NV12==6 && ZC_NV21==7);
+    const char *names[]={"YVU420","NV12","NV21"};
+    for(unsigned i=0;i<3;i++){
+        zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=4;
+        zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=2;pipe.lores_format=ZC_YVU420+i;
+        zc_camera *camera=NULL;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YVU420+i,1,0,&camera)==ZC_OK);
+        zc_info info;assert(zc_get_info(camera,&info)==ZC_OK);assert(!strcmp(info.main.format,names[i]));
+        assert(info.main.plane_count==(i==0?3:2));
+        zc_color_negotiation color;assert(zc_get_color_negotiation(camera,ZC_MAIN,&color)==ZC_OK && color.format==ZC_YVU420+i);
+        assert(color.actual.ycbcr_encoding==ZC_YCBCR_REC601);
+        assert(zc_start(camera)==ZC_OK);zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+        unsigned char packed[24],rgb[48];assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_OK);
+        assert(zc_copy_stream(&frame.main,packed,sizeof(packed))==ZC_OK);
+        const unsigned last=frame.main.plane_count-1;frame.main.planes[last].bytes_used=0;memset(packed,73,sizeof(packed));
+        assert(zc_copy_stream(&frame.main,packed,sizeof(packed))==ZC_INVALID);
+        for(unsigned j=0;j<sizeof(packed);j++)assert(packed[j]==73);
+        assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_close(camera)==ZC_OK);
+        cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YVU420+i,1,0,&camera)==ZC_INVALID && !camera);
+    }
+    zc_config cfg,out,before;zc_default_config(&cfg);memset(&out,71,sizeof(out));before=out;
+    zc_pipeline_options pipe,out_pipe,before_pipe;zc_default_pipeline_options(&pipe);memset(&out_pipe,73,sizeof(out_pipe));before_pipe=out_pipe;
+    zc_processed_options processed;zc_default_processed_options(&processed);processed.main_format=UINT32_MAX;
+    assert(zc_align_camera_configuration(&cfg,&pipe,&processed,ZC_ALIGN_PISP,1,&out,&out_pipe)==ZC_INVALID);
+    assert(!memcmp(&out,&before,sizeof(out)) && !memcmp(&out_pipe,&before_pipe,sizeof(out_pipe)));
+}
 int main(void) {
+    yuv_processed_inputs();
     packed_rgb_inputs();
     quality_abi();
     keyframe_abi();

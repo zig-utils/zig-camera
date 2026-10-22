@@ -122,3 +122,9 @@ for physical Pi ISP negotiation, gamut/gamma validation or throughput measuremen
 Version 0.76 also supports RGB888, XBGR8888 and XRGB8888 processed main/lores
 streams with the same RGB color normalization. Names describe libcamera FourCC,
 not memory order; see [packed formats](packed-rgb.md). X is unused padding.
+
+Version 0.77 extends these requests and negotiated descriptions to YVU420,
+NV12 and NV21. Each requires a YCbCr matrix and even dimensions/stride. Byte/plane
+order does not change primaries, transfer, matrix or range; see
+[YUV layouts](yuv420-layouts.md). Direct recording remapping reads planar and
+interleaved chroma with the same policy.

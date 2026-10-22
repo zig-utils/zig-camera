@@ -144,7 +144,7 @@ test('main I420 writable planes retain exclusion and propagate exact encoded lum
 })
 test('invalid main formats and odd I420 geometry reject without weakening legacy odd RGB capture', async () => {
   for (const format of [
-    'NV12',
+    'invalid-YUV',
     'raw',
     '',
     0,

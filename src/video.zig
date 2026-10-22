@@ -1012,7 +1012,7 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
         }
     }
     const input = &normalized;
-    const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
+    const yuv = @import("processed_format.zig").isYuv(std.mem.sliceTo(&stream.format, 0));
     if (self.keyframes.pending() != 0) try self.forceKey();
     if (self.config.codec == c.ZC_MJPEG) {
         var source = input.*;

@@ -19,7 +19,7 @@ pub fn validate(stream: c.zc_stream, color: ?c.zc_color_space) !bool {
     return validateFor(stream, color, @import("recording_color.zig").legacy());
 }
 pub fn validateFor(stream: c.zc_stream, color: ?c.zc_color_space, target: c.zc_color_space) !bool {
-    const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
+    const yuv = @import("processed_format.zig").isYuv(std.mem.sliceTo(&stream.format, 0));
     if (color) |space| try validateColorFor(space, yuv, target) else {
         if (yuv) return error.Unsupported;
         var assumed = @import("recording_color.zig").legacy();
@@ -38,15 +38,12 @@ pub fn packedSize(stream: c.zc_stream, yuv: bool) usize {
     const pixels = @as(usize, stream.width) * stream.height;
     return if (yuv) pixels + pixels / 2 else pixels * @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)).?.bytes();
 }
+/// Preserve the actual physical layout; workers consume logical chroma views.
 pub fn copy(stream: c.zc_stream, yuv: bool, out: []u8) !void {
-    if (yuv) {
-        const source = try streams.i420View(stream);
-        try @import("home/plane_pack.zig").packI420(source.planes, .{ source.strides[0], source.strides[1], source.strides[2] }, stream.width, stream.height, out);
-    } else {
-        const source = try streams.packedView(stream);
-        try @import("home/plane_pack.zig").rows(source.data, source.stride, @as(usize, stream.width) * source.layout.bytes(), stream.height, out);
-    }
+    if (yuv != @import("processed_format.zig").isYuv(std.mem.sliceTo(&stream.format, 0))) return error.Unsupported;
+    try @import("stream_copy.zig").copy(&stream, out);
 }
+
 pub fn remap(space: c.zc_color_space) !@import("home/yuv_remap.zig").Remap {
     return remapFor(space, @import("recording_color.zig").legacy());
 }

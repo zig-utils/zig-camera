@@ -98,7 +98,11 @@ export function cameraConfiguration(options: CameraOptions, preflight = false) {
     )
       throw new RangeError('invalid lores RGB option')
     const code = processedFormatCode(
-      options.lores.format ?? (options.lores.rgb ? 'BGR888' : 'YUV420'),
+      options.lores.format === undefined
+        ? options.lores.rgb
+          ? 'BGR888'
+          : 'YUV420'
+        : options.lores.format,
     )
     if (options.lores.rgb !== undefined && code !== (options.lores.rgb ? 1 : 0))
       throw new RangeError('lores format conflicts with RGB option')

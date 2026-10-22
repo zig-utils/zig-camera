@@ -4,8 +4,8 @@ const c = @import("abi.zig").c;
 const streams = @import("stream_rgb.zig");
 const home = @import("home/yuv_rgb.zig");
 pub export fn zc_preview_check_color(format: u32, color: ?*const c.zc_color_space) c_int {
-    if (@import("processed_format.zig").valid(format) and format != c.ZC_YUV420) return c.ZC_OK;
-    if (format != c.ZC_YUV420) return c.ZC_UNSUPPORTED;
+    if (@import("processed_format.zig").valid(format) and !@import("processed_format.zig").yuv(format)) return c.ZC_OK;
+    if (!@import("processed_format.zig").yuv(format)) return c.ZC_UNSUPPORTED;
     const value = color orelse return c.ZC_UNSUPPORTED;
     if (value.struct_size != @sizeOf(c.zc_color_space)) return c.ZC_INVALID;
     _ = streams.conversion(value.*) catch return c.ZC_UNSUPPORTED;

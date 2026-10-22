@@ -15,9 +15,9 @@ const help =
     \\  --color-space NAME       srgb/sycc/smpte170m/rec709/rec2020 (otherwise sYCC request)
     \\  --strict-color-space     Reject backend color adjustments; requires --color-space
     \\  --video-color-space NAME AVC/HEVC output profile; source gamut/transfer must match
-    \\  --main-format NAME       BGR888 (default), RGB888, XBGR8888, XRGB8888, YUV420
+    \\  --main-format NAME       BGR888 (default), RGB888, XBGR8888, XRGB8888, YUV420, YVU420, NV12, NV21
     \\  --align PROFILE          Round explicit processed sizes down: pisp/vc4/minimum
-    \\  --lores-format NAME      YUV420 (default), BGR888, RGB888, XBGR8888, XRGB8888
+    \\  --lores-format NAME      YUV420 (default), BGR888, RGB888, XBGR8888, XRGB8888, YVU420, NV12, NV21
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
     \\  --strict-transform       Reject adjusted camera orientation
     \\  --transpose              Final diagonal transpose after rotation/flips
@@ -397,14 +397,13 @@ fn run() !void {
         }
         if (negotiated.lores.width != 0) {
             const lores = try frame.stream(camera.c.ZC_LORES);
-            const rgb = !std.mem.eql(u8, std.mem.sliceTo(&lores.format, 0), "YUV420");
             var copy_size: u64 = 0;
             try camera.check(camera.media.zc_stream_copy_size(&lores, &copy_size));
             const size: usize = @intCast(copy_size);
             const bytes = try a.alloc(u8, size);
             defer a.free(bytes);
             try camera.check(camera.media.zc_copy_stream(&lores, bytes.ptr, bytes.len));
-            const path = try std.fmt.allocPrint(a, "{s}.lores.{s}", .{ output, if (rgb) @tagName(camera.processed_format.layout(std.mem.sliceTo(&lores.format, 0)).?) else "i420" });
+            const path = try std.fmt.allocPrint(a, "{s}.lores.{s}", .{ output, camera.processed_format.suffix(camera.processed_format.code(std.mem.sliceTo(&lores.format, 0)).?) });
             defer a.free(path);
             const file = try std.fs.cwd().createFile(path, .{});
             defer file.close();

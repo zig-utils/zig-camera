@@ -1,3 +1,4 @@
+import { isYuv420 } from './processed-format'
 import {
   native as n,
   storage,
@@ -76,7 +77,7 @@ export class MappedStream {
       const size = new BigUint64Array(1)
       if (
         n.zc_stream_copy_size(ptr(this.descriptor), ptr(size)) === 0 &&
-        this.format !== 'YUV420'
+        !isYuv420(this.format)
       )
         this.rowBytes = Number(size[0]) / this.height
     } catch (error) {
@@ -103,7 +104,7 @@ export class MappedStream {
   get closed() {
     return !this.handle
   }
-  /** Tight row without padding; I420 components are 0=Y, 1=U, 2=V. */
+  /** Tight row without padding. Planar components are Y/U/V; NV12/NV21 use Y/interleaved UV or VU. */
   row(y: number, component = 0): Uint8Array {
     if (this.closed) throw new CameraError(-5, 'closed mapping')
     if (
@@ -118,7 +119,20 @@ export class MappedStream {
       stride = this.stride,
       height = this.height,
       bytes = this.rowBytes
-    if (this.format === 'YUV420') {
+    if (this.format === 'NV12' || this.format === 'NV21') {
+      if (
+        component > 1 ||
+        (this.width | this.height | this.stride) & 1 ||
+        ![1, 2].includes(this.planes.length)
+      )
+        throw new CameraError(-8, 'mapped semi-planar layout')
+      bytes = this.width
+      if (component) {
+        height /= 2
+        if (this.planes.length === 2) plane = 1
+        else offset = this.stride * this.height
+      }
+    } else if (this.format === 'YUV420' || this.format === 'YVU420') {
       if (
         component > 2 ||
         (this.width | this.height | this.stride) & 1 ||
@@ -130,11 +144,13 @@ export class MappedStream {
         stride /= 2
         height /= 2
       }
-      if (this.planes.length === 3) plane = component
-      else if (component)
+      const physical =
+        component && this.format === 'YVU420' ? 3 - component : component
+      if (this.planes.length === 3) plane = physical
+      else if (physical)
         offset =
           this.stride * this.height +
-          (component - 1) * (this.stride / 2) * (this.height / 2)
+          (physical - 1) * (this.stride / 2) * (this.height / 2)
     } else if (component || this.planes.length !== 1 || bytes === undefined)
       throw new CameraError(-8, 'mapped row format')
     if (

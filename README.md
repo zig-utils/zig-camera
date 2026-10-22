@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.77 adds [NV12, NV21 and YVU420 streams](docs/yuv420-layouts.md): checked
+Home chroma views, raw/mapped capture, stills, preview, codec input and explicit
+bounded async ownership across mode changes and recording recovery.
+
 Version 0.76 adds [packed processed RGB formats](docs/packed-rgb.md): RGB888,
 XBGR8888 and XRGB8888 main/lores streams, checked Home byte-layout conversion,
 owned capture copies, still images, bounded recording inputs and SDL preview.
