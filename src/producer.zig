@@ -25,6 +25,7 @@ pub const Job = struct {
     restart_config: ?struct { video: c.zc_video_config, audio: c.zc_recording_options, bitrate: u32 } = null,
     restart_color: ?c.zc_color_space = null,
     restart_codec_options: ?@import("home/native_encoder.zig").Options = null,
+    restart_codec_limits: ?@import("home/native_encoder.zig").Limits = null,
     restart_kind: u32 = 0,
     restart_stage: std.atomic.Value(u32) = .init(0),
     restart_candidate: ?*anyopaque = null,

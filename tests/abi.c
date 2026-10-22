@@ -84,6 +84,7 @@ _Static_assert(sizeof(zc_audio_config)==32,"audio config ABI");
 _Static_assert(sizeof(zc_audio_block)==24,"audio block ABI");
 _Static_assert(sizeof(zc_recording_options)==24,"recording options ABI");
 _Static_assert(sizeof(zc_codec_options)==16,"codec options ABI");
+_Static_assert(sizeof(zc_codec_limits)==16,"codec limits ABI");
 _Static_assert(sizeof(zc_recording_stats)==72,"recording stats ABI");
 _Static_assert(sizeof(zc_audio_buffer_stats)==40,"audio history ABI");
 static void recording_color_contract(void) {
@@ -97,6 +98,18 @@ static void recording_color_contract(void) {
     recipe.qp=52;assert(zc_video_check_codec_options(&cfg,&recipe)==ZC_INVALID);recipe.qp=26;
     recipe.profile=1;cfg.codec=ZC_HEVC;assert(zc_video_check_codec_options(&cfg,&recipe)==ZC_INVALID);
     recipe.profile=2;assert(zc_video_check_codec_options(&cfg,&recipe)==ZC_OK);
+    cfg.codec=ZC_MJPEG;
+    zc_codec_limits limits;zc_default_codec_limits(&limits);
+    assert(limits.struct_size==16 && limits.level==0 && limits.max_bitrate==0 && limits.buffer_bits==0);
+    assert(zc_video_check_codec_limits(&cfg,NULL,&limits)==ZC_OK);
+    limits.level=40;assert(zc_video_check_codec_limits(&cfg,NULL,&limits)==ZC_UNSUPPORTED);
+    cfg.codec=ZC_H264;assert(zc_video_check_codec_limits(&cfg,NULL,&limits)==ZC_OK);
+    limits.max_bitrate=1000000;assert(zc_video_check_codec_limits(&cfg,NULL,&limits)==ZC_INVALID);
+    limits.buffer_bits=2000000;assert(zc_video_check_codec_limits(&cfg,NULL,&limits)==ZC_OK);
+    recipe.qp=26;assert(zc_video_check_codec_limits(&cfg,&recipe,&limits)==ZC_INVALID);
+    recipe.qp=0;limits.level=42;cfg.codec=ZC_HEVC;assert(zc_video_check_codec_limits(&cfg,&recipe,&limits)==ZC_INVALID);
+    limits.level=40;assert(zc_video_check_codec_limits(&cfg,&recipe,&limits)==ZC_OK);
+    limits.level=63;assert(zc_video_check_codec_limits(&cfg,&recipe,&limits)==ZC_INVALID);
     cfg.codec=ZC_MJPEG;
     zc_color_space legacy;zc_default_video_color(&legacy);
     assert(legacy.struct_size==24 && legacy.present==1 && legacy.primaries==ZC_PRIMARIES_REC709 && legacy.transfer==ZC_TRANSFER_SRGB && legacy.ycbcr_encoding==ZC_YCBCR_REC601 && legacy.range==ZC_RANGE_LIMITED);

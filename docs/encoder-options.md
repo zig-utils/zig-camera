@@ -67,5 +67,6 @@ Tests inspect actual SPS compatibility flags and AVC PPS QP endpoints, exercise
 all presets, delayed IDRs/drains, failed replacement, cancellation, restart,
 coordinated modes and AVC/HEVC/AAC recovery. Linux CI independently decodes those
 MP4 samples; local tests check headers/container ownership without a local video
-decoder. Full codec conformance, upstream quality-tier heuristics, explicit level
-controls, repeated in-band parameter sets and hardware encoder paths remain work.
+decoder. Version 0.71 adds [level ceilings and VBV](encoder-limits.md), including
+their current HEVC CTU limits. Full codec conformance, upstream quality-tier
+heuristics, repeated in-band parameter sets and hardware encoder paths remain work.

@@ -12,6 +12,7 @@
 static void require(bool ok,const char *why) { if(!ok){std::fprintf(stderr,"%s\n",why);std::exit(1);} }
 static int first_index=0;
 static unsigned reference_width=0,reference_height=0;
+static bool geometry_only=false;
 static std::vector<uint8_t> reference_i420;
 static std::vector<uint64_t> expected_indices;
 static void picture(const uint8_t *y,int stride,int width,int height,int &count) {
@@ -24,6 +25,11 @@ static void picture(const uint8_t *y,int stride,int width,int height,int &count)
     count++;
 }
 static void checkFrame(const uint8_t *const planes[3],const int strides[3],int width,int height,int &count) {
+    if(geometry_only) {
+        require(width==(int)reference_width && height==(int)reference_height,"decoded dimensions differ");
+        for(unsigned p=0;p<3;p++) require(planes[p] && strides[p]>=(int)(p ? reference_width/2 : reference_width),"invalid decoded plane");
+        count++;return;
+    }
     if(reference_i420.empty()){picture(planes[0],strides[0],width,height,count);return;}
     require(width==(int)reference_width && height==(int)reference_height,"reference dimensions differ");
     const size_t pixels=(size_t)width*height,frame_size=pixels+pixels/2;
@@ -40,10 +46,16 @@ static void checkFrame(const uint8_t *const planes[3],const int strides[3],int w
     count++;
 }
 int main(int argc,char **argv) {
-    require((argc>=3 && argc<=6)||argc==8,"usage: decode-codecs h264|hevc file.aus [frames [first_index [sequence_file]]]");
+    require((argc>=3 && argc<=6)||argc==7||argc==8,"usage: decode-codecs h264|hevc file.aus [frames [first_index [sequence_file]]] or frames --decode-only width height");
     const int expected_count=argc>=4 ? std::atoi(argv[3]) : 12;
     const bool reference_mode=argc==8;
-    first_index=!reference_mode && argc>=5 ? std::atoi(argv[4]) : 0;
+    geometry_only=argc==7;
+    first_index=!reference_mode && !geometry_only && argc>=5 ? std::atoi(argv[4]) : 0;
+    if(geometry_only) {
+        require(!std::strcmp(argv[4],"--decode-only"),"invalid decode-only mode");
+        reference_width=(unsigned)std::strtoul(argv[5],nullptr,10);reference_height=(unsigned)std::strtoul(argv[6],nullptr,10);
+        require(reference_width && reference_height && reference_width<=8192 && reference_height<=8192 && !((reference_width|reference_height)&1),"invalid decode-only geometry");
+    }
     if(reference_mode) {
         require(!std::strcmp(argv[4],"--i420"),"invalid pixel reference mode");
         reference_width=(unsigned)std::strtoul(argv[5],nullptr,10);reference_height=(unsigned)std::strtoul(argv[6],nullptr,10);
@@ -108,5 +120,5 @@ int main(int argc,char **argv) {
         avc->Uninitialize();WelsDestroyDecoder(avc);
     } else {require(de265_isOK(de265_flush_data(hevc)),"libde265 flush");decode_hevc();drain();de265_free_decoder(hevc);}
     require(count==expected_count,"missing decoded frames");
-    std::printf("%s: independently decoded all %d frames with expected luma/order\n",argv[1],count);
+    std::printf("%s: independently decoded all %d frames with expected %s\n",argv[1],count,geometry_only ? "geometry/count" : "luma/order");
 }

@@ -629,6 +629,20 @@ int zc_video_check_codec_options(const zc_video_config *,const zc_codec_options 
  * NULL restores defaults. Query copies state; serialize recorder calls. */
 int zc_video_set_codec_options(zc_recorder *,const zc_codec_options *);
 int zc_video_get_codec_options(zc_recorder *,zc_codec_options *);
+/* Copied decoder-level ceiling (level*10, 0 auto) and optional VBV limits.
+ * HEVC Main tier. max_bitrate (bits/sec) and buffer_bits must be both zero or
+ * positive multiples of 1000. VBV requires qp=0 and target <= max_bitrate.
+ * Nominal geometry/rate and actual emitted SPS level are checked on construct.
+ * Buffer covers at least one nominal frame. HEVC explicit level rejects CQP;
+ * shared CTU16 limits effective HEVC requirements to <=4.1 even for higher ceilings.
+ * Level/VBV is not a per-packet network cap or complete conformance guarantee.
+ * Existing codec-options/video layouts remain unchanged. */
+typedef struct { uint32_t struct_size,level,max_bitrate,buffer_bits; } zc_codec_limits;
+void zc_default_codec_limits(zc_codec_limits *);
+int zc_video_check_codec_limits(const zc_video_config *,const zc_codec_options *,const zc_codec_limits *);
+/* Pristine/unattached only. NULL restores defaults; failure preserves state. */
+int zc_video_set_codec_limits(zc_recorder *,const zc_codec_limits *);
+int zc_video_get_codec_limits(zc_recorder *,zc_codec_limits *);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
 int zc_video_close(zc_recorder *);
@@ -1005,6 +1019,7 @@ int zc_producer_job_restart_color(zc_producer_job *,const zc_color_space *);
 /* Copied before start, NULL resets defaults; omission retains prior policy.
  * Final codec/rate compatibility is checked before candidate output creation. */
 int zc_producer_job_restart_codec_options(zc_producer_job *,const zc_codec_options *);
+int zc_producer_job_restart_codec_limits(zc_producer_job *,const zc_codec_limits *);
 int zc_producer_job_restart_io(zc_producer_job *,uint64_t bytes,uint32_t operations,uint64_t wait_ns);
 int zc_producer_job_restart_stage(zc_producer_job *,uint32_t *stage);
 int zc_producer_job_restart_headers(zc_producer_job *,uint8_t *,uint32_t capacity,uint32_t *size);

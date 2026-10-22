@@ -113,6 +113,20 @@ pub export fn zc_video_get_codec_options(p: *c.zc_recorder, out: *c.zc_codec_opt
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
     return @import("video.zig").getCodecOptions(p, out);
 }
+pub export fn zc_default_codec_limits(out: *c.zc_codec_limits) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_codec_limits), .level = 0, .max_bitrate = 0, .buffer_bits = 0 };
+}
+pub export fn zc_video_check_codec_limits(cfg: *const c.zc_video_config, policy: ?*const c.zc_codec_options, value: ?*const c.zc_codec_limits) c_int {
+    return @import("video.zig").checkCodecLimits(cfg, policy, value);
+}
+pub export fn zc_video_set_codec_limits(p: *c.zc_recorder, value: ?*const c.zc_codec_limits) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").setCodecLimits(p, value);
+}
+pub export fn zc_video_get_codec_limits(p: *c.zc_recorder, out: *c.zc_codec_limits) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").getCodecLimits(p, out);
+}
 pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
@@ -559,6 +573,9 @@ pub export fn zc_producer_job_restart_color(p: *c.zc_producer_job, color: ?*cons
 }
 pub export fn zc_producer_job_restart_codec_options(p: *c.zc_producer_job, value: ?*const c.zc_codec_options) c_int {
     return @import("video.zig").restartCodecOptions(@ptrCast(@alignCast(p)), value);
+}
+pub export fn zc_producer_job_restart_codec_limits(p: *c.zc_producer_job, value: ?*const c.zc_codec_limits) c_int {
+    return @import("video.zig").restartCodecLimits(@ptrCast(@alignCast(p)), value);
 }
 pub export fn zc_producer_job_restart_stage(p: *c.zc_producer_job, stage: *u32) c_int {
     const job: *@import("producer.zig").Job = @ptrCast(@alignCast(p));

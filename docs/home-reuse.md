@@ -900,3 +900,34 @@ coordinated modes and AVC/HEVC/AAC reconnect. Local video decoding is unavailabl
 local AAC checks and header/container tests are distinct from Linux video-decode
 coverage. Home's own workflow remains disabled rather than claimed as run.
 No speed, physical-camera quality or full codec conformance result is inferred.
+
+The 0.71 decoder/VBV audit fetches Home main, fast-forwards through the unrelated
+TypeScript compiler changes at 7d1b12717b533404a7b438a2de103abddd353f9a and
+992794895cd4472c188f011d3416dbf9859ed40a, and contributes the media changes at
+a7a746d1f04072657f3c87702900326ac2bffb95. It inspects native_encoder, the pure
+H264/HEVC configuration modules, codec/bitrate.zig and analysis/quality.zig.
+BitrateAnalyzer accumulates samples/statistics; it is not a bounded codec VBV
+policy or SDK admission path. Existing metric/configuration fields alone do not
+prove emitted level conformance. The working header-checked Home adapter therefore
+gains a separate Limits recipe, exact-unit and minimum-frame-buffer validation,
+AVC vendor-table resource checks and HEVC Main-tier checked integer nominal
+bounds. Actual SPS requirements are checked before ownership escapes. Existing
+color/options/open ABIs keep their sizes and defaults. Camera copies the C/header,
+Zig wrapper and IDR/raw-C/boundary test verbatim with attribution.
+
+Explicit HEVC ceilings also preserve the existing shared CTU16 policy: higher
+ceilings can contain a <=4.1 stream but cannot silently induce vendor CTU32
+mutation. Higher-resolution HEVC ownership remains work. Full codec/HRD conformance
+is not inferred from SPS/resource checks. Home's focused suite passes Debug and
+ReleaseSafe with pinned 0.15.2 and development 0.18. Camera's copied-source matrix
+covers both compilers, while Linux main CI builds actual adapters and independent
+decoders. Local video decoding remains unavailable; independent AAC/image checks
+are distinct evidence. Bun tests cover high-complexity VBV volume and all accepted
+frames, scalar ABI/failure ownership, copied/cancelled reconfiguration, explicit
+coordinated default resets, modes and AVC/HEVC/AAC recovery. Camera reuses existing
+Home-gated publication/flush ownership instead of adding another scheduler.
+The current Home permissions endpoint reports enabled, but no workflow run exists
+for the contributed head and manual native-media dispatch still returns HTTP422
+"Actions has been disabled for this repository". Local focused suites and camera's
+copied-source/adapter CI are separate evidence; an unrun Home workflow is not
+counted as passing. No Actions settings are changed.

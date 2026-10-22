@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.71 adds [decoder-level ceilings and VBV policies](docs/encoder-limits.md):
+checked nominal resources and emitted headers, explicit rate/buffer limits,
+transactional session propagation and coordinated policy resets.
+
 Version 0.70 adds [encoder profiles, presets and fixed QP](docs/encoder-options.md):
 copied per-session codec policies, AVC Baseline/Main container support and
 transactional propagation through restart, mode changes and recording recovery.

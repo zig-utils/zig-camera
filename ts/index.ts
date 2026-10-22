@@ -8,6 +8,13 @@ import {
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
 import {
+  encodeEncoderLimits,
+  snapshotEncoderLimits,
+  readEncoderLimits,
+  type EncoderLimits,
+} from './encoder-limits'
+export type { EncoderLimits } from './encoder-limits'
+import {
   encodeEncoderOptions,
   snapshotEncoderOptions,
   readEncoderOptions,
@@ -5483,6 +5490,7 @@ export interface RecorderOptions {
   fps?: number
   codec?: keyof typeof Codec
   encoder?: EncoderOptions
+  limits?: EncoderLimits
   bitrate?: number
   quality?: number
   gop?: number
@@ -5524,6 +5532,7 @@ export type RecorderSessionOptions = Partial<
   audio?: RecorderOptions['audio'] | null
   colorSpace?: ColorSpaceRequest | null
   encoder?: EncoderOptions | null
+  limits?: EncoderLimits | null
 }
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   options = { ...options }
@@ -5531,6 +5540,10 @@ function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   const colorSpace = snapshotColorSpace(options.colorSpace)
   return Object.freeze({
     ...options,
+    limits:
+      options.limits === undefined
+        ? undefined
+        : snapshotEncoderLimits(options.limits),
     encoder:
       options.encoder === undefined
         ? undefined
@@ -5559,6 +5572,7 @@ function mergeSessionOptions(
     merged.bitrate = undefined
     merged.gop = undefined
     merged.encoder = undefined
+    merged.limits = undefined
   }
   for (const key of [
     'width',
@@ -5577,6 +5591,8 @@ function mergeSessionOptions(
     merged.colorSpace = settings.colorSpace ?? undefined
   if (settings.encoder !== undefined)
     merged.encoder = settings.encoder ?? undefined
+  if (settings.limits !== undefined)
+    merged.limits = settings.limits ?? undefined
   return snapshotRecorderOptions(merged)
 }
 function resolvedSession(
@@ -5635,6 +5651,7 @@ function sessionFields(options: RecorderOptions) {
         ? undefined
         : encodeColorSpace(options.colorSpace),
     encoder: encodeEncoderOptions(options.encoder),
+    limits: encodeEncoderLimits(options.limits),
   }
   check(
     n.zc_video_check_color(
@@ -5646,6 +5663,14 @@ function sessionFields(options: RecorderOptions) {
   check(
     n.zc_video_check_codec_options(ptr(result.video), ptr(result.encoder)),
     'encoder configuration',
+  )
+  check(
+    n.zc_video_check_codec_limits(
+      ptr(result.video),
+      ptr(result.encoder),
+      ptr(result.limits),
+    ),
+    'encoder limits',
   )
   return result
 }
@@ -5967,10 +5992,19 @@ export class Recorder {
     if (producerLimits && (!producerLimits.bytes || !producerLimits.jobs))
       throw new RangeError('invalid producer queue bounds')
     this.currentOptions = options
-    const { video: cfg, audio: opts, color, encoder } = sessionFields(options)
+    const {
+      video: cfg,
+      audio: opts,
+      color,
+      encoder,
+      limits,
+    } = sessionFields(options)
     this.recordingColorBytes = color
     const configuredPath =
-      path !== null && (color !== undefined || options.encoder !== undefined)
+      path !== null &&
+      (color !== undefined ||
+        options.encoder !== undefined ||
+        options.limits !== undefined)
     const out = outPointer()
     if (options.circular) {
       const ring = fields(24, n.zc_default_buffer_config, [
@@ -6033,6 +6067,11 @@ export class Recorder {
           n.zc_video_set_codec_options(this.handle, ptr(encoder)),
           'encoder configuration',
         )
+      if (options.limits)
+        check(
+          n.zc_video_set_codec_limits(this.handle, ptr(limits)),
+          'encoder limits',
+        )
       if (color)
         check(
           n.zc_video_set_color(this.handle, ptr(color)),
@@ -6071,6 +6110,10 @@ export class Recorder {
   encoderOptions() {
     this.assertOpen()
     return readEncoderOptions(this.handle)
+  }
+  encoderLimits() {
+    this.assertOpen()
+    return readEncoderLimits(this.handle)
   }
   private assertOwned(allowProducer = false) {
     guardOutputHook()
@@ -7717,6 +7760,8 @@ export class Recorder {
               ...settings,
               audio: settings.audio ?? null,
               colorSpace: settings.colorSpace ?? null,
+              encoder: settings.encoder ?? null,
+              limits: settings.limits ?? null,
             },
             output,
             {},
@@ -7832,6 +7877,11 @@ export class Recorder {
         check(
           n.zc_producer_job_restart_codec_options(native, ptr(config.encoder)),
           'session encoder settings',
+        )
+      if (config)
+        check(
+          n.zc_producer_job_restart_codec_limits(native, ptr(config.limits)),
+          'session encoder limits',
         )
       if (typeof output === 'string' && this.options.io) {
         const io = this.options.io

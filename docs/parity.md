@@ -1,4 +1,4 @@
-# Feature coverage in 0.70
+# Feature coverage in 0.71
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -18,7 +18,7 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Controls and autofocus | Atomic convenience/native/vendor batches; exact typed bounded journals; pre-start replay; logical metadata revisions; revision-filtered AF jobs | setControls/setNativeControls and both snapshot/restore APIs; cancellable scan and CAF pause/resume jobs; focus-locked retained requests, paired streams and RGB/metadata/lores/JPEG/DNG with joined restoration and discard on failure; wait/cancel/reject mode handoff and optional fresh target AF; runtime settings restored across mode jobs; physical optics and sensor-specific timing unvalidated |
 | Preview | SDL/Home aspect fitting, window requests, independent orthogonal image/overlay transforms and overlay rectangles, owned RGBA uploads and alpha composition; scoped token input and direct-to-texture I420 conversion | Asynchronous SDL/headless pump, main/RGB-I420 lores/background selection, atomic live source/view replacement, immutable state, isolated display errors and joined mode restoration; additional formats and Qt/DRM zero-copy remain |
 | Still images | Home JPEG 4:4:4, streaming PNG, BMP, TIFF, PPM; Bayer DNG with metadata/calibration; owned immutable encoded blobs and atomic files | Named main/lores Frame/file/encoded-byte/RGB captures with negotiated YCbCr conversion, focus-locked and temporary-mode images, compression/filter controls and callback access; GIF/APNG, Exif/ICC, decoded image-object conveniences, additional pixel formats/demosaicing, compressed raw and advanced DNG profiles remain |
-| Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls; AVC profile ceilings, validated codec presets and fixed QP; Baseline/Main AVC container records | Main/lores Recorder input selection, direct I420 remap and compact producers; copied policies through transactional restart, mode changes and recovery; upstream quality-tier heuristics, level controls, repeated in-band headers, general gamut/transfer conversion, hardware encoder and per-output codec settings remain |
+| Video | Home MJPEG/MKV and x264 AVC/x265 HEVC, fragmented MP4, GOP/bitrate/quality controls; AVC profile ceilings, validated codec presets and fixed QP; Baseline/Main AVC container records; checked level ceilings and VBV/CPB limits | Main/lores Recorder input selection, direct I420 remap and compact producers; copied policies through transactional restart, mode changes and recovery; upstream quality-tier heuristics, higher-resolution HEVC CTU ownership, full HRD/codec conformance, repeated in-band headers, general gamut/transfer conversion, hardware encoder and per-output codec settings remain |
 | Audio/A/V | ALSA or synthetic PCM, independent sample cursors, PCM MKV / AAC-LC MP4 with priming/tail edits | AudioCapture, manual writeAudio and shared bounded PCM across encoders, including dropped video with continuous audio; physical drift/latency calibration missing |
 | Circular and delayed output | Bounded GOP history, synchronized owned path/custom snapshots, global/per-output delays, tail rules | CircularOutput2 typed Bun recorder, dynamic delay, custom pre-roll and shared PTS; arbitrary upstream signatures remain unsupported |
 | Multiple encoders | Home frame fan-out registry, eight stable consumer IDs, one automatic producer per encoder, wait/drop admission and failure isolation | Independent main/lores Recorder attachments, per-encoder stats and joined close; shared bounded PCM with per-consumer watermarks and isolated overruns; coordinated all-active encoder mode jobs with shared publication and audio holds |
@@ -30,6 +30,13 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
+
+[Encoder limits](encoder-limits.md) check nominal resources and actual emitted
+levels, VBV buffer/rate volume under complex synthetic input, accepted frame
+counts, fractional rate boundaries, failed/cancelled session ownership and
+explicit reset across coordinated recovery. Independent Linux decoding checks
+low-complexity pixels and high-complexity geometry/count. Full HRD/codec
+conformance and higher-resolution HEVC CTU ownership remain required work.
 
 [Encoder options](encoder-options.md) exercise all profile/preset combinations,
 actual AVC SPS compatibility and PPS QP endpoints, complete delayed IDRs/drains,

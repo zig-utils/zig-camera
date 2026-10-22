@@ -306,3 +306,13 @@ places these algorithms in Home's shared media packages. Native adapter policy
 and Baseline/Main container fixes therefore improve Home first and are reused
 verbatim here. No OS file is copied, modified or executed; kernel capability
 assertions are not evidence of a working codec, GPU acceleration or Pi throughput.
+
+The 0.71 level/VBV audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads camera.home,
+media/video_decoder.home and ADR-MC3. The nominal camera/decoder returns and kernel
+hardware-capability declarations do not supply a hosted encoder-level table,
+transactional parameter recipe, CPB rate control or validated SPS output.
+Bitrate fields in kernel state are not an implemented VBV controller. Per the
+shared-media boundary, the working Home adapter gains the reusable limits policy
+first. No OS source is copied, changed or executed, and no hardware encoding,
+physical quality, clock or throughput result is inferred from these files.
