@@ -132,6 +132,22 @@ int zc_tuning_document_copy(zc_tuning_document *,uint8_t *data,uint64_t capacity
 int zc_tuning_document_find(zc_tuning_document *,const uint8_t *name,uint32_t name_length,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_tuning_document_replace(zc_tuning_document *,const uint8_t *name,uint32_t name_length,const uint8_t *json,uint64_t length);
 void zc_tuning_document_close(zc_tuning_document *);
+/* A process/backend-wide immutable tuning reservation, acquired BEFORE camera
+ * discovery/open. Equal byte snapshots share; conflicting/default live managers
+ * reject BUSY. Retain across worker reopens. Untuned opens inherit the manager's
+ * policy. Only the Raspberry Pi IPA consumes this file; synthetic tests lifecycle.
+ * Close may fail on cleanup and then retains the handle for retry. */
+typedef struct zc_tuning_session zc_tuning_session;
+typedef struct {
+    uint32_t struct_size,backend,custom,manager_users,session_users,environment_active,cleanup_pending,external_change;
+    int32_t last_error;
+    uint32_t reserved;
+    uint64_t generation,bytes;
+} zc_tuning_state;
+int zc_tuning_session_open(const uint8_t *json,uint64_t length,uint32_t backend,zc_tuning_session **out);
+int zc_tuning_session_close(zc_tuning_session *);
+int zc_get_tuning_state(uint32_t backend,zc_tuning_state *out);
+int zc_tuning_cleanup(uint32_t backend);
 int zc_open_id_pipeline(const zc_config *, const zc_pipeline_options *, const uint8_t *id, uint32_t length, zc_camera **out);
 int zc_get_camera_id(zc_camera *, uint8_t *data, uint32_t capacity, uint32_t *length);
 int zc_open_pipeline(const zc_config *,const zc_pipeline_options *,zc_camera **);

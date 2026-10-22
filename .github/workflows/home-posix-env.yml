@@ -1,0 +1,53 @@
+name: Home POSIX environment
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/posix_env.zig', 'tests/home_env_no_libc.zig', '.github/workflows/home-posix-env.yml']
+  pull_request:
+    paths: ['src/home/posix_env.zig', 'tests/home_env_no_libc.zig', '.github/workflows/home-posix-env.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  environment:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Owned values, restoration and allocation failures
+        run: |
+          zig test -lc -O Debug src/home/posix_env.zig
+          zig test -lc -O ReleaseSafe src/home/posix_env.zig
+      - name: Explicit unsupported result without libc
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build-exe --dep posix_env -Mroot=tests/home_env_no_libc.zig -Mposix_env=src/home/posix_env.zig -femit-bin="$RUNNER_TEMP/home-env-no-libc"
+          "$RUNNER_TEMP/home-env-no-libc"
+      - name: Read exact Home public wrapper revision
+        if: matrix.zig == 'master'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87
+          path: home-env-upstream
+          sparse-checkout: packages/env
+          persist-credentials: false
+      - name: Public Linux/libc and long-value regression on current Home toolchain
+        if: matrix.zig == 'master'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/posix_env.zig home-env-upstream/packages/env/src/posix_env.zig
+          for mode in Debug ReleaseSafe; do
+            zig build-exe -lc -O "$mode" --dep env -Mroot=home-env-upstream/packages/env/tests/posix_exports.zig -Menv=home-env-upstream/packages/env/src/env.zig -femit-bin="$RUNNER_TEMP/home-env-exports"
+            "$RUNNER_TEMP/home-env-exports"
+          done

@@ -12,6 +12,10 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_tuning_session_open: { args: [p, n, u, p], returns: i },
+  zc_tuning_session_close: { args: [p], returns: i },
+  zc_get_tuning_state: { args: [u, p], returns: i },
+  zc_tuning_cleanup: { args: [u], returns: i },
   zc_tuning_document_open: { args: [p, n, p], returns: i },
   zc_tuning_document_version: { args: [p, p], returns: i },
   zc_tuning_document_copy: { args: [p, p, n, p], returns: i },

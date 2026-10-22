@@ -8,6 +8,8 @@ _Static_assert(sizeof(zc_packed_stream)==64,"packed stream ABI");
 _Static_assert(offsetof(zc_packed_stream,offset)==48,"packed stream range ABI");
 _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
 _Static_assert(sizeof(zc_stream_alignment)==20,"stream alignment ABI");
+_Static_assert(sizeof(zc_tuning_state)==56,"tuning state ABI");
+_Static_assert(offsetof(zc_tuning_state,generation)==40,"tuning generation ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
 _Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
 _Static_assert(sizeof(zc_pcm_span)==24,"shared PCM span ABI");
@@ -165,6 +167,21 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        const uint8_t json[]="{\"one\":1}";
+        zc_tuning_session *profile=NULL,*same=NULL,*conflict=NULL;
+        assert(zc_tuning_session_open(json,sizeof(json)-1,ZC_SYNTHETIC,&profile)==ZC_OK && profile);
+        assert(zc_tuning_session_open(json,sizeof(json)-1,ZC_SYNTHETIC,&same)==ZC_OK && same);
+        assert(zc_tuning_session_open((const uint8_t*)"{\"one\":2}",9,ZC_SYNTHETIC,&conflict)==ZC_BUSY && !conflict);
+        zc_tuning_state state={0};
+        assert(zc_get_tuning_state(ZC_SYNTHETIC,&state)==ZC_OK);
+        assert(state.struct_size==56 && state.custom==1 && state.session_users==2 && state.manager_users==0 && state.bytes==9);
+        assert(zc_tuning_session_close(profile)==ZC_OK);
+        assert(zc_tuning_session_close(same)==ZC_OK);
+        assert(zc_get_tuning_state(ZC_SYNTHETIC,&state)==ZC_OK && state.custom==0 && state.session_users==0);
+        assert(zc_tuning_cleanup(ZC_SYNTHETIC)==ZC_OK);
+        assert(zc_get_tuning_state(99,&state)==ZC_INVALID && state.struct_size==0);
+    }
     {
         uint8_t source[]="{\"version\":2,\"algorithms\":[{\"rpi.af\":9007199254740993}]}";
         zc_tuning_document *doc=NULL;

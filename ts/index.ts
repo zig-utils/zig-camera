@@ -10,10 +10,21 @@ import { preparePreviewConfiguration } from './preview-options'
 import {
   loadTuningFile,
   findTuningAlgorithm,
+  TuningSession,
+  TuningCleanupError,
+  getTuningState,
+  type TuningSource,
   type TuningDocument,
   type LoadTuningOptions,
 } from './tuning'
 export {
+  TuningSession,
+  TuningCleanupError,
+  getTuningState,
+  cleanupTuning,
+  type TuningSource,
+  type TuningState,
+  type TuningBackend,
   TuningDocument,
   loadTuningFile,
   findTuningAlgorithm,
@@ -483,6 +494,8 @@ export interface PreviewOverlay {
   stride?: number
 }
 export interface CameraOptions {
+  /** Snapshot before manager startup. Held across mode jobs; conflicts reject. */
+  tuning?: TuningSource
   /** Main processed stream. Defaults to RGB byte order BGR888. */
   format?: 'BGR888' | 'YUV420'
   colorSpace?: ColorSpaceRequest
@@ -1002,6 +1015,7 @@ export class Camera {
     return this.focusJob && !this.focusJob.done ? 1 : 0
   }
   private configuration: CameraOptions
+  private tuningSession?: TuningSession
   private modeActive = false
   private coordinatedGroup?: { recorders: Recorder[]; initials: Recording[] }
   private coordinatedRecorder?: Recorder
@@ -1031,68 +1045,72 @@ export class Camera {
       strictOrientation,
     } = cameraConfiguration(this.configuration)
     const out = outPointer()
-    check(
-      processed
-        ? cameraId
-          ? n.zc_open_id_processed_pipeline(
-              ptr(cfg),
-              ptr(pipeline),
-              ptr(processed),
-              orientation,
-              strictOrientation ? 1 : 0,
-              ptr(cameraId),
-              cameraId.length,
-              ptr(out),
-            )
-          : n.zc_open_processed_pipeline(
-              ptr(cfg),
-              ptr(pipeline),
-              ptr(processed),
-              orientation,
-              strictOrientation ? 1 : 0,
-              ptr(out),
-            )
-        : mainFormat === 0
-          ? cameraId
-            ? n.zc_open_id_formatted_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                mainFormat,
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(cameraId),
-                cameraId.length,
-                ptr(out),
-              )
-            : n.zc_open_formatted_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                mainFormat,
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(out),
-              )
-          : cameraId
-            ? n.zc_open_id_oriented_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(cameraId),
-                cameraId.length,
-                ptr(out),
-              )
-            : n.zc_open_oriented_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(out),
-              ),
-      'open camera',
-    )
-    this.handle = handle(out)
+    if (this.configuration.tuning !== undefined)
+      this.tuningSession = TuningSession.open(this.configuration.tuning, {
+        simulate: this.configuration.simulate ?? false,
+      })
     try {
+      check(
+        processed
+          ? cameraId
+            ? n.zc_open_id_processed_pipeline(
+                ptr(cfg),
+                ptr(pipeline),
+                ptr(processed),
+                orientation,
+                strictOrientation ? 1 : 0,
+                ptr(cameraId),
+                cameraId.length,
+                ptr(out),
+              )
+            : n.zc_open_processed_pipeline(
+                ptr(cfg),
+                ptr(pipeline),
+                ptr(processed),
+                orientation,
+                strictOrientation ? 1 : 0,
+                ptr(out),
+              )
+          : mainFormat === 0
+            ? cameraId
+              ? n.zc_open_id_formatted_pipeline(
+                  ptr(cfg),
+                  ptr(pipeline),
+                  mainFormat,
+                  orientation,
+                  strictOrientation ? 1 : 0,
+                  ptr(cameraId),
+                  cameraId.length,
+                  ptr(out),
+                )
+              : n.zc_open_formatted_pipeline(
+                  ptr(cfg),
+                  ptr(pipeline),
+                  mainFormat,
+                  orientation,
+                  strictOrientation ? 1 : 0,
+                  ptr(out),
+                )
+            : cameraId
+              ? n.zc_open_id_oriented_pipeline(
+                  ptr(cfg),
+                  ptr(pipeline),
+                  orientation,
+                  strictOrientation ? 1 : 0,
+                  ptr(cameraId),
+                  cameraId.length,
+                  ptr(out),
+                )
+              : n.zc_open_oriented_pipeline(
+                  ptr(cfg),
+                  ptr(pipeline),
+                  orientation,
+                  strictOrientation ? 1 : 0,
+                  ptr(out),
+                ),
+        'open camera',
+      )
+      this.handle = handle(out)
       if (writable)
         check(n.zc_enable_writable(this.handle), 'enable writable buffers')
       const length = new Uint32Array(1)
@@ -1120,8 +1138,14 @@ export class Camera {
       )
         throw new CameraError(-8, 'synthetic backend unavailable')
     } catch (error) {
-      n.zc_close(this.handle)
+      if (this.handle) n.zc_close(this.handle)
       this.handle = 0 as Pointer
+      try {
+        this.tuningSession?.close()
+        this.tuningSession = undefined
+      } catch (cleanup) {
+        throw new TuningCleanupError([error, cleanup], this.tuningSession!)
+      }
       throw error
     }
   }
@@ -2041,6 +2065,7 @@ export class Camera {
     this.modeFocusPolicy(plan.modeOptions)
     for (const configuration of [plan.previewMode, plan.captureMode]) {
       cameraIdentity(configuration)
+      this.validateModeTuning(configuration)
       this.validateModeIdentity(configuration)
       cameraConfiguration(configuration, true)
     }
@@ -2693,6 +2718,7 @@ export class Camera {
       cameraIndex: this.configuration.cameraIndex,
       cameraId: this.configuration.cameraId,
     })
+    this.validateModeTuning(target)
     target.writable ??= this.configuration.writable
     target.transform ??= this.configuration.transform
       ? { ...this.configuration.transform }
@@ -3089,6 +3115,7 @@ export class Camera {
       cameraIndex: this.configuration.cameraIndex,
       cameraId: this.configuration.cameraId,
     })
+    this.validateModeTuning(target)
     target.writable ??= this.configuration.writable
     target.transform ??= this.configuration.transform
       ? { ...this.configuration.transform }
@@ -3638,6 +3665,14 @@ export class Camera {
       jobOptions,
     ) as BunJob<Uint8Array>
   }
+  private validateModeTuning(target: CameraOptions) {
+    if (
+      target.tuning !== undefined &&
+      target.tuning !== this.configuration.tuning
+    )
+      throw new CameraError(-1, 'mode must retain manager tuning')
+    target.tuning = this.configuration.tuning
+  }
   private validateModeIdentity(options: CameraOptions) {
     if (
       (options.simulate !== undefined &&
@@ -3689,6 +3724,7 @@ export class Camera {
       cameraIndex: this.configuration.cameraIndex,
       cameraId: this.configuration.cameraId,
     })
+    this.validateModeTuning(target)
     target.writable ??= this.configuration.writable
     target.transform ??= this.configuration.transform
       ? { ...this.configuration.transform }
@@ -4479,7 +4515,8 @@ export class Camera {
       !this.handle &&
       !this.fanout &&
       !this.previewConfiguration &&
-      !this.overlayHandle
+      !this.overlayHandle &&
+      !this.tuningSession
     )
       return Promise.resolve()
     this.closing = true
@@ -4495,12 +4532,14 @@ export class Camera {
         this.handle = 0 as Pointer
         this.fanout?.close()
         this.fanout = undefined
+        this.tuningSession?.close()
+        this.tuningSession = undefined
       } catch (error) {
         failure ??= error
       }
       if (failure) throw failure
     })().finally(() => {
-      if (this.handle || this.fanout) {
+      if (this.handle || this.fanout || this.tuningSession) {
         this.closing = false
         this.closeJob = undefined
       }

@@ -7,6 +7,7 @@ import {
   outPointer,
   handle,
   type Pointer,
+  view,
 } from './ffi'
 import {
   constants,
@@ -388,4 +389,110 @@ export function loadTuningFile(
 }
 export function findTuningAlgorithm(document: TuningDocument, name: string) {
   return document.findAlgorithm(name)
+}
+export type TuningSource = TuningDocument | string
+export function snapshotTuning(source: TuningSource | undefined) {
+  if (source === undefined) return undefined
+  if (source instanceof TuningDocument) return source.json()
+  if (typeof source === 'string') {
+    if (
+      !source.length ||
+      source.length > TUNING_MAX_BYTES ||
+      !source.isWellFormed() ||
+      Buffer.byteLength(source) > TUNING_MAX_BYTES
+    )
+      throw new RangeError('invalid tuning JSON size or UTF-8')
+    return source
+  }
+  throw new TypeError('tuning requires a TuningDocument or strict JSON string')
+}
+export interface TuningBackend {
+  simulate?: boolean
+}
+function backend(options: TuningBackend) {
+  if (!options || typeof options !== 'object')
+    throw new TypeError('invalid tuning backend')
+  const simulate = options.simulate ?? false
+  if (typeof simulate !== 'boolean')
+    throw new TypeError('invalid tuning simulation flag')
+  return simulate ? 0 : 1
+}
+export interface TuningState {
+  backend: 'synthetic' | 'libcamera'
+  custom: boolean
+  managerUsers: number
+  sessionUsers: number
+  environmentActive: boolean
+  cleanupPending: boolean
+  externalChange: boolean
+  lastError: number
+  generation: bigint
+  bytes: bigint
+}
+export function getTuningState(
+  options: TuningBackend = {},
+): Readonly<TuningState> {
+  const data = storage(56),
+    id = backend(options)
+  check(n.zc_get_tuning_state(id, ptr(data)), 'tuning state')
+  const d = view(data)
+  return Object.freeze({
+    backend: id === 0 ? 'synthetic' : 'libcamera',
+    custom: !!d.getUint32(8, true),
+    managerUsers: d.getUint32(12, true),
+    sessionUsers: d.getUint32(16, true),
+    environmentActive: !!d.getUint32(20, true),
+    cleanupPending: !!d.getUint32(24, true),
+    externalChange: !!d.getUint32(28, true),
+    lastError: d.getInt32(32, true),
+    generation: d.getBigUint64(40, true),
+    bytes: d.getBigUint64(48, true),
+  })
+}
+export function cleanupTuning(options: TuningBackend = {}) {
+  check(n.zc_tuning_cleanup(backend(options)), 'tuning cleanup')
+}
+/** Pin immutable manager tuning across open/close gaps and worker mode jobs. */
+export class TuningSession {
+  private constructor(
+    private nativeHandle: Pointer | undefined,
+    readonly json: string,
+    readonly simulate: boolean,
+  ) {}
+  static open(source: TuningSource, options: TuningBackend = {}) {
+    const snapshot = snapshotTuning(source)!,
+      bytes = jsonBytes(snapshot),
+      id = backend(options),
+      out = outPointer()
+    check(
+      n.zc_tuning_session_open(ptr(bytes), BigInt(bytes.length), id, ptr(out)),
+      'reserve tuning session',
+    )
+    return new TuningSession(handle(out), snapshot, id === 0)
+  }
+  get state() {
+    if (!this.nativeHandle) throw new CameraError(-2, 'closed tuning session')
+    return getTuningState({ simulate: this.simulate })
+  }
+  close() {
+    if (this.nativeHandle) {
+      check(
+        n.zc_tuning_session_close(this.nativeHandle),
+        'close tuning session',
+      )
+      this.nativeHandle = undefined
+    }
+  }
+  [Symbol.dispose]() {
+    this.close()
+  }
+}
+/** A constructor failed and cleanup needs retry; the session remains owned. */
+export class TuningCleanupError extends AggregateError {
+  constructor(
+    errors: unknown[],
+    readonly session: TuningSession,
+  ) {
+    super(errors, 'camera construction failed and tuning cleanup needs retry')
+  }
 }

@@ -47,6 +47,7 @@ pub const Handle = struct {
     fail_stop_once: bool = false,
     stop_calls: u32 = 0,
     writable: bool = false,
+    tuning_held: bool = false,
     fail_writable_once: bool = false,
 };
 pub fn enableWritable(h: *Handle) c_int {
@@ -210,6 +211,12 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     for (1..31) |id| if (id != c.ZC_AF_TRIGGER and id != c.ZC_AF_PAUSE) {
         h.saved[id] = h.active[id];
     };
+    const tuning_rc = @import("tuning_session.zig").begin(c.ZC_SYNTHETIC);
+    if (tuning_rc != c.ZC_OK) {
+        close(h);
+        return tuning_rc;
+    }
+    h.tuning_held = true;
     pipeline.* = h.pipeline;
     info.* = h.info;
     out.* = h;
@@ -254,6 +261,7 @@ pub fn close(h: *Handle) void {
     for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
     for (h.lores_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+    if (h.tuning_held) @import("tuning_session.zig").end(c.ZC_SYNTHETIC);
     Alloc.destroy(h);
 }
 pub fn sync(h: *Handle, _: u32, begin: bool) c_int {

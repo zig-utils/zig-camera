@@ -1,6 +1,7 @@
 import { snapshotColorSpace, prepareProcessedOptions } from './color-config'
 import { native as n, storage, ptr, view, cstring, check } from './ffi'
 import type { CameraOptions } from './index'
+import { snapshotTuning } from './tuning'
 export function copyConfiguration(options: CameraOptions): CameraOptions {
   const snapshot = { ...options }
   if (
@@ -12,6 +13,7 @@ export function copyConfiguration(options: CameraOptions): CameraOptions {
     throw new RangeError('invalid camera transform')
   return {
     ...snapshot,
+    tuning: snapshotTuning(snapshot.tuning),
     colorSpace: snapshotColorSpace(snapshot.colorSpace),
     sensor: snapshot.sensor ? { ...snapshot.sensor } : undefined,
     lores: snapshot.lores ? { ...snapshot.lores } : undefined,

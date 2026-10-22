@@ -773,3 +773,28 @@ codec/container, request and job helpers remain in place. OS kernel ownership is
 not imported, and no ISP application or physical quality result is inferred from
 document editing. Native tuning application still requires an explicit shared
 manager/environment lifetime policy, including worker reopens and restoration.
+
+The 0.65 manager-tuning audit reuses Home image's tuning editor unchanged at
+960700eb74abd292d86bc884b2f667e3862a38dd and improves Home env at
+465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87. The env reader had returned null on
+Linux even when libc was linked, and set/unset treated values as filesystem paths.
+The standalone PosixEnv helper now owns raw-byte reads and complete override
+snapshots before mutation, preserves absent/empty/external values, and retains
+failed restoration owners for retry. Public get/set/unset reuse it, fixing Linux
+libc reads and supporting values beyond path limits. Three pure tests pass in
+Debug/ReleaseSafe on pinned 0.15.2 and current 0.18 Zig, including exhaustive
+allocation failures. The public wrapper executable passes locally on current
+0.18; its unrelated current-runtime imports prevent claiming pinned support for
+the whole env package. A no-libc Linux executable also compiles independently.
+
+Camera copies the helper and no-libc fixture verbatim and uses Override directly
+for the manager environment duty. Its copied-source matrix checks both compilers
+on Linux x86/ARM and macOS, runs the no-libc executable on Linux, and checks the
+public Home wrapper from that exact upstream revision on current Zig. Home's
+own workflow dispatch still returns HTTP422: Actions is disabled for its repo.
+Native camera owns profile reservations, immutable temporary files and shared
+manager counters; C++ only balances startup/shutdown notifications around manager
+leases. Bun pins one reservation through existing Home-gated camera/recorder jobs,
+reusing their joined rollback/cancellation rather than adding another scheduler.
+No codec/container, kernel camera or process environment implementation is
+imported from OS. Physical IPA/hotplug/tuning results remain unverified.

@@ -242,3 +242,14 @@ supplies a hosted ISP tuning document implementation. ADR-MC3 places shared medi
 algorithms in Home's libraries, so the portable bounded editor improves Home
 image, then is copied here with attribution. OS remains unmodified and unexecuted.
 Data edits are not evidence of working sensor tuning, Pi quality or performance.
+
+The 0.65 manager-tuning audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rechecks camera.home and ADR-MC3.
+The camera stub has no hosted libcamera manager, IPA profile ownership or
+environment restoration boundary. Its kernel pointers/allocator cannot supply
+the process-level lease needed across Bun worker reopens. Per the shared-media
+boundary, the portable environment ownership primitive improves Home env and is
+reused here with the existing Home tuning editor and job gates. No OS source is
+copied, changed or executed. The fixed-buffer stub is not hardware acceptance,
+and the new real-backend no-camera smoke proves manager cleanup, not sensor IPA
+parameters, optics, hotplug behavior or Pi throughput.

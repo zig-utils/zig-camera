@@ -268,7 +268,7 @@ test('file failures close owned descriptors and retain primary plus cleanup erro
   expect(Buffer.from(result.stderr).toString()).toBe('')
   expect(result.exitCode).toBe(0)
 })
-test('tuning data operations preserve camera and process tuning state', () => {
+test('tuning data operations preserve camera and process tuning state', async () => {
   const previous = process.env.LIBCAMERA_RPI_TUNING_FILE
   const camera = new Camera({ simulate: true, width: 16, height: 16 })
   try {
@@ -279,6 +279,6 @@ test('tuning data operations preserve camera and process tuning state', () => {
     expect(frame.metadata().sequence).toBeGreaterThanOrEqual(0n)
     expect(process.env.LIBCAMERA_RPI_TUNING_FILE).toBe(previous)
   } finally {
-    camera.close()
+    await camera.close()
   }
 })

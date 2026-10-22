@@ -1,9 +1,10 @@
 # Tuning document utilities
 
 The Zig/C/Bun data APIs cover Picamera2's load_tuning_file and find_tuning_algo
-capabilities, with owned editing and save. They **do not apply tuning to the ISP**.
-There is currently no CameraOptions.tuning. Native per-camera application and
-reconfiguration semantics remain required for parity.
+capabilities, with owned editing and save. Data operations alone do not change
+camera state. Version 0.65 adds CameraOptions.tuning through an owned
+[manager-lifetime tuning session](tuning-sessions.md), which applies the snapshot
+before real manager startup and retains it across mode jobs.
 
 ```ts
 import { Camera } from '@zig-utils/camera'
@@ -64,8 +65,9 @@ close with all calls. Parsing needs no camera and changes no process environment
 The libcamera Raspberry Pi IPA resolves its tuning configuration during manager
 enumeration/IPA initialization. An environment override is process-wide; merely
 setting it around Camera construction cannot safely define independent camera,
-worker-reopen or concurrent-discovery semantics. Implementing that ownership and
-restoration policy remains in scope. See upstream [IPA configuration lookup](https://github.com/raspberrypi/libcamera/blob/main/src/libcamera/ipa_proxy.cpp)
+worker-reopen or concurrent-discovery semantics. The owned session now defines
+that shared policy and restoration lifetime; physical IPA/hotplug acceptance
+remains required. See upstream [IPA configuration lookup](https://github.com/raspberrypi/libcamera/blob/main/src/libcamera/ipa_proxy.cpp)
 and [Raspberry Pi pipeline IPA initialization](https://github.com/raspberrypi/libcamera/blob/main/src/libcamera/pipeline/rpi/common/pipeline_base.cpp).
 
 Native tests include exhaustive Home allocation-failure checks and atomic C

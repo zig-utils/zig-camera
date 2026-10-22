@@ -401,6 +401,14 @@ Home owned tuning documents (0.64):
   https://github.com/home-lang/home/commit/960700eb74abd292d86bc884b2f667e3862a38dd
 The Home MIT license and copyright reproduced above apply.
 
+Home owned POSIX environment values and overrides (0.65):
+- src/home/posix_env.zig and tests/home_env_no_libc.zig are copied verbatim from
+  Home packages/env/src/posix_env.zig and packages/env/tests/no_libc.zig at
+  465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87. They supply owned raw-byte reads,
+  allocation-atomic overrides, retryable restoration and unsupported-libc checks.
+  https://github.com/home-lang/home/commit/465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87
+The Home MIT license and copyright reproduced above apply.
+
 Home relative capture intervals (0.61):
 - src/home/relative_delay.zig is copied verbatim from Home async's
   src/relative_delay.zig at 8779c7c861360540bcf1fe49f4329d8c5f0f2397. It supplies

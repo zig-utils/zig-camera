@@ -26,6 +26,8 @@
 
 using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
+extern "C" int zct_tuning_manager_begin();
+extern "C" void zct_tuning_manager_end();
 namespace {
 bool nativeOrientation(uint32_t value,Orientation &out) {
     switch(value) {
@@ -232,6 +234,10 @@ struct ManagerHost {
     size_t users=0;
     int acquire() {
         std::lock_guard<std::mutex> lock(mutex);
+        const int tuning=zct_tuning_manager_begin();
+        if(tuning)return tuning;
+        // Balance the Zig policy lease even if allocation/startup throws.
+        struct Rollback { bool active=true; ~Rollback(){if(active)zct_tuning_manager_end();} } rollback;
         if(users==0) {
             // Older libcamera does not reset its initialization latch on stop.
             // Construct a fresh manager after the previous one is destroyed.
@@ -239,11 +245,12 @@ struct ManagerHost {
             if(next->start()<0)return ZC_DEVICE;
             manager=std::move(next);
         }
-        ++users;return ZC_OK;
+        ++users;rollback.active=false;return ZC_OK;
     }
     void release() {
         std::lock_guard<std::mutex> lock(mutex);
         if(--users==0)manager.reset();
+        zct_tuning_manager_end();
     }
 };
 ManagerHost &managerHost(){static ManagerHost host;return host;}

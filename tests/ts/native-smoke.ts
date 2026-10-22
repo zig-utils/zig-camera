@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { Camera, CameraError } from '../../ts'
+import { Camera, CameraError, TuningSession, getTuningState } from '../../ts'
 const discovered = Camera.discover()
 assert.ok(Array.isArray(discovered))
 assert.deepEqual(
@@ -79,4 +79,27 @@ try {
 } finally {
   if (timeout) clearTimeout(timeout)
   for (const worker of workers) worker.terminate()
+}
+
+// Exercise the actual C++ manager policy on no-camera hosts. This verifies
+// startup/failed-open cleanup, not sensor IPA parsing or optical behavior.
+if (discovered.length === 0) {
+  const previous = process.env.LIBCAMERA_RPI_TUNING_FILE
+  const profile = '{"version":2,"algorithms":[]}'
+  using tuning = TuningSession.open(profile)
+  const before = tuning.state.generation
+  Camera.discover()
+  assert(tuning.state.generation > before)
+  assert.equal(tuning.state.managerUsers, 0)
+  assert.equal(tuning.state.environmentActive, false)
+  assert.throws(
+    () =>
+      new Camera({ tuning: profile, cameraId: 'zig-utils-absent-tuning-test' }),
+    (error) => error instanceof CameraError && error.code === -9,
+  )
+  assert.equal(tuning.state.sessionUsers, 1)
+  assert.equal(process.env.LIBCAMERA_RPI_TUNING_FILE, previous)
+  tuning.close()
+  assert.equal(getTuningState().custom, false)
+  console.log('real manager tuning discovery and failed-open cleanup completed')
 }

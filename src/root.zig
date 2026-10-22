@@ -1,5 +1,42 @@
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;
 pub const Tuning = @import("home/tuning.zig");
+pub const TuningState = c.zc_tuning_state;
+pub fn tuningState(backend: u32) Error!TuningState {
+    var out: TuningState = undefined;
+    try check(@import("tuning_session.zig").zc_get_tuning_state(backend, &out));
+    return out;
+}
+pub const TuningSession = struct {
+    handle: ?*c.zc_tuning_session,
+    pub fn init(json: []const u8, backend: u32) Error!TuningSession {
+        var out: ?*c.zc_tuning_session = null;
+        try check(core.zc_tuning_session_open(json.ptr, json.len, backend, &out));
+        return .{ .handle = out };
+    }
+    /// Close retains the owner on failure; retry after fixing cleanup errors.
+    pub fn close(self: *TuningSession) Error!void {
+        if (self.handle) |value| {
+            try check(@import("tuning_session.zig").zc_tuning_session_close(value));
+            self.handle = null;
+        }
+    }
+};
+test "public tuning session pins synthetic mode ownership until explicit close" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var tuning = try TuningSession.init("{\"one\":1}", c.ZC_SYNTHETIC);
+    defer tuning.close() catch unreachable;
+    var cfg: c.zc_config = undefined;
+    core.zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var camera: ?*c.zc_camera = null;
+    try check(core.zc_open(&cfg, &camera));
+    try std.testing.expectEqual(@as(u32, 1), (try tuningState(c.ZC_SYNTHETIC)).manager_users);
+    try check(core.zc_close(camera.?));
+    try std.testing.expectEqual(@as(u32, 1), (try tuningState(c.ZC_SYNTHETIC)).session_users);
+    try tuning.close();
+    try std.testing.expectEqual(@as(u32, 0), (try tuningState(c.ZC_SYNTHETIC)).custom);
+}
 const std = @import("std");
 pub const c = @import("abi.zig").c;
 pub const core = @import("core.zig");

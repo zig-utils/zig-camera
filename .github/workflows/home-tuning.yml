@@ -2,9 +2,9 @@ name: Home tuning documents
 on:
   push:
     branches: [main]
-    paths: ['src/home/tuning.zig', 'src/tuning.zig', 'include/zig_camera.h', '.github/workflows/home-tuning.yml']
+    paths: ['src/home/tuning.zig', 'src/tuning.zig', 'src/tuning_session.zig', 'src/home/posix_env.zig', 'native/libcamera.cpp', 'include/zig_camera.h', '.github/workflows/home-tuning.yml']
   pull_request:
-    paths: ['src/home/tuning.zig', 'src/tuning.zig', 'include/zig_camera.h', '.github/workflows/home-tuning.yml']
+    paths: ['src/home/tuning.zig', 'src/tuning.zig', 'src/tuning_session.zig', 'src/home/posix_env.zig', 'native/libcamera.cpp', 'include/zig_camera.h', '.github/workflows/home-tuning.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,3 +34,5 @@ jobs:
           set -euo pipefail
           zig test -lc -I include -O Debug src/tuning.zig
           zig test -lc -I include -O ReleaseSafe src/tuning.zig
+          zig test -lc -I include -O Debug src/tuning_session.zig
+          zig test -lc -I include -O ReleaseSafe src/tuning_session.zig

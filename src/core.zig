@@ -9,6 +9,7 @@ comptime {
     _ = @import("capture_delay.zig").zc_capture_delay_remaining;
     _ = @import("alignment.zig").zc_align_stream_geometry;
     _ = @import("tuning.zig");
+    _ = @import("tuning_session.zig");
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
@@ -133,6 +134,12 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
 }
 pub export fn zc_abi_version() u32 {
     return c.ZC_ABI_VERSION;
+}
+pub export fn zc_tuning_session_open(data: ?[*]const u8, length: u64, backend: u32, out: *?*c.zc_tuning_session) c_int {
+    out.* = null;
+    if (backend > 1) return c.ZC_INVALID;
+    if (backend == c.ZC_LIBCAMERA and !options.libcamera) return c.ZC_UNSUPPORTED;
+    return @import("tuning_session.zig").create(data, length, backend, out);
 }
 pub export fn zc_default_config(out: *c.zc_config) void {
     out.* = std.mem.zeroes(c.zc_config);
