@@ -839,3 +839,18 @@ are compared to current Home, retaining attribution; no Home source changes are
 needed for this feature. Callback paths allocate no application storage and do
 not invoke consumers. This is not a guarantee about SDK-internal allocation or
 physical camera behavior.
+
+The 0.68 reconnect audit fetches Home main at
+0cb789b4cbc2568bcf97308647f1ad4035bb2fa8. The eight new commits since 3888e242
+concern the TypeScript compiler and change no audited media/async/env packages.
+The research checkout fast-forwards cleanly; output_recovery.zig and exact
+identity storage remain verbatim matches. Home video's existing Retry already
+provides bounded lifetime claims, capped/saturating backoff, completion-time
+observation, and no deadline drift; no second retry algorithm or new Home API is
+needed. A camera C bridge exposes that unchanged policy with validation and
+caller-owned state, and Bun supplies a private monotonic epoch, discovery watch
+and joined native open/disposal. Existing Home-gated Bun jobs and native control
+snapshot/replay provide cancellation/publication and owned exact settings. The
+portable policy is tested on pinned/development Zig; the C-import ABI is tested
+on camera's pinned 0.15.2, since development Zig has removed @cImport. No Home
+source is changed for this feature, and no physical reconnect result is inferred.

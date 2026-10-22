@@ -2,7 +2,6 @@ import { native, storage, ptr, type Pointer } from './ffi'
 declare const self: {
   onmessage: (event: { data: { operation: string; handle: Pointer } }) => void
   postMessage: (value: unknown) => void
-  close: () => void
 }
 self.onmessage = ({
   data,
@@ -40,5 +39,5 @@ self.onmessage = ({
   } catch (error) {
     self.postMessage({ error: String(error) })
   }
-  self.close()
+  // The parent terminates the Bun worker after receiving the native result.
 }

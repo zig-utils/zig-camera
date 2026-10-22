@@ -57,9 +57,10 @@ snapshot is copied. Rescan on events or a change in missed rather than treating 
 snapshot as a permanent topology. This is observation of SDK notifications, not a
 guarantee that a removed camera has physically stopped DMA or a new camera is
 ready to open. A disconnected native camera remains terminal; reappearance must
-use a fresh Camera instance and negotiate again. Automatic reconnect, transactional
-recorder restart after device replacement, and physical hotplug acceptance remain
-parity work.
+use a fresh Camera instance and negotiate again. Version 0.68's
+[reconnect job](reconnection.md) automates bounded discovery/open/settings replay
+into a fresh owner. Continuous background supervision, transactional recorder
+restart after device replacement, and physical hotplug acceptance remain parity work.
 
 Bun queues at most 32 `next()` jobs, with one 2 ms idle poll per watch and no timer
 when no jobs are pending. Jobs support cancellation, deadline and signalFunction.

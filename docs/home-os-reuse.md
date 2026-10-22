@@ -272,3 +272,13 @@ kernel/controller state, not hosted SDK signal retirement. Existing Home stdlib
 owned_fifo/device_identity therefore remain the reusable pieces, with camera
 manager/tuning lifetime and rescan policy in zig-camera. No OS code is copied,
 modified or executed; no physical hotplug or reconnect result is asserted.
+
+The 0.68 reconnect audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads camera.home, time/clocksource.home,
+time/hrtimer.home and ADR-MC3. The fixed RGB capture stub has no manager/device
+reopen or retained userspace frame generations. Kernel timer queues and the
+clocksource's explicitly approximate TSC conversion cannot supply hosted monotonic
+retry admission or Bun/native cancellation. Existing Home stdlib Retry therefore
+supplies shared portable arithmetic, while the camera owns SDK discovery, fresh
+handle adoption and joined disposal. No kernel sources are copied, changed or
+executed, and no clock calibration, USB reconnect, sensor or DMA result is claimed.

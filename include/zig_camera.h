@@ -150,6 +150,19 @@ int zc_camera_watch_close(zc_camera_watch *);
 /* Scoped synthetic event injection; does not change discovery/capture topology.
  * Real watches reject UNSUPPORTED. Invalid input does not mutate the queue. */
 int zc_camera_watch_simulate_event(zc_camera_watch *,uint32_t kind,const uint8_t *id,uint32_t length);
+/* Caller-owned, serialized Home retry policy on a supplied monotonic ns clock.
+ * 1..1024 attempts; no allocation/timers/I/O. Poll returns 1 for a claim, 0 when
+ * not due/exhausted, negative on invalid state without mutation.
+ * First claim waits initial_ns, later failures use capped exponential backoff.
+ * Observe failure at completion to arm without shifting the next deadline;
+ * success clears the deadline, never the lifetime attempt budget. */
+typedef struct {
+    uint32_t struct_size,max_attempts,attempts,armed;
+    uint64_t initial_ns,maximum_ns,deadline_ns;
+} zc_recovery_retry;
+int zc_recovery_retry_init(uint32_t max_attempts,uint64_t initial_ns,uint64_t maximum_ns,zc_recovery_retry *out);
+int zc_recovery_retry_poll(zc_recovery_retry *,uint64_t now_ns,uint32_t failed);
+int zc_recovery_retry_observe(zc_recovery_retry *,uint64_t now_ns,uint32_t failed);
 /* Owned JSON tuning data; does not apply an ISP policy. Native limits are
  * 16 MiB, 262144 scanner tokens and 64 container levels. Number text is exact.
  * Copy/find NULL+0 queries required length; short outputs remain untouched.

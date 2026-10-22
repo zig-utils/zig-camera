@@ -390,3 +390,36 @@ test('flush rejects a staged split before ending codecs, allowing recording to c
     await c.close()
   }
 })
+
+test('delayed native drain response survives the worker return without a post-handoff exception', async () => {
+  const c = camera(),
+    r = await Recorder.open({ outputframe() {} }, options),
+    Original = globalThis.Worker
+  let delayed = 0
+  class Delayed extends Original {
+    override postMessage(
+      message: unknown,
+      settings?: Transferable[] | StructuredSerializeOptions,
+    ) {
+      if ((message as { operation?: string }).operation === 'drain') {
+        const receive = this.onmessage
+        this.onmessage = (event) => {
+          delayed++
+          setTimeout(() => receive?.call(this, event), 5)
+        }
+      }
+      if (Array.isArray(settings)) super.postMessage(message, settings)
+      else super.postMessage(message, settings)
+    }
+  }
+  globalThis.Worker = Delayed
+  try {
+    await submit(c, r, 0)
+    await r.drain()
+    expect(delayed).toBeGreaterThan(0)
+  } finally {
+    globalThis.Worker = Original
+    await r.close()
+    await c.close()
+  }
+})

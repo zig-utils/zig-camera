@@ -1,4 +1,4 @@
-# Feature coverage in 0.66
+# Feature coverage in 0.68
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API
@@ -9,8 +9,8 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | --- | --- | --- |
 | Capture | Reused libcamera requests, persistent DMA mappings, FIFO/latest queues, retained requests with distinct reference tokens; native exact timestamp/drop filters; retained read/shared and write/exclusive mapped streams | Camera/Frame, owned same-request RGB/raw/lores and metadata; cancellable bounded capture jobs with flush/dropFrames; scoped writable RGB/I420/Bayer rows and plane views with detach-on-close; synchronized multi-camera requests remain incomplete |
 | Request callbacks | Home leases/access gates pin scopes, exclude writers and prevent requeue under live maps; existing native metadata/control APIs | Scoped synchronous pre/copy/post/encode/display order on the main Bun thread; mode-worker warmup/AF/capture handoff; failure isolation, retained owners, map cleanup recovery and ownership reentry guards; arbitrary dispatch remains incomplete |
-| Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata; bounded manager hotplug watches with full IDs and explicit loss/rescan | Camera.discover/watchCameras, CameraWatch, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; automatic recovery and physical hotplug acceptance remain required |
-| Device loss | Sticky per-handle disconnect state, SDK relay retirement, capture/metadata wakeups, retained frame/map ownership and explicit fence errors; final close-state handoff | deviceState, coalesced cancellable waitDisconnected, typed errors, producer/preview failure and worker loss reporting across rollback; manager watches span camera gaps; automatic recovery and physical unplug acceptance remain required |
+| Discovery/catalogs | Shared manager, unacquired enumeration, exact ID selection/full identity copies, owned typed properties/control ranges/full request metadata; bounded manager hotplug watches with full IDs and explicit loss/rescan; Home lifetime retry policy | Camera.discover/watchCameras, CameraWatch, properties, controls, Frame.metadataCatalog; exact i64/arrays/opaque bytes; bounded exact-ID reconnect jobs; continuous supervision and physical hotplug acceptance remain required |
+| Device loss | Sticky per-handle disconnect state, SDK relay retirement, capture/metadata wakeups, retained frame/map ownership and explicit fence errors; final close-state handoff | deviceState, coalesced cancellable waitDisconnected, typed errors, producer/preview failure and worker loss reporting across rollback; fresh-owner reconnect with settings/CAF replay, retained cleanup and old map independence; recorder/preview recovery and physical unplug acceptance remain required |
 | Tuning | Home owned bounded strict JSON for both layouts, exact numeric text, transactional edits; native owned IPA file and manager policy with shared POSIX override/restoration | TuningDocument/load/find/save, TuningSession and CameraOptions.tuning; matching-profile sharing, conflict rejection and held reservations across capture/recording/group mode jobs and rollback; physical IPA/hotplug/tuning acceptance remains required |
 | Sensor modes and lores | Cached advertised modes; exact raw size/depth; RGB/I420 main and paired lores | Constructor format selection, sensorModes, copyStream; measured FPS/crop catalog missing |
 | Color configuration | Home portable descriptions, RGB normalization, explicit shared processed-stream requests and requested/effective/actual negotiation; strict open/reopen policy | Presets/custom Bun options, copied negotiation queries, camera/recorder mode restoration and verified RGB recording admission; copied recording profiles, matching conversion/VUI/nclx through output/session/mode jobs; general gamut/transfer conversion, ICC/profile insertion and MJPEG/Matroska color metadata options remain |
@@ -30,6 +30,12 @@ promises for the Bun API. Full Picamera2 parity remains ongoing work.
 | Multiple cameras | Shared manager with independent acquired camera indices | Independent Camera objects with ID-pinned worker reopens and rollback; no synchronized stereo or tracking/navigation |
 
 ## Validation
+
+[Reconnection](reconnection.md) exercises exact-ID absence/retries, new owned
+handles, old retained buffers/maps, exact persistent controls, CAF restoration,
+joined active cancellation, source close/reentry and explicit failed cleanup
+owners. Real no-camera worker checks prove absent-ID cleanup without a hidden
+rollback open; physical reconnection remains untested.
 
 [Manager hotplug watches](hotplug.md) exercise bounded IDs/queues, explicit loss,
 native wait stop/wakeup, coalesced competing Bun jobs, reentrant joined close and

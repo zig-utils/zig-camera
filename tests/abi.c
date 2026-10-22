@@ -13,6 +13,8 @@ _Static_assert(sizeof(zc_device_state)==32,"device state ABI");
 _Static_assert(sizeof(zc_camera_event)==4128,"camera event ABI");
 _Static_assert(offsetof(zc_camera_event,id)==32,"camera event ID ABI");
 _Static_assert(sizeof(zc_camera_watch_state)==40,"camera watch state ABI");
+_Static_assert(sizeof(zc_recovery_retry)==40,"recovery retry ABI");
+_Static_assert(offsetof(zc_recovery_retry,deadline_ns)==32,"recovery retry deadline ABI");
 _Static_assert(offsetof(zc_device_state,disconnect_event)==24,"device loss event ABI");
 _Static_assert(offsetof(zc_tuning_state,generation)==40,"tuning generation ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
@@ -594,6 +596,15 @@ int main(void) {
     assert(zc_camera_watch_close(watch)==ZC_OK);
     watch=(zc_camera_watch *)1;
     assert(zc_camera_watch_open(ZC_SYNTHETIC,65,&watch)==ZC_INVALID && !watch);
+    zc_recovery_retry retry,retry_sentinel;
+    memset(&retry,0xa5,sizeof(retry));retry_sentinel=retry;
+    assert(zc_recovery_retry_init(0,0,0,&retry)==ZC_INVALID);
+    assert(!memcmp(&retry,&retry_sentinel,sizeof(retry)));
+    assert(zc_recovery_retry_init(2,0,0,&retry)==ZC_OK);
+    assert(zc_recovery_retry_poll(&retry,0,1)==1 && retry.attempts==1);
+    assert(zc_recovery_retry_observe(&retry,1,1)==ZC_OK && retry.armed);
+    assert(zc_recovery_retry_poll(&retry,1,1)==1 && retry.attempts==2);
+    assert(zc_recovery_retry_poll(&retry,2,1)==0);
 
     zc_output_mailbox *mailbox=NULL;
     assert(zc_output_mailbox_open(3,2,&mailbox)==ZC_OK);

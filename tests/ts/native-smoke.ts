@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { Camera, CameraError, getTuningState, TuningSession } from '../../ts'
+import { native as n, ptr, storage, type Pointer } from '../../ts/ffi'
 
 // A real manager watch must outlive failed opens and discovery leases without
 // needing physical cameras. Its close must release the actual SDK signal slots.
@@ -8,6 +9,53 @@ import { Camera, CameraError, getTuningState, TuningSession } from '../../ts'
   const generation = getTuningState().generation
   assert.equal(watch.state().backend, 'libcamera')
   assert.equal(getTuningState().managerUsers, 1)
+  // A fresh failed open must return no candidate and perform no rollback open.
+  const config = storage(72),
+    pipeline = storage(44)
+  n.zc_default_config(ptr(config))
+  n.zc_default_pipeline_options(ptr(pipeline))
+  const worker = new Worker(
+    new URL('../../ts/mode-worker.ts', import.meta.url).href,
+  )
+  try {
+    const result = new Promise<{
+      handle: Pointer
+      code: number
+      restoreCode: number
+    }>((resolve, reject) => {
+      worker.onmessage = (event) => resolve(event.data)
+      worker.onerror = reject
+    })
+    worker.postMessage({
+      fresh: true,
+      targetStarted: false,
+      handle: 0,
+      config,
+      pipeline,
+      previousConfig: config,
+      previousPipeline: pipeline,
+      previousStarted: false,
+      cameraId: new TextEncoder().encode(
+        'zig-utils-absent-reconnect-smoke-test',
+      ),
+      controls: new Uint8Array(),
+      controlCount: 0,
+      controlRevision: 0n,
+      cancel: new SharedArrayBuffer(8),
+      deadline: Infinity,
+      dropFrames: 0,
+    })
+    const response = await result
+    if (response.handle) n.zc_close(response.handle)
+    assert.deepEqual(response.handle, 0)
+    assert.equal(response.code, -9)
+    assert.equal(response.restoreCode, 0)
+    assert.equal(getTuningState().generation, generation)
+    assert.equal(getTuningState().managerUsers, 1)
+    console.log('real fresh reconnection worker failed-open cleanup completed')
+  } finally {
+    worker.terminate()
+  }
   assert.ok(Array.isArray(watch.discover()))
   assert.equal(getTuningState().generation, generation)
   assert.equal(getTuningState().managerUsers, 1)

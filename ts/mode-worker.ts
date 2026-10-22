@@ -5,6 +5,7 @@ import {
 } from './streams'
 import type { PreparedExif } from './exif'
 import { decodeMetadata } from './metadata'
+import { decodeCatalog } from './catalog'
 import {
   readDeviceState,
   decodeDeviceState,
@@ -26,6 +27,10 @@ import {
   type Pointer,
 } from './ffi'
 export interface ModeRequest {
+  /** Reconnection creates a separate owner. Never reopen a failed candidate as rollback. */
+  fresh?: boolean
+  disposeOnly?: boolean
+  targetStarted?: boolean
   handle: Pointer
   cameraId: Uint8Array
   config: Uint8Array
@@ -104,7 +109,6 @@ declare const self: {
     value: ModeResponse | ModeRequestHook,
     transfer?: ArrayBuffer[],
   ) => void
-  close: () => void
 }
 self.onmessage = ({ data: request }) => {
   const status = (error: unknown) =>
@@ -259,6 +263,16 @@ self.onmessage = ({ data: request }) => {
       if (!state.connected) result.deviceLoss = state
     }
   }
+  if (request.disposeOnly) {
+    try {
+      close()
+    } catch (code) {
+      result.code = status(code)
+    }
+    observeLoss()
+    self.postMessage(result)
+    return
+  }
   let focusRevision: bigint | undefined
   let hookTicket = 0
   const hook = (phase: 'pre' | 'post', frame: Uint8Array) => {
@@ -329,10 +343,11 @@ self.onmessage = ({ data: request }) => {
   let oldConsumed = false
   try {
     if (cancelled()) throw -5
+    if (request.fresh && request.handle) throw -1
     close()
     oldConsumed = true
     Atomics.store(new Int32Array(request.cancel), 1, 1)
-    open(request.config, request.pipeline, true)
+    open(request.config, request.pipeline, request.targetStarted ?? true)
     result.target = true
     Atomics.store(new Int32Array(request.cancel), 1, 3)
     for (let i = 0; i < request.dropFrames; i++) {
@@ -374,6 +389,70 @@ self.onmessage = ({ data: request }) => {
       for (let i = 0; i < view(info).getUint32(4, true); i++) {
         const frame = acquire()
         recycle(frame)
+      }
+      if (request.fresh) {
+        // A scan changes AfMode. Recover the original persistent recipe after
+        // proving that scan completed; one-shot triggers are never replayed.
+        const native = request.nativeControls,
+          hasNativeAf =
+            native && decodeCatalog(native).records.some((r) => r.appId === 13),
+          legacy = view(request.controls)
+        let hasLegacyAf = false
+        for (let i = 0; i < request.controlCount; i++)
+          if (legacy.getUint32(i * 144, true) === 13) hasLegacyAf = true
+        const revision = new BigUint64Array(1)
+        const replay = (code: number) => {
+          if (code) result.controlCode = code
+          check(code)
+        }
+        if (!hasLegacyAf && !hasNativeAf) {
+          const lens = view(request.config).getFloat32(32, true),
+            fallback = storage(lens >= 0 ? 288 : 144),
+            d = view(fallback)
+          d.setUint32(0, 13, true)
+          d.setUint32(4, 2, true)
+          d.setUint32(8, 1, true)
+          d.setFloat64(16, lens >= 0 ? 0 : 2, true)
+          if (lens >= 0) {
+            d.setUint32(144, 12, true)
+            d.setUint32(148, 3, true)
+            d.setUint32(152, 1, true)
+            d.setFloat64(160, lens, true)
+          }
+          replay(
+            n.zc_set_controls(
+              result.handle,
+              ptr(fallback),
+              fallback.length / 144,
+              ptr(revision),
+            ),
+          )
+        }
+        if (request.controlCount)
+          replay(
+            n.zc_set_controls(
+              result.handle,
+              ptr(request.controls),
+              request.controlCount,
+              ptr(revision),
+            ),
+          )
+        if (native && view(native).getUint32(12, true)) {
+          // State/update catalogs share records; the setter revalidates every
+          // exact payload against the replacement camera's current control map.
+          const update = native.slice()
+          view(update).setUint32(8, 6, true)
+          replay(
+            n.zc_set_native_controls(
+              result.handle,
+              ptr(update),
+              BigInt(update.length),
+              ptr(revision),
+            ),
+          )
+        }
+        if (revision[0]) result.controlRevision = revision[0]
+        focusRevision = undefined
       }
     }
     if (request.capture) {
@@ -504,7 +583,13 @@ self.onmessage = ({ data: request }) => {
     if (rc !== -4) retainedFrame = undefined
   }
   if (retainedFrame) result.requestFrame = retainedFrame
-  if (
+  if (request.fresh && !request.handle && result.code !== 0) {
+    try {
+      close()
+    } catch (code) {
+      result.restoreCode = status(code)
+    }
+  } else if (
     oldConsumed &&
     ((request.capture && request.capture.kind !== 'request-stop') ||
       result.code !== 0)
@@ -555,5 +640,7 @@ self.onmessage = ({ data: request }) => {
       disconnectEvent: 0n,
     }
   self.postMessage(result, [...transfers])
-  self.close()
+  // Bun has no WorkerGlobalScope.close(). The parent retires this worker only
+  // after consuming the owned-handle response; throwing here could race that
+  // handoff and turn a recoverable candidate into an unreachable native owner.
 }

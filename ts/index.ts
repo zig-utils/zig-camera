@@ -157,6 +157,17 @@ export type {
   CameraDescriptor,
 } from './catalog'
 import { CameraWatch, type CameraWatchOptions } from './hotplug'
+import {
+  RecoveryRetry,
+  ReconnectJob,
+  reconnectOptions,
+  type ReconnectOptions,
+} from './recovery'
+export {
+  ReconnectJob,
+  type ReconnectOptions,
+  type ReconnectState,
+} from './recovery'
 export {
   CameraWatch,
   type CameraWatchOptions,
@@ -411,6 +422,43 @@ function state(data: Uint8Array) {
     pending: !!view(data).getUint32(16, true),
   }
 }
+const nativeAdmission = Symbol('admitted camera owner')
+type CameraAdmission = {
+  [nativeAdmission]: Pointer
+  started: boolean
+  claimed: boolean
+}
+/** A failed disposal still owns a camera. Retry camera.close() before discarding. */
+export class CameraCleanupError extends AggregateError {
+  readonly owners: readonly { close(): Promise<void> }[]
+  constructor(
+    errors: unknown[],
+    owners: readonly { close(): Promise<void> }[],
+  ) {
+    super(
+      errors.flatMap((e) => (e instanceof CameraCleanupError ? e.errors : [e])),
+      'camera operation failed with retained cleanup ownership',
+    )
+    this.owners = Object.freeze([
+      ...new Set([
+        ...owners,
+        ...errors.flatMap((e) =>
+          e instanceof CameraCleanupError ? e.owners : [],
+        ),
+      ]),
+    ])
+    this.name = 'CameraCleanupError'
+  }
+  async cleanup() {
+    const settled = await Promise.allSettled(
+      this.owners.map((owner) => owner.close()),
+    )
+    const errors = settled.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    )
+    if (errors.length) throw new CameraCleanupError(errors, this.owners)
+  }
+}
 class ModeWorkerFault extends Error {}
 function runModeWorker(
   request: ModeRequest,
@@ -473,6 +521,47 @@ function runModeWorker(
       reject(error)
     }
   })
+}
+
+function recoveryCleanup(request: ModeRequest, handle: Pointer) {
+  let owned = handle,
+    pending: Promise<void> | undefined,
+    fault: unknown
+  return {
+    close(): Promise<void> {
+      if (pending) return pending
+      if (fault) return Promise.reject(fault)
+      if (!owned) return Promise.resolve()
+      pending = runModeWorker({
+        ...request,
+        handle: owned,
+        fresh: false,
+        disposeOnly: true,
+        previousStarted: false,
+        capture: undefined,
+        requestHooks: undefined,
+        autofocus: false,
+        dropFrames: 0,
+        cancel: new SharedArrayBuffer(8),
+        deadline: Infinity,
+      })
+        .then((response) => {
+          owned = response.handle
+          check(
+            response.code || response.restoreCode,
+            'reconnection candidate cleanup',
+          )
+        })
+        .catch((error) => {
+          if (error instanceof ModeWorkerFault) fault = error
+          throw error
+        })
+        .finally(() => {
+          pending = undefined
+        })
+      return pending
+    },
+  }
 }
 
 export interface RuntimeControl {
@@ -852,6 +941,7 @@ export class Camera {
   }
   private started = false
   private disconnectJobs = new Set<BunJob<Readonly<DeviceState>>>()
+  private reconnectJob?: ReconnectJob<Camera>
   private observedDeviceLoss?: Readonly<DeviceState>
   private disconnectScratch = storage(32)
   private disconnectObserver = new DisconnectObserver(() => {
@@ -913,6 +1003,187 @@ export class Camera {
     this.disconnectJobs.add(job)
     void job.operationDone.then(() => this.disconnectJobs.delete(job))
     if (effective.signal?.aborted) job.cancel(effective.signal.reason)
+    void job.start()
+    return job
+  }
+  /** Recover into a separate owner. Old leases/maps stay with this lost camera. */
+  reconnect(options: ReconnectOptions<Camera> = {}) {
+    guardRequestCallback()
+    guardOutputHook()
+    const settings = reconnectOptions(options, this.started)
+    const admit = () => {
+      this.assertOpen()
+      if (
+        this.hasPendingModes() ||
+        (this.reconnectJob && !this.reconnectJob.done) ||
+        (this.captureFilesJob && !this.captureFilesJob.done)
+      )
+        throw new CameraError(-4, 'camera lifecycle job active')
+      if (readDeviceState(this.handle).connected)
+        throw new CameraError(-2, 'reconnection requires a disconnected camera')
+    }
+    admit()
+    const target = copyConfiguration({
+        ...this.options,
+        cameraIndex: undefined,
+        cameraId: this.selectedId,
+      }),
+      encoded = cameraConfiguration(target),
+      controls = this.readModeControls(settings.autofocus ? 2n : 0n),
+      callbacks = this.requestCallbacks,
+      retry = new RecoveryRetry(settings)
+    const job = new ReconnectJob<Camera>(
+      async (current) => {
+        let watch: CameraWatch | undefined,
+          candidate: Camera | undefined,
+          published = false
+        let failure: unknown
+        const request: ModeRequest = {
+          handle: 0 as Pointer,
+          fresh: true,
+          targetStarted: settings.start,
+          ...encoded,
+          cameraId: this.selectedIdBytes.slice(),
+          previousConfig: encoded.config,
+          previousPipeline: encoded.pipeline,
+          previousStarted: false,
+          ...controls,
+          cancel: current.cancellation,
+          deadline: Infinity,
+          dropFrames: settings.dropFrames,
+          autofocus: settings.autofocus,
+        }
+        try {
+          current.check()
+          this.assertOpen()
+          watch = new CameraWatch({ simulate: target.simulate ?? false })
+          while (true) {
+            current.check()
+            if (retry.state.exhausted)
+              throw (
+                retry.lastError ??
+                new CameraError(-9, 'reconnection attempts exhausted')
+              )
+            const available = watch
+              .discover()
+              .some((entry) => entry.id === this.selectedId)
+            if (available && retry.claim()) {
+              const response = await runModeWorker(request)
+              if (response.code || response.restoreCode) {
+                const error = Object.assign(
+                  cameraError(
+                    response.code || response.restoreCode,
+                    'camera reconnection',
+                  ),
+                  {
+                    controlCode: response.controlCode,
+                    restoreCode: response.restoreCode,
+                    restoreControlCode: response.restoreControlCode,
+                  },
+                )
+                if (response.handle) {
+                  const owner = recoveryCleanup(request, response.handle)
+                  try {
+                    await owner.close()
+                  } catch (cleanup) {
+                    throw new CameraCleanupError([error, cleanup], [owner])
+                  }
+                }
+                current.check()
+                retry.lastError = error
+                if (
+                  (response.controlCode &&
+                    ![-9, -11].includes(response.controlCode)) ||
+                  response.restoreCode ||
+                  ![-9, -11, -4].includes(error.code)
+                )
+                  throw error
+                retry.complete(true)
+                continue
+              }
+              // Until the constructor claims it, the worker result is our owner.
+              const admission: CameraAdmission = {
+                [nativeAdmission]: response.handle,
+                started: response.started,
+                claimed: false,
+              }
+              try {
+                candidate = new Camera(target, admission)
+              } catch (error) {
+                if (!admission.claimed) {
+                  const owner = recoveryCleanup(request, response.handle)
+                  try {
+                    await owner.close()
+                  } catch (cleanup) {
+                    throw new CameraCleanupError([error, cleanup], [owner])
+                  }
+                }
+                throw error
+              }
+              if (candidate.cameraId !== this.selectedId)
+                throw new CameraError(
+                  -9,
+                  'reconnection changed camera identity',
+                )
+              candidate.requestCallbacks = callbacks
+              current.check()
+              await watch.close()
+              watch = undefined
+              current.check()
+              retry.complete(false)
+              if (candidate.started && candidate.hasRequestCallbacks)
+                candidate.ensurePump()
+              current.seal()
+              published = true
+              return candidate
+            }
+            try {
+              await watch.next({
+                timeoutMs: retry.waitMs(settings.pollMs),
+                signal: current.signal,
+              })
+            } catch (error) {
+              current.check()
+              if (!(error instanceof CameraError && error.code === -3))
+                throw error
+            }
+          }
+        } catch (error) {
+          failure = error
+        }
+        const owners = [!published ? candidate : undefined, watch].filter(
+          (owner): owner is Camera | CameraWatch => !!owner,
+        )
+        const failed: (Camera | CameraWatch)[] = [],
+          errors: unknown[] = []
+        for (const owner of owners) {
+          try {
+            await owner.close()
+          } catch (error) {
+            failed.push(owner)
+            errors.push(error)
+          }
+        }
+        if (errors.length)
+          throw new CameraCleanupError([failure, ...errors], failed)
+        throw failure
+      },
+      () => {},
+      settings.job,
+      this.selectedId,
+      retry,
+    )
+    // Signal registration may have re-entered stop/close or filled this slot.
+    try {
+      admit()
+    } catch (error) {
+      job.cancel(error)
+      return job
+    }
+    this.reconnectJob = job
+    void job.operationDone.then(() => {
+      if (this.reconnectJob === job) this.reconnectJob = undefined
+    })
     void job.start()
     return job
   }
@@ -1126,7 +1397,7 @@ export class Camera {
   get options() {
     return copyConfiguration(this.configuration)
   }
-  constructor(options: CameraOptions = {}) {
+  constructor(options: CameraOptions = {}, admission?: CameraAdmission) {
     this.configuration = copyConfiguration(options)
     const {
       config: cfg,
@@ -1144,68 +1415,74 @@ export class Camera {
         simulate: this.configuration.simulate ?? false,
       })
     try {
-      check(
-        processed
-          ? cameraId
-            ? n.zc_open_id_processed_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                ptr(processed),
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(cameraId),
-                cameraId.length,
-                ptr(out),
-              )
-            : n.zc_open_processed_pipeline(
-                ptr(cfg),
-                ptr(pipeline),
-                ptr(processed),
-                orientation,
-                strictOrientation ? 1 : 0,
-                ptr(out),
-              )
-          : mainFormat === 0
+      if (admission) {
+        admission.claimed = true
+        this.handle = admission[nativeAdmission]
+        this.started = admission.started
+      } else {
+        check(
+          processed
             ? cameraId
-              ? n.zc_open_id_formatted_pipeline(
+              ? n.zc_open_id_processed_pipeline(
                   ptr(cfg),
                   ptr(pipeline),
-                  mainFormat,
+                  ptr(processed),
                   orientation,
                   strictOrientation ? 1 : 0,
                   ptr(cameraId),
                   cameraId.length,
                   ptr(out),
                 )
-              : n.zc_open_formatted_pipeline(
+              : n.zc_open_processed_pipeline(
                   ptr(cfg),
                   ptr(pipeline),
-                  mainFormat,
+                  ptr(processed),
                   orientation,
                   strictOrientation ? 1 : 0,
                   ptr(out),
                 )
-            : cameraId
-              ? n.zc_open_id_oriented_pipeline(
-                  ptr(cfg),
-                  ptr(pipeline),
-                  orientation,
-                  strictOrientation ? 1 : 0,
-                  ptr(cameraId),
-                  cameraId.length,
-                  ptr(out),
-                )
-              : n.zc_open_oriented_pipeline(
-                  ptr(cfg),
-                  ptr(pipeline),
-                  orientation,
-                  strictOrientation ? 1 : 0,
-                  ptr(out),
-                ),
-        'open camera',
-      )
-      this.handle = handle(out)
-      if (writable)
+            : mainFormat === 0
+              ? cameraId
+                ? n.zc_open_id_formatted_pipeline(
+                    ptr(cfg),
+                    ptr(pipeline),
+                    mainFormat,
+                    orientation,
+                    strictOrientation ? 1 : 0,
+                    ptr(cameraId),
+                    cameraId.length,
+                    ptr(out),
+                  )
+                : n.zc_open_formatted_pipeline(
+                    ptr(cfg),
+                    ptr(pipeline),
+                    mainFormat,
+                    orientation,
+                    strictOrientation ? 1 : 0,
+                    ptr(out),
+                  )
+              : cameraId
+                ? n.zc_open_id_oriented_pipeline(
+                    ptr(cfg),
+                    ptr(pipeline),
+                    orientation,
+                    strictOrientation ? 1 : 0,
+                    ptr(cameraId),
+                    cameraId.length,
+                    ptr(out),
+                  )
+                : n.zc_open_oriented_pipeline(
+                    ptr(cfg),
+                    ptr(pipeline),
+                    orientation,
+                    strictOrientation ? 1 : 0,
+                    ptr(out),
+                  ),
+          'open camera',
+        )
+        this.handle = handle(out)
+      }
+      if (writable && !admission)
         check(n.zc_enable_writable(this.handle), 'enable writable buffers')
       const length = new Uint32Array(1)
       check(n.zc_get_camera_id(this.handle, null, 0, ptr(length)), 'camera ID')
@@ -1232,7 +1509,14 @@ export class Camera {
       )
         throw new CameraError(-8, 'synthetic backend unavailable')
     } catch (error) {
-      if (this.handle) n.zc_close(this.handle)
+      if (this.handle) {
+        const code = n.zc_close(this.handle)
+        if (code)
+          throw new CameraCleanupError(
+            [error, cameraError(code, 'camera construction cleanup')],
+            [this],
+          )
+      }
       this.handle = 0 as Pointer
       try {
         this.tuningSession?.close()
@@ -4086,6 +4370,8 @@ export class Camera {
   }
   private async cancelModes() {
     const jobs = [...this.modeJobs]
+    if (this.reconnectJob && !this.reconnectJob.done)
+      jobs.push(this.reconnectJob)
     for (const job of jobs) job.cancel(new CameraError(-2, 'camera stopped'))
     await Promise.all(jobs.map((job) => job.operationDone))
   }
@@ -4624,38 +4910,47 @@ export class Camera {
       !this.previewConfiguration &&
       !this.overlayHandle &&
       !this.tuningSession &&
-      this.disconnectJobs.size === 0
+      this.disconnectJobs.size === 0 &&
+      (!this.reconnectJob || this.reconnectJob.done)
     )
       return Promise.resolve()
     this.closing = true
     const disconnectJobs = [...this.disconnectJobs]
-    for (const job of disconnectJobs)
-      job.cancel(new CameraError(-2, 'camera closing'))
-    this.closeJob = (async () => {
-      await Promise.all(disconnectJobs.map((job) => job.operationDone))
-      let failure: unknown
-      try {
-        await this.stopWork()
-      } catch (error) {
-        failure = error
-      }
-      try {
-        if (this.handle) check(n.zc_close(this.handle))
-        this.handle = 0 as Pointer
-        this.fanout?.close()
-        this.fanout = undefined
-        this.tuningSession?.close()
-        this.tuningSession = undefined
-      } catch (error) {
-        failure ??= error
-      }
-      if (failure) throw failure
-    })().finally(() => {
-      if (this.handle || this.fanout || this.tuningSession) {
-        this.closing = false
-        this.closeJob = undefined
-      }
-    })
+    const reconnect = this.reconnectJob
+    // Publish the promise before cancellation dispatches application listeners.
+    this.closeJob = Promise.resolve()
+      .then(async () => {
+        for (const job of disconnectJobs)
+          job.cancel(new CameraError(-2, 'camera closing'))
+        reconnect?.cancel(new CameraError(-2, 'camera closing'))
+        await Promise.all([
+          ...disconnectJobs.map((job) => job.operationDone),
+          ...(reconnect ? [reconnect.operationDone] : []),
+        ])
+        let failure: unknown
+        try {
+          await this.stopWork()
+        } catch (error) {
+          failure = error
+        }
+        try {
+          if (this.handle) check(n.zc_close(this.handle))
+          this.handle = 0 as Pointer
+          this.fanout?.close()
+          this.fanout = undefined
+          this.tuningSession?.close()
+          this.tuningSession = undefined
+        } catch (error) {
+          failure ??= error
+        }
+        if (failure) throw failure
+      })
+      .finally(() => {
+        if (this.handle || this.fanout || this.tuningSession) {
+          this.closing = false
+          this.closeJob = undefined
+        }
+      })
     return this.closeJob
   }
   async [Symbol.asyncDispose]() {

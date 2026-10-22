@@ -1,0 +1,36 @@
+name: Home recovery policy
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/output_recovery.zig', 'src/recovery.zig', 'include/zig_camera.h', '.github/workflows/home-recovery.yml']
+  pull_request:
+    paths: ['src/home/output_recovery.zig', 'src/recovery.zig', 'include/zig_camera.h', '.github/workflows/home-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recovery:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Home monotonic backoff, lifetime budgets and completion deadlines
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig test -lc -O Debug src/home/output_recovery.zig
+          zig test -lc -O ReleaseSafe src/home/output_recovery.zig
+      - name: Camera C ABI on its pinned compiler
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig test -lc -I include -O Debug src/recovery.zig
+          zig test -lc -I include -O ReleaseSafe src/recovery.zig
