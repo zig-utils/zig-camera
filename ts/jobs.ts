@@ -1,3 +1,4 @@
+import { armDeadline } from './deadline'
 import { native as n, storage, ptr, view, check, CameraError } from './ffi'
 export interface JobOptions<T = unknown> {
   timeoutMs?: number
@@ -36,7 +37,7 @@ export class BunJob<T> implements PromiseLike<T> {
   private requested = false
   private cancellationGuard?: () => boolean
   private reason: unknown = new JobCancelledError()
-  private timer?: ReturnType<typeof setTimeout>
+  private cancelDeadline?: () => void
   private abort?: () => void
   private operation: ((job: BunJob<T>) => Promise<T>) | undefined
   private controller = new AbortController()
@@ -71,9 +72,8 @@ export class BunJob<T> implements PromiseLike<T> {
       this.releaseCleanup = resolve
     })
     if (options.timeoutMs !== undefined)
-      this.timer = setTimeout(
-        () => this.cancel(new CameraError(-3, 'job deadline')),
-        options.timeoutMs,
+      this.cancelDeadline = armDeadline(options.timeoutMs, () =>
+        this.cancel(new CameraError(-3, 'job deadline')),
       )
     if (options.signal) {
       this.abort = () =>
@@ -160,7 +160,7 @@ export class BunJob<T> implements PromiseLike<T> {
     this.error = error
     this.operation = undefined
     this.releaseOperation()
-    if (this.timer) clearTimeout(this.timer)
+    this.cancelDeadline?.()
     if (this.abort)
       this.options.signal!.removeEventListener('abort', this.abort)
     if (error !== undefined) this.reject(error)
