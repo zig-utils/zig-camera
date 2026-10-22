@@ -55,17 +55,37 @@ int negotiatedOrientation(uint32_t requested,Orientation actual,bool strict,uint
 }
 static uint32_t sensorModeDepth(const std::string &name) {
     std::string suffix;
-    if(name.size()>5 && name[0]=='S') {
-        const auto p=name.substr(1,4);
-        if(p!="RGGB" && p!="BGGR" && p!="GRBG" && p!="GBRG")return 0;
-        suffix=name.substr(5);
-    } else if(name.size()>1 && name[0]=='R')suffix=name.substr(1);else return 0;
-    const auto underscore=suffix.find('_');
-    if(underscore!=std::string::npos){if(suffix.substr(underscore)!="_CSI2P")return 0;suffix.resize(underscore);}
-    if(suffix=="8")return 8;if(suffix=="10")return 10;if(suffix=="12")return 12;if(suffix=="14")return 14;if(suffix=="16")return 16;
+    if (name.size() > 5 && name[0] == 'S') {
+        const auto pattern = name.substr(1, 4);
+        if (pattern != "RGGB" && pattern != "BGGR" && pattern != "GRBG" && pattern != "GBRG")
+            return 0;
+        suffix = name.substr(5);
+    } else if (name.size() > 1 && name[0] == 'R') {
+        suffix = name.substr(1);
+    } else {
+        return 0;
+    }
+    const auto underscore = suffix.find('_');
+    if (underscore != std::string::npos) {
+        if (suffix.substr(underscore) != "_CSI2P")
+            return 0;
+        suffix.resize(underscore);
+    }
+    if (suffix == "8")
+        return 8;
+    if (suffix == "10")
+        return 10;
+    if (suffix == "12")
+        return 12;
+    if (suffix == "14")
+        return 14;
+    if (suffix == "16")
+        return 16;
     return 0;
 }
-static bool unpackedSensorFormat(const std::string &name) {return name.find('_')==std::string::npos && sensorModeDepth(name)!=0;}
+static bool unpackedSensorFormat(const std::string &name) {
+    return name.find('_') == std::string::npos && sensorModeDepth(name) != 0;
+}
 bool sameBayerLayout(const std::string &requested,const std::string &actual) {
     const auto bayer=[](const std::string &name) {
         if(name.size()<6 || name[0]!='S')return false;
