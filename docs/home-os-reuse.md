@@ -333,3 +333,12 @@ and requires corpus results rather than source size for codec claims. Therefore
 the shared bit-reader/SPS/encoder improvements go to Home and are reused here;
 no kernel code is copied, modified or executed. Kernel capability declarations
 are not evidence of physical 4K capture, decoding, acceleration or performance.
+
+The 0.73 counted-keyframe audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches media sources for encoder,
+IDR and keyframe implementations. Its camera stub and nominal video decode path
+do not supply a hosted IDR request queue or encoder-input accounting. ADR-MC3
+continues to put media algorithms in Home's shared library. The reusable counted
+ledger therefore improves Home first; zig-camera retains hosted producer and
+session lifetime coordination. No kernel code is copied, modified or executed,
+and these checks do not establish physical camera timing, decoding or acceleration.

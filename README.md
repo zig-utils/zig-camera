@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.73 adds [counted keyframe requests](docs/keyframes.md): synchronous
+and FIFO async requests, distinct repeated IDRs, cancellation at commit, and
+per-session request accounting through Home.
+
 Version 0.72 adds [mixed tiny and 4K HEVC recording](docs/hevc-geometry.md):
 shared CTU32, edge padding with exact visible crops for tiny I420 inputs, and
 stable parameter-set caching through Home's encoder bridge.

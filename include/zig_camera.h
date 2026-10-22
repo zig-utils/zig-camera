@@ -643,6 +643,23 @@ int zc_video_check_codec_limits(const zc_video_config *,const zc_codec_options *
 /* Pristine/unattached only. NULL restores defaults; failure preserves state. */
 int zc_video_set_codec_limits(zc_recorder *,const zc_codec_limits *);
 int zc_video_get_codec_limits(zc_recorder *,zc_codec_limits *);
+/* Counted public keyframe intent: each accepted request applies to one subsequent
+ * accepted video input, including an input that already starts a GOP. AVC/HEVC
+ * request an IDR; MJPEG is inherently key. Input acceptance can precede delayed
+ * packet output. No output acknowledgment is implied. Pending capacity UINT32_MAX,
+ * counters never wrap. New recorder sessions reset state only on publication.
+ * Sync request is BUSY while any copied producer/control job remains retained.
+ * Query is BUSY during active producer ownership; otherwise copies 24 bytes. */
+typedef struct {uint64_t requested,applied;uint32_t pending,reserved;} zc_keyframe_state;
+int zc_video_request_keyframe(zc_recorder *);
+int zc_video_keyframe_state(zc_recorder *,zc_keyframe_state *);
+/* Admit a zero-payload control job in the same bounded producer pool. Caller
+ * determines start order as for copied frames. Cancellation before commit leaves
+ * intent unchanged; cancellation after commit returns STATE. Completion means
+ * request admission, not an encoded frame or delivered output. Validity is checked
+ * at execution, so a request following a terminal flush reports STATE. */
+typedef struct zc_producer_job zc_producer_job;
+int zc_video_producer_keyframe(zc_recorder *,zc_producer_job **);
 /* Finishes the stream. Always consumes the handle,
  * including on failure. Recorder calls require caller serialization. */
 int zc_video_close(zc_recorder *);
@@ -976,7 +993,7 @@ int zc_video_finish_factory(zc_recorder *,uint64_t id,uint64_t ticket,int code);
  * job may be closed without starting. Cancellation never rolls back/retries data.
  * All ordinary recorder ABI calls return BUSY during an active producer turn.
  * Creator/caller serializes admission and lifecycle; callbacks remain native. */
-typedef struct zc_producer_job zc_producer_job;
+
 typedef struct {uint64_t id,generation;} zc_producer_handoff;
 typedef struct {const uint8_t *data;uint64_t length,timestamp_ns;} zc_producer_audio_input;
 typedef struct {uint64_t owned_bytes,owned_jobs,high_bytes,high_jobs,max_bytes,max_jobs,admitted,released,rejected,completed,failed,cancelled;uint32_t running,reserved;} zc_producer_stats;

@@ -394,6 +394,7 @@ const Output = struct {
     }
 };
 const Recorder = struct {
+    keyframes: @import("home/keyframe_requests.zig").Requests = .{},
     finalization: @import("home/recording_policy.zig").Finalization = .{},
     accepting: std.atomic.Value(bool) = .init(true),
     primary_generation: u64 = 0,
@@ -934,6 +935,22 @@ pub fn openCircular(cfg: *const c.zc_video_config, buffer: *const c.zc_buffer_co
     out.* = @ptrCast(self);
     return c.ZC_OK;
 }
+/// Synchronous callers cannot overtake a retained copied-input/control job.
+pub fn requestKeyframe(p: *c.zc_recorder) c_int {
+    const self = recorder(p);
+    if (self.producer) |pool| if (pool.count() != 0) return c.ZC_BUSY;
+    return commitKeyframe(self);
+}
+fn commitKeyframe(self: *Recorder) c_int {
+    if (self.failed or !self.finalization.accepting()) return c.ZC_STATE;
+    self.keyframes.request() catch |err| return if (err == error.CounterExhausted) c.ZC_STATE else c.ZC_BUSY;
+    return c.ZC_OK;
+}
+pub fn keyframeState(p: *c.zc_recorder, out: *c.zc_keyframe_state) c_int {
+    const requests = recorder(p).keyframes;
+    out.* = .{ .requested = requests.requested, .applied = requests.applied, .pending = requests.pending(), .reserved = 0 };
+    return c.ZC_OK;
+}
 pub fn write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     return writeInput(p, f, ts, null);
 }
@@ -965,6 +982,7 @@ pub fn writeInput(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64, color: ?c.zc
 }
 fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, color: ?c.zc_color_space) !void {
     const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
+    if (self.keyframes.pending() != 0) try self.forceKey();
     if (self.config.codec == c.ZC_MJPEG) {
         var source = stream.*;
         if (yuv) {
@@ -975,7 +993,9 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
             source.planes[0].bytes_used = self.input_rgb.len;
         }
         const data = source.planes[0].data[0..@intCast(source.planes[0].bytes_used)];
-        try self.packet(try self.encoder.encode(data, source.width, source.height, source.stride, 3, @intCast(self.config.quality)), ns, true);
+        const packet = try self.encoder.encode(data, source.width, source.height, source.stride, 3, @intCast(self.config.quality));
+        _ = self.keyframes.consume();
+        try self.packet(packet, ns, true);
     } else if (options.codecs) {
         const pixels = @as(usize, stream.width) * stream.height;
         if (yuv) {
@@ -985,7 +1005,9 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
             // Preserve the established integer rounding for legacy RGB input.
             try rgb.convert(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, self.i420);
         } else try @import("home/yuv_rgb.zig").encode420(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, try recording_color.conversion(self.color));
-        if (try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, stream.width, stream.height, @intCast(pts))) |packet| try self.encoded(packet);
+        const packet = try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, stream.width, stream.height, @intCast(pts));
+        _ = self.keyframes.consume();
+        if (packet) |value| try self.encoded(value);
     }
 }
 pub fn bufferStats(p: *c.zc_recorder, out: *c.zc_buffer_stats) c_int {
@@ -2598,6 +2620,15 @@ pub fn producerDrain(p: *c.zc_recorder, out: *?*c.zc_producer_drain) c_int {
 fn applyProducer(ctx: *anyopaque, job: *@import("producer.zig").Job) c_int {
     const p: *c.zc_recorder = @ptrCast(@alignCast(ctx));
     if (job.operation == .restart) return runRestart(recorder(p), job);
+    if (job.operation == .keyframe) {
+        // Linearize commit with cancel(). No codec or sink calls hold this lock.
+        job.owner.mutex.lock();
+        defer job.owner.mutex.unlock();
+        if (job.cancel_requested.load(.acquire)) return c.ZC_CANCELLED;
+        const result = commitKeyframe(recorder(p));
+        if (result == c.ZC_OK) job.control_committed = true;
+        return result;
+    }
     if (job.operation != .write) {
         const self = recorder(p);
         const result = if (job.operation == .flush) finishMedia(self) else if (self.failed) c.ZC_IO else c.ZC_OK;
@@ -2731,6 +2762,16 @@ pub fn startProducer(p: *c.zc_producer_job) c_int {
         if (!internal) return c.ZC_BUSY;
     };
     return job.owner.start(job);
+}
+/// Allocation is safe while a producer owns recorder fields: only the pool is
+/// touched. Session validity is evaluated at this job's serialized execution.
+pub fn producerKeyframe(p: *c.zc_recorder, result: *?*c.zc_producer_job) c_int {
+    result.* = null;
+    const pool = producerPool(recorder(p)) catch |err| return status(err);
+    const job = pool.allocate(0, false, 0, 0) catch |err| return status(err);
+    job.operation = .keyframe;
+    result.* = @ptrCast(job);
+    return c.ZC_OK;
 }
 pub fn producerBarrier(p: *c.zc_recorder, flush: u32, result: *?*c.zc_producer_job) c_int {
     result.* = null;

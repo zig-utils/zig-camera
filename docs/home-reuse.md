@@ -974,3 +974,33 @@ native tests succeed. No physical camera, Pi throughput or quality claim follows
 Home-hosted Actions have previously returned disabled despite enabled repository
 permission metadata; this local suite and the copied camera CI are distinct from
 claiming a Home-hosted run succeeded. See hevc-geometry.md for scope and ownership.
+
+The 0.73 public-keyframe audit fast-forwards Home's unrelated TypeScript fixes to
+a3dcf41299cfac151cd211af04672d4dc441022c and contributes the allocation-free
+keyframe_requests ledger at 0fc3d41481ab4beb7007a0110ddb79f1ed9ad95f. It inspects
+native_encoder's existing requestKeyframe/IDR operation, packet_ring keyframe
+handling, recording_policy session transitions and the shared preparation gate.
+Those supply encoding, GOP retention and ownership primitives; a public repeated
+request still needs distinct intent per accepted input. The new bounded ledger
+is therefore implemented in Home and copied verbatim, with nonwrapping counters,
+transactional capacity rejection and independent session state.
+
+zig-camera reuses the existing Home encoder operation when an input has pending
+public intent. Native/Bun producer ownership supplies ordering and cancellation:
+a zero-payload job shares the bounded producer pool, and commit is linearized
+with cancellation under the existing owner lock. No codec/sink call holds that
+lock, and a control job does not become a recording drain. Actual encoder input
+acceptance advances accounting before sink delivery; rollback preserves the old
+ledger, and successful session publication installs a fresh one. Existing
+internal split/recovery keyframe flags stay coalesced and do not increment these
+public counters.
+
+Home's focused suite passes pinned Zig Debug/ReleaseSafe; ledger tests also pass
+Home development Zig in both modes. Local camera validation passes 338 native
+and 779 Bun tests, C ABI, format and type checks. A two-thread native test holds
+worker completion open to verify cancellation before versus after commit.
+The copied Linux fixture checks IDR NALs, MP4 flags and independent I420 decoding.
+The normal macOS build runner still fails SDK linkage before project compilation;
+the direct target-qualified native build succeeds. Home-hosted Actions remain
+separate from these local checks and the camera CI matrix; no Home-hosted success
+is asserted. See keyframes.md for public semantics and outstanding limitations.

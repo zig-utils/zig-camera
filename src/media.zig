@@ -65,6 +65,17 @@ pub export fn zc_video_open(path: [*:0]const u8, cfg: *const c.zc_video_config, 
     if (!options.video) return c.ZC_UNSUPPORTED;
     return @import("video.zig").open(path, cfg, out);
 }
+pub export fn zc_video_request_keyframe(p: *c.zc_recorder) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").requestKeyframe(p);
+}
+pub export fn zc_video_keyframe_state(p: *c.zc_recorder, out: *c.zc_keyframe_state) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").keyframeState(p, out);
+}
+pub export fn zc_video_producer_keyframe(p: *c.zc_recorder, out: *?*c.zc_producer_job) c_int {
+    return @import("video.zig").producerKeyframe(p, out);
+}
 pub export fn zc_video_write(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64) c_int {
     if (!options.video) return c.ZC_UNSUPPORTED;
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;

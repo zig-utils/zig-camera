@@ -2,9 +2,9 @@ name: Home encoder policy
 on:
   push:
     branches: [main]
-    paths: ['src/home/native_encoder.*', 'src/home/bit_reader.zig', 'src/home/hevc_conformance*.zig', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
+    paths: ['src/home/native_encoder.*', 'src/home/keyframe_requests.zig', 'src/home/bit_reader.zig', 'src/home/hevc_conformance*.zig', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
   pull_request:
-    paths: ['src/home/native_encoder.*', 'src/home/bit_reader.zig', 'src/home/hevc_conformance*.zig', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
+    paths: ['src/home/native_encoder.*', 'src/home/keyframe_requests.zig', 'src/home/bit_reader.zig', 'src/home/hevc_conformance*.zig', 'src/home/mp4_stream.zig', 'tests/home_encoder_idr.zig', 'include/zig_camera.h', '.github/workflows/home-encoder.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,6 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" src/home/keyframe_requests.zig
             zig test -lc -O "$mode" src/home/hevc_conformance.zig
             zig test -lc -O "$mode" src/home/native_encoder.zig
             zig test -lc -O "$mode" src/home/mp4_stream.zig

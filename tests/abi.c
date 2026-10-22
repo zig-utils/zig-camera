@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_keyframe_state)==24,"keyframe state ABI");
+_Static_assert(offsetof(zc_keyframe_state,pending)==16,"keyframe pending ABI");
 _Static_assert(sizeof(zc_packed_stream)==64,"packed stream ABI");
 _Static_assert(offsetof(zc_packed_stream,offset)==48,"packed stream range ABI");
 _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
@@ -197,7 +199,40 @@ static void color_requests(void) {
         assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_close(camera)==ZC_OK);
     }
 }
+static void keyframe_abi(void) {
+    zc_video_config video;zc_default_video_config(&video);video.width=16;video.height=16;
+    zc_recording_options recording;zc_default_recording_options(&recording);
+    zc_recorder *recorder=NULL;assert(zc_video_create(&video,&recording,0,&recorder)==ZC_OK);
+    zc_keyframe_state state={0};assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && !state.pending);
+    assert(zc_video_request_keyframe(recorder)==ZC_OK && zc_video_request_keyframe(recorder)==ZC_OK);
+    for(unsigned cancelled=0;cancelled<2;cancelled++) {
+        zc_producer_job *job=NULL;assert(zc_video_producer_keyframe(recorder,&job)==ZC_OK);
+        assert(zc_video_request_keyframe(recorder)==ZC_BUSY);
+        if(cancelled)assert(zc_producer_job_cancel(job)==ZC_OK);
+        assert(zc_producer_job_start(job)==ZC_OK);
+        int code=ZC_TIMEOUT,status=ZC_TIMEOUT;
+        for(unsigned retry=0;retry<10000;retry++) {
+            status=zc_producer_job_finish(job,&code);if(status!=ZC_TIMEOUT)break;
+            struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+        }
+        assert(status==ZC_OK && code==(cancelled?ZC_CANCELLED:ZC_OK));
+        assert(zc_producer_job_cancel(job)==ZC_STATE);
+        assert(zc_producer_job_drain_outputs(job)==ZC_STATE);
+        assert(zc_producer_job_close(job)==ZC_OK);
+    }
+    assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && state.requested==3 && !state.applied && state.pending==3 && !state.reserved);
+    zc_config cfg;zc_default_config(&cfg);cfg.width=16;cfg.height=16;
+    zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK && zc_start(camera)==ZC_OK);
+    zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+    zc_frame invalid=frame;invalid.token=0;assert(zc_video_write(recorder,&invalid,0)==ZC_INVALID);
+    assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && state.pending==3);
+    assert(zc_video_write(recorder,&frame,0)==ZC_OK);
+    assert(zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);
+    assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && state.applied==1 && state.pending==2);
+    assert(zc_video_close(recorder)==ZC_OK);
+}
 int main(void) {
+    keyframe_abi();
     {
         zc_config config;zc_default_config(&config);config.width=16;config.height=16;config.policy=ZC_FIFO;
         zc_camera *camera=NULL;assert(zc_open(&config,&camera)==ZC_OK);

@@ -6111,6 +6111,33 @@ export class Recorder {
     this.assertOpen()
     return readEncoderOptions(this.handle)
   }
+  /** Apply one counted request to a future accepted input. Use the async method
+   * when copied writes are pending. Neither method waits for packet delivery. */
+  requestKeyframe() {
+    this.assertOpen()
+    check(n.zc_video_request_keyframe(this.handle), 'keyframe request')
+  }
+  requestKeyframeAsync(options: JobOptions<void> = {}): BunJob<void> {
+    this.assertOpen(true)
+    options = snapshotJobOptions(options)
+    this.assertOpen(true)
+    const out = outPointer()
+    check(
+      n.zc_video_producer_keyframe(this.handle, ptr(out)),
+      'keyframe admission',
+    )
+    return this.queueProducer(handle(out), options, 'keyframe')
+  }
+  keyframeState(): { requested: bigint; applied: bigint; pending: number } {
+    this.assertOpen()
+    const data = storage(24)
+    check(n.zc_video_keyframe_state(this.handle, ptr(data)), 'keyframe state')
+    return {
+      requested: u64(data),
+      applied: u64(data, 8),
+      pending: view(data).getUint32(16, true),
+    }
+  }
   encoderLimits() {
     this.assertOpen()
     return readEncoderLimits(this.handle)
@@ -6362,7 +6389,7 @@ export class Recorder {
   private queueProducer(
     native: Pointer,
     options: JobOptions<void>,
-    mode: 'write' | 'drain' | 'flush' = 'write',
+    mode: 'write' | 'drain' | 'flush' | 'keyframe' = 'write',
   ) {
     let owned = true
     const release = () => {
@@ -6431,7 +6458,7 @@ export class Recorder {
               finished = true
               retire()
               if (code[0] === -10) job.check()
-              if (mode !== 'write') {
+              if (mode === 'drain' || mode === 'flush') {
                 if (mode === 'drain') job.setCancellationGuard(undefined)
                 const prefixes = [...this.deliveryBridges].map((bridge) => ({
                   bridge,
@@ -6467,7 +6494,12 @@ export class Recorder {
                   await pause()
                 }
               }
-              check(code[0], 'async producer write')
+              check(
+                code[0],
+                mode === 'keyframe'
+                  ? 'async keyframe request'
+                  : 'async producer write',
+              )
               job.check()
               job.seal()
               break
@@ -8382,6 +8414,16 @@ export class Recording {
     } finally {
       audio?.finish(accepted)
     }
+  }
+  requestKeyframe() {
+    if (this.stopped || this.closeJob)
+      throw new CameraError(-2, 'recording stopped')
+    this.recorder.requestKeyframe()
+  }
+  requestKeyframeAsync(options: JobOptions<void> = {}): BunJob<void> {
+    if (this.stopped || this.closeJob)
+      throw new CameraError(-2, 'recording stopped')
+    return this.recorder.requestKeyframeAsync(options)
   }
   split(output: string | CustomOutput, id: bigint | number = 0n) {
     return this.recorder.split(output, id)

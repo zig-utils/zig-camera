@@ -21,7 +21,7 @@ pub const Job = struct {
     input_color: ?c.zc_color_space = null,
     timestamp: u64,
     audio: bool,
-    operation: enum { write, drain, flush, restart } = .write,
+    operation: enum { write, drain, flush, restart, keyframe } = .write,
     restart_config: ?struct { video: c.zc_video_config, audio: c.zc_recording_options, bitrate: u32 } = null,
     restart_color: ?c.zc_color_space = null,
     restart_codec_options: ?@import("home/native_encoder.zig").Options = null,
@@ -33,6 +33,7 @@ pub const Job = struct {
     restart_io: ?@import("output_io.zig").Config = null,
     restart_identity: ?[2]i128 = null,
     restart_published: bool = false,
+    control_committed: bool = false, // Protected by owner.mutex, like cancel().
     drains: [9]?*@import("output_io.zig").Drain = @splat(null),
     started: bool = false,
     released: bool = false,
@@ -105,7 +106,7 @@ pub const Pool = struct {
     pub fn cancel(self: *Pool, job: *Job) c_int {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if ((job.operation == .flush and job.started) or job.restart_published or job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+        if ((job.operation == .flush and job.started) or job.restart_published or job.control_committed or job.done.load(.acquire) or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
         job.cancel_requested.store(true, .release);
         self.changed.broadcast();
         return c.ZC_OK;
@@ -175,7 +176,7 @@ pub const Pool = struct {
 /// Poll retained native sink prefixes; no recorder access after worker completion.
 pub fn pollOutputs(job: *Job) c_int {
     if (!job.done.load(.acquire)) return c.ZC_TIMEOUT;
-    if (job.operation == .write) return c.ZC_STATE;
+    if (job.operation == .write or job.operation == .keyframe) return c.ZC_STATE;
     var failure: c_int = c.ZC_OK;
     var pending = false;
     for (job.drains) |drain| if (drain) |value| {
@@ -320,4 +321,69 @@ test "operation failure wins an accepted cancellation and completion rejects lat
     try std.testing.expectEqual(c.ZC_OK, pool.finish(later, &code));
     try std.testing.expectEqual(c.ZC_OK, code);
     try std.testing.expectEqual(c.ZC_OK, pool.release(later));
+}
+
+test "control commit linearizes cancellation while worker completion is still pending" {
+    const t = std.testing;
+    const Context = struct {
+        entered: std.atomic.Value(bool) = .init(false),
+        allow_commit: std.atomic.Value(bool) = .init(false),
+        committed: std.atomic.Value(bool) = .init(false),
+        allow_finish: std.atomic.Value(bool) = .init(false),
+        requests: @import("home/keyframe_requests.zig").Requests = .{},
+        fn apply(raw: *anyopaque, job: *Job) c_int {
+            const ctx: *@This() = @ptrCast(@alignCast(raw));
+            ctx.entered.store(true, .release);
+            while (!ctx.allow_commit.load(.acquire)) std.Thread.sleep(100000);
+            job.owner.mutex.lock();
+            if (job.cancel_requested.load(.acquire)) {
+                job.owner.mutex.unlock();
+                return c.ZC_CANCELLED;
+            }
+            ctx.requests.request() catch unreachable;
+            job.control_committed = true;
+            job.owner.mutex.unlock();
+            ctx.committed.store(true, .release);
+            while (!ctx.allow_finish.load(.acquire)) std.Thread.sleep(100000);
+            return c.ZC_OK;
+        }
+        fn wait(flag: *std.atomic.Value(bool)) !void {
+            for (0..10000) |_| {
+                if (flag.load(.acquire)) return;
+                std.Thread.sleep(100000);
+            }
+            return error.WorkerTimeout;
+        }
+    };
+    for ([_]bool{ false, true }) |after_commit| {
+        var ctx: Context = .{};
+        const pool = try Pool.create(&ctx, Context.apply, 1, 1);
+        const job = try pool.allocate(0, false, 0, 0);
+        job.operation = .keyframe;
+        defer {
+            ctx.allow_commit.store(true, .release);
+            ctx.allow_finish.store(true, .release);
+            if (job.started) {
+                var result: c_int = c.ZC_TIMEOUT;
+                while (pool.finish(job, &result) == c.ZC_TIMEOUT) std.Thread.sleep(100000);
+            }
+            std.debug.assert(pool.release(job) == c.ZC_OK);
+            pool.destroy();
+        }
+        try t.expectEqual(c.ZC_OK, pool.start(job));
+        try Context.wait(&ctx.entered);
+        if (after_commit) {
+            ctx.allow_commit.store(true, .release);
+            try Context.wait(&ctx.committed);
+        }
+        try t.expect(!job.done.load(.acquire));
+        try t.expectEqual(if (after_commit) c.ZC_STATE else c.ZC_OK, pool.cancel(job));
+        ctx.allow_commit.store(true, .release);
+        ctx.allow_finish.store(true, .release);
+        try Context.wait(&job.done);
+        var result: c_int = c.ZC_TIMEOUT;
+        try t.expectEqual(c.ZC_OK, pool.finish(job, &result));
+        try t.expectEqual(if (after_commit) c.ZC_OK else c.ZC_CANCELLED, result);
+        try t.expectEqual(if (after_commit) @as(u64, 1) else 0, ctx.requests.requested);
+    }
 }
