@@ -105,12 +105,12 @@ pub export fn zc_video_write_input(p: *c.zc_recorder, f: *const c.zc_frame, colo
     return @import("video.zig").writeInput(p, f, ts, color.*);
 }
 pub export fn zc_video_check_input_color(color: *const c.zc_color_space, format: u32) c_int {
-    if (format > c.ZC_NV21) return c.ZC_INVALID;
+    if (format > c.ZC_VYUY) return c.ZC_INVALID;
     @import("video_input.zig").validateColor(color.*, @import("processed_format.zig").yuv(format)) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
 pub export fn zc_video_check_input_color_for(color: *const c.zc_color_space, format: u32, target: ?*const c.zc_color_space) c_int {
-    if (format > c.ZC_NV21) return c.ZC_INVALID;
+    if (format > c.ZC_VYUY) return c.ZC_INVALID;
     @import("video_input.zig").validateColorFor(color.*, @import("processed_format.zig").yuv(format), if (target) |value| value.* else @import("recording_color.zig").legacy()) catch |err| return if (err == error.InvalidConfiguration) c.ZC_INVALID else c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }

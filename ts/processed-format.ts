@@ -8,6 +8,10 @@ export const processedFormats = [
   'YVU420',
   'NV12',
   'NV21',
+  'YUYV',
+  'YVYU',
+  'UYVY',
+  'VYUY',
 ] as const
 export type ProcessedFormat = (typeof processedFormats)[number]
 export function processedFormatCode(value: unknown): number {
@@ -23,4 +27,11 @@ export function processedFormatName(code: number): ProcessedFormat {
 
 export function isYuv420(value: unknown): boolean {
   return ['YUV420', 'YVU420', 'NV12', 'NV21'].includes(value as string)
+}
+
+export function isYuv(value: unknown): boolean {
+  return (
+    isYuv420(value) ||
+    ['YUYV', 'YVYU', 'UYVY', 'VYUY'].includes(value as string)
+  )
 }

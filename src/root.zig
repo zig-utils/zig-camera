@@ -1023,7 +1023,7 @@ test "formatted main I420 admission preserves legacy layouts and never exposes l
     var pipeline: c.zc_pipeline_options = undefined;
     core.zc_default_pipeline_options(&pipeline);
     var invalid: ?*c.zc_camera = undefined;
-    for ([_]u32{ 8, std.math.maxInt(u32) }) |format| {
+    for ([_]u32{ 12, std.math.maxInt(u32) }) |format| {
         try std.testing.expectEqual(c.ZC_INVALID, core.zc_open_formatted_pipeline(&cfg, &pipeline, format, 1, 0, &invalid));
         try std.testing.expectEqual(null, invalid);
     }

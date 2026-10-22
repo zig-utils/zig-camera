@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.78 adds [packed YUV 4:2:2 streams](docs/yuv422-layouts.md): YUYV/YVYU/
+UYVY/VYUY capture and preview, odd-height stills, raw layout ownership and direct
+I420 codec downsampling through improved shared Home conversion.
+
 Version 0.77 adds [NV12, NV21 and YVU420 streams](docs/yuv420-layouts.md): checked
 Home chroma views, raw/mapped capture, stills, preview, codec input and explicit
 bounded async ownership across mode changes and recording recovery.

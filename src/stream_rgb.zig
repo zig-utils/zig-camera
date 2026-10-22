@@ -39,10 +39,16 @@ pub fn rgbView(stream: c.zc_stream) !raster.View {
     _ = try view.validate();
     return view;
 }
+pub fn packed422View(stream: c.zc_stream) !@import("home/packed_yuv422.zig").View {
+    _ = try size(stream);
+    if (stream.plane_count != 1) return error.UnsupportedFormat;
+    const layout = @import("processed_format.zig").layout422(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
+    return @import("home/packed_yuv422.zig").View.init(try plane(stream.planes[0]), stream.width, stream.height, stream.stride, layout);
+}
 pub fn i420View(stream: c.zc_stream) !home.I420 {
     _ = try size(stream);
     const format = @import("processed_format.zig").code(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
-    if (!@import("processed_format.zig").yuv(format)) return error.UnsupportedFormat;
+    if (!@import("processed_format.zig").yuv420(format)) return error.UnsupportedFormat;
     if ((stream.stride | stream.width | stream.height) & 1 != 0) return error.InvalidGeometry;
     if (@import("processed_format.zig").semi(format)) {
         var planes: [2][]const u8 = undefined;
@@ -76,7 +82,7 @@ pub fn copy(stream: c.zc_stream, space: c.zc_color_space, out: []u8) !void {
     if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
         const view = try packedView(stream);
         try view.convert(out, @as(usize, stream.width) * 3, .rgb);
-    } else try home.decode420(try i420View(stream), try conversion(space), out, stream.width * 3);
+    } else if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) try (try packed422View(stream)).decodeRgb(try conversion(space), out, stream.width * 3) else try home.decode420(try i420View(stream), try conversion(space), out, stream.width * 3);
 }
 /// Borrow canonical RGB rows directly; other layouts own one RGB conversion buffer.
 pub const Selected = struct {
@@ -91,7 +97,11 @@ pub const Selected = struct {
             if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
                 _ = try packedView(stream);
             } else {
-                _ = try i420View(stream);
+                if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) {
+                    _ = try packed422View(stream);
+                } else {
+                    _ = try i420View(stream);
+                }
                 _ = try conversion(space);
             }
             const data = try allocator.alloc(u8, try size(stream));

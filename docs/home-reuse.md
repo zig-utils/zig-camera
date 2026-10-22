@@ -1143,3 +1143,34 @@ decoding and real-backend compile/load/no-camera smoke. No camera is attached.
 The final native suite passes 353 tests, including the inspected YVU/NV producer
 payload after source overwrite and joined worker completion. This validates the
 physical-layout queue contract rather than inferring it from decoded pixels alone.
+
+## 0.78 packed 4:2:2
+
+The audit starts at clean Home main 26f842190aa69a3d23ed73756ecc4815b0433e80
+and reads core/pixel_convert, yuv_rgb/remap and packed_rgb. YUYV/UYVY reads exist,
+but packed writes fell through the setter without initializing output. Shared
+RGB layout checks, fixed-point color coefficients and direct I420 remapping are
+reused rather than introducing a parallel color implementation in camera code.
+
+Home commit 49793c1fe7b6d65e58833cdc880ec1dd48326f0e adds a checked packed-422
+view for all four byte orders, RGB encode/decode and repacking, plus direct I420
+sampling/remapping. Horizontal RGB chroma uses both pixels; vertical 422-to-420
+chroma uses adjacent-row averages. Public packed routes use these helpers and
+append YVYU/VYUY enum entries without moving earlier IDs. Unrelated conversion
+routes remain outside this guarantee. Home tests pass pinned/development Zig in
+Debug/ReleaseSafe, including independent floating color/chroma references and
+atomic bounds/overlap failures. Home-hosted Actions still supplies no run for the
+published head; local/camera matrix results remain separate evidence.
+
+The new packed_yuv422 and updated yuv_rgb/remap modules are copied verbatim here.
+Hosted source selection, retained planes, pixel copies and SDL lifetime stay in
+camera code. Queue payloads retain physical bytes at two bytes per pixel; workers
+perform codec conversion. C/Bun/CLI use even width with odd capture height, while
+codec I420 keeps even height. Raw size queries additionally reject odd-width
+external descriptors without changing the output count. See yuv422-layouts.md.
+Local final checks pass 884 Bun tests, 357 native tests, C ABI, SDL matrix/range
+readback and CLI raw-layout/image/recording comparisons. The normal local build
+runner again fails macOS SDK/libSystem linkage before project compilation;
+target-qualified direct native/library/CLI builds pass. Linux CI supplies the
+independent AVC/HEVC decoding and real-backend compile/load/no-camera evidence;
+local independent still decoding is available, but physical capture is not.

@@ -248,14 +248,14 @@ pub export fn zc_open_id_processed_pipeline(cfg: *const c.zc_config, pipeline: *
 pub export fn zc_check_camera_configuration(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32) c_int {
     if (colors.zc_check_processed_options(processed, pipeline) != c.ZC_OK) return c.ZC_INVALID;
     const main_format = processed.main_format;
-    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_NV21 or (@import("processed_format.zig").yuv(main_format) and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
+    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_VYUY or !@import("processed_format.zig").geometry(main_format, cfg.width, cfg.height)) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
         pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
         ((pipeline.sensor_width == 0) != (pipeline.sensor_height == 0)) or ((pipeline.sensor_width == 0) != (pipeline.sensor_bit_depth == 0)) or
         pipeline.lores_width > 16384 or pipeline.lores_height > 16384 or
-        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_NV21 or
-        (@import("processed_format.zig").yuv(pipeline.lores_format) and (pipeline.lores_width | pipeline.lores_height) & 1 != 0)) return c.ZC_INVALID;
+        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_VYUY or
+        !@import("processed_format.zig").geometry(pipeline.lores_format, pipeline.lores_width, pipeline.lores_height)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
     return c.ZC_OK;

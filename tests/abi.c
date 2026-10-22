@@ -142,7 +142,7 @@ static void formatted_main(void) {
     zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=2;
     zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=2;pipe.lores_format=ZC_RGB24;
     zc_camera *camera=NULL;
-    assert(zc_open_formatted_pipeline(&cfg,&pipe,8,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
+    assert(zc_open_formatted_pipeline(&cfg,&pipe,12,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
     cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);cfg.width=4;
     assert(zc_open_id_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
     zc_info info;assert(zc_get_info(camera,&info)==ZC_OK);assert(!strcmp(info.main.format,"YUV420") && info.main.plane_count==3);
@@ -307,7 +307,28 @@ static void yuv_processed_inputs(void) {
     assert(zc_align_camera_configuration(&cfg,&pipe,&processed,ZC_ALIGN_PISP,1,&out,&out_pipe)==ZC_INVALID);
     assert(!memcmp(&out,&before,sizeof(out)) && !memcmp(&out_pipe,&before_pipe,sizeof(out_pipe)));
 }
+static void yuv422_processed_inputs(void) {
+    const char *names[]={"YUYV","YVYU","UYVY","VYUY"};
+    assert(ZC_YUYV==8 && ZC_YVYU==9 && ZC_UYVY==10 && ZC_VYUY==11);
+    for(unsigned i=0;i<4;i++){
+        zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=3;
+        zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=1;pipe.lores_format=ZC_YUYV+i;
+        zc_camera *camera=NULL;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUYV+i,1,0,&camera)==ZC_OK);
+        zc_info info;assert(zc_get_info(camera,&info)==ZC_OK && !strcmp(info.main.format,names[i]) && info.main.plane_count==1);
+        assert(zc_start(camera)==ZC_OK);zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);
+        uint8_t packed[24],rgb[36];uint64_t count=0;
+        assert(zc_stream_copy_size(&frame.main,&count)==ZC_OK && count==24);
+        frame.main.width=3;count=71;assert(zc_stream_copy_size(&frame.main,&count)==ZC_INVALID && count==71);frame.main.width=4;
+        assert(zc_copy_frame_rgb(camera,frame.token,rgb,sizeof(rgb))==ZC_OK);
+        assert(zc_copy_stream(&frame.main,packed,sizeof(packed))==ZC_OK);
+        frame.main.planes[0].bytes_used=frame.main.stride*2+7;memset(packed,73,sizeof(packed));
+        assert(zc_copy_stream(&frame.main,packed,sizeof(packed))==ZC_INVALID);for(unsigned j=0;j<sizeof(packed);j++)assert(packed[j]==73);
+        assert(zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);
+        cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUYV+i,1,0,&camera)==ZC_INVALID && !camera);
+    }
+}
 int main(void) {
+    yuv422_processed_inputs();
     yuv_processed_inputs();
     packed_rgb_inputs();
     quality_abi();

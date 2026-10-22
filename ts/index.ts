@@ -1,6 +1,6 @@
 import {
   processedFormatCode,
-  isYuv420,
+  isYuv,
   type ProcessedFormat,
 } from './processed-format'
 export type { ProcessedFormat } from './processed-format'
@@ -2080,7 +2080,7 @@ export class Camera {
       const info = this.readInfo()
       const formatCode = processedFormatCode(info.format)
       if (
-        !isYuv420(info.format) &&
+        !isYuv(info.format) &&
         target === undefined &&
         !this[legacyRgbInput]()
       )

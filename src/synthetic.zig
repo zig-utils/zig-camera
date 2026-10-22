@@ -76,8 +76,7 @@ fn attachProcessed(stream: *c.zc_stream, buf: []u8) void {
 fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize, color: c.zc_color_space) !void {
     @memset(buf, 0);
     const output = orientation.Extent{ .width = stream.width, .height = stream.height };
-    if (stream.plane_count == 1) {
-        const layout = @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
+    if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0))) |layout| {
         for (0..stream.height) |y| for (0..stream.width) |x| {
             const value = sampleRGB(transform, output, main_source, x, y, index);
             layout.write(buf[y * stream.stride + x * layout.bytes() ..], .{ value[0], value[1], value[2], 255 });
@@ -92,7 +91,9 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
         const ysize = @as(usize, stream.stride) * stream.height;
         const format = @import("processed_format.zig").code(std.mem.sliceTo(&stream.format, 0)).?;
         const conversion = try @import("stream_rgb.zig").conversion(color);
-        if (@import("processed_format.zig").semi(format)) {
+        if (@import("processed_format.zig").packed422(format)) {
+            try @import("home/packed_yuv422.zig").encodeRgb(try @import("home/packed_rgb.zig").View.init(tmp, stream.width, stream.height, stream.width * 3, .rgb), buf, stream.stride, @import("processed_format.zig").layout422(std.mem.sliceTo(&stream.format, 0)).?, conversion);
+        } else if (@import("processed_format.zig").semi(format)) {
             try @import("home/yuv_rgb.zig").encodeSemi420(tmp, stream.width, stream.height, stream.width * 3, .{ buf[0..ysize], buf[ysize..] }, .{ stream.stride, stream.stride }, format == c.ZC_NV21, conversion);
         } else {
             const first = buf[ysize..][0 .. ysize / 4];
@@ -168,7 +169,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         _ = std.fmt.bufPrint(&h.info.raw.format, "S{s}{s}", .{ pattern, name[5..] }) catch unreachable;
     }
     for (0..config.buffer_count) |i| {
-        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv(main_format)) 2 else 1)) catch {
+        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 2 else 1)) catch {
             close(h);
             return c.ZC_NOMEM;
         };
@@ -193,7 +194,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         }
         if (opts.lores_width != 0) {
             const l = h.pipeline.lores;
-            const rgb = !@import("processed_format.zig").yuv(opts.lores_format);
+            const rgb = !@import("processed_format.zig").yuv420(opts.lores_format);
             h.lores_buffers[i] = Alloc.alloc(u8, @as(usize, l.stride) * l.height * @as(usize, if (rgb) 1 else 3) / @as(usize, if (rgb) 1 else 2)) catch {
                 close(h);
                 return c.ZC_NOMEM;

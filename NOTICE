@@ -549,3 +549,9 @@ Home semi-planar YUV (0.77):
   direct matrix/range remapping with overlap preflight.
   https://github.com/home-lang/home/commit/26f842190aa69a3d23ed73756ecc4815b0433e80
   The Home MIT license and copyright above apply.
+
+Home packed YUV 4:2:2 (0.78):
+- src/home/packed_yuv422.zig and the updated yuv_rgb.zig/yuv_remap.zig are verbatim
+  Home checked packed-pair RGB conversion and direct I420 sampling/remapping.
+  https://github.com/home-lang/home/commit/49793c1fe7b6d65e58833cdc880ec1dd48326f0e
+  The Home MIT license and copyright above apply.

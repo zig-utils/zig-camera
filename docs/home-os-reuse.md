@@ -383,3 +383,12 @@ ownership. Video decoder declarations do not implement a substitute. ADR-MC3's
 media-stdlib boundary still applies, so checked sample views and codec conversion
 improve Home's Zig library and are reused here. No OS code is copied, changed or
 executed, and no kernel decode or physical camera result is inferred.
+
+The 0.78 packed-422 audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches camera, media and VideoCore7
+sources for YUYV/YVYU/UYVY/VYUY. The nominal YUV camera constant and size-returning
+capture stub provide no packed-pair processing, checked row spans or hosted
+4:2:2-to-I420 conversion. ADR-MC3 keeps these algorithms in Home stdlib; the shared
+converter is improved there and reused here. Kernel buffers/addresses and
+unimplemented decoder declarations do not substitute for libcamera ownership.
+No OS code is copied, changed or executed, and no physical result is inferred.

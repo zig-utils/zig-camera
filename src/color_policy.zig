@@ -25,7 +25,7 @@ pub export fn zc_color_space_preset(value: u32, out: *c.zc_color_space) c_int {
     return c.ZC_OK;
 }
 pub export fn zc_check_processed_options(value: *const c.zc_processed_options, pipeline: *const c.zc_pipeline_options) c_int {
-    if (value.struct_size != @sizeOf(c.zc_processed_options) or value.main_format > c.ZC_NV21 or value.strict_color > 1 or pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or pipeline.lores_format > c.ZC_NV21) return c.ZC_INVALID;
+    if (value.struct_size != @sizeOf(c.zc_processed_options) or value.main_format > c.ZC_VYUY or value.strict_color > 1 or pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or pipeline.lores_format > c.ZC_VYUY) return c.ZC_INVALID;
     const space = value.color_space;
     if (space.struct_size != @sizeOf(c.zc_color_space) or space.present > 1) return c.ZC_INVALID;
     if (space.present == 0) {

@@ -1031,7 +1031,9 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
         const pixels = @as(usize, stream.width) * stream.height;
         if (yuv) {
             const map = try video_input.remapFor(color.?, self.color);
-            try map.apply(try @import("stream_rgb.zig").i420View(stream.*), .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 });
+            if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) {
+                try map.apply422(try @import("stream_rgb.zig").packed422View(stream.*), .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 });
+            } else try map.apply(try @import("stream_rgb.zig").i420View(stream.*), .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 });
         } else if (recording_color.eql(self.color, recording_color.legacy())) {
             // Preserve the established integer rounding for legacy RGB input.
             try rgb.convert(input.planes[0].data[0..@intCast(input.planes[0].bytes_used)], stream.width, stream.height, input.stride, self.i420);
@@ -2732,7 +2734,7 @@ pub fn producerInputAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, 
     job.input_color = color;
     job.frame.main.width = s.width;
     job.frame.main.height = s.height;
-    job.frame.main.stride = s.width * @as(u32, if (yuv) 1 else @intCast(@import("processed_format.zig").layout(std.mem.sliceTo(&s.format, 0)).?.bytes()));
+    job.frame.main.stride = s.width * @as(u32, if (@import("processed_format.zig").is422(std.mem.sliceTo(&s.format, 0))) 2 else if (yuv) 1 else @intCast(@import("processed_format.zig").layout(std.mem.sliceTo(&s.format, 0)).?.bytes()));
     job.frame.main.plane_count = 1;
     job.frame.main.format = s.format;
     job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = pixel_size, .bytes_used = pixel_size, .data = job.data.ptr };

@@ -128,7 +128,7 @@ static void leased_processed(uint32_t which) {
     assert(zc_preview_close(p)==ZC_OK);assert(zc_close(camera)==ZC_OK);
 }
 static void configured_colors(void) {
-    for(uint32_t fi=0;fi<4;fi++)for(uint32_t matrix=ZC_YCBCR_REC601;matrix<=ZC_YCBCR_REC2020;matrix++)for(uint32_t range=ZC_RANGE_FULL;range<=ZC_RANGE_LIMITED;range++) {
+    for(uint32_t fi=0;fi<8;fi++)for(uint32_t matrix=ZC_YCBCR_REC601;matrix<=ZC_YCBCR_REC2020;matrix++)for(uint32_t range=ZC_RANGE_FULL;range<=ZC_RANGE_LIMITED;range++) {
         zc_config cfg;zc_default_config(&cfg);cfg.width=2;cfg.height=2;
         zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);
         zc_processed_options processed;zc_default_processed_options(&processed);processed.main_format=fi==0?ZC_YUV420:ZC_BGRX32+fi;processed.strict_color=1;
@@ -141,6 +141,10 @@ static void configured_colors(void) {
         zc_stream input;assert(zc_frame_map_stream(map,&input)==ZC_OK);
         memset((void *)input.planes[0].data,100,input.planes[0].bytes_used);
         if(fi<2){memset((void *)input.planes[1].data,fi==0?64:192,input.planes[1].bytes_used);memset((void *)input.planes[2].data,fi==0?192:64,input.planes[2].bytes_used);}
+        else if(fi>=4){
+            const unsigned order[4][4]={{0,1,2,3},{0,3,2,1},{1,0,3,2},{1,2,3,0}};const uint8_t logical[4]={100,64,100,192};
+            for(unsigned y=0;y<2;y++)for(unsigned k=0;k<4;k++)((uint8_t *)input.planes[0].data)[y*input.stride+order[fi-4][k]]=logical[k];
+        }
         else {uint8_t *uv=(uint8_t *)input.planes[1].data;for(uint64_t j=0;j+1<input.planes[1].bytes_used;j+=2){uv[j]=fi==2?64:192;uv[j+1]=fi==2?192:64;}}
         assert(zc_frame_map_close(map)==ZC_OK);
         zc_preview *preview=NULL;assert(zc_preview_open("configured color",2,2,&preview)==ZC_OK);

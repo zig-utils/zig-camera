@@ -298,8 +298,10 @@ struct ManagerWatch {
     }
 };
 
-static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;case ZC_YVU420:return formats::YVU420;case ZC_NV12:return formats::NV12;case ZC_NV21:return formats::NV21;default:return formats::YUV420; } }
-static bool processedYuv(uint32_t format) { return format==ZC_YUV420 || format==ZC_YVU420 || format==ZC_NV12 || format==ZC_NV21; }
+static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;case ZC_YVU420:return formats::YVU420;case ZC_NV12:return formats::NV12;case ZC_NV21:return formats::NV21;case ZC_YUYV:return formats::YUYV;case ZC_YVYU:return formats::YVYU;case ZC_UYVY:return formats::UYVY;case ZC_VYUY:return formats::VYUY;default:return formats::YUV420; } }
+static bool processed422(uint32_t format) { return format>=ZC_YUYV && format<=ZC_VYUY; }
+static bool processedYuv(uint32_t format) { return processed422(format) || format==ZC_YUV420 || format==ZC_YVU420 || format==ZC_NV12 || format==ZC_NV21; }
+static bool processedGeometry(uint32_t format,Size size,uint32_t stride) { return !processedYuv(format) || (processed422(format) ? !(size.width&1) && stride>=(uint64_t)size.width*2 : !((size.width|size.height|stride)&1)); }
 static ColorSpace processedColorSpace(uint32_t format) {
     auto color=ColorSpace::Sycc;
     if(!processedYuv(format))color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
@@ -569,7 +571,7 @@ struct Device {
         const int orientation_rc=negotiatedOrientation(orientation,config->orientation,strict,actual_orientation);
         if(orientation_rc)return orientation_rc;
         const auto &main = config->at(0);
-        if (main.pixelFormat != processedPixelFormat(main_format) || (processedYuv(main_format) && ((main.size.width|main.size.height|main.stride)&1))) return ZC_UNSUPPORTED;
+        if (main.pixelFormat != processedPixelFormat(main_format) || !processedGeometry(main_format,main.size,main.stride)) return ZC_UNSUPPORTED;
         if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format) {
             // A sensor flip can change CFA phase while preserving depth/packing.
             // The negotiated descriptor is authoritative for DNG and consumers.
@@ -587,7 +589,7 @@ struct Device {
         if(pipe.sensor_width && (pipeline.sensor_width!=pipe.sensor_width || pipeline.sensor_height!=pipe.sensor_height || pipeline.sensor_bit_depth!=pipe.sensor_bit_depth))return ZC_UNSUPPORTED;
         if(has_lores) {
             const auto &lores=config->at(1);
-            if(lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || (processedYuv(pipe.lores_format) && ((lores.size.width|lores.size.height|lores.stride)&1)))return ZC_UNSUPPORTED;
+            if(lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || !processedGeometry(pipe.lores_format,lores.size,lores.stride))return ZC_UNSUPPORTED;
             pipeline.lores=geometry(lores);
         }
         if (camera->configure(config.get()) < 0) return ZC_DEVICE;

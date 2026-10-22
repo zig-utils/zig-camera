@@ -31,7 +31,7 @@ typedef struct {
 } zc_plane;
 typedef struct {
     uint32_t width, height, stride, plane_count;
-    char format[32]; /* processed: BGR888/RGB888/XBGR8888/XRGB8888/YUV420/YVU420/NV12/NV21; raw: negotiated name */
+    char format[32]; /* processed: BGR888/RGB888/XBGR8888/XRGB8888/YUV420/YVU420/NV12/NV21/YUYV/YVYU/UYVY/VYUY; raw: negotiated name */
     zc_plane planes[ZC_MAX_PLANES];
 } zc_stream;
 typedef struct {
@@ -61,7 +61,7 @@ typedef struct zc_camera zc_camera;
  * Its negotiated size must not exceed main. All three streams share one lease. */
 enum { ZC_MAIN=0, ZC_RAW=1, ZC_LORES=2 };
 /* Processed format names use libcamera FourCC; constants describe memory bytes. */
-enum { ZC_YUV420=0, ZC_RGB24=1, ZC_BGR24=2, ZC_RGBX32=3, ZC_BGRX32=4, ZC_YVU420=5, ZC_NV12=6, ZC_NV21=7 };
+enum { ZC_YUV420=0, ZC_RGB24=1, ZC_BGR24=2, ZC_RGBX32=3, ZC_BGRX32=4, ZC_YVU420=5, ZC_NV12=6, ZC_NV21=7, ZC_YUYV=8, ZC_YVYU=9, ZC_UYVY=10, ZC_VYUY=11 };
 /* Negotiated color values, not configuration defaults. Zero means unknown.
  * Decoding YCbCr converts encoded R'G'B' values; it does not transform primaries
  * or transfer functions. present=0 means the pipeline supplied no color space. */
@@ -210,9 +210,9 @@ int zc_orientation_from_transform(uint32_t rotation,uint32_t hflip,uint32_t vfli
  * geometry are negotiated and reported by get_info, never assumed from input. */
 int zc_open_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,zc_camera **out);
 int zc_open_id_oriented_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t orientation,uint32_t strict,const uint8_t *id,uint32_t length,zc_camera **out);
-/* Main format is one of the ZC_YUV420..ZC_NV21 processed formats. RGB24 is
- * the legacy default. All 4:2:0 requests require
- * even explicit dimensions; negotiated format/stride must remain supported.
+/* Main format is one of the ZC_YUV420..ZC_VYUY processed formats. RGB24 is
+ * the legacy default. 4:2:0 requires even dimensions; packed 4:2:2 requires
+ * even width, with odd height permitted; negotiated format/stride must remain supported.
  * RGB and 4:2:0 plane descriptors share the existing ABI v1 layouts. Color space
  * is negotiated and queried with zc_get_stream_color_space, never guessed. */
 int zc_open_formatted_pipeline(const zc_config *,const zc_pipeline_options *,uint32_t main_format,uint32_t orientation,uint32_t strict,zc_camera **out);
@@ -231,7 +231,7 @@ int zc_get_stream(zc_camera *,uint64_t token,uint32_t stream,zc_stream *);
 int zc_enable_writable(zc_camera *);
 int zc_frame_readable(zc_camera *,uint64_t token);
 int zc_copy_frame_rgb(zc_camera *,uint64_t token,uint8_t *out,uint64_t length);
-/* Packed RGB/BGR/RGBX/BGRX main/lores or YUV420/YVU420/NV12/NV21 converted into tight RGB24.
+/* Packed RGB/BGR/RGBX/BGRX main/lores or planar/semi-planar 4:2:0 or packed 4:2:2 converted into tight RGB24.
  * All planes and destination are validated before writing; raw is unsupported. */
 int zc_copy_stream_rgb(zc_camera *,uint64_t token,uint32_t stream,uint8_t *out,uint64_t length);
 /* Scoped maps retain their own generation-checked frame reference. Read maps
@@ -518,7 +518,7 @@ int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_previ
 /* Display with no image texture allocation; logical dimensions place overlays. */
 int zc_preview_open_background(const char *title,uint32_t width,uint32_t height,zc_preview **);
 int zc_preview_show(zc_preview *, const zc_frame *);
-/* Main/lores packed RGB/BGR/RGBX/BGRX or 4:2:0 from the leased frame. YUV requires a
+/* Main/lores packed RGB/BGR/RGBX/BGRX or YUV from the leased frame. YUV requires a
  * present negotiated matrix/range; conversion writes directly into SDL's locked
  * RGB texture, without a temporary RGB image. RGB ignores optional color data.
  * No plane or frame pointer survives this call. */
@@ -609,12 +609,12 @@ int zc_video_open(const char *path, const zc_video_config *, zc_recorder **);
  * MP4 timestamps must advance by >=1 microsecond; max gap ~4294 seconds.
  * Codecs/containers unavailable in this build return UNSUPPORTED. */
 int zc_video_write(zc_recorder *, const zc_frame *, uint64_t timestamp_ns);
-/* Selected packed RGB/BGR/RGBX/BGRX/4:2:0 input; caller retains its source lease.
- * Input primaries/transfer must match the recording profile. RGB/4:2:0 matrix
+/* Selected packed RGB/BGR/RGBX/BGRX/YUV input; caller retains its source lease.
+ * Input primaries/transfer must match the recording profile. RGB/YUV matrix
  * and range convert to that profile; no gamut/transfer conversion is implied.
  * Legacy zc_video_write assumes Rec.709 primaries/sRGB RGB input. */
 int zc_video_write_input(zc_recorder *,const zc_frame *,const zc_color_space *,uint64_t timestamp_ns);
-int zc_video_check_input_color(const zc_color_space *,uint32_t format /* ZC_YUV420..ZC_NV21 */);
+int zc_video_check_input_color(const zc_color_space *,uint32_t format /* ZC_YUV420..ZC_VYUY */);
 /* Target-aware admission. Null target uses legacy output defaults. Unknown input
  * metadata or mismatched primaries/transfer reject before media/PCM mutation. */
 int zc_video_check_input_color_for(const zc_color_space *,uint32_t format,const zc_color_space *target);
