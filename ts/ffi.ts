@@ -12,6 +12,12 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_camera_watch_open: { args: [u, u, p], returns: i },
+  zc_camera_watch_wait: { args: [p, u, p], returns: i },
+  zc_camera_watch_get_state: { args: [p, p], returns: i },
+  zc_camera_watch_stop: { args: [p], returns: i },
+  zc_camera_watch_close: { args: [p], returns: i },
+  zc_camera_watch_simulate_event: { args: [p, u, p, u], returns: i },
   zc_get_device_state: { args: [p, p], returns: i },
   zc_wait_disconnected: { args: [p, u, p], returns: i },
   zc_simulate_disconnect: { args: [p], returns: i },

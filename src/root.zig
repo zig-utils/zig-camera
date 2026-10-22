@@ -39,6 +39,40 @@ test "public tuning session pins synthetic mode ownership until explicit close" 
 }
 const std = @import("std");
 pub const c = @import("abi.zig").c;
+pub const CameraEvent = c.zc_camera_event;
+pub const CameraWatchState = c.zc_camera_watch_state;
+pub const CameraWatch = struct {
+    handle: ?*c.zc_camera_watch,
+    pub fn init(backend: u32, capacity: u32) Error!CameraWatch {
+        var out: ?*c.zc_camera_watch = null;
+        try check(@import("hotplug.zig").zc_camera_watch_open(backend, capacity, &out));
+        return .{ .handle = out };
+    }
+    pub fn wait(self: CameraWatch, timeout_ms: u32) Error!CameraEvent {
+        var out: CameraEvent = undefined;
+        try check(@import("hotplug.zig").zc_camera_watch_wait(self.handle orelse return error.Stopped, timeout_ms, &out));
+        return out;
+    }
+    pub fn state(self: CameraWatch) Error!CameraWatchState {
+        var out: CameraWatchState = undefined;
+        try check(@import("hotplug.zig").zc_camera_watch_get_state(self.handle orelse return error.Stopped, &out));
+        return out;
+    }
+    pub fn stop(self: CameraWatch) Error!void {
+        try check(@import("hotplug.zig").zc_camera_watch_stop(self.handle orelse return error.Stopped));
+    }
+    /// Stop and join waiters before retrying BUSY. Failed close retains ownership.
+    pub fn close(self: *CameraWatch) Error!void {
+        if (self.handle) |value| {
+            try check(@import("hotplug.zig").zc_camera_watch_close(value));
+            self.handle = null;
+        }
+    }
+    pub fn simulateEvent(self: CameraWatch, kind: u32, id: []const u8) Error!void {
+        if (id.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        try check(@import("hotplug.zig").zc_camera_watch_simulate_event(self.handle orelse return error.Stopped, kind, id.ptr, @intCast(id.len)));
+    }
+};
 pub const core = @import("core.zig");
 comptime {
     _ = core;
@@ -169,7 +203,7 @@ pub const StreamBundle = struct {
         self.count = 0;
     }
 };
-pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device, Disconnected };
+pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device, Disconnected, Cancelled };
 pub fn check(rc: c_int) Error!void {
     return switch (rc) {
         0 => {},
@@ -182,6 +216,7 @@ pub fn check(rc: c_int) Error!void {
         c.ZC_NOMEM => error.OutOfMemory,
         c.ZC_UNSUPPORTED => error.Unsupported,
         c.ZC_DISCONNECTED => error.Disconnected,
+        c.ZC_CANCELLED => error.Cancelled,
         else => error.Device,
     };
 }
@@ -1186,4 +1221,20 @@ test "Zig acquireAndStop transfers readable ownership without an extra native re
     try sibling.release();
     try camera.start();
     try camera.stop();
+}
+
+test "public Zig watch spans closed camera gaps and retains explicit terminal ownership" {
+    var watch = try CameraWatch.init(c.ZC_SYNTHETIC, 2);
+    defer watch.close() catch unreachable;
+    try std.testing.expectError(error.Timeout, watch.wait(0));
+    try watch.simulateEvent(c.ZC_CAMERA_ADDED, "Cam/1");
+    const event = try watch.wait(0);
+    try std.testing.expectEqualStrings("Cam/1", event.id[0..event.id_length]);
+    try std.testing.expectEqual(@as(u32, 0), (try watch.state()).queued);
+    var snapshot = try discover(c.ZC_SYNTHETIC);
+    snapshot.deinit();
+    try watch.stop();
+    try std.testing.expectError(error.Cancelled, watch.wait(0));
+    try watch.close();
+    try std.testing.expectError(error.Stopped, watch.wait(0));
 }

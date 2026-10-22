@@ -1,5 +1,30 @@
 import assert from 'node:assert/strict'
-import { Camera, CameraError, TuningSession, getTuningState } from '../../ts'
+import { Camera, CameraError, getTuningState, TuningSession } from '../../ts'
+
+// A real manager watch must outlive failed opens and discovery leases without
+// needing physical cameras. Its close must release the actual SDK signal slots.
+{
+  await using watch = Camera.watchCameras({ capacity: 2 })
+  const generation = getTuningState().generation
+  assert.equal(watch.state().backend, 'libcamera')
+  assert.equal(getTuningState().managerUsers, 1)
+  assert.ok(Array.isArray(watch.discover()))
+  assert.equal(getTuningState().generation, generation)
+  assert.equal(getTuningState().managerUsers, 1)
+  assert.throws(
+    () => watch.simulateEvent('added', 'fake'),
+    (error) => error instanceof CameraError && error.code === -8,
+  )
+  await assert.rejects(
+    watch.next({ timeoutMs: 5 }).wait(),
+    (error) => error instanceof CameraError && error.code === -3,
+  )
+  const pending = watch.next()
+  await watch.close()
+  await assert.rejects(pending.wait())
+  assert.equal(getTuningState().managerUsers, 0)
+  console.log('real manager hotplug watch ownership and joined close completed')
+}
 const discovered = Camera.discover()
 assert.ok(Array.isArray(discovered))
 assert.deepEqual(
@@ -92,14 +117,28 @@ if (discovered.length === 0) {
   assert(tuning.state.generation > before)
   assert.equal(tuning.state.managerUsers, 0)
   assert.equal(tuning.state.environmentActive, false)
+  {
+    await using watch = Camera.watchCameras()
+    const liveGeneration = tuning.state.generation
+    tuning.close()
+    assert.equal(getTuningState().custom, true)
+    assert.equal(getTuningState().environmentActive, true)
+    watch.discover()
+    assert.equal(getTuningState().generation, liveGeneration)
+    await watch.close()
+    assert.equal(getTuningState().custom, false)
+    assert.equal(process.env.LIBCAMERA_RPI_TUNING_FILE, previous)
+  }
+  // Recreate the explicit session for the failed-open cleanup check below.
+  using failedOpenTuning = TuningSession.open(profile)
   assert.throws(
     () =>
       new Camera({ tuning: profile, cameraId: 'zig-utils-absent-tuning-test' }),
     (error) => error instanceof CameraError && error.code === -9,
   )
-  assert.equal(tuning.state.sessionUsers, 1)
+  assert.equal(failedOpenTuning.state.sessionUsers, 1)
   assert.equal(process.env.LIBCAMERA_RPI_TUNING_FILE, previous)
-  tuning.close()
+  failedOpenTuning.close()
   assert.equal(getTuningState().custom, false)
   console.log('real manager tuning discovery and failed-open cleanup completed')
 }

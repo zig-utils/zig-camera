@@ -10,6 +10,7 @@ comptime {
     _ = @import("alignment.zig").zc_align_stream_geometry;
     _ = @import("tuning.zig");
     _ = @import("tuning_session.zig");
+    _ = @import("hotplug.zig");
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };

@@ -264,6 +264,40 @@ struct ManagerLease {
     ManagerLease &operator=(const ManagerLease &)=delete;
 };
 
+// A manager watch owns a policy/manager lease even with no acquired Device.
+// Plain member slots run synchronously on the SDK emitter. They publish only
+// into Zig's preallocated queue; consumer code never runs on this thread.
+using CameraNotice = void (*)(void *,uint32_t,const uint8_t *,size_t);
+struct WatchCallbacks : std::enable_shared_from_this<WatchCallbacks> {
+    std::mutex mutex;
+    void *context=nullptr;
+    CameraNotice callback=nullptr;
+    void deliverId(uint32_t kind,const uint8_t *id,size_t length) {
+        const auto keep=shared_from_this();
+        std::lock_guard<std::mutex> lock(mutex);
+        if(callback)callback(context,kind,id,length);
+    }
+    void deliver(uint32_t kind,const std::shared_ptr<Camera> &camera) {
+        const auto keep=shared_from_this();
+        if(camera)deliverId(kind,reinterpret_cast<const uint8_t *>(camera->id().data()),camera->id().size());
+    }
+    void added(std::shared_ptr<Camera> camera){deliver(ZC_CAMERA_ADDED,camera);}
+    void removed(std::shared_ptr<Camera> camera){deliver(ZC_CAMERA_REMOVED,camera);}
+    void retire(){std::lock_guard<std::mutex> lock(mutex);callback=nullptr;context=nullptr;}
+};
+struct ManagerWatch {
+    ManagerLease lease;
+    std::shared_ptr<WatchCallbacks> callbacks;
+    bool added=false,removed=false;
+    ~ManagerWatch() {
+        // Join active callback scopes before releasing the Zig context. Keep
+        // the manager and relay alive through both signal disconnections.
+        if(callbacks)callbacks->retire();
+        if(added)managerHost().manager->cameraAdded.disconnect(callbacks.get());
+        if(removed)managerHost().manager->cameraRemoved.disconnect(callbacks.get());
+    }
+};
+
 static PixelFormat processedPixelFormat(uint32_t format) { return format==ZC_RGB24 ? formats::BGR888 : formats::YUV420; }
 static ColorSpace processedColorSpace(uint32_t format) {
     auto color=ColorSpace::Sycc;
@@ -810,6 +844,21 @@ extern "C" int zcd_lores(Device *device,uint32_t index,zc_stream *out) {
     if(!device->has_lores)return ZC_UNSUPPORTED;
     *out=device->slots[index].lores;return ZC_OK;
 }
+
+extern "C" int zcd_camera_watch_open(void *context,CameraNotice callback,ManagerWatch **out) {
+    *out=nullptr;
+    try {
+        auto watch=std::make_unique<ManagerWatch>();
+        const int rc=watch->lease.acquire();if(rc)return rc;
+        watch->callbacks=std::make_shared<WatchCallbacks>();
+        watch->callbacks->context=context;watch->callbacks->callback=callback;
+        auto &manager=*managerHost().manager;
+        manager.cameraAdded.connect(watch->callbacks.get(),&WatchCallbacks::added);watch->added=true;
+        manager.cameraRemoved.connect(watch->callbacks.get(),&WatchCallbacks::removed);watch->removed=true;
+        *out=watch.release();return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
+extern "C" void zcd_camera_watch_close(ManagerWatch *watch){delete watch;}
 
 extern "C" int zcd_discover(const zcd_catalog_sink *s) {
     try {

@@ -156,6 +156,13 @@ export type {
   CatalogScalar,
   CameraDescriptor,
 } from './catalog'
+import { CameraWatch, type CameraWatchOptions } from './hotplug'
+export {
+  CameraWatch,
+  type CameraWatchOptions,
+  type CameraEvent,
+  type CameraWatchState,
+} from './hotplug'
 import {
   invokeRequestCallback,
   guardRequestCallback,
@@ -804,6 +811,9 @@ export class Camera {
       readCatalog((out) => n.zc_discover(simulate ? 0 : 1, out)),
       simulate,
     )
+  }
+  static watchCameras(options: CameraWatchOptions = {}) {
+    return new CameraWatch(options)
   }
   properties() {
     this.assertOpen()

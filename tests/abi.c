@@ -10,6 +10,9 @@ _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
 _Static_assert(sizeof(zc_stream_alignment)==20,"stream alignment ABI");
 _Static_assert(sizeof(zc_tuning_state)==56,"tuning state ABI");
 _Static_assert(sizeof(zc_device_state)==32,"device state ABI");
+_Static_assert(sizeof(zc_camera_event)==4128,"camera event ABI");
+_Static_assert(offsetof(zc_camera_event,id)==32,"camera event ID ABI");
+_Static_assert(sizeof(zc_camera_watch_state)==40,"camera watch state ABI");
 _Static_assert(offsetof(zc_device_state,disconnect_event)==24,"device loss event ABI");
 _Static_assert(offsetof(zc_tuning_state,generation)==40,"tuning generation ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
@@ -573,6 +576,24 @@ int main(void) {
     catalog=(zc_catalog *)1;
     assert(zc_discover(99,&catalog)==ZC_INVALID && catalog==NULL);
     zc_catalog_close(NULL);
+
+    zc_camera_watch *watch=NULL;
+    assert(zc_camera_watch_open(ZC_SYNTHETIC,2,&watch)==ZC_OK && watch);
+    zc_camera_event event,event_sentinel;
+    memset(&event,0xa5,sizeof(event));event_sentinel=event;
+    assert(zc_camera_watch_wait(watch,0,&event)==ZC_TIMEOUT);
+    assert(!memcmp(&event,&event_sentinel,sizeof(event)));
+    assert(zc_camera_watch_simulate_event(watch,ZC_CAMERA_ADDED,(const uint8_t *)"cam",3)==ZC_OK);
+    assert(zc_camera_watch_wait(watch,0,&event)==ZC_OK && event.kind==ZC_CAMERA_ADDED);
+    assert(event.sequence==1 && event.missed==0 && event.id_length==3 && !memcmp(event.id,"cam",3));
+    zc_camera_watch_state watch_state;
+    assert(zc_camera_watch_get_state(watch,&watch_state)==ZC_OK && !watch_state.queued && watch_state.capacity==2);
+    assert(zc_camera_watch_stop(watch)==ZC_OK);
+    event=event_sentinel;
+    assert(zc_camera_watch_wait(watch,0,&event)==ZC_CANCELLED && !memcmp(&event,&event_sentinel,sizeof(event)));
+    assert(zc_camera_watch_close(watch)==ZC_OK);
+    watch=(zc_camera_watch *)1;
+    assert(zc_camera_watch_open(ZC_SYNTHETIC,65,&watch)==ZC_INVALID && !watch);
 
     zc_output_mailbox *mailbox=NULL;
     assert(zc_output_mailbox_open(3,2,&mailbox)==ZC_OK);

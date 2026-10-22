@@ -44,6 +44,26 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
 }
 int main() {
     {
+        struct Blocking {std::mutex mutex;std::condition_variable changed;bool entered=false,release=false;unsigned calls=0;} block;
+        const auto relay=std::make_shared<WatchCallbacks>();
+        relay->context=&block;
+        relay->callback=[](void *context,uint32_t kind,const uint8_t *id,size_t length){
+            assert(kind==ZC_CAMERA_REMOVED && length==5 && !std::memcmp(id,"Cam/1",5));
+            auto &value=*static_cast<Blocking *>(context);
+            std::unique_lock<std::mutex> lock(value.mutex);++value.calls;value.entered=true;value.changed.notify_all();
+            value.changed.wait(lock,[&]{return value.release;});
+        };
+        std::thread delivery([relay]{relay->deliverId(ZC_CAMERA_REMOVED,reinterpret_cast<const uint8_t *>("Cam/1"),5);});
+        {std::unique_lock<std::mutex> lock(block.mutex);block.changed.wait(lock,[&]{return block.entered;});}
+        const bool acquired=relay->mutex.try_lock();if(acquired)relay->mutex.unlock();assert(!acquired);
+        std::thread retirement([relay]{relay->retire();});
+        {std::lock_guard<std::mutex> lock(block.mutex);block.release=true;block.changed.notify_all();}
+        delivery.join();retirement.join();
+        assert(!relay->context && !relay->callback && block.calls==1);
+        relay->deliverId(ZC_CAMERA_ADDED,reinterpret_cast<const uint8_t *>("Cam/2"),5);
+        assert(block.calls==1);
+    }
+    {
         struct Blocking {std::mutex mutex;std::condition_variable changed;bool entered=false,release=false;} block;
         const auto relay=std::make_shared<CallbackState>();
         auto device=std::make_unique<Device>();device->callbacks=relay;relay->owner=device.get();device->context=&block;

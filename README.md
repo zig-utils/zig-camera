@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.67 adds [bounded manager hotplug watches](docs/hotplug.md): full-ID
+added/removed events, explicit overflow/rescan, cancellable Bun jobs, and manager
+and tuning lifetime across camera close/reopen gaps.
+
 Version 0.66 adds [device disconnection handling](docs/disconnection.md): terminal
 loss notifications, owned frame/map cleanup, coalesced async observation and
 mode-worker loss reporting through rollback.

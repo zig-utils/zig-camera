@@ -824,3 +824,18 @@ carry owned loss observations across close/rollback without retaining a driver
 pointer. Home sources remain unchanged for this step, with their existing notices
 and license preserved. Synthetic relay, fence and wait tests do not establish
 physical disconnect/DMA behavior; manager-wide watches and recovery remain open.
+
+The 0.67 manager-watch audit fetches unchanged Home main at
+3888e242056533d2da2e0c082129354885d920ec. It inspects events/src/events.zig,
+async channel/concurrent queue, and video core/owned_fifo.zig/device_identity.zig.
+The emitter copies listener snapshots with an allocator and runs handlers; the
+channel/concurrent queue allocates nodes. Those are not SDK callback storage.
+Existing verbatim Home owned_fifo and device_identity instead supply bounded
+preallocated payload ownership, wrap/copy/ack and exact UTF-8 validation. New
+camera-specific eviction/sequence/rescan policy and SDK relay retirement stay in
+zig-camera rather than introducing a second Home queue. Tuning sessions reuse
+Home's existing owned POSIX override and the camera manager lease. Copied sources
+are compared to current Home, retaining attribution; no Home source changes are
+needed for this feature. Callback paths allocate no application storage and do
+not invoke consumers. This is not a guarantee about SDK-internal allocation or
+physical camera behavior.

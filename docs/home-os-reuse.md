@@ -262,3 +262,13 @@ signal retirement or completion-lease/DMA ownership. The camera stub has no such
 disconnect notification. Existing Home lease/access/completion gates therefore
 remain the portable pieces to reuse. No OS source is changed, copied or executed,
 and no physical unplug, kernel-camera or recovery acceptance is inferred.
+
+The 0.67 manager-watch audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ipc/msgqueue.home, the USB event
+ring/context ownership and ADR-MC3. The kernel queue holds 16 inline 256-byte
+messages, rejects full sends and shifts matching receive tails. It cannot preserve
+4096-byte hosted SDK IDs or supply a libcamera manager subscription. USB rings own
+kernel/controller state, not hosted SDK signal retirement. Existing Home stdlib
+owned_fifo/device_identity therefore remain the reusable pieces, with camera
+manager/tuning lifetime and rescan policy in zig-camera. No OS code is copied,
+modified or executed; no physical hotplug or reconnect result is asserted.

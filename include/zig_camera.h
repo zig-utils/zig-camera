@@ -119,6 +119,37 @@ int zc_get_color_negotiation(zc_camera *,uint32_t stream,zc_color_negotiation *o
  * Old config/ABI layouts remain unchanged. Copy returns the full selected ID;
  * null/zero queries length, short buffers reject without writing a prefix. */
 #define ZC_MAX_CAMERA_ID 4096
+/* A watch pins the backend manager without acquiring a camera. Open before
+ * discovery; subsequent events invalidate discovery snapshots. No initial added
+ * events or atomic snapshot/event boundary is promised. Each event is consumed
+ * once. missed is a cumulative eviction/invalid-ID count; rescan on any change.
+ * RESCAN carries no ID. Other IDs are exact length-delimited UTF-8, never cut.
+ * Capacity is 1..64; at most 32 live watches per backend. Callbacks only copy to
+ * preallocated storage. stop retires callbacks/releases the manager and wakes
+ * waiters; queued events remain readable, then wait returns CANCELLED. close
+ * stops first and returns BUSY while waits remain; retry after joining them.
+ * Synchronize all other entries with close. Failed wait leaves out untouched.
+ * Choose custom tuning BEFORE opening a watch, using a tuning session. */
+enum { ZC_CAMERA_ADDED=1, ZC_CAMERA_REMOVED=2, ZC_CAMERA_RESCAN=3 };
+typedef struct zc_camera_watch zc_camera_watch;
+typedef struct {
+    uint32_t struct_size,backend,kind,id_length;
+    uint64_t sequence,missed;
+    uint8_t id[ZC_MAX_CAMERA_ID];
+} zc_camera_event;
+typedef struct {
+    uint32_t struct_size,backend,capacity,queued;
+    uint64_t sequence,missed;
+    uint32_t stopped,waiters;
+} zc_camera_watch_state;
+int zc_camera_watch_open(uint32_t backend,uint32_t capacity,zc_camera_watch **out);
+int zc_camera_watch_wait(zc_camera_watch *,uint32_t timeout_ms,zc_camera_event *out);
+int zc_camera_watch_get_state(zc_camera_watch *,zc_camera_watch_state *out);
+int zc_camera_watch_stop(zc_camera_watch *);
+int zc_camera_watch_close(zc_camera_watch *);
+/* Scoped synthetic event injection; does not change discovery/capture topology.
+ * Real watches reject UNSUPPORTED. Invalid input does not mutate the queue. */
+int zc_camera_watch_simulate_event(zc_camera_watch *,uint32_t kind,const uint8_t *id,uint32_t length);
 /* Owned JSON tuning data; does not apply an ISP policy. Native limits are
  * 16 MiB, 262144 scanner tokens and 64 container levels. Number text is exact.
  * Copy/find NULL+0 queries required length; short outputs remain untouched.
