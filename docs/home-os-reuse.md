@@ -209,3 +209,14 @@ the Home shared libraries. Relative interval arithmetic therefore improves Home
 async, while mode selection, serial file ownership and cancellation stay in
 zig-camera. OS stays unmodified and unexecuted. Its stubs are not capture, codec,
 optical-quality or physical timing evidence.
+
+The 0.62 sync-readiness audit fetches Home OS main and rechecks unchanged
+151269666bc09aa15a271f1c1f4603f681132e65. camera.home has no per-request sync
+metadata or server/client implementation. time/clocksource.home exposes kernel
+clock/TSC routines and saturation; time/hrtimer.home owns kernel timer queues,
+callbacks and clock bases. Neither supplies libcamera's request-local SyncReady
+or signed SyncTimer contract, and a host clock cannot stand in for that contract.
+The media-stdlib ADR still directs shared algorithms into Home packages. Home
+video's existing frame barrier is therefore extended with explicit observation
+readiness. Kernel pointers, allocators, timers and device state are not copied or
+executed, and no physical cross-camera synchronization result is inferred.

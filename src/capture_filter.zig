@@ -4,7 +4,7 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 const Gate = @import("home/frame_barrier.zig").Gate;
 pub fn valid(filter: *const c.zc_capture_filter) bool {
-    return filter.struct_size == @sizeOf(c.zc_capture_filter) and filter.flags & ~@as(u32, 3) == 0 and
+    return filter.struct_size == @sizeOf(c.zc_capture_filter) and filter.flags & ~@as(u32, 7) == 0 and
         filter.observed & ~@as(u32, 3) == 0 and (filter.flags & 2 == 0 or filter.flags & 1 != 0);
 }
 pub export fn zc_capture_filter_init(out: *c.zc_capture_filter, drop_frames: u32, flags: u32, after_ns: u64) c_int {
@@ -14,9 +14,12 @@ pub export fn zc_capture_filter_init(out: *c.zc_capture_filter, drop_frames: u32
     return c.ZC_OK;
 }
 pub fn observe(filter: *c.zc_capture_filter, metadata: *const c.zc_metadata) c_int {
+    return observeReady(filter, metadata, null);
+}
+pub fn observeReady(filter: *c.zc_capture_filter, metadata: *const c.zc_metadata, ready: ?bool) c_int {
     if (!valid(filter)) return c.ZC_INVALID;
-    var gate: Gate = .{ .remaining = filter.remaining, .after_ns = if (filter.flags & 1 != 0) filter.after_ns else null, .subtract_exposure = filter.flags & 2 != 0, .last_event = if (filter.observed & 1 != 0) filter.last_event else null, .accepted = filter.observed & 2 != 0 };
-    const accepted = gate.observe(metadata.event_id, if (metadata.valid & 16 != 0) metadata.timestamp_ns else null, if (metadata.valid & 64 != 0) metadata.exposure_us else null) catch return c.ZC_UNSUPPORTED;
+    var gate: Gate = .{ .remaining = filter.remaining, .after_ns = if (filter.flags & 1 != 0) filter.after_ns else null, .subtract_exposure = filter.flags & 2 != 0, .last_event = if (filter.observed & 1 != 0) filter.last_event else null, .accepted = filter.observed & 2 != 0, .require_ready = filter.flags & c.ZC_CAPTURE_SYNC_READY != 0 };
+    const accepted = gate.observeReady(metadata.event_id, if (metadata.valid & 16 != 0) metadata.timestamp_ns else null, if (metadata.valid & 64 != 0) metadata.exposure_us else null, ready) catch return c.ZC_UNSUPPORTED;
     filter.remaining = gate.remaining;
     filter.last_event = gate.last_event orelse 0;
     filter.observed = (if (gate.last_event != null) @as(u32, 1) else 0) | (if (gate.accepted) @as(u32, 2) else 0);
@@ -53,4 +56,26 @@ test "capture filter validation and missing metadata leave caller state untouche
     const after = filter;
     try std.testing.expectEqual(c.ZC_TIMEOUT, observe(&filter, &metadata));
     try std.testing.expectEqualDeep(after, filter);
+}
+test "sync-ready filters wait for explicit per-request readiness without changing the ABI" {
+    var filter: c.zc_capture_filter = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_capture_filter_init(&filter, 1, c.ZC_CAPTURE_SYNC_READY, 0));
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(c.zc_capture_filter));
+    var metadata = std.mem.zeroes(c.zc_metadata);
+    metadata.event_id = 1;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, observeReady(&filter, &metadata, true));
+    metadata.event_id = 2;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, observe(&filter, &metadata));
+    const before = filter;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, observeReady(&filter, &metadata, true));
+    try std.testing.expectEqualDeep(before, filter);
+    metadata.event_id = 3;
+    try std.testing.expectEqual(c.ZC_TIMEOUT, observeReady(&filter, &metadata, false));
+    metadata.event_id = 4;
+    try std.testing.expectEqual(c.ZC_OK, observeReady(&filter, &metadata, true));
+    const accepted = filter;
+    try std.testing.expectEqual(c.ZC_OK, observe(&filter, &metadata));
+    try std.testing.expectEqualDeep(accepted, filter);
+    try std.testing.expectEqual(c.ZC_INVALID, zc_capture_filter_init(&filter, 0, 8, 0));
+    try std.testing.expectEqualDeep(accepted, filter);
 }

@@ -712,3 +712,22 @@ automatic capture-Exif default and PNG/TIFF opt-in. This avoids repeated metadat
 copies for each file. No video codec, container, kernel camera object or request
 queue is reimplemented for the series. Timing tests establish hosted ordering and
 ownership only; physical sensor cadence and focus acceptance remain unmeasured.
+
+The 0.62 software-sync audit improves Home video at
+1f1c8690507bf14e71c8c5ea273ade18366493a1. frame_barrier.zig gains require_ready
+and observeReady, preserving the old observe path. Per-observation readiness must
+be explicitly true after distinct drops and exact timing criteria; absent/false
+waits, repeated events cannot revise a pending observation, and terminal acceptance
+is immutable. Required timing errors preserve the whole gate. Five standalone
+tests pass in Debug/ReleaseSafe on pinned 0.15.2 and development 0.17 Zig. The
+updated helper is copied verbatim; the camera matrix checks pinned/master Zig
+on Linux x86/ARM and macOS, with C filter checks on the pinned camera compiler.
+Home's own workflow dispatch remains disabled.
+
+Existing Home typed catalogs, persistent control state, leases and job gates
+supply ownership, exact signed metadata and atomic control replay. Camera adds
+an allocation-free request-local SyncReady/SyncTimer bridge and combines those
+observations with the shared gate. It does not infer readiness from a timestamp
+matcher, use a second queue, or import a new network sync algorithm. libcamera
+owns the real server/client algorithm. Virtual server countdown/client-pending
+behavior tests control and request association, not network or exposure alignment.

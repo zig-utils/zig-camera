@@ -53,3 +53,5 @@ pub const closeNative = zcd_close_native_controls;
 
 pub extern fn zcd_photo_values(*Handle, u32, *@import("catalog.zig").bridge.zcd_photo_metadata) c_int;
 pub const photoValues = zcd_photo_values;
+pub extern fn zcd_frame_sync_state(*Handle, u32, *c.zc_frame_sync_state) c_int;
+pub const frameSyncState = zcd_frame_sync_state;

@@ -19,6 +19,11 @@ pub const Handle = struct {
     raw_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     catalog_metadata: [c.ZC_MAX_BUFFERS]c.zc_metadata = @splat(std.mem.zeroes(c.zc_metadata)),
     photo_wallclock_ns: [c.ZC_MAX_BUFFERS]i64 = @splat(0),
+    sync_states: [c.ZC_MAX_BUFFERS]c.zc_frame_sync_state = @splat(std.mem.zeroes(c.zc_frame_sync_state)),
+    sync_mode: i32 = 0,
+    sync_frames: u32 = 3,
+    sync_seen: u64 = 0,
+    fail_sync_metadata: bool = false,
     sequence: u64 = 0,
     revision: u64 = 0,
     applied_revision: u64 = 0,
@@ -212,6 +217,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     return c.ZC_OK;
 }
 pub fn start(h: *Handle) c_int {
+    h.sync_seen = 0;
     for (h.saved, 0..) |value, id| if (h.pending[id] == null) {
         h.pending[id] = value;
     };
@@ -233,6 +239,8 @@ pub fn stop(h: *Handle) c_int {
     const saved = refs.retain(h.vendor_saved);
     refs.release(h.vendor_current);
     h.vendor_current = saved;
+    @import("typed_synthetic.zig").applySynchronization(h, @import("typed_synthetic.zig").synchronizationSettings(saved));
+    h.sync_seen = 0;
     h.af_steps = 0;
     h.af_state = 0;
     h.af_pause_state = 0;
@@ -322,6 +330,20 @@ pub fn queue(h: *Handle, index: u32) c_int {
     meta.blue_gain = f.blue_gain;
     meta.lens_position = @floatCast(h.active[c.ZC_LENS_POSITION].values[0]);
     meta.frame_duration_us = @intFromFloat(h.active[c.ZC_FRAME_DURATION_LIMITS].values[0]);
+    var sync_state = std.mem.zeroes(c.zc_frame_sync_state);
+    sync_state.struct_size = @sizeOf(c.zc_frame_sync_state);
+    if (h.sync_mode != 0) {
+        sync_state.valid = 1;
+        // Virtual clients receive no network server messages and remain pending.
+        if (h.sync_mode == 1) {
+            h.sync_seen +|= 1;
+            sync_state.ready = @intFromBool(h.sync_seen >= h.sync_frames);
+            sync_state.valid |= 2;
+            const timer = (@as(i128, h.sync_frames) - h.sync_seen) * meta.frame_duration_us;
+            sync_state.timer_us = @intCast(std.math.clamp(timer, std.math.minInt(i64), std.math.maxInt(i64)));
+        }
+    }
+    h.sync_states[index] = sync_state;
     for (0..4) |i| meta.crop[i] = @intFromFloat(h.active[c.ZC_SCALER_CROP].values[i]);
     meta.af_state = h.af_state;
     meta.af_pause_state = -1;
@@ -347,6 +369,12 @@ pub fn metadata(_: *Handle, _: u32, out: *c.zc_raw_metadata) c_int {
     out.black_levels = @splat(@floatFromInt(black_level));
     out.camera_to_srgb = color_matrix;
     @memcpy(out.model[0..model.len], model);
+    return c.ZC_OK;
+}
+pub fn frameSyncState(h: *Handle, index: u32, out: *c.zc_frame_sync_state) c_int {
+    if (h.fail_sync_metadata) return c.ZC_IO;
+    if (index >= h.info.buffer_count) return c.ZC_INVALID;
+    out.* = h.sync_states[index];
     return c.ZC_OK;
 }
 

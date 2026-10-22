@@ -7,6 +7,18 @@ import {
   type CaptureFilesOptions,
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
+import {
+  readFrameSynchronization,
+  synchronizationControls,
+  synchronizationOptions,
+  type SynchronizationMode,
+  type SynchronizationOptions,
+} from './synchronization'
+export type {
+  FrameSynchronization,
+  SynchronizationMode,
+  SynchronizationOptions,
+} from './synchronization'
 export {
   CaptureFilesJob,
   type CaptureFilesOptions,
@@ -212,16 +224,25 @@ export interface CaptureOptions<T = unknown> extends JobOptions<T> {
   flush?: boolean | bigint
   /** Skip this many distinct delivered requests before selecting a result. */
   dropFrames?: number
+  /** Select only requests with explicitly true backend SyncReady metadata. */
+  syncReady?: boolean
 }
 export function captureClockNs(): bigint {
   const out = new BigUint64Array(1)
   check(n.zc_capture_clock_ns(ptr(out)), 'capture clock')
   return out[0]
 }
-function captureSelection<T>(source: CaptureOptions<T>) {
+function captureSelection<T>(
+  source: CaptureOptions<T>,
+  requireSyncReady = false,
+) {
   const options = snapshotJobOptions(source, 5000)
   const drop = uint(source.dropFrames ?? 0),
-    flush = source.flush
+    flush = source.flush,
+    syncReady = source.syncReady
+  if (syncReady !== undefined && typeof syncReady !== 'boolean')
+    throw new RangeError('invalid synchronization selection')
+  const readiness = requireSyncReady || syncReady === true
   if (
     flush !== undefined &&
     typeof flush !== 'boolean' &&
@@ -239,14 +260,14 @@ function captureSelection<T>(source: CaptureOptions<T>) {
     (timestamp < 0n || timestamp > 0xffffffffffffffffn)
   )
     throw new RangeError('invalid capture timestamp')
-  if (timestamp === undefined && drop === 0)
+  if (timestamp === undefined && drop === 0 && !readiness)
     return { options, filter: undefined }
   const filter = storage(32)
   check(
     n.zc_capture_filter_init(
       ptr(filter),
       drop,
-      timestamp === undefined ? 0 : 3,
+      (timestamp === undefined ? 0 : 3) | (readiness ? 4 : 0),
       timestamp ?? 0n,
     ),
   )
@@ -629,6 +650,10 @@ export class Frame {
     const data = storage(96)
     check(n.zc_get_frame_metadata(this.camera.handle, this.token, ptr(data)))
     return decodeMetadata(data)
+  }
+  synchronization() {
+    this.open()
+    return readFrameSynchronization(this.camera.handle, this.token)
   }
   saveJPEG(path: string, quality = 98) {
     this.saveFile(path, { format: 'jpeg', quality })
@@ -1277,6 +1302,17 @@ export class Camera {
     )
     return revision[0]
   }
+  setSynchronization(
+    mode: SynchronizationMode,
+    options: SynchronizationOptions = {},
+  ) {
+    guardRequestCallback()
+    this.assertOpen()
+    const admitted = synchronizationOptions(mode, options)
+    return this.setNativeControls(
+      synchronizationControls(this.controls(), admitted),
+    )
+  }
   restoreNativeControls(snapshot: NativeControlSnapshot) {
     this.assertOpen()
     if (this.focusJobs || this.focusCaptureActive || this.hasPendingModes())
@@ -1864,6 +1900,7 @@ export class Camera {
     discard?: (value: T) => void,
     transfer = false,
     owner?: object,
+    requireSyncReady = false,
   ): BunJob<T> {
     guardRequestCallback()
     this.assertOpen()
@@ -1874,7 +1911,7 @@ export class Camera {
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
     if (typeof operation !== 'function')
       throw new TypeError('capture operation must be a function')
-    const selection = captureSelection(options)
+    const selection = captureSelection(options, requireSyncReady)
     this.assertOpen()
     if (
       this.hasPendingModes(owner) ||
@@ -2169,6 +2206,19 @@ export class Camera {
   }
   captureRequest(options: CaptureOptions<Frame> = {}) {
     return this.captureRequestAsync(options).wait()
+  }
+  captureSyncRequestAsync(options: CaptureOptions<Frame> = {}) {
+    return this.submitCapture(
+      (frame) => frame,
+      options,
+      (frame) => frame.release(),
+      true,
+      undefined,
+      true,
+    )
+  }
+  captureSyncRequest(options: CaptureOptions<Frame> = {}) {
+    return this.captureSyncRequestAsync(options).wait()
   }
   captureStreamsAsync(
     streams: readonly StreamName[] = ['main'],

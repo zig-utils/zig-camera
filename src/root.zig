@@ -81,6 +81,12 @@ pub fn colorSpacePreset(preset: u32) Error!c.zc_color_space {
 pub const Info = c.zc_info;
 pub const Stats = c.zc_stats;
 pub const CaptureFilter = c.zc_capture_filter;
+pub const FrameSyncState = c.zc_frame_sync_state;
+pub fn syncCaptureFilter(drop_frames: u32, after_ns: ?u64, exposure_guard: bool) Error!CaptureFilter {
+    var filter = try captureFilter(drop_frames, after_ns, exposure_guard);
+    filter.flags |= c.ZC_CAPTURE_SYNC_READY;
+    return filter;
+}
 pub fn captureClockNs() Error!u64 {
     var stamp: u64 = 0;
     try check(@import("capture_filter.zig").zc_capture_clock_ns(&stamp));
@@ -373,6 +379,10 @@ pub const Camera = struct {
         try check(core.zc_acquire_filtered(self.handle, filter, timeout_ms, &frame));
         return .{ .camera = self, .value = frame };
     }
+    pub fn acquireSynced(self: Camera, timeout_ms: u32) Error!Frame {
+        var filter = try syncCaptureFilter(0, null, false);
+        return self.acquireFiltered(&filter, timeout_ms);
+    }
 };
 pub const FrameMapping = struct {
     handle: ?*c.zc_frame_map,
@@ -452,6 +462,12 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         var out: c.zc_metadata = undefined;
         try check(core.zc_get_frame_metadata(self.camera.handle, self.value.token, &out));
+        return out;
+    }
+    pub fn synchronization(self: *const Frame) Error!FrameSyncState {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: FrameSyncState = undefined;
+        try check(core.zc_get_frame_sync_state(self.camera.handle, self.value.token, &out));
         return out;
     }
     pub fn saveDng(self: *const Frame, path: [:0]const u8) Error!void {
@@ -793,6 +809,40 @@ test "Zig capture filters transfer one request after exact frame drops" {
     try std.testing.expectEqual(@as(u64, 3), frame.value.sequence);
     try std.testing.expect(frame.value.timestamp_ns >= before);
     try std.testing.expectEqual(@as(u32, 0), filter.remaining);
+}
+test "Zig synchronized acquisition composes typed controls filters and retained request metadata" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 8;
+    cfg.height = 6;
+    cfg.policy = c.ZC_FIFO;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch unreachable;
+    var writer = try catalog_format.Writer.init(t.allocator, 6, 1024);
+    defer writer.deinit();
+    try writer.begin(.{ .id = 0x10001 + 10, .kind = .i32, .name = "SyncMode", .vendor = "rpi", .flags = 32 });
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(i32, &bytes, 1, .little);
+    try writer.append(.{ .kind = .i32, .data = &bytes });
+    try writer.end();
+    _ = try camera.setNativeControls(try writer.finish());
+    try camera.start();
+    var frame = try camera.acquireSynced(100);
+    defer if (frame.value.token != 0) frame.release() catch unreachable;
+    try t.expectEqual(@as(u64, 2), frame.value.sequence);
+    try t.expectEqual(@as(u32, 1), (try frame.synchronization()).ready);
+    var filter = try syncCaptureFilter(1, 0, true);
+    try t.expectEqual(@as(u32, 7), filter.flags);
+    var next = try camera.acquireFiltered(&filter, 100);
+    defer if (next.value.token != 0) next.release() catch unreachable;
+    try t.expectEqual(@as(u64, 4), next.value.sequence);
+    try t.expect((try next.synchronization()).timer_us < 0);
+    try next.release();
+    try camera.stop();
+    try t.expectEqual(@as(i64, 0), (try frame.synchronization()).timer_us);
+    try frame.release();
+    try t.expectError(error.StaleFrame, frame.synchronization());
 }
 
 test "Zig scoped mappings own buffers independently and publish writable pixel edits" {

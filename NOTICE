@@ -484,3 +484,11 @@ Home heterogeneous capture plane bundles (0.59):
   allocation-free packing shared by rows, I420 and request stream bundles.
   https://github.com/home-lang/home/commit/44bf4e911437251479a4a535fc311e1471cc93d5
 The Home MIT license and copyright reproduced above apply.
+
+Home per-observation capture readiness (0.62):
+- src/home/frame_barrier.zig is copied verbatim from Home video
+  core/frame_barrier.zig at 1f1c8690507bf14e71c8c5ea273ade18366493a1. It combines
+  explicit request readiness with distinct drops and exact timing without allocation
+  or device ownership.
+  https://github.com/home-lang/home/commit/1f1c8690507bf14e71c8c5ea273ade18366493a1
+The Home MIT license and copyright reproduced above apply.

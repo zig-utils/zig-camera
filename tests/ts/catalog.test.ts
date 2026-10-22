@@ -111,7 +111,7 @@ test('catalogs advertise every virtual control with typed ranges and allowed val
   try {
     const controls = c.controls()
     expect(controls.kind).toBe('controls')
-    expect(controls.records.length).toBe(40)
+    expect(controls.records.length).toBe(42)
     const exposure = controls.records.find((r) => r.name === 'ExposureTime')!
     expect(exposure).toMatchObject({
       appId: Control.exposureTime,

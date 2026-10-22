@@ -14,6 +14,7 @@ export interface RequestFrame extends Pick<
   | 'referenceCount'
   | 'metadata'
   | 'metadataCatalog'
+  | 'synchronization'
   | 'copyRGB'
   | 'copyStream'
   | 'copyStreams'
@@ -88,6 +89,9 @@ class ScopedRequest implements RequestFrame {
   }
   metadataCatalog() {
     return this.current().metadataCatalog()
+  }
+  synchronization() {
+    return this.current().synchronization()
   }
   copyRGB(stream: 'main' | 'lores' = 'main') {
     return this.current().copyRGB(stream)

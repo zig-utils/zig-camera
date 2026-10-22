@@ -71,6 +71,7 @@ export const native = dlopen(library, {
   zc_capture_clock_ns: { args: [p], returns: i },
   zc_capture_filter_init: { args: [p, u, u, n], returns: i },
   zc_capture_filter_accept: { args: [p, n, p], returns: i },
+  zc_get_frame_sync_state: { args: [p, n, p], returns: i },
   zc_acquire_filtered: { args: [p, p, u, p], returns: i },
   zc_video_producer_av: { args: [p, p, n, p, u, p], returns: i },
   zc_video_producer_input_av: { args: [p, p, p, n, p, u, p], returns: i },

@@ -213,8 +213,16 @@ int zc_copy_frame_streams(zc_camera *,uint64_t token,const uint32_t *streams,uin
  * use within one camera completion timeline. Never edits/recycles a request.
  * Timestamp is inclusive; EXPOSURE_GUARD subtracts exposure_us*1000, saturating
  * at zero. Required timing must be explicitly valid, otherwise UNSUPPORTED.
- * Repeated/out-of-order completion events do not consume more drops. */
-enum { ZC_CAPTURE_TIMESTAMP=1, ZC_CAPTURE_EXPOSURE_GUARD=2 };
+ * Repeated/out-of-order completion events do not consume more drops.
+ * SYNC_READY also requires explicitly true per-request SyncReady; false/absent
+ * waits. Backend/query errors preserve filter state. Acceptance is terminal. */
+enum { ZC_CAPTURE_TIMESTAMP=1, ZC_CAPTURE_EXPOSURE_GUARD=2, ZC_CAPTURE_SYNC_READY=4 };
+/* Exact request-local software-sync metadata. valid: ready=1, timer=2.
+ * Missing values stay absent; timer is signed microseconds to the ready time.
+ * Failure clears out. This reads the backend algorithm's status; it does not
+ * synchronize cameras or infer readiness from host timestamps. */
+typedef struct { uint32_t struct_size,valid,ready,reserved; int64_t timer_us; } zc_frame_sync_state;
+int zc_get_frame_sync_state(zc_camera *,uint64_t token,zc_frame_sync_state *out);
 typedef struct {
  uint32_t struct_size,remaining,flags,observed;
  uint64_t after_ns,last_event;

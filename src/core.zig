@@ -555,7 +555,33 @@ pub export fn zc_capture_filter_accept(p: *c.zc_camera, token: u64, filter: *c.z
     self.operation.lock();
     defer self.operation.unlock();
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
-    return CaptureFilter.observe(filter, &self.slots[index].metadata);
+    var ready: ?bool = null;
+    if (filter.flags & c.ZC_CAPTURE_SYNC_READY != 0 and filter.observed & 2 == 0) {
+        var state: c.zc_frame_sync_state = undefined;
+        const rc = frameSyncState(self, index, &state);
+        if (rc != c.ZC_OK) return rc;
+        if (state.valid & 1 != 0) ready = state.ready != 0;
+    }
+    return CaptureFilter.observeReady(filter, &self.slots[index].metadata, ready);
+}
+fn frameSyncState(self: *Session, index: u32, out: *c.zc_frame_sync_state) c_int {
+    const rc = driver.frameSyncState(self.device.?, index, out);
+    if (rc != c.ZC_OK) return rc;
+    if (out.struct_size != @sizeOf(c.zc_frame_sync_state) or out.valid & ~@as(u32, 3) != 0 or out.ready > 1 or out.reserved != 0 or
+        (out.valid & 1 == 0 and out.ready != 0) or (out.valid & 2 == 0 and out.timer_us != 0)) return c.ZC_DEVICE;
+    return c.ZC_OK;
+}
+pub export fn zc_get_frame_sync_state(p: *c.zc_camera, token: u64, out: *c.zc_frame_sync_state) c_int {
+    out.* = std.mem.zeroes(c.zc_frame_sync_state);
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    var state: c.zc_frame_sync_state = undefined;
+    const rc = frameSyncState(self, index, &state);
+    if (rc != c.ZC_OK) return rc;
+    out.* = state;
+    return c.ZC_OK;
 }
 pub export fn zc_acquire_and_stop(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_int {
     out.* = std.mem.zeroes(c.zc_frame);
@@ -1480,6 +1506,95 @@ test "configuration rejects invalid and nonfinite input" {
     cfg.analogue_gain = std.math.nan(f32);
     try std.testing.expectEqual(c.ZC_INVALID, zc_open(&cfg, &p));
     try std.testing.expect(p == null);
+}
+test "sync readiness belongs to a leased request and survives retain stop and later completions" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 8;
+    cfg.height = 6;
+    cfg.buffer_count = 3;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer t.expectEqual(c.ZC_OK, zc_close(camera.?)) catch unreachable;
+    const self = session(camera.?);
+    self.device.?.sync_mode = 1;
+    self.device.?.sync_frames = 3;
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var first: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &first));
+    var retained: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_retain(camera.?, first.token, &retained));
+    var state: c.zc_frame_sync_state = undefined;
+    try t.expectEqual(c.ZC_OK, zc_get_frame_sync_state(camera.?, first.token, &state));
+    try t.expectEqual(@as(u32, 3), state.valid);
+    try t.expectEqual(@as(u32, 0), state.ready);
+    try t.expect(state.timer_us > 0);
+    const before = state;
+    var filter: c.zc_capture_filter = undefined;
+    try t.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 0, c.ZC_CAPTURE_SYNC_READY, 0));
+    try t.expectEqual(c.ZC_TIMEOUT, zc_capture_filter_accept(camera.?, first.token, &filter));
+    var selected: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire_filtered(camera.?, &filter, 100, &selected));
+    try t.expectEqual(@as(u64, 2), selected.sequence);
+    try t.expectEqual(c.ZC_OK, zc_get_frame_sync_state(camera.?, selected.token, &state));
+    try t.expectEqual(@as(u32, 1), state.ready);
+    try t.expectEqual(@as(i64, 0), state.timer_us);
+    try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_get_frame_sync_state(camera.?, retained.token, &state));
+    try t.expectEqualDeep(before, state);
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, selected.token));
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, first.token));
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, retained.token));
+    try t.expectEqual(c.ZC_STALE, zc_get_frame_sync_state(camera.?, retained.token, &state));
+    try t.expectEqualDeep(std.mem.zeroes(c.zc_frame_sync_state), state);
+    try t.expectEqual(@as(u32, 0), self.stats.leased);
+}
+test "sync query failures preserve filter state and rejected pending frames retire their owners" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 8;
+    cfg.height = 6;
+    cfg.policy = c.ZC_FIFO;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer t.expectEqual(c.ZC_OK, zc_close(camera.?)) catch unreachable;
+    const self = session(camera.?);
+    self.device.?.sync_mode = 2;
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var filter: c.zc_capture_filter = undefined;
+    try t.expectEqual(c.ZC_OK, CaptureFilter.zc_capture_filter_init(&filter, 0, c.ZC_CAPTURE_SYNC_READY, 0));
+    const before = filter;
+    self.device.?.fail_sync_metadata = true;
+    try t.expectEqual(c.ZC_IO, zc_capture_filter_accept(camera.?, frame.token, &filter));
+    try t.expectEqualDeep(before, filter);
+    var state: c.zc_frame_sync_state = undefined;
+    try t.expectEqual(c.ZC_IO, zc_get_frame_sync_state(camera.?, frame.token, &state));
+    try t.expectEqualDeep(std.mem.zeroes(c.zc_frame_sync_state), state);
+    self.device.?.fail_sync_metadata = false;
+    const index = self.leaseIndex(frame.token).?;
+    const original = self.device.?.sync_states[index];
+    self.device.?.sync_states[index].ready = 2;
+    try t.expectEqual(c.ZC_DEVICE, zc_capture_filter_accept(camera.?, frame.token, &filter));
+    try t.expectEqualDeep(before, filter);
+    try t.expectEqual(c.ZC_DEVICE, zc_get_frame_sync_state(camera.?, frame.token, &state));
+    try t.expectEqualDeep(std.mem.zeroes(c.zc_frame_sync_state), state);
+    self.device.?.sync_states[index] = original;
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    frame.token = 42;
+    try t.expectEqual(c.ZC_TIMEOUT, zc_acquire_filtered(camera.?, &filter, 0, &frame));
+    try t.expectEqual(@as(u64, 42), frame.token);
+    try t.expectEqual(@as(u32, 0), self.stats.leased);
+    self.device.?.fail_sync_end = true;
+    try t.expectEqual(c.ZC_IO, zc_acquire_filtered(camera.?, &filter, 0, &frame));
+    try t.expectEqual(@as(u32, 0), self.stats.leased);
+    self.device.?.fail_sync_end = false;
 }
 test "structural preflight shares open validation without opening a device" {
     var cfg: c.zc_config = undefined;

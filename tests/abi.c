@@ -25,6 +25,8 @@ _Static_assert(sizeof(zc_output_wait_state)==16,"host capacity wait ABI");
 _Static_assert(offsetof(zc_output_mailbox_stats,error_code)==160,"host queue error ABI");
 _Static_assert(sizeof(zc_pts_clock)==24,"shared PTS clock ABI");
 _Static_assert(sizeof(zc_capture_filter)==32,"capture filter ABI");
+_Static_assert(sizeof(zc_frame_sync_state)==24,"frame sync ABI");
+_Static_assert(offsetof(zc_frame_sync_state,timer_us)==16,"frame sync timer ABI");
 _Static_assert(sizeof(zc_capture_delay)==32,"capture delay ABI");
 _Static_assert(offsetof(zc_capture_delay,armed)==24,"capture delay flag ABI");
 _Static_assert(sizeof(zc_preparation_job_state)==32,"preparation job ABI");
@@ -162,6 +164,22 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_config cfg;zc_default_config(&cfg);cfg.width=8;cfg.height=6;cfg.policy=ZC_FIFO;
+        zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK && zc_start(camera)==ZC_OK);
+        zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        zc_frame_sync_state state;memset(&state,42,sizeof(state));
+        assert(zc_get_frame_sync_state(camera,frame.token,&state)==ZC_OK);
+        assert(state.struct_size==sizeof(state) && state.valid==0 && state.ready==0 && state.timer_us==0);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        assert(zc_get_frame_sync_state(camera,frame.token,&state)==ZC_STALE);
+        zc_frame_sync_state zero={0};assert(memcmp(&state,&zero,sizeof(state))==0);
+        zc_capture_filter filter;assert(zc_capture_filter_init(&filter,0,ZC_CAPTURE_SYNC_READY,0)==ZC_OK);
+        frame.token=42;
+        assert(zc_acquire_filtered(camera,&filter,0,&frame)==ZC_TIMEOUT && frame.token==42);
+        zc_stats stats;assert(zc_get_stats(camera,&stats)==ZC_OK && stats.leased==0);
+        assert(zc_close(camera)==ZC_OK);
+    }
     {
         zc_config cfg;zc_default_config(&cfg);
         zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);

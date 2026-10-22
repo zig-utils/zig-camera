@@ -1008,3 +1008,32 @@ extern "C" int zcd_photo_values(Device *device,uint32_t index,zcd_photo_metadata
     }
     return ZC_OK;
 }
+template<class T> bool synchronizationMetadataName(const T *id,const char *name) {
+    if(!id || id->name()!=name)return false;
+    if constexpr(HasCatalogInfo<T>::value)
+        return id->vendor()=="rpi" || id->vendor()=="libcamera";
+    return true; // Older ControlId headers have no vendor provenance.
+}
+extern "C" int zcd_frame_sync_state(Device *device,uint32_t index,zc_frame_sync_state *out) {
+    *out={};out->struct_size=sizeof(*out);
+    if(index>=device->slots.size())return ZC_INVALID;
+    const auto &metadata=device->slots[index].request->metadata();
+    const auto *ids=metadata.idMap();
+    if(!ids)return ZC_OK;
+    for(const auto &entry:metadata) {
+        const auto found=ids->find(entry.first);
+        if(found==ids->end())continue;
+        const auto *id=found->second;
+        const auto &value=entry.second;
+        if(synchronizationMetadataName(id,"SyncReady")) {
+            if(out->valid&1)return ZC_DEVICE;
+            if(value.type()!=ControlTypeBool || value.isArray())return ZC_UNSUPPORTED;
+            out->ready=value.get<bool>();out->valid|=1;
+        }else if(synchronizationMetadataName(id,"SyncTimer")) {
+            if(out->valid&2)return ZC_DEVICE;
+            if(value.type()!=ControlTypeInteger64 || value.isArray())return ZC_UNSUPPORTED;
+            out->timer_us=value.get<int64_t>();out->valid|=2;
+        }
+    }
+    return ZC_OK;
+}

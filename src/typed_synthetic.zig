@@ -39,7 +39,7 @@ pub const Prepared = struct {
     saved: ?*Ref,
     committed: bool = false,
 };
-const Spec = struct { name: []const u8, kind: wire.Kind, array: bool = false, extent: u32 = 0, writable: bool = true };
+const Spec = struct { name: []const u8, kind: wire.Kind, vendor: []const u8 = "synthetic", array: bool = false, extent: u32 = 0, writable: bool = true };
 pub const first_id = 0x10001;
 pub const specs = [_]Spec{
     .{ .name = "SyntheticInt64", .kind = .i64 },
@@ -52,10 +52,12 @@ pub const specs = [_]Spec{
     .{ .name = "SyntheticPoint", .kind = .point },
     .{ .name = "SyntheticSize", .kind = .size },
     .{ .name = "SyntheticReadOnly", .kind = .i32, .writable = false },
+    .{ .name = "SyncMode", .kind = .i32, .vendor = "rpi" },
+    .{ .name = "SyncFrames", .kind = .i32, .vendor = "rpi" },
 };
 fn specInfo(index: usize) wire.RecordInfo {
     const spec = specs[index];
-    return .{ .id = @intCast(first_id + index), .kind = spec.kind, .native_type = @intFromEnum(spec.kind), .name = spec.name, .vendor = "synthetic", .flags = 8 | 16 | 32 | (if (spec.writable) @as(u32, 1) else 2) | (if (spec.array) @as(u32, 4) else 0), .extent = spec.extent };
+    return .{ .id = @intCast(first_id + index), .kind = spec.kind, .native_type = @intFromEnum(spec.kind), .name = spec.name, .vendor = spec.vendor, .flags = 8 | 16 | 32 | (if (spec.writable) @as(u32, 1) else 2) | (if (spec.array) @as(u32, 4) else 0), .extent = spec.extent };
 }
 fn knownInfo(h: *backend.Handle, id: u32) !wire.RecordInfo {
     var info: c.zc_control_info = undefined;
@@ -112,6 +114,14 @@ fn validate(h: *backend.Handle, info: wire.RecordInfo, value: wire.Value) !?c.zc
         return legacy;
     }
     switch (value.kind) {
+        .i32 => {
+            const scalar = ctl.integer(i32, value, 0);
+            if (std.mem.eql(u8, info.name, "SyncMode")) {
+                if (scalar < 0 or scalar > 2) return error.InvalidCatalog;
+            } else if (std.mem.eql(u8, info.name, "SyncFrames")) {
+                if (scalar < 1) return error.InvalidCatalog;
+            } else return error.Unsupported;
+        },
         .string, .byte => if (value.data.len > 4096) return error.InvalidCatalog,
         .f32 => {
             if (value.count > 256) return error.InvalidCatalog;
@@ -229,18 +239,40 @@ fn prepareFallible(h: *backend.Handle, entries: []const ctl.Input, sink: *const 
 pub fn commit(h: *backend.Handle, p: *Prepared, revision: *u64) c_int {
     if (p.owner != h or p.version != h.revision or p.committed) return c.ZC_STALE;
     if (h.revision == std.math.maxInt(u64)) return c.ZC_STATE;
+    const sync_settings = synchronizationSettings(p.current);
     h.pending = p.pending;
     h.saved = p.desired;
     Ref.release(h.vendor_current);
     Ref.release(h.vendor_saved);
     h.vendor_current = p.current;
     h.vendor_saved = p.saved;
+    applySynchronization(h, sync_settings);
     p.current = null;
     p.saved = null;
     h.revision += 1;
     revision.* = h.revision;
     p.committed = true;
     return c.ZC_OK;
+}
+const SyncSettings = struct { mode: i32 = 0, frames: u32 = 3 };
+pub fn synchronizationSettings(p: ?*Ref) SyncSettings {
+    var settings: SyncSettings = .{};
+    if (source(p) catch unreachable) |reader| {
+        var it = reader.records();
+        while (it.next() catch unreachable) |record| {
+            if (record.info.id != first_id + 10 and record.info.id != first_id + 11) continue;
+            var values = record.values();
+            const value = (values.next() catch unreachable).?;
+            const scalar = ctl.integer(i32, value, 0);
+            if (record.info.id == first_id + 10) settings.mode = scalar else settings.frames = @intCast(scalar);
+        }
+    }
+    return settings;
+}
+pub fn applySynchronization(h: *backend.Handle, settings: SyncSettings) void {
+    if (h.sync_mode != settings.mode or h.sync_frames != settings.frames) h.sync_seen = 0;
+    h.sync_mode = settings.mode;
+    h.sync_frames = settings.frames;
 }
 pub fn close(p: *Prepared) void {
     Ref.release(p.current);
@@ -256,6 +288,20 @@ pub fn metadata(h: *backend.Handle, index: u32, sink: *const api.Sink) c_int {
             const rc = ctl.emit(sink, output);
             if (rc != 0) return rc;
         }
+    }
+    const state = h.sync_states[index];
+    if (state.valid == 0) return c.ZC_OK;
+    var writer = wire.Writer.init(alloc, 4, 512) catch return c.ZC_NOMEM;
+    defer writer.deinit();
+    const ready = [_]u8{@intCast(state.ready)};
+    if (state.valid & 1 != 0) writeRecord(&writer, .{ .id = 0x20001, .kind = .boolean, .native_type = 1, .name = "SyncReady", .vendor = "rpi", .flags = 2 | 8 | 16 | 32 }, .{ .kind = .boolean, .data = &ready }) catch return c.ZC_NOMEM;
+    var timer: [8]u8 = undefined;
+    std.mem.writeInt(i64, &timer, state.timer_us, .little);
+    if (state.valid & 2 != 0) writeRecord(&writer, .{ .id = 0x20002, .kind = .i64, .native_type = 4, .name = "SyncTimer", .vendor = "rpi", .flags = 2 | 8 | 16 | 32 }, .{ .kind = .i64, .data = &timer }) catch return c.ZC_NOMEM;
+    var it = (wire.Reader.init(writer.finish() catch return c.ZC_INVALID) catch return c.ZC_INVALID).records();
+    while (it.next() catch return c.ZC_INVALID) |record| {
+        const rc = ctl.emit(sink, record);
+        if (rc != 0) return rc;
     }
     return c.ZC_OK;
 }
@@ -278,6 +324,10 @@ pub fn capabilities(h: *backend.Handle, sink: *const api.Sink) c_int {
                 else => 1,
             };
             if (spec.kind == .i64) std.mem.writeInt(i64, bytes[0..8], if (role == 1) std.math.minInt(i64) else if (role == 2) std.math.maxInt(i64) else 0, endian);
+            if (spec.kind == .i32 and spec.writable) {
+                const mode = std.mem.eql(u8, spec.name, "SyncMode");
+                std.mem.writeInt(i32, bytes[0..4], if (mode) (if (role == 2) 2 else 0) else (if (role == 1) 1 else if (role == 2) std.math.maxInt(i32) else 3), endian);
+            }
             if (spec.kind == .u16) std.mem.writeInt(u16, bytes[0..2], if (role == 2) std.math.maxInt(u16) else 0, endian);
             if (spec.kind == .u32) std.mem.writeInt(u32, bytes[0..4], if (role == 2) std.math.maxInt(u32) else 0, endian);
             if (spec.kind == .f32) std.mem.writeInt(u32, bytes[0..4], @bitCast(@as(f32, if (role == 1) -16 else if (role == 2) 16 else 0)), endian);

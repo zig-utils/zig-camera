@@ -1,7 +1,9 @@
 # Timestamp and frame-drop capture barriers
 
 CaptureOptions extends JobOptions with flush?: boolean | bigint and
-dropFrames?: number. The same options work for request/RGB/metadata/raw/lores,
+dropFrames?: number, plus syncReady?: boolean. Readiness requires true per-request
+SyncReady metadata and composes with the same counters/timing; see
+[software-sync capture](synchronization.md). The same options work for request/RGB/metadata/raw/lores,
 paired streams, JPEG/DNG and focus-locked captures. Defaults preserve existing
 selection and avoid an extra filter FFI call. Counts are unsigned u32 integers;
 thresholds are exact unsigned u64 bigints. Invalid values reject at admission.
