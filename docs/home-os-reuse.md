@@ -413,3 +413,11 @@ Per ADR-MC3, the std-only sensor decoder is contributed to Home's image package
 and reused here, while libcamera leases/DMA/calibration remain camera ownership.
 No OS source is copied, changed or executed. Software fixtures do not prove
 physical Pi compressed raw, mono metadata, sensor quality or hardware throughput.
+
+The 0.80.1 PNG ownership audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3, kernel boot/initramfs,
+container/image and media/video_decoder sources. initramfs has a restricted
+stored-block gzip read path; it is not a hosted deflate encoder or pinned zlib
+owner. container/image manages OCI layers, not raster images. These sources do
+not replace the checked Home streaming adapter. The owner cleanup fix improves
+Home stdlib and is reused here; no OS source is copied, changed or executed.

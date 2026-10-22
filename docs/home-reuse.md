@@ -1242,3 +1242,22 @@ independent libtiff DNG sample readback and LibRaw recognition, plus real-backen
 old-SDK compile/load/no-camera cleanup on ARM/x86. Physical Pi format/quality,
 calibration/precision, additional compression/DNG behavior and performance remain
 unverified; no parity completion is inferred from format coverage.
+
+The 0.80.1 still-media audit at Home 82d0989566ca6f4e01a48fc0d6d581a54072e5ef
+found duplicate errdefer owner destruction in the shared zlib_stream factory.
+Host allocation-failure tests stop before native initialization and could not
+observe this failure in zlib's separate allocator. A private initializer seam
+reproduces memory/stream/version error results after successful owner allocation;
+with duplicate cleanup it crashes in a second free. Home main commit
+cf409eea44d0769862b2c04dd5717a930673579c removes the duplicate, keeps validation
+and owner allocation before native init, and tests all native failure results
+without publishing an owner. The module is copied verbatim here. No public API,
+configuration switch, ABI or codec dependency changes. Pinned/development Zig
+pass Debug and ReleaseSafe; the complete Home image API passes 126 tests.
+Home-hosted Actions evidence remains unavailable and is not claimed as green.
+
+The audit also identifies later GIF/APNG work: Home's GIF writer emits one image,
+its literal LZW path never grows code width, and the APNG path bypasses checked
+raster row encoding. Those capabilities remain in the parity worklist; their
+presence in a source file is not completion evidence. This patch fixes the
+shared native PNG initialization prerequisite without claiming animation support.

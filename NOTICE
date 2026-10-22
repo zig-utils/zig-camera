@@ -596,3 +596,11 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Home native zlib initialization cleanup (0.80.1):
+- src/home/zlib_stream.zig is copied verbatim from Home
+  packages/image/src/formats/zlib_stream.zig at
+  cf409eea44d0769862b2c04dd5717a930673579c, superseding its earlier copy.
+  Native initialization failure destroys its pinned owner once. The private test
+  seam covers error results outside the caller's Zig allocator; public ABI stays
+  unchanged. Existing Home/Bun MIT attribution applies.

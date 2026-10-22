@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.80.1 fixes duplicate owner cleanup when native zlib stream initialization
+fails. The Home adapter now tests native initialization errors independently of
+host allocation failures; normal PNG encoding is unchanged.
+
 Version 0.80 adds [sensor raw formats](docs/sensor-raw.md): monochrome, CSI-2 and
 Pi 5 PiSP COMP1 capture, owned raw16 jobs and streaming Bayer/mono DNG through a
 checked Home helper. Explicit raw packing survives temporary DNG capture jobs.
