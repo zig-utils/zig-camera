@@ -97,3 +97,9 @@ held hooks and close races, shared/replaced microphones, fractional PCM cuts,
 main/lores exchange, AVC/HEVC changes and independently decoded AAC MP4 segments.
 No Pi camera/microphone is attached; physical drift, switching latency and sustained
 throughput remain hardware acceptance work.
+
+Cancellation coverage distinguishes a claimed candidate bridge from a peer whose
+native preparation has not yet claimed its host output. Claimed candidates retire
+with discard; an unclaimed application output is left untouched. Both paths join
+an already active asynchronous hook before releasing camera/recorder reservations.
+Tests use explicit start/stage barriers rather than native worker timing.

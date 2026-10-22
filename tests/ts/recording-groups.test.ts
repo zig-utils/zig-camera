@@ -10,7 +10,7 @@ import {
   type OutputPacket,
   type OutputStreams,
 } from '../../ts'
-import { native as ffi } from '../../ts/ffi'
+import { native as ffi, toArrayBuffer } from '../../ts/ffi'
 import {
   mkdtempSync,
   existsSync,
@@ -21,6 +21,12 @@ import {
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 const native: {
+  zc_video_producer_restart: (
+    ...args: Parameters<typeof ffi.zc_video_producer_restart>
+  ) => number
+  zc_producer_job_restart_stage: (
+    ...args: Parameters<typeof ffi.zc_producer_job_restart_stage>
+  ) => number
   zc_video_producer_barrier: (
     ...args: Parameters<typeof ffi.zc_video_producer_barrier>
   ) => number
@@ -41,6 +47,11 @@ const failed = (job: PromiseLike<unknown>) =>
     () => undefined,
     (e) => e,
   )
+function nativeOutputView(value: unknown, bytes: number) {
+  if (typeof value !== 'number' && typeof value !== 'bigint')
+    throw Error('native output pointer expected')
+  return new DataView(toArrayBuffer(value, 0, bytes))
+}
 function gate() {
   let release!: () => void
   const promise = new Promise<void>((r) => {
@@ -362,7 +373,12 @@ test('cancellation joins a held output hook before releasing the camera and both
   const s = await setup(),
     hold = gate(),
     entered = gate(),
-    peer = new Sink()
+    peerStarted = gate(),
+    peer = new (class extends Sink {
+      start() {
+        peerStarted.release()
+      }
+    })()
   try {
     const mode = s.c.switchRecordingsModeAsync(target, [
       { recording: s.a, output: peer },
@@ -378,7 +394,7 @@ test('cancellation joins a held output hook before releasing the camera and both
       },
     ])
     const result = failed(mode)
-    await entered.promise
+    await Promise.all([entered.promise, peerStarted.promise])
     expect(mode.cancel()).toBe(true)
     await pause(10)
     expect(mode.done).toBe(false)
@@ -393,6 +409,68 @@ test('cancellation joins a held output hook before releasing the camera and both
     expect(peer.discarded).toBe(true)
   } finally {
     hold.release()
+    await s.close()
+  }
+})
+test('group cancellation before a peer output claim leaves that output untouched while joining an active hook', async () => {
+  const s = await setup(),
+    hold = gate(),
+    entered = gate(),
+    blocked = gate(),
+    peer = new Sink(),
+    restart = native.zc_video_producer_restart,
+    stage = native.zc_producer_job_restart_stage
+  let peerJob: number | undefined
+  native.zc_video_producer_restart = (...args) => {
+    const code = restart(...args)
+    if (code === 0 && peerJob === undefined)
+      peerJob = Number(nativeOutputView(args[3], 8).getBigUint64(0, true))
+    return code
+  }
+  native.zc_producer_job_restart_stage = (...args) => {
+    const code = stage(...args)
+    if (code === 0 && Number(args[0]) === peerJob) {
+      // Hold only the first member before Bun constructs/claims its bridge.
+      nativeOutputView(args[1], 4).setUint32(0, 0, true)
+      blocked.release()
+    }
+    return code
+  }
+  try {
+    const mode = s.c.switchRecordingsModeAsync(target, [
+        { recording: s.a, output: peer },
+        {
+          recording: s.b,
+          output: {
+            outputframe() {},
+            async start() {
+              entered.release()
+              await hold.promise
+            },
+          },
+        },
+      ]),
+      result = failed(mode)
+    await Promise.all([entered.promise, blocked.promise])
+    expect(peer.metadata).toBeUndefined()
+    expect(peer.stops).toBe(0)
+    expect(mode.cancel()).toBe(true)
+    await pause(10)
+    expect(mode.done).toBe(false)
+    expect(() => s.c.acquire()).toThrow()
+    expect(() => s.r.restartAsync()).toThrow()
+    hold.release()
+    expect(await result).toBeInstanceOf(JobCancelledError)
+    expect(peer.metadata).toBeUndefined()
+    expect(peer.stops).toBe(0)
+    expect(s.c.info().width).toBe(64)
+    expect([s.r.width, s.p.width]).toEqual([64, 32])
+    expect(s.r.producerStats().ownedJobs).toBe(0n)
+    expect(s.p.producerStats().ownedJobs).toBe(0n)
+  } finally {
+    hold.release()
+    native.zc_video_producer_restart = restart
+    native.zc_producer_job_restart_stage = stage
     await s.close()
   }
 })
