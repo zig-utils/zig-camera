@@ -11,7 +11,7 @@ extern "C" {
 #define ZC_MAX_FRAME_REFERENCES 256
 /* Negative results, stable across platforms. */
 enum { ZC_OK=0, ZC_INVALID=-1, ZC_STATE=-2, ZC_TIMEOUT=-3, ZC_BUSY=-4,
-       ZC_STALE=-5, ZC_IO=-6, ZC_NOMEM=-7, ZC_UNSUPPORTED=-8, ZC_DEVICE=-9, ZC_CANCELLED=-10 };
+       ZC_STALE=-5, ZC_IO=-6, ZC_NOMEM=-7, ZC_UNSUPPORTED=-8, ZC_DEVICE=-9, ZC_CANCELLED=-10, ZC_DISCONNECTED=-11 };
 enum { ZC_FIFO=0, ZC_LATEST=1 };
 enum { ZC_SYNTHETIC=0, ZC_LIBCAMERA=1 };
 /* Zero dimensions select libcamera's default still size. Set both or neither.
@@ -375,6 +375,23 @@ int zc_frame_references(zc_camera *,uint64_t token,uint32_t *out);
 int zc_release(zc_camera *, uint64_t token);
 int zc_stop(zc_camera *);
 int zc_close(zc_camera *);
+/* Terminal device loss is separate from stop and generic errors. Existing
+ * completed leases/maps retain ownership and may still be read/released. No
+ * restart/requeue is allowed on a lost handle. Fence errors remain observable.
+ * Waiters require caller coordination with close. Synthetic injection is never
+ * available on a real-backend build. This does not reconnect/replace a camera. */
+typedef struct {
+    uint32_t struct_size,connected,running,leased;
+    int32_t status;
+    uint32_t ready;
+    uint64_t disconnect_event;
+} zc_device_state;
+int zc_get_device_state(zc_camera *,zc_device_state *out);
+int zc_wait_disconnected(zc_camera *,uint32_t timeout_ms,zc_device_state *out);
+int zc_simulate_disconnect(zc_camera *);
+/* Same close ownership contract; successful close copies final state AFTER
+ * callback retirement and before freeing the handle. Failure leaves out intact. */
+int zc_close_with_device_state(zc_camera *,zc_device_state *out);
 int zc_get_stats(zc_camera *, zc_stats *out);
 /* quality 1..100, 4:4:4 sampling; operates on an outstanding lease, no RGB copy. */
 int zc_save_jpeg(zc_camera *, uint64_t token, const char *path, uint32_t quality);

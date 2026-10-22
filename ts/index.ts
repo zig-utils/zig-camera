@@ -8,6 +8,13 @@ import {
 } from './capture-series'
 import { preparePreviewConfiguration } from './preview-options'
 import {
+  readDeviceState,
+  pollDisconnected,
+  DisconnectObserver,
+  type DeviceState,
+} from './device-state'
+export type { DeviceState } from './device-state'
+import {
   loadTuningFile,
   findTuningAlgorithm,
   TuningSession,
@@ -237,9 +244,11 @@ import {
   check,
   cstring,
   CameraError,
+  cameraError,
+  CameraDisconnectedError,
   type Pointer,
 } from './ffi'
-export { CameraError } from './ffi'
+export { CameraError, CameraDisconnectedError } from './ffi'
 const recordingOwner = Symbol('recordingOwner')
 const consumerState = Symbol('consumerState')
 const audioState = Symbol('audioState')
@@ -811,6 +820,8 @@ export class Camera {
   }
   set handle(value: Pointer) {
     this.cameraHandle = value
+    if (value && this.lastDeviceError && readDeviceState(value).connected)
+      this.lastDeviceError = undefined
     this.cachedLegacyRgb = undefined
   }
   [legacyRgbInput]() {
@@ -830,6 +841,71 @@ export class Camera {
     return this.cachedLegacyRgb
   }
   private started = false
+  private disconnectJobs = new Set<BunJob<Readonly<DeviceState>>>()
+  private observedDeviceLoss?: Readonly<DeviceState>
+  private disconnectScratch = storage(32)
+  private disconnectObserver = new DisconnectObserver(() => {
+    if (this.observedDeviceLoss) return this.observedDeviceLoss
+    if (this.closing || !this.handle)
+      throw new CameraError(-2, 'camera closed during disconnection wait')
+    if (this.modeActive || this.coordinatedRecorder || this.coordinatedGroup)
+      return undefined
+    const state = pollDisconnected(this.handle, this.disconnectScratch)
+    if (state) this.observedDeviceLoss ??= state
+    return state
+  })
+  private lastDeviceError?: CameraDisconnectedError
+  get deviceError() {
+    return this.lastDeviceError
+  }
+  deviceState() {
+    this.assertOpen()
+    const state = readDeviceState(this.handle)
+    if (!state.connected) this.observedDeviceLoss ??= state
+    return state
+  }
+  private ensureConnected() {
+    if (
+      !this.modeActive &&
+      !this.coordinatedRecorder &&
+      !this.coordinatedGroup &&
+      this.handle &&
+      !readDeviceState(this.handle).connected
+    )
+      throw new CameraDisconnectedError()
+  }
+  simulateDisconnect() {
+    this.assertOpen()
+    check(
+      n.zc_simulate_disconnect(this.handle),
+      'simulate device disconnection',
+    )
+    return this.deviceState()
+  }
+  waitDisconnected(options: JobOptions<Readonly<DeviceState>> = {}) {
+    guardRequestCallback()
+    this.assertOpen()
+    const effective = snapshotJobOptions(options, 30000)
+    this.assertOpen()
+    if (this.disconnectJobs.size >= 32)
+      throw new CameraError(-4, 'disconnection wait queue')
+    const job = new BunJob<Readonly<DeviceState>>(
+      async (current) => {
+        current.check()
+        const observed = await this.disconnectObserver.wait(current.signal)
+        current.check()
+        current.seal()
+        return observed
+      },
+      () => {},
+      effective,
+    )
+    this.disconnectJobs.add(job)
+    void job.operationDone.then(() => this.disconnectJobs.delete(job))
+    if (effective.signal?.aborted) job.cancel(effective.signal.reason)
+    void job.start()
+    return job
+  }
   private closing = false
   private stopJob?: Promise<void>
   private closeJob?: Promise<void>
@@ -975,9 +1051,14 @@ export class Camera {
       throw error
     }
   }
-  private runOwnedMode(request: ModeRequest): Promise<ModeResponse> {
+  private async runOwnedMode(request: ModeRequest): Promise<ModeResponse> {
     const callbacks = this.requestCallbacks
-    if (!callbacks.pre && !callbacks.post) return runModeWorker(request)
+    if (!callbacks.pre && !callbacks.post) {
+      const response = await runModeWorker(request)
+      if (response.deviceLoss)
+        this.observedDeviceLoss ??= Object.freeze({ ...response.deviceLoss })
+      return response
+    }
     const prepared = {
       ...request,
       requestHooks: {
@@ -986,7 +1067,7 @@ export class Camera {
         control: new SharedArrayBuffer(16),
       },
     }
-    return runModeWorker(prepared, (hook) => {
+    const response = await runModeWorker(prepared, (hook) => {
       const frame = new Frame(
         { handle: hook.handle, assertOpen: guardOutputHook },
         hook.frame,
@@ -999,6 +1080,9 @@ export class Camera {
         10n,
       )
     })
+    if (response.deviceLoss)
+      this.observedDeviceLoss ??= Object.freeze({ ...response.deviceLoss })
+    return response
   }
   private focusJob?: Pick<
     BunJob<unknown>,
@@ -1273,10 +1357,12 @@ export class Camera {
   start() {
     guardRequestCallback()
     this.assertOpen()
+    this.ensureConnected()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     this.startOwned()
   }
   private startOwned() {
+    this.ensureConnected()
     if (!this.started) {
       check(n.zc_start(this.handle))
       this.started = true
@@ -1631,13 +1717,13 @@ export class Camera {
             Object.assign(error, { restorationCancellationCode: code })
           } catch {
             throw new AggregateError(
-              [error, new CameraError(code, 'cancel AF restoration')],
+              [error, cameraError(code, 'cancel AF restoration')],
               'AF restoration cleanup failed',
             )
           }
         } else {
           throw new AggregateError(
-            [error, new CameraError(code, 'cancel AF restoration')],
+            [error, cameraError(code, 'cancel AF restoration')],
             'AF restoration cleanup failed',
           )
         }
@@ -2389,6 +2475,7 @@ export class Camera {
   startPreview(options: string | PreviewOptions = 'zig-camera') {
     guardRequestCallback()
     this.assertOpen()
+    this.ensureConnected()
     const configuration = preparePreviewConfiguration(options)
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
@@ -2589,6 +2676,7 @@ export class Camera {
   ) {
     guardRequestCallback()
     this.assertOpen()
+    this.ensureConnected()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     const audio = options.audio,
       backpressure = options.backpressure ?? 'wait',
@@ -2681,6 +2769,7 @@ export class Camera {
   ): BunJob<Recording> {
     guardRequestCallback()
     this.assertOpen()
+    this.ensureConnected()
     cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions)
     const autofocus = jobOptions.autofocus ?? false
@@ -3055,12 +3144,12 @@ export class Camera {
       !response.restoreCode &&
       !current.cancelRequested
     )
-      throw Object.assign(new CameraError(response.code, 'target autofocus'), {
+      throw Object.assign(cameraError(response.code, 'target autofocus'), {
         autofocusState: response.autofocusState,
       })
     if (response.controlCode && !response.restoreCode)
       throw Object.assign(
-        new CameraError(
+        cameraError(
           response.code || response.controlCode,
           'runtime control restoration',
         ),
@@ -3070,10 +3159,7 @@ export class Camera {
       current.cancel(new CameraError(-3, 'mode deadline'))
     if (response.restoreCode)
       throw Object.assign(
-        new CameraError(
-          response.code || response.restoreCode,
-          'mode restoration',
-        ),
+        cameraError(response.code || response.restoreCode, 'mode restoration'),
         {
           restoreCode: response.restoreCode,
           controlCode: response.controlCode,
@@ -3092,6 +3178,7 @@ export class Camera {
   ): BunJob<readonly Recording[]> {
     guardRequestCallback()
     this.assertOpen()
+    this.ensureConnected()
     cameraIdentity(options)
     const focusPolicy = this.modeFocusPolicy(jobOptions),
       autofocus = jobOptions.autofocus ?? false
@@ -3685,6 +3772,7 @@ export class Camera {
       throw new CameraError(-1, 'mode must retain camera/backend')
   }
   private checkModeAdmission(owner?: object) {
+    this.ensureConnected()
     if (
       this.captureFilesJob &&
       !this.captureFilesJob.done &&
@@ -3821,12 +3909,12 @@ export class Camera {
                 !current.cancelRequested
               )
                 throw Object.assign(
-                  new CameraError(response.code, 'target autofocus'),
+                  cameraError(response.code, 'target autofocus'),
                   { autofocusState: response.autofocusState },
                 )
               if (response.controlCode && !response.restoreCode)
                 throw Object.assign(
-                  new CameraError(
+                  cameraError(
                     response.code || response.controlCode,
                     'runtime control restoration',
                   ),
@@ -3835,7 +3923,7 @@ export class Camera {
               if (Date.now() >= deadline && !current.cancelRequested)
                 current.cancel(new CameraError(-3, 'mode deadline'))
               if (response.restoreCode) {
-                const error = new CameraError(
+                const error = cameraError(
                   response.code || response.restoreCode,
                   'mode restoration',
                 ) as CameraError & { restoreCode: number }
@@ -4212,6 +4300,7 @@ export class Camera {
     if (error !== undefined && !cancelled) this.failRecording(recording, error)
   }
   private ensurePump() {
+    if (this.lastDeviceError) return
     if (
       this.timer === undefined &&
       !this.pumping &&
@@ -4236,7 +4325,7 @@ export class Camera {
               : code
           if (failure && failure !== -3)
             this.focusJob?.cancel(
-              new CameraError(failure, 'autofocus observation pump'),
+              cameraError(failure, 'autofocus observation pump'),
             )
           if (this.focusJobs) this.timer = setTimeout(() => this.pump(), 1)
         }
@@ -4376,6 +4465,13 @@ export class Camera {
         }
       } catch (error) {
         if (!(error instanceof CameraError && error.code === -3)) {
+          if (error instanceof CameraError && error.code === -11) {
+            this.lastDeviceError ??=
+              error instanceof CameraDisconnectedError
+                ? error
+                : new CameraDisconnectedError()
+            this.focusJob?.cancel(error)
+          }
           selected?.reject(error)
           selected = undefined
           for (const job of this.requests) job.reject(error)
@@ -4399,6 +4495,7 @@ export class Camera {
         }
       }
       selected?.resolve(capturedValue)
+      if (this.lastDeviceError) return
       if (!this.handle || this.closing || this.stopJob) return
       if (
         this.recording ||
@@ -4516,11 +4613,16 @@ export class Camera {
       !this.fanout &&
       !this.previewConfiguration &&
       !this.overlayHandle &&
-      !this.tuningSession
+      !this.tuningSession &&
+      this.disconnectJobs.size === 0
     )
       return Promise.resolve()
     this.closing = true
+    const disconnectJobs = [...this.disconnectJobs]
+    for (const job of disconnectJobs)
+      job.cancel(new CameraError(-2, 'camera closing'))
     this.closeJob = (async () => {
+      await Promise.all(disconnectJobs.map((job) => job.operationDone))
       let failure: unknown
       try {
         await this.stopWork()
@@ -5676,8 +5778,7 @@ export class Recorder {
       this.objectOutputs.delete(key)
       try {
         if (code !== 0)
-          primary =
-            current.bridge.error ?? new CameraError(code, 'remove output')
+          primary = current.bridge.error ?? cameraError(code, 'remove output')
         await current.bridge.retire()
       } catch (error) {
         primary ??= error
@@ -6051,8 +6152,7 @@ export class Recorder {
         u64(state) === current.generation
       ) {
         const code = view(state).getInt32(8, true)
-        if (code !== 0)
-          current.bridge.fail(new CameraError(code, 'native output'))
+        if (code !== 0) current.bridge.fail(cameraError(code, 'native output'))
       }
     }
   }
@@ -6494,7 +6594,7 @@ export class Recorder {
           code = n.zc_video_claim_factory(this.handle, id, ptr(state))
         if (code === -3) continue
         if (code !== 0) {
-          entry.error ??= new CameraError(code, 'factory claim')
+          entry.error ??= cameraError(code, 'factory claim')
           continue
         }
         const ticket = u64(state, 8),

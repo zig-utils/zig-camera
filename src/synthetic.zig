@@ -48,6 +48,8 @@ pub const Handle = struct {
     stop_calls: u32 = 0,
     writable: bool = false,
     tuning_held: bool = false,
+    removed: bool = false,
+    remove_on_sync_begin: bool = false,
     fail_writable_once: bool = false,
 };
 pub fn enableWritable(h: *Handle) c_int {
@@ -224,6 +226,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     return c.ZC_OK;
 }
 pub fn start(h: *Handle) c_int {
+    if (h.removed) return c.ZC_DISCONNECTED;
     h.sync_seen = 0;
     for (h.saved, 0..) |value, id| if (h.pending[id] == null) {
         h.pending[id] = value;
@@ -265,10 +268,15 @@ pub fn close(h: *Handle) void {
     Alloc.destroy(h);
 }
 pub fn sync(h: *Handle, _: u32, begin: bool) c_int {
+    if (begin and h.remove_on_sync_begin) {
+        h.remove_on_sync_begin = false;
+        disconnect(h);
+    }
     if ((begin and h.fail_sync_begin) or (!begin and h.fail_sync_end)) return c.ZC_IO;
     return c.ZC_OK;
 }
 pub fn queue(h: *Handle, index: u32) c_int {
+    if (h.removed) return c.ZC_DISCONNECTED;
     if (h.fail_queue) return c.ZC_DEVICE;
     for (&h.pending, 0..) |*entry, id| {
         if (entry.*) |value| {
@@ -369,6 +377,11 @@ pub fn queue(h: *Handle, index: u32) c_int {
     h.catalog_metadata[index] = meta;
     h.callback(h.context, index, &f, &meta, c.ZC_OK);
     return c.ZC_OK;
+}
+pub fn disconnect(h: *Handle) void {
+    if (h.removed) return;
+    h.removed = true;
+    h.callback(h.context, std.math.maxInt(u32), null, null, c.ZC_DISCONNECTED);
 }
 
 pub fn metadata(_: *Handle, _: u32, out: *c.zc_raw_metadata) c_int {

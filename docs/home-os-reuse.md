@@ -253,3 +253,12 @@ reused here with the existing Home tuning editor and job gates. No OS source is
 copied, changed or executed. The fixed-buffer stub is not hardware acceptance,
 and the new real-backend no-camera smoke proves manager cleanup, not sensor IPA
 parameters, optics, hotplug behavior or Pi throughput.
+
+The 0.66 device-loss audit fetches unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, rechecks camera.home/ADR-MC3 and reads
+the xHCI/HID/mass-storage ownership boundary in drivers/usb.home. Kernel device
+contexts, command/event rings and register access do not supply hosted libcamera
+signal retirement or completion-lease/DMA ownership. The camera stub has no such
+disconnect notification. Existing Home lease/access/completion gates therefore
+remain the portable pieces to reuse. No OS source is changed, copied or executed,
+and no physical unplug, kernel-camera or recovery acceptance is inferred.

@@ -807,3 +807,20 @@ regression deliberately aborts against the earlier helper and passes the fixed
 public wrappers in Debug/ReleaseSafe. Pure tests pass on pinned/current compilers.
 The camera's standalone catalogue test now links the actual built Zig library
 for manager policy hooks; it does not replace those hooks with test stubs.
+
+The 0.66 device-loss audit fetches unchanged Home main at
+3888e242056533d2da2e0c082129354885d920ec and verifies the copied video lease_pool,
+frame_access and async completion_gate against their upstream files. These
+existing helpers retain generation tokens, read/write scopes and AF job state
+through loss. No new pool or scheduler is needed. Audited async channel and
+concurrent_queue: sends allocate nodes and their lifecycle does not supply the
+fixed terminal observation required on an SDK callback, so neither is imported
+as an unbounded device-event transport.
+
+Camera keeps its SDK-specific sticky loss/status and final-close handoff in Zig;
+the C++ relay owns only SDK callback retirement. Bun's 32 bounded subscribers
+share one poll/scratch descriptor and existing Home-gated jobs. Worker responses
+carry owned loss observations across close/rollback without retaining a driver
+pointer. Home sources remain unchanged for this step, with their existing notices
+and license preserved. Synthetic relay, fence and wait tests do not establish
+physical disconnect/DMA behavior; manager-wide watches and recovery remain open.

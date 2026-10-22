@@ -43,6 +43,8 @@ const Session = struct {
     changed: std.Thread.Condition = .{},
     running: bool = false,
     fatal: c_int = 0,
+    removed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    disconnect_event: u64 = 0,
     leases: @import("home/lease_pool.zig").Pool(c.ZC_MAX_BUFFERS, c.ZC_MAX_FRAME_REFERENCES) = .{},
     config: c.zc_config,
     processed: c.zc_processed_options = colors.defaults(),
@@ -72,13 +74,17 @@ const Session = struct {
     // operation held, mutex NOT held: synthetic queue may complete synchronously.
     fn queue(self: *Session, i: u32) c_int {
         self.mutex.lock();
+        if (self.removed.load(.acquire)) {
+            self.mutex.unlock();
+            return c.ZC_DISCONNECTED;
+        }
         self.slots[i].state = .queued;
         self.mutex.unlock();
         const rc = driver.queue(self.device.?, i);
         if (rc != 0) {
             self.mutex.lock();
             self.slots[i].state = .idle;
-            self.fatal = rc;
+            if (!self.removed.load(.acquire)) self.fatal = rc;
             self.stats.errors += 1;
             self.changed.broadcast();
             self.mutex.unlock();
@@ -93,6 +99,25 @@ fn completed(ctx: ?*anyopaque, index: u32, frame: ?*const c.zc_frame, metadata: 
     const self: *Session = @ptrCast(@alignCast(ctx.?));
     self.mutex.lock();
     defer self.mutex.unlock();
+    // Out-of-band terminal notification is valid even before first start or
+    // after stop. It never consumes an index or recycles an outstanding lease.
+    if (status == c.ZC_DISCONNECTED) {
+        if (!self.removed.swap(true, .acq_rel)) {
+            self.disconnect_event = self.stats.completed;
+            self.fatal = c.ZC_DISCONNECTED;
+            self.running = false;
+            self.af_lock_valid = false;
+            self.stats.errors += 1;
+            self.stats.dropped += self.count;
+            self.count = 0;
+            for (&self.slots) |*slot| if (slot.state == .ready) {
+                slot.state = .idle;
+            };
+            self.changed.broadcast();
+        }
+        return;
+    }
+    if (self.removed.load(.acquire)) return;
     if (!self.running) return;
     if (index >= self.info.buffer_count or self.slots[index].state != .queued or status != 0 or frame == null or metadata == null) {
         self.fatal = if (status != 0) status else c.ZC_DEVICE;
@@ -262,8 +287,9 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
     var actual: u32 = 0;
     const rc = if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
+        const disconnected = self.removed.load(.acquire);
         std.heap.c_allocator.destroy(self);
-        return rc;
+        return if (disconnected) c.ZC_DISCONNECTED else rc;
     }
     if (actual < 1 or actual > 8 or (strict != 0 and actual != orientation)) {
         driver.close(self.device.?);
@@ -306,6 +332,11 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
         driver.close(self.device.?);
         std.heap.c_allocator.destroy(self);
         return identity_rc;
+    }
+    if (self.removed.load(.acquire)) {
+        driver.close(self.device.?);
+        std.heap.c_allocator.destroy(self);
+        return c.ZC_DISCONNECTED;
     }
     out.* = self.ptr();
     return c.ZC_OK;
@@ -478,6 +509,10 @@ pub export fn zc_start(p: *c.zc_camera) c_int {
     self.operation.lock();
     defer self.operation.unlock();
     self.mutex.lock();
+    if (self.removed.load(.acquire)) {
+        self.mutex.unlock();
+        return c.ZC_DISCONNECTED;
+    }
     if (self.running or self.stats.leased != 0) {
         self.mutex.unlock();
         return c.ZC_BUSY;
@@ -491,6 +526,11 @@ pub export fn zc_start(p: *c.zc_camera) c_int {
     const rc = driver.start(self.device.?);
     if (rc != 0) return rc;
     self.mutex.lock();
+    if (self.removed.load(.acquire)) {
+        self.mutex.unlock();
+        _ = driver.stop(self.device.?);
+        return c.ZC_DISCONNECTED;
+    }
     self.running = true;
     self.started_once = true;
     self.mutex.unlock();
@@ -567,12 +607,17 @@ pub export fn zc_acquire(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_frame) c_i
             _ = self.leases.release(token) catch unreachable;
             self.stats.leased -= 1;
             self.stats.errors += 1;
-            self.fatal = rc;
+            if (!self.removed.load(.acquire)) self.fatal = rc;
             self.changed.broadcast();
             self.mutex.unlock();
             return rc;
         }
         self.mutex.lock();
+        if (self.removed.load(.acquire)) {
+            self.mutex.unlock();
+            const cleanup = releaseLocked(self, token);
+            return if (cleanup != c.ZC_OK) cleanup else c.ZC_DISCONNECTED;
+        }
         self.stats.delivered += 1;
         out.* = slot.frame;
         self.mutex.unlock();
@@ -699,7 +744,7 @@ fn releaseLocked(self: *Session, token: u64) c_int {
     self.stats.leased -= 1;
     const running = self.running and self.fatal == 0;
     if (rc != 0) {
-        self.fatal = rc;
+        if (!self.removed.load(.acquire)) self.fatal = rc;
         self.stats.errors += 1;
         self.changed.broadcast();
     }
@@ -712,6 +757,7 @@ pub export fn zc_enable_writable(p: *c.zc_camera) c_int {
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (self.started_once) return c.ZC_STATE;
     if (self.stats.leased != 0) return c.ZC_BUSY;
     if (self.writable) return c.ZC_OK;
@@ -834,7 +880,185 @@ pub export fn zc_stop(p: *c.zc_camera) c_int {
     defer self.operation.unlock();
     return stopLocked(self);
 }
+fn deviceStateLocked(self: *Session, out: *c.zc_device_state) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_device_state), .connected = @intFromBool(!self.removed.load(.acquire)), .running = @intFromBool(self.running), .leased = self.stats.leased, .status = self.fatal, .ready = @intCast(self.count), .disconnect_event = self.disconnect_event };
+}
+pub export fn zc_get_device_state(p: *c.zc_camera, out: *c.zc_device_state) c_int {
+    const self = session(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    deviceStateLocked(self, out);
+    return c.ZC_OK;
+}
+test "disconnect is terminal before start and completed leases survive loss without requeue" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.buffer_count = 2;
+    cfg.policy = c.ZC_FIFO;
+    var p: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    try t.expectEqual(c.ZC_OK, zc_simulate_disconnect(p.?));
+    try t.expectEqual(c.ZC_DISCONNECTED, zc_start(p.?));
+    try t.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try t.expectEqual(c.ZC_DISCONNECTED, zc_start(p.?));
+    try t.expectEqual(c.ZC_OK, zc_close(p.?));
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try t.expectEqual(c.ZC_OK, zc_start(p.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &frame));
+    var retained: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_retain(p.?, frame.token, &retained));
+    const event = session(p.?).stats.completed;
+    try t.expectEqual(c.ZC_OK, zc_simulate_disconnect(p.?));
+    try t.expectEqual(c.ZC_OK, zc_simulate_disconnect(p.?));
+    var state: c.zc_device_state = undefined;
+    try t.expectEqual(c.ZC_OK, zc_get_device_state(p.?, &state));
+    try t.expectEqual(@as(u32, 0), state.connected);
+    try t.expectEqual(@as(u32, 1), state.leased);
+    try t.expectEqual(event, state.disconnect_event);
+    try t.expectEqual(@as(u64, 1), session(p.?).stats.errors);
+    var metadata: c.zc_metadata = undefined;
+    try t.expectEqual(c.ZC_OK, zc_get_frame_metadata(p.?, frame.token, &metadata));
+    try t.expectEqual(c.ZC_OK, zc_frame_readable(p.?, frame.token));
+    try t.expectEqual(c.ZC_DISCONNECTED, zc_acquire(p.?, 5000, &frame));
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, frame.token));
+    try t.expectEqual(c.ZC_BUSY, zc_close(p.?));
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, retained.token));
+    try t.expectEqual(event, session(p.?).stats.completed);
+    try t.expectEqual(c.ZC_DISCONNECTED, zc_start(p.?));
+}
+const DisconnectWait = struct {
+    camera: *c.zc_camera,
+    kind: u32,
+    ready: std.Thread.ResetEvent = .{},
+    result: c_int = 123,
+    fn run(self: *DisconnectWait) void {
+        self.ready.set();
+        var frame: c.zc_frame = undefined;
+        var metadata: c.zc_metadata = undefined;
+        var state: c.zc_device_state = undefined;
+        self.result = switch (self.kind) {
+            0 => zc_acquire(self.camera, 5000, &frame),
+            1 => zc_wait_metadata(self.camera, std.math.maxInt(u64), 5000, &metadata),
+            else => zc_wait_disconnected(self.camera, 5000, &state),
+        };
+    }
+};
+test "disconnect wakes capture metadata and lifecycle waits without releasing their frame owners" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    cfg.buffer_count = 2;
+    cfg.policy = c.ZC_FIFO;
+    var p: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try t.expectEqual(c.ZC_OK, zc_start(p.?));
+    var a: c.zc_frame = undefined;
+    var b: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &a));
+    try t.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &b));
+    var waits = [_]DisconnectWait{ .{ .camera = p.?, .kind = 0 }, .{ .camera = p.?, .kind = 1 }, .{ .camera = p.?, .kind = 2 } };
+    var threads: [3]std.Thread = undefined;
+    for (&waits, 0..) |*wait, i| threads[i] = try std.Thread.spawn(.{}, DisconnectWait.run, .{wait});
+    for (&waits) |*wait| wait.ready.wait();
+    try t.expectEqual(c.ZC_OK, zc_simulate_disconnect(p.?));
+    for (threads) |thread| thread.join();
+    try t.expectEqual(c.ZC_DISCONNECTED, waits[0].result);
+    try t.expectEqual(c.ZC_DISCONNECTED, waits[1].result);
+    try t.expectEqual(c.ZC_OK, waits[2].result);
+    try t.expectEqual(@as(u32, 2), session(p.?).stats.leased);
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, a.token));
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, b.token));
+}
+test "loss keeps fence errors observable and mapped access retains the last owner" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 16;
+    cfg.height = 16;
+    var p: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    defer _ = zc_close(p.?);
+    try t.expectEqual(c.ZC_OK, zc_start(p.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &frame));
+    var map: ?*c.zc_frame_map = null;
+    try t.expectEqual(c.ZC_OK, zc_frame_map_open(p.?, frame.token, c.ZC_MAIN, 0, &map));
+    try t.expectEqual(c.ZC_OK, zc_simulate_disconnect(p.?));
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, frame.token));
+    try t.expectEqual(c.ZC_BUSY, zc_close(p.?));
+    session(p.?).device.?.fail_sync_end = true;
+    try t.expectEqual(c.ZC_IO, zc_frame_map_close(map));
+    try t.expectEqual(@as(u32, 0), session(p.?).stats.leased);
+    var state: c.zc_device_state = undefined;
+    _ = zc_get_device_state(p.?, &state);
+    try t.expectEqual(c.ZC_DISCONNECTED, state.status);
+    try t.expectEqual(c.ZC_DISCONNECTED, zc_start(p.?));
+}
+test "removal during the begin fence never publishes a candidate and still attempts its end fence" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    for ([_]bool{ false, true }) |fail_end| {
+        var cfg: c.zc_config = undefined;
+        zc_default_config(&cfg);
+        cfg.width = 16;
+        cfg.height = 16;
+        var camera: ?*c.zc_camera = null;
+        try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+        defer _ = zc_close(camera.?);
+        try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+        const device = session(camera.?).device.?;
+        device.remove_on_sync_begin = true;
+        device.fail_sync_end = fail_end;
+        var output: c.zc_frame = undefined;
+        @memset(std.mem.asBytes(&output), 0x5a);
+        const before = output;
+        try t.expectEqual(if (fail_end) @as(c_int, c.ZC_IO) else @as(c_int, c.ZC_DISCONNECTED), zc_acquire(camera.?, 0, &output));
+        try t.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&output));
+        try t.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+        try t.expectEqual(@as(u64, 0), session(camera.?).stats.delivered);
+        try t.expectEqual(c.ZC_DISCONNECTED, session(camera.?).fatal);
+    }
+}
+pub export fn zc_wait_disconnected(p: *c.zc_camera, timeout_ms: u32, out: *c.zc_device_state) c_int {
+    const self = session(p);
+    var timer = std.time.Timer.start() catch return c.ZC_IO;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    while (!self.removed.load(.acquire)) {
+        const elapsed = timer.read();
+        const limit = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        if (elapsed >= limit) return c.ZC_TIMEOUT;
+        self.changed.timedWait(&self.mutex, limit - elapsed) catch {};
+    }
+    deviceStateLocked(self, out);
+    return c.ZC_OK;
+}
+pub export fn zc_simulate_disconnect(p: *c.zc_camera) c_int {
+    if (options.libcamera) return c.ZC_UNSUPPORTED;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    driver.disconnect(self.device.?);
+    return c.ZC_OK;
+}
 pub export fn zc_close(p: *c.zc_camera) c_int {
+    return closeWithState(p, null);
+}
+pub export fn zc_close_with_device_state(p: *c.zc_camera, out: *c.zc_device_state) c_int {
+    return closeWithState(p, out);
+}
+fn closeWithState(p: *c.zc_camera, out: ?*c.zc_device_state) c_int {
     const self = session(p);
     self.operation.lock();
     self.mutex.lock();
@@ -850,6 +1074,11 @@ pub export fn zc_close(p: *c.zc_camera) c_int {
         return rc;
     }
     driver.close(self.device.?);
+    if (out) |state| {
+        self.mutex.lock();
+        deviceStateLocked(self, state);
+        self.mutex.unlock();
+    }
     if (self.native_desired) |*writer| writer.deinit();
     self.operation.unlock();
     std.heap.c_allocator.destroy(self);
@@ -870,6 +1099,7 @@ pub export fn zc_get_control_info(p: *c.zc_camera, id: u32, out: *c.zc_control_i
     return driver.controlInfo(self.device.?, id, out);
 }
 fn setControlsLocked(self: *Session, values: []const c.zc_control, revision: *u64) c_int {
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (values.len == 0 or values.len > c.ZC_MAX_CONTROLS) return c.ZC_INVALID;
     for (values, 0..) |*v, i| {
         var info: c.zc_control_info = undefined;
@@ -955,6 +1185,7 @@ pub export fn zc_restore_controls(p: *c.zc_camera, values: ?[*]const c.zc_contro
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (self.started_once or self.restored or self.control_revision != 0 or self.desired.count != 0) return c.ZC_STATE;
     if (count != 0) {
         if (base == std.math.maxInt(u64)) return c.ZC_STATE;
@@ -989,6 +1220,7 @@ pub export fn zc_wait_metadata(p: *c.zc_camera, after: u64, timeout_ms: u32, out
     self.mutex.lock();
     defer self.mutex.unlock();
     while (true) {
+        if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
         if (!self.running) return c.ZC_STATE;
         if (self.fatal != 0) return self.fatal;
         if (self.latest.event_id > after) {
@@ -1005,6 +1237,7 @@ pub export fn zc_autofocus_start(p: *c.zc_camera, job_id: *u64) c_int {
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     self.mutex.lock();
     const running = self.running;
     const busy = if (self.af) |af| !af.terminal() else false;
@@ -1036,6 +1269,7 @@ fn continuous(self: *Session) bool {
 }
 // operation held. Replacing an owned pause command is explicit and returns a fresh ID.
 fn pauseStartLocked(self: *Session, command: u32, replace: bool, job_id: *u64) c_int {
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (command > 2) return c.ZC_INVALID;
     self.mutex.lock();
     const running = self.running;
@@ -1074,11 +1308,13 @@ pub export fn zc_autofocus_pause_restore(p: *c.zc_camera, id: u64, job_id: *u64)
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (id != self.af_id or self.af_command == null or !self.af_lock_valid) return c.ZC_STALE;
     return pauseStartLocked(self, self.af_restore_pause, true, job_id);
 }
 // Both operation and mutex held.
 fn focusLockStatus(self: *Session, id: u64) c_int {
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (self.af_id != id or self.af_command == null or self.af_command.? == 2 or !self.af_lock_valid) return c.ZC_STALE;
     if (self.af == null or self.af.?.state != .succeeded) return c.ZC_STATE;
     return c.ZC_OK;
@@ -1142,6 +1378,12 @@ pub export fn zc_autofocus_cancel(p: *c.zc_camera, id: u64) c_int {
         return c.ZC_STALE;
     }
     const terminal = self.af.?.terminal();
+    if (self.removed.load(.acquire)) {
+        self.af.?.cancel();
+        self.changed.broadcast();
+        self.mutex.unlock();
+        return c.ZC_OK;
+    }
     self.mutex.unlock();
     if (terminal) return c.ZC_OK;
     var value: c.zc_control = std.mem.zeroes(c.zc_control);
@@ -1522,6 +1764,7 @@ pub export fn zc_status_string(status: c_int) [*:0]const u8 {
         c.ZC_NOMEM => "out of memory",
         c.ZC_UNSUPPORTED => "requested feature unavailable in this backend or camera",
         c.ZC_DEVICE => "libcamera device/configuration failure",
+        c.ZC_DISCONNECTED => "camera disconnected; close this handle before reopening",
         else => "unknown error",
     };
 }
@@ -2616,6 +2859,7 @@ fn publishNative(self: *Session, staged: *?catalogs.wire.Writer) void {
     }
 }
 fn applyTypedLocked(self: *Session, input_reader: catalogs.wire.Reader, revision: *u64, restoring: bool) c_int {
+    if (self.removed.load(.acquire)) return c.ZC_DISCONNECTED;
     if (input_reader.count == 0 or input_reader.count > typed.max_controls) return c.ZC_INVALID;
     if (self.control_revision == std.math.maxInt(u64)) return c.ZC_STATE;
     var entries: [typed.max_controls]typed.Input = undefined;

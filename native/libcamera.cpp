@@ -23,6 +23,7 @@
 #include <mutex>
 #include <type_traits>
 #include <utility>
+#include <atomic>
 
 using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
@@ -299,7 +300,21 @@ static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,co
     else if(format!=ZC_YUV420 || color.ycbcrEncoding==ColorSpace::YcbcrEncoding::None)return std::nullopt;
     return color;
 }
+struct Device;
+struct CallbackState : std::enable_shared_from_this<CallbackState> {
+    std::mutex mutex; Device *owner=nullptr;
+    void completed(Request *request);
+    void disconnected();
+    void retire(){std::lock_guard<std::mutex> lock(mutex);owner=nullptr;}
+};
 struct Device {
+    std::atomic<bool> removed{false};
+    std::shared_ptr<CallbackState> callbacks;
+    bool loss_connected=false;
+    void disconnected() {
+        if(!removed.exchange(true,std::memory_order_acq_rel) && callback)
+            callback(context,UINT32_MAX,nullptr,nullptr,ZC_DISCONNECTED);
+    }
     ManagerLease manager_lease;
     std::shared_ptr<Camera> camera;
     std::unique_ptr<CameraConfiguration> config;
@@ -350,6 +365,7 @@ struct Device {
         return ZC_OK;
     }
     int setControls(const zc_control *values,uint32_t count,uint64_t *revision) {
+        if(removed.load(std::memory_order_acquire))return ZC_DISCONNECTED;
         if(control_revision==UINT64_MAX)return ZC_STATE;
         auto next=pending;auto saved=desired;
         // AeEnable is a convenience for both newer mode controls; explicit modes
@@ -382,8 +398,12 @@ struct Device {
     bool acquired = false, started = false, connected = false;
 
     ~Device() {
+        // Slots retain relay state while executing. Retire the owner under its mutex,
+        // joining any active callback before request/map storage is destroyed.
+        if(callbacks)callbacks->retire();
         if (started) camera->stop();
-        if (connected) camera->requestCompleted.disconnect(this);
+        if (connected) camera->requestCompleted.disconnect(callbacks.get());
+        if (loss_connected) camera->disconnected.disconnect(callbacks.get());
         // Requests must be destroyed before the buffers they reference.
         slots.clear();
         allocator.reset();
@@ -436,7 +456,11 @@ struct Device {
             if (cfg.camera_index >= cameras.size()) return ZC_DEVICE;
             camera = cameras[cfg.camera_index];
         }
-        if (camera->acquire() < 0) return ZC_BUSY;
+        callbacks=std::make_shared<CallbackState>();callbacks->owner=this;
+        camera->disconnected.connect(callbacks.get(),&CallbackState::disconnected);
+        loss_connected=true;
+        const int acquire_rc=camera->acquire();
+        if(acquire_rc<0) {if(acquire_rc==-ENODEV){disconnected();return ZC_DISCONNECTED;}return ZC_BUSY;}
         acquired = true;
         pending=ControlList(camera->controls());desired=ControlList(camera->controls());
         // Inspect raw formats once, before configuring. Discovery never changes
@@ -565,11 +589,12 @@ struct Device {
         info.main.plane_count = slots[0].frame.main.plane_count;
         info.raw.plane_count = slots[0].frame.raw.plane_count;
         pipeline.lores.plane_count=slots[0].lores.plane_count;
-        camera->requestCompleted.connect(this, &Device::completed);
+        camera->requestCompleted.connect(callbacks.get(),&CallbackState::completed);
         connected = true;
-        return ZC_OK;
+        return removed.load(std::memory_order_acquire) ? ZC_DISCONNECTED : ZC_OK;
     }
     void completed(Request *request) {
+        if(removed.load(std::memory_order_acquire))return;
         if (request->status() == Request::RequestCancelled) return;
         const auto index = static_cast<uint32_t>(request->cookie());
         auto &frame = slots[index].frame;
@@ -617,6 +642,7 @@ struct Device {
         callback(context, index, &frame, &extra,ZC_OK);
     }
     int start() {
+        if(removed.load(std::memory_order_acquire))return ZC_DISCONNECTED;
         ControlList control(camera->controls());
         // Match Picamera2's still-image quality policy when the camera supports it.
         const uint32_t nr = options.noise_reduction == UINT32_MAX ? (options.role == ZC_STILL ? 2 : options.role == ZC_VIDEO ? 1 : 3) : options.noise_reduction;
@@ -638,17 +664,19 @@ struct Device {
         }
         for(const auto &entry:desired)control.set(entry.first,entry.second);
         const int rc = camera->start(&control);
-        if (rc < 0) return ZC_DEVICE;
+        if (rc < 0) {if(rc==-ENODEV){disconnected();return ZC_DISCONNECTED;}return ZC_DEVICE;}
         started = true;
         return ZC_OK;
     }
     int queue(uint32_t index) {
+        if(removed.load(std::memory_order_acquire))return ZC_DISCONNECTED;
         if (index >= slots.size()) return ZC_INVALID;
         auto &slot = slots[index];
         if (slot.used) slot.request->reuse(Request::ReuseBuffers);
         slot.used = true;
         slot.request->controls()=pending;slot.control_revision=control_revision;
-        if(camera->queueRequest(slot.request.get())<0)return ZC_DEVICE;
+        const int queued=camera->queueRequest(slot.request.get());
+        if(queued<0){if(queued==-ENODEV){disconnected();return ZC_DISCONNECTED;}return ZC_DEVICE;}
         pending.clear();return ZC_OK;
     }
     int sync(uint32_t index, bool begin) {
@@ -681,6 +709,17 @@ struct Device {
         writable=true;return ZC_OK;
     }
 };
+void CallbackState::completed(Request *request) {
+    const auto relay=shared_from_this();
+    std::lock_guard<std::mutex> lock(relay->mutex);
+    if(relay->owner)relay->owner->completed(request);
+}
+void CallbackState::disconnected() {
+    const auto relay=shared_from_this();
+    std::lock_guard<std::mutex> lock(relay->mutex);
+    if(relay->owner)relay->owner->disconnected();
+}
+
 }
 extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts,const zc_processed_options *processed,uint32_t orientation,bool strict,uint32_t *actual, void *ctx, Completion cb, Device **out, zc_info *info,zc_pipeline_info *pipeline) {
     *out = nullptr;
@@ -699,7 +738,7 @@ extern "C" int zcd_enable_writable(Device *device) { return device->enableWritab
 extern "C" int zcd_stop(Device *device) {
     if (!device->started) {device->pending.clear();return ZC_OK;}
     const int rc = device->camera->stop();
-    if (rc < 0) return ZC_DEVICE;
+    if (rc < 0 && !(rc==-ENODEV && device->removed.load(std::memory_order_acquire))) return ZC_DEVICE;
     device->started = false;
     device->pending.clear();
     return ZC_OK;
@@ -953,6 +992,7 @@ template<class T> bool expectedVendor(const T *id,const zcd_catalog_record &r) {
 }
 }
 extern "C" int zcd_prepare_native_controls(Device *device,const zcd_control_input *inputs,uint32_t count,const zcd_catalog_sink *sink,PreparedControls **out) {
+    if(device->removed.load(std::memory_order_acquire)){*out=nullptr;return ZC_DISCONNECTED;}
     *out=nullptr;
     try {
         if(device->control_revision==UINT64_MAX)return ZC_STATE;
@@ -993,6 +1033,7 @@ extern "C" int zcd_prepare_native_controls(Device *device,const zcd_control_inpu
     }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }
 extern "C" int zcd_commit_native_controls(Device *device,PreparedControls *p,uint64_t *revision) {
+    if(device->removed.load(std::memory_order_acquire))return ZC_DISCONNECTED;
     if(p->owner!=device || p->committed || p->version!=device->control_revision)return ZC_STALE;
     if(device->control_revision==UINT64_MAX)return ZC_STATE;
     device->pending=std::move(p->pending);device->desired=std::move(p->desired);

@@ -12,6 +12,10 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_get_device_state: { args: [p, p], returns: i },
+  zc_wait_disconnected: { args: [p, u, p], returns: i },
+  zc_simulate_disconnect: { args: [p], returns: i },
+  zc_close_with_device_state: { args: [p, p], returns: i },
   zc_tuning_session_open: { args: [p, n, u, p], returns: i },
   zc_tuning_session_close: { args: [p], returns: i },
   zc_get_tuning_state: { args: [u, p], returns: i },
@@ -292,7 +296,18 @@ export class CameraError extends Error {
   }
 }
 export function check(code: number, operation?: string) {
-  if (code !== 0) throw new CameraError(code, operation)
+  if (code !== 0) throw cameraError(code, operation)
+}
+export function cameraError(code: number, operation?: string): CameraError {
+  return code === -11
+    ? new CameraDisconnectedError(operation)
+    : new CameraError(code, operation)
+}
+export class CameraDisconnectedError extends CameraError {
+  constructor(operation = 'camera disconnected') {
+    super(-11, operation)
+    this.name = 'CameraDisconnectedError'
+  }
 }
 export function storage(size: number) {
   return new Uint8Array(size)

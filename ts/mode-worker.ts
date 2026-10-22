@@ -6,6 +6,11 @@ import {
 import type { PreparedExif } from './exif'
 import { decodeMetadata } from './metadata'
 import {
+  readDeviceState,
+  decodeDeviceState,
+  type DeviceState,
+} from './device-state'
+import {
   encodeNativeImage,
   stageNativeImage,
   type ImageProfile,
@@ -75,6 +80,7 @@ export interface ModeRequestHook {
   frame: Uint8Array
 }
 export interface ModeResponse {
+  deviceLoss?: Readonly<DeviceState>
   handle: Pointer
   code: number
   restoreCode: number
@@ -232,6 +238,7 @@ self.onmessage = ({ data: request }) => {
   }
   const close = () => {
     if (!result.handle) return
+    observeLoss()
     // AF start/cancel consumes revisions too. Preserve them across every rollback.
     const count = new Uint32Array(1),
       revision = new BigUint64Array(1)
@@ -240,8 +247,17 @@ self.onmessage = ({ data: request }) => {
       result.controlRevision = revision[0]
     check(n.zc_stop(result.handle))
     result.started = false
-    check(n.zc_close(result.handle))
+    const finalState = storage(32)
+    check(n.zc_close_with_device_state(result.handle, ptr(finalState)))
     result.handle = 0 as Pointer
+    const state = decodeDeviceState(finalState)
+    if (!state.connected) result.deviceLoss ??= state
+  }
+  const observeLoss = () => {
+    if (result.handle && !result.deviceLoss) {
+      const state = readDeviceState(result.handle)
+      if (!state.connected) result.deviceLoss = state
+    }
   }
   let focusRevision: bigint | undefined
   let hookTicket = 0
@@ -527,6 +543,16 @@ self.onmessage = ({ data: request }) => {
     for (const stream of Object.values(result.bundle.streams)) {
       if (stream && stream.data.buffer instanceof ArrayBuffer)
         transfers.add(stream.data.buffer)
+    }
+  observeLoss()
+  if (!result.deviceLoss && (result.code === -11 || result.restoreCode === -11))
+    result.deviceLoss = {
+      connected: false,
+      running: false,
+      leased: 0,
+      ready: 0,
+      status: -11,
+      disconnectEvent: 0n,
     }
   self.postMessage(result, [...transfers])
   self.close()

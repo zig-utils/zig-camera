@@ -9,6 +9,8 @@ _Static_assert(offsetof(zc_packed_stream,offset)==48,"packed stream range ABI");
 _Static_assert(sizeof(zc_processed_options)==36,"processed options ABI");
 _Static_assert(sizeof(zc_stream_alignment)==20,"stream alignment ABI");
 _Static_assert(sizeof(zc_tuning_state)==56,"tuning state ABI");
+_Static_assert(sizeof(zc_device_state)==32,"device state ABI");
+_Static_assert(offsetof(zc_device_state,disconnect_event)==24,"device loss event ABI");
 _Static_assert(offsetof(zc_tuning_state,generation)==40,"tuning generation ABI");
 _Static_assert(sizeof(zc_color_negotiation)==88,"color negotiation ABI");
 _Static_assert(sizeof(zc_preview_view)==48,"preview view ABI");
@@ -167,6 +169,21 @@ static void color_requests(void) {
     }
 }
 int main(void) {
+    {
+        zc_config config;zc_default_config(&config);config.width=16;config.height=16;config.policy=ZC_FIFO;
+        zc_camera *camera=NULL;assert(zc_open(&config,&camera)==ZC_OK);
+        zc_device_state state={0};assert(zc_get_device_state(camera,&state)==ZC_OK && state.struct_size==32 && state.connected==1);
+        memset(&state,0x5a,sizeof(state));zc_device_state original=state;
+        assert(zc_wait_disconnected(camera,0,&state)==ZC_TIMEOUT && memcmp(&state,&original,sizeof(state))==0);
+        assert(zc_start(camera)==ZC_OK);zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+        assert(zc_simulate_disconnect(camera)==ZC_OK);
+        assert(zc_wait_disconnected(camera,0,&state)==ZC_OK && state.connected==0 && state.status==ZC_DISCONNECTED && state.leased==1);
+        memset(&state,0x5a,sizeof(state));original=state;
+        assert(zc_close_with_device_state(camera,&state)==ZC_BUSY && memcmp(&state,&original,sizeof(state))==0);
+        assert(zc_release(camera,frame.token)==ZC_OK);
+        assert(zc_start(camera)==ZC_DISCONNECTED);assert(zc_close_with_device_state(camera,&state)==ZC_OK);
+        assert(state.connected==0 && state.leased==0 && state.status==ZC_DISCONNECTED);
+    }
     {
         const uint8_t json[]="{\"one\":1}";
         zc_tuning_session *profile=NULL,*same=NULL,*conflict=NULL;

@@ -2,6 +2,8 @@
 // the implementation in this translation unit tests exactly the system-STL bridge.
 #include "../native/libcamera.cpp"
 #include <cassert>
+#include <thread>
+#include <condition_variable>
 namespace {
 std::vector<std::pair<int,uint64_t>> sync_calls;
 int fail_sync_fd=-1;
@@ -41,6 +43,43 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    {
+        struct Blocking {std::mutex mutex;std::condition_variable changed;bool entered=false,release=false;} block;
+        const auto relay=std::make_shared<CallbackState>();
+        auto device=std::make_unique<Device>();device->callbacks=relay;relay->owner=device.get();device->context=&block;
+        device->callback=[](void *context,uint32_t,const zc_frame *,const zc_metadata *,int){
+            auto &value=*static_cast<Blocking *>(context);
+            std::unique_lock<std::mutex> lock(value.mutex);value.entered=true;value.changed.notify_all();
+            value.changed.wait(lock,[&]{return value.release;});
+        };
+        std::thread delivery([relay]{relay->disconnected();});
+        {std::unique_lock<std::mutex> lock(block.mutex);block.changed.wait(lock,[&]{return block.entered;});}
+        // The actual relay holds its owner lock throughout delivery. Retirement
+        // on another thread must join that scope before storage can disappear.
+        const bool acquired=relay->mutex.try_lock();if(acquired)relay->mutex.unlock();assert(!acquired);
+        std::thread retirement([&]{device.reset();});
+        {std::lock_guard<std::mutex> lock(block.mutex);block.release=true;block.changed.notify_all();}
+        delivery.join();retirement.join();
+        assert(!relay->owner);relay->completed(nullptr);relay->disconnected();
+    }
+    {
+        struct Notice {unsigned count=0;int status=0;uint32_t index=0;} notice;
+        const auto relay=std::make_shared<CallbackState>();
+        {
+            Device device; device.callbacks=relay;relay->owner=&device;
+            device.context=&notice;
+            device.callback=[](void *context,uint32_t index,const zc_frame *,const zc_metadata *,int status){
+                auto &value=*static_cast<Notice *>(context);++value.count;value.status=status;value.index=index;
+            };
+            relay->disconnected();relay->disconnected();
+            assert(device.removed.load() && notice.count==1 && notice.status==ZC_DISCONNECTED && notice.index==UINT32_MAX);
+            assert(device.start()==ZC_DISCONNECTED && device.queue(0)==ZC_DISCONNECTED);
+            relay->completed(nullptr); // A late completion after removal is ignored.
+        }
+        assert(!relay->owner);
+        relay->disconnected();relay->completed(nullptr);
+        assert(notice.count==1); // Relay outlives retired Device without dereferencing it.
+    }
     zc_color_space requested={sizeof(zc_color_space),1,ZC_PRIMARIES_REC2020,ZC_TRANSFER_REC709,ZC_YCBCR_REC2020,ZC_RANGE_LIMITED};
     const auto unchanged=requested;
     const auto requested_rgb=requestedProcessedColorSpace(ZC_RGB24,requested);

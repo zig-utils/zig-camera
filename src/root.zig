@@ -169,7 +169,7 @@ pub const StreamBundle = struct {
         self.count = 0;
     }
 };
-pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device };
+pub const Error = error{ Invalid, Stopped, Timeout, Busy, StaleFrame, Io, OutOfMemory, Unsupported, Device, Disconnected };
 pub fn check(rc: c_int) Error!void {
     return switch (rc) {
         0 => {},
@@ -181,6 +181,7 @@ pub fn check(rc: c_int) Error!void {
         c.ZC_IO => error.Io,
         c.ZC_NOMEM => error.OutOfMemory,
         c.ZC_UNSUPPORTED => error.Unsupported,
+        c.ZC_DISCONNECTED => error.Disconnected,
         else => error.Device,
     };
 }
@@ -213,6 +214,19 @@ pub fn discover(backend: u32) Error!Catalog {
 }
 pub const Camera = struct {
     handle: *c.zc_camera,
+    pub fn deviceState(self: Camera) Error!c.zc_device_state {
+        var out: c.zc_device_state = undefined;
+        try check(core.zc_get_device_state(self.handle, &out));
+        return out;
+    }
+    pub fn waitDisconnected(self: Camera, timeout_ms: u32) Error!c.zc_device_state {
+        var out: c.zc_device_state = undefined;
+        try check(core.zc_wait_disconnected(self.handle, timeout_ms, &out));
+        return out;
+    }
+    pub fn simulateDisconnect(self: Camera) Error!void {
+        try check(core.zc_simulate_disconnect(self.handle));
+    }
     pub fn init(cfg: Config) Error!Camera {
         var ptr: ?*c.zc_camera = null;
         try check(core.zc_open(&cfg, &ptr));
@@ -432,6 +446,22 @@ pub const Camera = struct {
         return self.acquireFiltered(&filter, timeout_ms);
     }
 };
+test "public device loss API preserves typed terminal errors and completed frames" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 16;
+    cfg.height = 16;
+    const camera = try Camera.init(cfg);
+    defer camera.deinit() catch unreachable;
+    try std.testing.expectEqual(@as(u32, 1), (try camera.deviceState()).connected);
+    try camera.start();
+    var frame = try camera.acquire(0);
+    try camera.simulateDisconnect();
+    try std.testing.expectEqual(@as(u32, 0), (try camera.waitDisconnected(0)).connected);
+    try std.testing.expectError(error.Disconnected, camera.acquire(0));
+    try frame.release();
+    try std.testing.expectError(error.Disconnected, camera.start());
+}
 pub const FrameMapping = struct {
     handle: ?*c.zc_frame_map,
     write: bool,
