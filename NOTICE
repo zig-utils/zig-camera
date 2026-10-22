@@ -536,3 +536,9 @@ Home named capture quality (0.75):
 - src/home/capture_quality.zig is the verbatim Home allocation-free tier policy,
   reusing session_config and standard integer square root for rational estimates.
   The Home MIT license and copyright above apply.
+
+Home packed RGB input (0.76):
+- src/home/packed_rgb.zig is the verbatim Home checked allocation-free byte-layout
+  converter, including explicit opaque-X handling and preflight overlap rejection.
+  https://github.com/home-lang/home/commit/321fe476c625d398d9b80abaaa8695e110025ae2
+  The Home MIT license and copyright above apply.

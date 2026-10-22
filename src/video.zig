@@ -1000,10 +1000,22 @@ pub fn writeInput(p: *c.zc_recorder, f: *const c.zc_frame, ts: u64, color: ?c.zc
     return c.ZC_OK;
 }
 fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, color: ?c.zc_color_space) !void {
+    var normalized = stream.*;
+    if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0))) |layout| {
+        if (layout != .rgb) {
+            if (self.input_rgb.len == 0) self.input_rgb = try A.alloc(u8, try @import("stream_rgb.zig").size(stream.*));
+            try @import("stream_rgb.zig").copy(stream.*, std.mem.zeroes(c.zc_color_space), self.input_rgb);
+            normalized.stride = stream.width * 3;
+            normalized.planes[0].data = self.input_rgb.ptr;
+            normalized.planes[0].bytes_used = self.input_rgb.len;
+            normalized.planes[0].length = self.input_rgb.len;
+        }
+    }
+    const input = &normalized;
     const yuv = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "YUV420");
     if (self.keyframes.pending() != 0) try self.forceKey();
     if (self.config.codec == c.ZC_MJPEG) {
-        var source = stream.*;
+        var source = input.*;
         if (yuv) {
             if (self.input_rgb.len == 0) self.input_rgb = try A.alloc(u8, try @import("stream_rgb.zig").size(source));
             try @import("stream_rgb.zig").copy(source, color.?, self.input_rgb);
@@ -1022,8 +1034,8 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
             try map.apply(try @import("stream_rgb.zig").i420View(stream.*), .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 });
         } else if (recording_color.eql(self.color, recording_color.legacy())) {
             // Preserve the established integer rounding for legacy RGB input.
-            try rgb.convert(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, self.i420);
-        } else try @import("home/yuv_rgb.zig").encode420(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, try recording_color.conversion(self.color));
+            try rgb.convert(input.planes[0].data[0..@intCast(input.planes[0].bytes_used)], stream.width, stream.height, input.stride, self.i420);
+        } else try @import("home/yuv_rgb.zig").encode420(input.planes[0].data[0..@intCast(input.planes[0].bytes_used)], stream.width, stream.height, input.stride, .{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, try recording_color.conversion(self.color));
         const packet = try self.codec.?.encode(.{ self.i420[0..pixels], self.i420[pixels..][0 .. pixels / 4], self.i420[pixels + pixels / 4 ..] }, .{ stream.width, stream.width / 2, stream.width / 2 }, stream.width, stream.height, @intCast(pts));
         _ = self.keyframes.consume();
         if (packet) |value| try self.encoded(value);
@@ -2720,7 +2732,7 @@ pub fn producerInputAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, 
     job.input_color = color;
     job.frame.main.width = s.width;
     job.frame.main.height = s.height;
-    job.frame.main.stride = s.width * @as(u32, if (yuv) 1 else 3);
+    job.frame.main.stride = s.width * @as(u32, if (yuv) 1 else @intCast(@import("processed_format.zig").layout(std.mem.sliceTo(&s.format, 0)).?.bytes()));
     job.frame.main.plane_count = 1;
     job.frame.main.format = s.format;
     job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = pixel_size, .bytes_used = pixel_size, .data = job.data.ptr };

@@ -164,7 +164,7 @@ self.onmessage = ({ data: request }) => {
             request.cameraId.length,
             ptr(out),
           )
-        : mainFormat === 0
+        : mainFormat !== 1
           ? n.zc_open_id_formatted_pipeline(
               ptr(selected),
               ptr(pipeline),

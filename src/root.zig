@@ -1,3 +1,4 @@
+pub const processed_format = @import("processed_format.zig");
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;
 pub const Tuning = @import("home/tuning.zig");
 pub const TuningState = c.zc_tuning_state;
@@ -1022,7 +1023,7 @@ test "formatted main I420 admission preserves legacy layouts and never exposes l
     var pipeline: c.zc_pipeline_options = undefined;
     core.zc_default_pipeline_options(&pipeline);
     var invalid: ?*c.zc_camera = undefined;
-    for ([_]u32{ 2, std.math.maxInt(u32) }) |format| {
+    for ([_]u32{ 5, std.math.maxInt(u32) }) |format| {
         try std.testing.expectEqual(c.ZC_INVALID, core.zc_open_formatted_pipeline(&cfg, &pipeline, format, 1, 0, &invalid));
         try std.testing.expectEqual(null, invalid);
     }

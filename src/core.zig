@@ -248,13 +248,13 @@ pub export fn zc_open_id_processed_pipeline(cfg: *const c.zc_config, pipeline: *
 pub export fn zc_check_camera_configuration(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32) c_int {
     if (colors.zc_check_processed_options(processed, pipeline) != c.ZC_OK) return c.ZC_INVALID;
     const main_format = processed.main_format;
-    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_RGB24 or (main_format == c.ZC_YUV420 and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
+    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_BGRX32 or (main_format == c.ZC_YUV420 and (cfg.width | cfg.height) & 1 != 0)) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
         pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
         ((pipeline.sensor_width == 0) != (pipeline.sensor_height == 0)) or ((pipeline.sensor_width == 0) != (pipeline.sensor_bit_depth == 0)) or
         pipeline.lores_width > 16384 or pipeline.lores_height > 16384 or
-        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_RGB24 or
+        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_BGRX32 or
         (pipeline.lores_format == c.ZC_YUV420 and (pipeline.lores_width | pipeline.lores_height) & 1 != 0)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
@@ -266,12 +266,12 @@ pub export fn zc_align_camera_configuration(cfg: *const c.zc_config, pipeline: *
     var pipe = pipeline.*;
     const color = processed.*;
     if (config.width != 0 or config.height != 0) {
-        const plan = selected.aligned(config.width, config.height, if (color.main_format == c.ZC_YUV420) .planar420 else .packed_pixels) catch return c.ZC_INVALID;
+        const plan = selected.aligned(config.width, config.height, if (color.main_format == c.ZC_YUV420) .planar420 else if (@import("processed_format.zig").bytes(color.main_format) == 4) .wide else .packed_pixels) catch return c.ZC_INVALID;
         config.width = plan.width;
         config.height = plan.height;
     }
     if (pipe.lores_width != 0 or pipe.lores_height != 0) {
-        const plan = selected.aligned(pipe.lores_width, pipe.lores_height, if (pipe.lores_format == c.ZC_YUV420) .planar420 else .packed_pixels) catch return c.ZC_INVALID;
+        const plan = selected.aligned(pipe.lores_width, pipe.lores_height, if (pipe.lores_format == c.ZC_YUV420) .planar420 else if (@import("processed_format.zig").bytes(pipe.lores_format) == 4) .wide else .packed_pixels) catch return c.ZC_INVALID;
         pipe.lores_width = plan.width;
         pipe.lores_height = plan.height;
     }
@@ -348,7 +348,7 @@ fn colorNegotiation(self: *Session, which: u32, enforce: bool, out: *c.zc_color_
     const stream = if (which == c.ZC_MAIN) self.info.main else self.pipeline.lores;
     if (stream.plane_count == 0) return c.ZC_UNSUPPORTED;
     const name = std.mem.sliceTo(&stream.format, 0);
-    const format: u32 = if (std.mem.eql(u8, name, "BGR888")) c.ZC_RGB24 else if (std.mem.eql(u8, name, "YUV420")) c.ZC_YUV420 else return c.ZC_UNSUPPORTED;
+    const format = @import("processed_format.zig").code(name) orelse return c.ZC_UNSUPPORTED;
     var actual: c.zc_color_space = undefined;
     const rc = driver.colorSpace(self.device.?, which, &actual);
     if (rc != c.ZC_OK) return rc;

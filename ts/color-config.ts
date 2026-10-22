@@ -1,3 +1,4 @@
+import { processedFormatName, type ProcessedFormat } from './processed-format'
 import {
   native as n,
   storage,
@@ -22,7 +23,7 @@ export interface ColorNegotiation {
   strict: boolean
   normalized: boolean
   adjusted: boolean
-  format: 'BGR888' | 'YUV420'
+  format: ProcessedFormat
   requested?: StreamColorSpace
   effective?: StreamColorSpace
   actual: StreamColorSpace
@@ -86,13 +87,12 @@ export function readColorNegotiation(
   )
   const flags = d.getUint32(4, true),
     format = d.getUint32(8, true)
-  if (format > 1) throw new CameraError(-8, 'negotiated color format')
   return {
     configured: !!(flags & 1),
     strict: !!(flags & 2),
     normalized: !!(flags & 4),
     adjusted: !!(flags & 8),
-    format: format === 1 ? 'BGR888' : 'YUV420',
+    format: processedFormatName(format),
     ...(flags & 1
       ? {
           requested: decodeStreamColorSpace(data.subarray(16, 40)),

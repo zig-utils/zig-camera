@@ -4,14 +4,14 @@ const c = @import("abi.zig").c;
 const streams = @import("stream_rgb.zig");
 const home = @import("home/yuv_rgb.zig");
 pub export fn zc_preview_check_color(format: u32, color: ?*const c.zc_color_space) c_int {
-    if (format == c.ZC_RGB24) return c.ZC_OK;
+    if (@import("processed_format.zig").valid(format) and format != c.ZC_YUV420) return c.ZC_OK;
     if (format != c.ZC_YUV420) return c.ZC_UNSUPPORTED;
     const value = color orelse return c.ZC_UNSUPPORTED;
     if (value.struct_size != @sizeOf(c.zc_color_space)) return c.ZC_INVALID;
     _ = streams.conversion(value.*) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
-const Input = struct { stream: c.zc_stream, yuv: ?home.I420 = null, conversion: ?home.Conversion = null };
+const Input = struct { stream: c.zc_stream, yuv: ?home.I420 = null, conversion: ?home.Conversion = null, packed_rgb: ?@import("home/packed_rgb.zig").View = null };
 fn prepare(frame: *const c.zc_frame, color: ?*const c.zc_color_space) !Input {
     if (frame.token == 0) return error.InvalidGeometry;
     const selected = frame.main;
@@ -19,6 +19,7 @@ fn prepare(frame: *const c.zc_frame, color: ?*const c.zc_color_space) !Input {
         _ = try streams.rgbView(selected);
         return .{ .stream = selected };
     }
+    if (@import("processed_format.zig").layout(std.mem.sliceTo(&selected.format, 0)) != null) return .{ .stream = selected, .packed_rgb = try streams.packedView(selected) };
     const value = color orelse return error.UnsupportedFormat;
     const checked = zc_preview_check_color(c.ZC_YUV420, value);
     if (checked == c.ZC_INVALID) return error.InvalidGeometry;
@@ -41,7 +42,7 @@ pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, 
     const dimensions = zcm_preview_extent(p, &width, &height);
     if (dimensions != c.ZC_OK) return dimensions;
     if (input.stream.width != width or input.stream.height != height) return c.ZC_INVALID;
-    if (input.yuv) |source| {
+    if (input.yuv != null or input.packed_rgb != null) {
         var pixels: ?[*]u8 = null;
         var length: u64 = 0;
         var stride: u32 = 0;
@@ -52,7 +53,9 @@ pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, 
             _ = zcm_preview_rgb_end(p, 0);
         };
         if (pixels == null or length > std.math.maxInt(usize)) return c.ZC_IO;
-        home.decode420(source, input.conversion.?, pixels.?[0..@intCast(length)], stride) catch return c.ZC_IO;
+        if (input.yuv) |source| {
+            home.decode420(source, input.conversion.?, pixels.?[0..@intCast(length)], stride) catch return c.ZC_IO;
+        } else input.packed_rgb.?.convert(pixels.?[0..@intCast(length)], stride, .rgb) catch return c.ZC_IO;
         ended = true;
         return zcm_preview_rgb_end(p, 1);
     }

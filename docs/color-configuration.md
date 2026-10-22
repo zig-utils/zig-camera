@@ -118,3 +118,7 @@ reference. Bun tests cover copies, conversion, admission rejection, legacy query
 caching, mode/CAF/control/preview restoration and direct I420 recording. Linux
 independently decodes AVC/HEVC color planes. Synthetic fixtures do not substitute
 for physical Pi ISP negotiation, gamut/gamma validation or throughput measurements.
+
+Version 0.76 also supports RGB888, XBGR8888 and XRGB8888 processed main/lores
+streams with the same RGB color normalization. Names describe libcamera FourCC,
+not memory order; see [packed formats](packed-rgb.md). X is unused padding.

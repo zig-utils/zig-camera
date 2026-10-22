@@ -77,8 +77,10 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
     @memset(buf, 0);
     const output = orientation.Extent{ .width = stream.width, .height = stream.height };
     if (stream.plane_count == 1) {
+        const layout = @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
         for (0..stream.height) |y| for (0..stream.width) |x| {
-            buf[y * stream.stride + x * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
+            const value = sampleRGB(transform, output, main_source, x, y, index);
+            layout.write(buf[y * stream.stride + x * layout.bytes() ..], .{ value[0], value[1], value[2], 255 });
         };
     } else {
         // Synthetic setup only: real hardware supplies the negotiated YUV planes.
@@ -107,7 +109,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     const height = if (config.height == 0) 480 else config.height;
     const main_output = orientation.Extent{ .width = width, .height = height };
     const main_source = transform.extent(main_output);
-    const stride = std.mem.alignForward(u32, width * @as(u32, if (main_format == c.ZC_RGB24) 3 else 1), 64);
+    const stride = std.mem.alignForward(u32, width * @import("processed_format.zig").bytes(main_format), 64);
     h.* = .{ .config = config.*, .color_request = processed.color_space, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
     h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
     h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else @intCast(main_source.width);
@@ -121,9 +123,9 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         const l = &h.pipeline.lores;
         l.width = opts.lores_width;
         l.height = opts.lores_height;
-        l.stride = std.mem.alignForward(u32, l.width * @as(u32, if (opts.lores_format == c.ZC_RGB24) 3 else 1), 64);
-        l.plane_count = if (opts.lores_format == c.ZC_RGB24) 1 else 3;
-        const name = if (opts.lores_format == c.ZC_RGB24) "BGR888" else "YUV420";
+        l.stride = std.mem.alignForward(u32, l.width * @import("processed_format.zig").bytes(opts.lores_format), 64);
+        l.plane_count = if (opts.lores_format != c.ZC_YUV420) 1 else 3;
+        const name = @import("processed_format.zig").name(opts.lores_format);
         @memcpy(l.format[0..name.len], name);
     }
     h.info.backend = c.ZC_SYNTHETIC;
@@ -131,8 +133,9 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     h.info.main.width = width;
     h.info.main.height = height;
     h.info.main.stride = stride;
-    h.info.main.plane_count = if (main_format == c.ZC_RGB24) 1 else 3;
-    @memcpy(h.info.main.format[0..6], if (main_format == c.ZC_RGB24) "BGR888" else "YUV420");
+    h.info.main.plane_count = if (main_format != c.ZC_YUV420) 1 else 3;
+    const main_name = @import("processed_format.zig").name(main_format);
+    @memcpy(h.info.main.format[0..main_name.len], main_name);
     @memcpy(h.info.camera_id[0..9], "synthetic");
     if (config.raw != 0) {
         const raw_output = transform.extent(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height });
@@ -157,7 +160,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         _ = std.fmt.bufPrint(&h.info.raw.format, "S{s}{s}", .{ pattern, name[5..] }) catch unreachable;
     }
     for (0..config.buffer_count) |i| {
-        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (main_format == c.ZC_RGB24) 1 else 3) / @as(usize, if (main_format == c.ZC_RGB24) 1 else 2)) catch {
+        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (main_format != c.ZC_YUV420) 1 else 3) / @as(usize, if (main_format != c.ZC_YUV420) 1 else 2)) catch {
             close(h);
             return c.ZC_NOMEM;
         };
@@ -182,7 +185,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         }
         if (opts.lores_width != 0) {
             const l = h.pipeline.lores;
-            const rgb = opts.lores_format == c.ZC_RGB24;
+            const rgb = opts.lores_format != c.ZC_YUV420;
             h.lores_buffers[i] = Alloc.alloc(u8, @as(usize, l.stride) * l.height * @as(usize, if (rgb) 1 else 3) / @as(usize, if (rgb) 1 else 2)) catch {
                 close(h);
                 return c.ZC_NOMEM;
@@ -553,7 +556,7 @@ pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
         out.* = @import("color_policy.zig").toSpace(@import("home/color_description.zig").preset(.raw));
     } else {
         const descriptor = if (stream == c.ZC_MAIN) h.info.main else h.pipeline.lores;
-        const format: u32 = if (descriptor.plane_count == 3) c.ZC_YUV420 else c.ZC_RGB24;
+        const format = @import("processed_format.zig").code(std.mem.sliceTo(&descriptor.format, 0)) orelse return c.ZC_UNSUPPORTED;
         out.* = @import("color_policy.zig").effective(h.color_request, format) catch return c.ZC_UNSUPPORTED;
     }
     return c.ZC_OK;

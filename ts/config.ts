@@ -1,3 +1,4 @@
+import { processedFormatCode } from './processed-format'
 import { snapshotColorSpace, prepareProcessedOptions } from './color-config'
 import { native as n, storage, ptr, view, cstring, check } from './ffi'
 import type { CameraOptions } from './index'
@@ -40,9 +41,12 @@ export function cameraIdentity(options: CameraOptions) {
 export function cameraConfiguration(options: CameraOptions, preflight = false) {
   const cameraId = cameraIdentity(options)
   const format = options.format === undefined ? 'BGR888' : options.format
-  if (format !== 'BGR888' && format !== 'YUV420')
+  let mainFormat: number
+  try {
+    mainFormat = processedFormatCode(format)
+  } catch {
     throw new RangeError('invalid main stream format')
-  const mainFormat = format === 'YUV420' ? 0 : 1
+  }
   if (options.writable !== undefined && typeof options.writable !== 'boolean')
     throw new RangeError('invalid writable buffer option')
   const config = storage(72),
@@ -88,7 +92,17 @@ export function cameraConfiguration(options: CameraOptions, preflight = false) {
   if (options.lores) {
     put(pipeline, 32, options.lores.width)
     put(pipeline, 36, options.lores.height)
-    put(pipeline, 40, options.lores.rgb ? 1 : 0)
+    if (
+      options.lores.rgb !== undefined &&
+      typeof options.lores.rgb !== 'boolean'
+    )
+      throw new RangeError('invalid lores RGB option')
+    const code = processedFormatCode(
+      options.lores.format ?? (options.lores.rgb ? 'BGR888' : 'YUV420'),
+    )
+    if (options.lores.rgb !== undefined && code !== (options.lores.rgb ? 1 : 0))
+      throw new RangeError('lores format conflicts with RGB option')
+    put(pipeline, 40, code)
   }
   const transform = options.transform
   let orientation = 1

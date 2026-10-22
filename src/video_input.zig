@@ -30,21 +30,21 @@ pub fn validateFor(stream: c.zc_stream, color: ?c.zc_color_space, target: c.zc_c
     if (yuv) {
         _ = try streams.i420View(stream);
     } else {
-        _ = try streams.rgbView(stream);
+        _ = try streams.packedView(stream);
     }
     return yuv;
 }
 pub fn packedSize(stream: c.zc_stream, yuv: bool) usize {
     const pixels = @as(usize, stream.width) * stream.height;
-    return if (yuv) pixels + pixels / 2 else pixels * 3;
+    return if (yuv) pixels + pixels / 2 else pixels * @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)).?.bytes();
 }
 pub fn copy(stream: c.zc_stream, yuv: bool, out: []u8) !void {
     if (yuv) {
         const source = try streams.i420View(stream);
         try @import("home/plane_pack.zig").packI420(source.planes, .{ source.strides[0], source.strides[1], source.strides[2] }, stream.width, stream.height, out);
     } else {
-        const source = try streams.rgbView(stream);
-        try @import("home/plane_pack.zig").rows(source.data, source.stride, @as(usize, stream.width) * 3, stream.height, out);
+        const source = try streams.packedView(stream);
+        try @import("home/plane_pack.zig").rows(source.data, source.stride, @as(usize, stream.width) * source.layout.bytes(), stream.height, out);
     }
 }
 pub fn remap(space: c.zc_color_space) !@import("home/yuv_remap.zig").Remap {

@@ -26,6 +26,12 @@ pub fn size(stream: c.zc_stream) !usize {
     if (stream.width == 0 or stream.height == 0 or stream.width > 16384 or stream.height > 16384) return error.InvalidGeometry;
     return @as(usize, stream.width) * stream.height * 3;
 }
+pub fn packedView(stream: c.zc_stream) !@import("home/packed_rgb.zig").View {
+    _ = try size(stream);
+    if (stream.plane_count != 1) return error.UnsupportedFormat;
+    const layout = @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
+    return @import("home/packed_rgb.zig").View.init(try plane(stream.planes[0]), stream.width, stream.height, stream.stride, layout);
+}
 pub fn rgbView(stream: c.zc_stream) !raster.View {
     _ = try size(stream);
     if (stream.plane_count != 1 or !std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR888")) return error.UnsupportedFormat;
@@ -53,12 +59,12 @@ pub fn i420View(stream: c.zc_stream) !home.I420 {
 pub fn copy(stream: c.zc_stream, space: c.zc_color_space, out: []u8) !void {
     const required = try size(stream);
     if (out.len < required) return error.BufferTooSmall;
-    if (std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR888")) {
-        const view = try rgbView(stream);
-        try @import("home/plane_pack.zig").rows(view.data, view.stride, @as(usize, view.width) * 3, view.height, out);
+    if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
+        const view = try packedView(stream);
+        try view.convert(out, @as(usize, stream.width) * 3, .rgb);
     } else try home.decode420(try i420View(stream), try conversion(space), out, stream.width * 3);
 }
-/// Borrow RGB rows directly; only YUV conversion allocates an explicit temporary.
+/// Borrow canonical RGB rows directly; other layouts own one RGB conversion buffer.
 pub const Selected = struct {
     frame: c.zc_frame,
     owned: ?[]u8 = null,
@@ -68,11 +74,15 @@ pub const Selected = struct {
         if (std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR888")) {
             _ = try rgbView(stream);
         } else {
-            const view = try i420View(stream);
-            const matrix = try conversion(space);
+            if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
+                _ = try packedView(stream);
+            } else {
+                _ = try i420View(stream);
+                _ = try conversion(space);
+            }
             const data = try allocator.alloc(u8, try size(stream));
             errdefer allocator.free(data);
-            try home.decode420(view, matrix, data, stream.width * 3);
+            try copy(stream, space, data);
             result.owned = data;
             result.frame.main.stride = stream.width * 3;
             result.frame.main.plane_count = 1;
@@ -162,4 +172,34 @@ test "RGB selection borrows rows while I420 selection owns one explicit conversi
     var out: [6]u8 = undefined;
     try copy(stream, std.mem.zeroes(c.zc_color_space), &out);
     try t.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6 }, &out);
+}
+
+test "packed RGB conversion validates before allocation and normalizes unused X without alpha" {
+    const t = std.testing;
+    for ([_][]const u8{ "RGB888", "XBGR8888", "XRGB8888" }) |name| {
+        var stream = std.mem.zeroes(c.zc_stream);
+        stream.width = 2;
+        stream.height = 2;
+        const layout = @import("processed_format.zig").layout(name).?;
+        stream.stride = @intCast(2 * layout.bytes() + 3);
+        stream.plane_count = 1;
+        @memcpy(stream.format[0..name.len], name);
+        var bytes: [32]u8 = @splat(0);
+        for (0..2) |y| for (0..2) |x| layout.write(bytes[y * stream.stride + x * layout.bytes() ..], .{ @intCast(1 + x), @intCast(3 + y), 5, 0 });
+        if (layout.bytes() == 4) for (0..2) |y| for (0..2) |x| {
+            bytes[y * stream.stride + x * 4 + 3] = 0;
+        };
+        stream.planes[0] = testPlane(bytes[0 .. stream.stride + 2 * layout.bytes()]);
+        var out: [14]u8 = @splat(79);
+        try copy(stream, std.mem.zeroes(c.zc_color_space), &out);
+        try t.expectEqualSlices(u8, &.{ 1, 3, 5, 2, 3, 5, 1, 4, 5, 2, 4, 5, 79, 79 }, &out);
+        const selected = try Selected.init(t.allocator, std.mem.zeroes(c.zc_frame), stream, std.mem.zeroes(c.zc_color_space));
+        defer selected.deinit(t.allocator);
+        try t.expect(selected.owned != null);
+        try t.expectEqualStrings("BGR888", std.mem.sliceTo(&selected.frame.main.format, 0));
+        stream.planes[0].bytes_used -= 1;
+        @memset(&out, 79);
+        try t.expectError(error.BufferTooSmall, copy(stream, std.mem.zeroes(c.zc_color_space), &out));
+        try t.expectEqualSlices(u8, &@as([14]u8, @splat(79)), &out);
+    }
 }

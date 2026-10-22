@@ -1,3 +1,5 @@
+import { processedFormatCode, type ProcessedFormat } from './processed-format'
+export type { ProcessedFormat } from './processed-format'
 import { qualityTierCode, type RecordingQuality } from './quality'
 export {
   QualityTier,
@@ -632,7 +634,7 @@ export interface CameraOptions {
   /** Snapshot before manager startup. Held across mode jobs; conflicts reject. */
   tuning?: TuningSource
   /** Main processed stream. Defaults to RGB byte order BGR888. */
-  format?: 'BGR888' | 'YUV420'
+  format?: ProcessedFormat
   colorSpace?: ColorSpaceRequest
   strictColorSpace?: boolean
   transform?: CameraTransform
@@ -650,7 +652,12 @@ export interface CameraOptions {
   rawFormat?: string
   role?: 'still' | 'preview' | 'video'
   sensor?: { width: number; height: number; bitDepth: number }
-  lores?: { width: number; height: number; rgb?: boolean }
+  lores?: {
+    width: number
+    height: number
+    rgb?: boolean
+    format?: ProcessedFormat
+  }
 }
 type FrameSource = {
   handle: Pointer
@@ -683,12 +690,11 @@ export class Frame {
     check(n.zc_get_stream(this.camera.handle, this.token, id, ptr(selected)))
     check(n.zc_get_stream_color_space(this.camera.handle, id, ptr(color)))
     const format = text(selected, 16, 32)
-    if (format !== 'BGR888' && format !== 'YUV420')
-      throw new CameraError(-8, 'recording stream format')
+    const formatCode = processedFormatCode(format)
     check(
       n.zc_video_check_input_color_for(
         ptr(color),
-        format === 'YUV420' ? 0 : 1,
+        formatCode,
         target ? ptr(target) : null,
       ),
       'recording stream color',
@@ -1930,7 +1936,7 @@ export class Camera {
                   strictOrientation ? 1 : 0,
                   ptr(out),
                 )
-            : mainFormat === 0
+            : mainFormat !== 1
               ? cameraId
                 ? n.zc_open_id_formatted_pipeline(
                     ptr(cfg),
@@ -2068,21 +2074,20 @@ export class Camera {
         : encodeColorSpace(options.colorSpace)
     if ((options.stream ?? 'main') === 'main') {
       const info = this.readInfo()
-      if (info.format !== 'BGR888' && info.format !== 'YUV420')
-        throw new CameraError(-8, 'recording stream format')
+      const formatCode = processedFormatCode(info.format)
       if (
-        info.format === 'BGR888' &&
+        info.format !== 'YUV420' &&
         target === undefined &&
         !this[legacyRgbInput]()
       )
         throw new CameraError(-8, 'recording stream color')
-      if (info.format === 'YUV420' || target !== undefined) {
+      if (info.format !== 'BGR888' || target !== undefined) {
         const color = storage(24)
         check(n.zc_get_stream_color_space(this.handle, 0, ptr(color)))
         check(
           n.zc_video_check_input_color_for(
             ptr(color),
-            info.format === 'YUV420' ? 0 : 1,
+            formatCode,
             target ? ptr(target) : null,
           ),
           'recording stream color',
@@ -2097,13 +2102,12 @@ export class Camera {
     if (!d.getUint32(28, true))
       throw new CameraError(-8, 'lores recording stream disabled')
     const format = text(data, 32, 32)
-    if (format !== 'BGR888' && format !== 'YUV420')
-      throw new CameraError(-8, 'recording stream format')
+    const formatCode = processedFormatCode(format)
     check(n.zc_get_stream_color_space(this.handle, 2, ptr(color)))
     check(
       n.zc_video_check_input_color_for(
         ptr(color),
-        format === 'YUV420' ? 0 : 1,
+        formatCode,
         target ? ptr(target) : null,
       ),
       'recording stream color',

@@ -1072,3 +1072,35 @@ file or hook. The local normal build runner still fails SDK linkage before
 project compilation; direct target-qualified native/CLI builds succeed.
 Home-hosted Actions remain distinct from these local checks and the copied
 camera matrix. See quality-tiers.md for units and remaining hardware limitations.
+
+## 0.76 packed RGB rows
+
+The audit starts with clean Home main fb8be0b3432316743e74b99ebc880ddf5876f4d0
+and inspects video/core/pixel_convert.zig, image/ops/rgba_view.zig and the borrowed
+raster encoder. Pixel layouts and straight-alpha interpretation already exist;
+RGBA views already demonstrate checked spans and overlap rejection. The public
+video RGB-to-RGB loop still performed unchecked pixel reads, and equal-format
+copies copied whole slices without independent source/destination pitches.
+
+Home commit 321fe476c625d398d9b80abaaa8695e110025ae2 adds allocation-free
+video/core/packed_rgb.zig and uses it in public packed RGB conversions, including
+equal layouts. It checks complete spans/overflow/overlap before writes, retains
+alpha for alpha layouts, treats X as opaque, excludes padding and preserves output
+suffixes. Other format families retain their existing dispatch; this is not a
+claim that every Home pixel conversion is now checked. All 49 layout pairs and
+public padded/truncated/overlapping frame cases pass pinned/development Zig in
+Debug/ReleaseSafe. Home-hosted Actions still has no run for the published head;
+local and copied-camera checks are separate evidence.
+
+The helper is copied verbatim into zig-camera. Hosted stream format selection,
+DMA/request ownership, codec scratch storage and SDL locking stay in camera code.
+C/Bun/CLI select BGR/RGBX/BGRX main and lores; compact producer ownership preserves
+actual source bytes. Existing canonical RGB rows still borrow; conversion costs
+are explicit. See packed-rgb.md for names, coverage and remaining hardware work.
+
+Local release checks pass 828 Bun tests and 348 native tests, C ABI, exact SDL
+pixel readback, C/Bun type/format checks and CLI image/sidecar/recording comparisons.
+The normal local Zig build runner again fails macOS SDK/libSystem linkage before
+project compilation; target-qualified direct library/native/CLI builds pass.
+Independent video decoding and real-backend compilation are checked by Linux CI;
+no local independent AVC/HEVC decoder or physical camera is present.

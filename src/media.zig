@@ -51,7 +51,7 @@ pub export fn zc_preview_open_background(title: [*:0]const u8, width: u32, heigh
 }
 pub export fn zc_preview_show(p: *c.zc_preview, f: *const c.zc_frame) c_int {
     if (!options.preview) return c.ZC_UNSUPPORTED;
-    return zcm_preview_show(p, f);
+    return @import("preview_input.zig").zc_preview_show_input(p, f, null);
 }
 pub export fn zc_preview_close(p: *c.zc_preview) c_int {
     if (!options.preview) return c.ZC_UNSUPPORTED;
@@ -105,12 +105,12 @@ pub export fn zc_video_write_input(p: *c.zc_recorder, f: *const c.zc_frame, colo
     return @import("video.zig").writeInput(p, f, ts, color.*);
 }
 pub export fn zc_video_check_input_color(color: *const c.zc_color_space, format: u32) c_int {
-    if (format > c.ZC_RGB24) return c.ZC_INVALID;
+    if (format > c.ZC_BGRX32) return c.ZC_INVALID;
     @import("video_input.zig").validateColor(color.*, format == c.ZC_YUV420) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
 pub export fn zc_video_check_input_color_for(color: *const c.zc_color_space, format: u32, target: ?*const c.zc_color_space) c_int {
-    if (format > c.ZC_RGB24) return c.ZC_INVALID;
+    if (format > c.ZC_BGRX32) return c.ZC_INVALID;
     @import("video_input.zig").validateColorFor(color.*, format == c.ZC_YUV420, if (target) |value| value.* else @import("recording_color.zig").legacy()) catch |err| return if (err == error.InvalidConfiguration) c.ZC_INVALID else c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
@@ -163,11 +163,9 @@ pub export fn zc_video_close(p: *c.zc_recorder) c_int {
 }
 
 pub export fn zc_copy_rgb(f: *const c.zc_frame, out: [*]u8, length: u64) c_int {
-    const m = f.main;
-    if (f.token == 0 or m.width == 0 or m.height == 0 or m.plane_count != 1 or m.width > 16384 or m.height > 16384 or m.stride < @as(u64, m.width) * 3 or m.planes[0].bytes_used > m.planes[0].length or m.planes[0].bytes_used < @as(u64, m.stride) * (m.height - 1) + @as(u64, m.width) * 3 or length < @as(u64, m.width) * m.height * 3) return c.ZC_INVALID;
-    const std = @import("std");
-    if (!std.mem.eql(u8, std.mem.sliceTo(&m.format, 0), "BGR888")) return c.ZC_UNSUPPORTED;
-    for (0..m.height) |y| @memcpy(out[y * @as(usize, m.width) * 3 ..][0 .. m.width * 3], m.planes[0].data[y * @as(usize, m.stride) ..][0 .. m.width * 3]);
+    if (f.token == 0 or length > @import("std").math.maxInt(usize)) return c.ZC_INVALID;
+    const view = @import("stream_rgb.zig").packedView(f.main) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+    view.convert(out[0..@intCast(length)], @as(usize, f.main.width) * 3, .rgb) catch return c.ZC_INVALID;
     return c.ZC_OK;
 }
 
@@ -177,7 +175,7 @@ pub export fn zc_stream_copy_size(m: *const c.zc_stream, out: *u64) c_int {
     if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384) return c.ZC_INVALID;
     const name = std.mem.sliceTo(&m.format, 0);
     const pixels = @as(u64, m.width) * m.height;
-    const size = if (std.mem.eql(u8, name, "BGR888")) pixels * 3 else if (std.mem.eql(u8, name, "YUV420")) blk: {
+    const size = if (@import("processed_format.zig").layout(name)) |layout| pixels * layout.bytes() else if (std.mem.eql(u8, name, "YUV420")) blk: {
         if ((m.width | m.height) & 1 != 0) return c.ZC_INVALID;
         break :blk pixels + pixels / 2;
     } else blk: {
@@ -216,7 +214,7 @@ pub fn streamPlanes(m: *const c.zc_stream, out: *[3]@import("home/plane_pack.zig
         return 3;
     }
     if (m.plane_count != 1) return error.InvalidGeometry;
-    const row: usize = if (std.mem.eql(u8, name, "BGR888")) @as(usize, m.width) * 3 else blk: {
+    const row: usize = if (@import("processed_format.zig").layout(name)) |layout| @as(usize, m.width) * layout.bytes() else blk: {
         const format = @import("raw.zig").Format.parse(name) catch return error.UnsupportedFormat;
         break :blk format.rowBytes(m.width) catch return error.InvalidGeometry;
     };

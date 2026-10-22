@@ -15,9 +15,9 @@ const help =
     \\  --color-space NAME       srgb/sycc/smpte170m/rec709/rec2020 (otherwise sYCC request)
     \\  --strict-color-space     Reject backend color adjustments; requires --color-space
     \\  --video-color-space NAME AVC/HEVC output profile; source gamut/transfer must match
-    \\  --main-format NAME       BGR888 (default, RGB bytes) or YUV420
+    \\  --main-format NAME       BGR888 (default), RGB888, XBGR8888, XRGB8888, YUV420
     \\  --align PROFILE          Round explicit processed sizes down: pisp/vc4/minimum
-    \\  --lores-format NAME      YUV420 (default) or BGR888
+    \\  --lores-format NAME      YUV420 (default), BGR888, RGB888, XBGR8888, XRGB8888
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
     \\  --strict-transform       Reject adjusted camera orientation
     \\  --transpose              Final diagonal transpose after rotation/flips
@@ -203,7 +203,7 @@ fn run() !void {
             const color = try camera.colorSpacePreset(preset);
             if (eq(key, "--video-color-space")) video_color = color else processed.color_space = color;
         } else if (eq(key, "--main-format")) {
-            main_format = if (eq(value, "BGR888")) camera.c.ZC_RGB24 else if (eq(value, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidMainFormat;
+            main_format = camera.processed_format.code(value) orelse return error.InvalidMainFormat;
         } else if (eq(key, "--align")) {
             alignment_profile = if (eq(value, "pisp") or eq(value, "minimum")) .pisp else if (eq(value, "vc4")) .vc4 else return error.InvalidAlignment;
             alignment_optimal = !eq(value, "minimum");
@@ -214,7 +214,7 @@ fn run() !void {
         } else if (eq(key, "--png-filter")) {
             image_options.png_filter = @intFromEnum(std.meta.stringToEnum(camera.still.PngFilter, value) orelse return error.InvalidPngFilter);
         } else if (eq(key, "--lores-format")) {
-            pipeline.lores_format = if (eq(value, "YUV420")) camera.c.ZC_YUV420 else if (eq(value, "BGR888")) camera.c.ZC_RGB24 else return error.InvalidLoresFormat;
+            pipeline.lores_format = camera.processed_format.code(value) orelse return error.InvalidLoresFormat;
         } else if (eq(key, "--camera-id")) {
             camera_id = value;
         } else if (eq(key, "--codec")) {
@@ -338,7 +338,7 @@ fn run() !void {
     if (eq(command, "record") and record_stream == camera.c.ZC_LORES) {
         if (video_geometry.plane_count == 0) return error.Unsupported;
         const color = try cam.colorSpace(record_stream);
-        try camera.check(camera.media.zc_video_check_input_color_for(&color, if (std.mem.eql(u8, std.mem.sliceTo(&video_geometry.format, 0), "YUV420")) camera.c.ZC_YUV420 else camera.c.ZC_RGB24, if (video_color) |*target| target else null));
+        try camera.check(camera.media.zc_video_check_input_color_for(&color, camera.processed_format.code(std.mem.sliceTo(&video_geometry.format, 0)) orelse return error.InvalidRecordingStream, if (video_color) |*target| target else null));
     }
     if (eq(command, "modes")) {
         const modes = try a.alloc(camera.c.zc_sensor_mode, try cam.sensorModes(&.{}));
@@ -369,7 +369,7 @@ fn run() !void {
     }
     if (eq(command, "record")) {
         const name = std.mem.sliceTo(&video_geometry.format, 0);
-        const format: u32 = if (eq(name, "BGR888")) camera.c.ZC_RGB24 else if (eq(name, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidRecordingStream;
+        const format: u32 = camera.processed_format.code(name) orelse return error.InvalidRecordingStream;
         var color = try cam.colorSpace(record_stream);
         try camera.check(camera.media.zc_video_check_input_color_for(&color, format, if (video_color) |*target| target else null));
     }
@@ -397,12 +397,14 @@ fn run() !void {
         }
         if (negotiated.lores.width != 0) {
             const lores = try frame.stream(camera.c.ZC_LORES);
-            const rgb = std.mem.eql(u8, std.mem.sliceTo(&lores.format, 0), "BGR888");
-            const size = @as(usize, lores.width) * lores.height * 3 / @as(usize, if (rgb) 1 else 2);
+            const rgb = !std.mem.eql(u8, std.mem.sliceTo(&lores.format, 0), "YUV420");
+            var copy_size: u64 = 0;
+            try camera.check(camera.media.zc_stream_copy_size(&lores, &copy_size));
+            const size: usize = @intCast(copy_size);
             const bytes = try a.alloc(u8, size);
             defer a.free(bytes);
             try camera.check(camera.media.zc_copy_stream(&lores, bytes.ptr, bytes.len));
-            const path = try std.fmt.allocPrint(a, "{s}.lores.{s}", .{ output, if (rgb) "rgb" else "i420" });
+            const path = try std.fmt.allocPrint(a, "{s}.lores.{s}", .{ output, if (rgb) @tagName(camera.processed_format.layout(std.mem.sliceTo(&lores.format, 0)).?) else "i420" });
             defer a.free(path);
             const file = try std.fs.cwd().createFile(path, .{});
             defer file.close();
@@ -430,7 +432,7 @@ fn run() !void {
                 var space: camera.c.zc_color_space = undefined;
                 try camera.check(camera.core.zc_get_stream_color_space(cam.handle, which, &space));
                 const format = std.mem.sliceTo(&display.format, 0);
-                const pixel_format: u32 = if (eq(format, "BGR888")) camera.c.ZC_RGB24 else if (eq(format, "YUV420")) camera.c.ZC_YUV420 else return error.InvalidPreviewStream;
+                const pixel_format: u32 = camera.processed_format.code(format) orelse return error.InvalidPreviewStream;
                 try camera.check(camera.preview_input.zc_preview_check_color(pixel_format, &space));
             }
             try camera.check(if (preview_stream == null) camera.media.zc_preview_open_background("zig-camera", display.width, display.height, &window) else camera.media.zc_preview_open("zig-camera", display.width, display.height, &window));

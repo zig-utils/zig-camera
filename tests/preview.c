@@ -148,7 +148,29 @@ static void configured_colors(void) {
         assert(zc_preview_close(preview)==ZC_OK && zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);
     }
 }
+static void packed_inputs(void) {
+    const char *names[]={"RGB888","XBGR8888","XRGB8888"};
+    for(unsigned i=0;i<3;i++) {
+        zc_preview *p=NULL; assert(zcm_preview_open("packed",4,3,&p)==ZC_OK);
+        unsigned char src[64]={0}, expected[36], actual[36];
+        const unsigned bpp=i==0?3:4;
+        for(unsigned y=0;y<3;y++)for(unsigned x=0;x<4;x++) {
+            unsigned char *v=src+y*(4*bpp+3)+x*bpp;
+            unsigned char *rgb=expected+(y*4+x)*3;
+            rgb[0]=30+x*40;rgb[1]=10+y*60;rgb[2]=5;
+            v[0]=i==1?rgb[0]:rgb[2];v[1]=rgb[1];v[2]=i==1?rgb[2]:rgb[0];
+        }
+        zc_frame f={0}; f.token=1;f.main.width=4;f.main.height=3;f.main.stride=4*bpp+3;f.main.plane_count=1;
+        strcpy(f.main.format,names[i]);f.main.planes[0].data=src;f.main.planes[0].length=sizeof(src);f.main.planes[0].bytes_used=2*f.main.stride+4*bpp;
+        assert(zc_preview_show_input(p,&f,NULL)==ZC_OK);pixels(p,actual);assert(!memcmp(expected,actual,sizeof(actual)));
+        assert(zc_preview_show(p,&f)==ZC_OK);pixels(p,actual);assert(!memcmp(expected,actual,sizeof(actual)));
+        f.main.planes[0].bytes_used--;assert(zc_preview_show_input(p,&f,NULL)==ZC_INVALID);
+        pixels(p,actual);assert(!memcmp(expected,actual,sizeof(actual)));
+        assert(zcm_preview_close(p)==ZC_OK);
+    }
+}
 int main(void) {
+    packed_inputs();
     assert(SDL_setenv("SDL_VIDEODRIVER","dummy",1)==0);
     SDL_SetHint(SDL_HINT_RENDER_DRIVER,"software");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"0");

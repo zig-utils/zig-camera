@@ -142,7 +142,7 @@ static void formatted_main(void) {
     zc_config cfg;zc_default_config(&cfg);cfg.width=4;cfg.height=2;
     zc_pipeline_options pipe;zc_default_pipeline_options(&pipe);pipe.lores_width=2;pipe.lores_height=2;pipe.lores_format=ZC_RGB24;
     zc_camera *camera=NULL;
-    assert(zc_open_formatted_pipeline(&cfg,&pipe,2,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
+    assert(zc_open_formatted_pipeline(&cfg,&pipe,5,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);
     cfg.width=3;assert(zc_open_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,&camera)==ZC_INVALID && !camera);cfg.width=4;
     assert(zc_open_id_formatted_pipeline(&cfg,&pipe,ZC_YUV420,ZC_ROTATE0,0,(const uint8_t *)"synthetic",9,&camera)==ZC_OK);
     zc_info info;assert(zc_get_info(camera,&info)==ZC_OK);assert(!strcmp(info.main.format,"YUV420") && info.main.plane_count==3);
@@ -254,7 +254,35 @@ static void quality_abi(void) {
     assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_LOW)==ZC_OK && cfg.bitrate==0 && cfg.quality==35);
     cfg.bitrate=1000;original=cfg;assert(zc_video_apply_quality_tier(&cfg,ZC_QUALITY_LOW)==ZC_INVALID && !memcmp(&cfg,&original,sizeof(cfg)));
 }
+static void packed_rgb_inputs(void) {
+    assert(ZC_YUV420==0 && ZC_RGB24==1 && ZC_BGR24==2 && ZC_RGBX32==3 && ZC_BGRX32==4);
+    const char *names[]={"RGB888","XBGR8888","XRGB8888"};
+    for(unsigned i=0;i<3;i++) {
+        const unsigned bpp=i==0?3:4;
+        unsigned char src[20]={0}, out[14];
+        for(unsigned y=0;y<2;y++)for(unsigned x=0;x<2;x++) {
+            unsigned char *p=src+y*(bpp*2+2)+x*bpp;
+            p[0]=i==1?1+x:5;p[1]=3+y;p[2]=i==1?5:1+x;
+        }
+        zc_frame f={0};f.token=1;f.main.width=2;f.main.height=2;f.main.stride=bpp*2+2;f.main.plane_count=1;
+        strcpy(f.main.format,names[i]);
+        f.main.planes[0].data=src;f.main.planes[0].length=sizeof(src);f.main.planes[0].bytes_used=f.main.stride+bpp*2;
+        memset(out,79,sizeof(out));
+        assert(zc_copy_rgb(&f,out,sizeof(out))==ZC_OK);
+        const unsigned char expected[]={1,3,5,2,3,5,1,4,5,2,4,5,79,79};
+        assert(!memcmp(out,expected,sizeof(out)));
+        uint64_t count=0;assert(zc_stream_copy_size(&f.main,&count)==ZC_OK && count==4*bpp);
+        memset(out,79,sizeof(out));f.main.planes[0].bytes_used--;
+        assert(zc_copy_rgb(&f,out,sizeof(out))==ZC_INVALID);
+        for(unsigned j=0;j<sizeof(out);j++)assert(out[j]==79);
+        f.main.planes[0].bytes_used++;
+        assert(zc_copy_rgb(&f,src,sizeof(src))==ZC_INVALID);
+        f.main.planes[0].data=NULL;assert(zc_copy_rgb(&f,out,sizeof(out))==ZC_INVALID);
+    }
+}
+
 int main(void) {
+    packed_rgb_inputs();
     quality_abi();
     keyframe_abi();
     {

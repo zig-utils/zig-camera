@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.76 adds [packed processed RGB formats](docs/packed-rgb.md): RGB888,
+XBGR8888 and XRGB8888 main/lores streams, checked Home byte-layout conversion,
+owned capture copies, still images, bounded recording inputs and SDL preview.
+
 Version 0.75 adds [named software quality tiers](docs/quality-tiers.md): exact
 Home bitrate planning, JPEG tier values, C/Bun/CLI selection and recomputation
 from negotiated geometry across recording sessions and recovery.

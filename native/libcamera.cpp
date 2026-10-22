@@ -298,10 +298,10 @@ struct ManagerWatch {
     }
 };
 
-static PixelFormat processedPixelFormat(uint32_t format) { return format==ZC_RGB24 ? formats::BGR888 : formats::YUV420; }
+static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;default:return formats::YUV420; } }
 static ColorSpace processedColorSpace(uint32_t format) {
     auto color=ColorSpace::Sycc;
-    if(format==ZC_RGB24)color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
+    if(format!=ZC_YUV420)color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;
     return color;
 }
 static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,const zc_color_space &requested) {
@@ -330,7 +330,7 @@ static std::optional<ColorSpace> requestedProcessedColorSpace(uint32_t format,co
     if(requested.range==ZC_RANGE_FULL)color.range=ColorSpace::Range::Full;
     else if(requested.range==ZC_RANGE_LIMITED)color.range=ColorSpace::Range::Limited;
     else return std::nullopt;
-    if(format==ZC_RGB24) { color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;color.range=ColorSpace::Range::Full; }
+    if(format!=ZC_YUV420) { color.ycbcrEncoding=ColorSpace::YcbcrEncoding::None;color.range=ColorSpace::Range::Full; }
     else if(format!=ZC_YUV420 || color.ycbcrEncoding==ColorSpace::YcbcrEncoding::None)return std::nullopt;
     return color;
 }

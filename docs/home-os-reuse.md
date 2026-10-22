@@ -360,3 +360,16 @@ implementation. Per the shared-media boundary, the reusable policy belongs in
 Home's library; hosted session negotiation and owner publication remain here.
 No OS code is copied, modified or executed, and no physical image quality,
 rate-control conformance, hardware acceleration or Pi throughput is inferred.
+
+The 0.76 packed-RGB audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads drivers/camera.home,
+drivers/framebuffer_double.home, media/video_decoder.home and ADR-MC3. The
+framebuffer manager tracks pitch/bpp and kernel buffer states/addresses, but
+initializes pitch from width/bpp; it does not supply a checked hosted borrowed
+RGB/BGR/RGBX/BGRX converter or libcamera lease handling. The camera capture path
+remains a nominal size-returning stub, and the decoder declarations are not
+working format/capture support. Per ADR-MC3, shared pixel algorithms improve Home's
+standard library and are reused here; kernel physical addresses and framebuffer
+owners stay out of the hosted camera boundary. No OS source is copied, changed or
+executed. Synthetic/decoder tests do not establish physical Pi format acceptance,
+DMA coherency, kernel video acceleration or performance.

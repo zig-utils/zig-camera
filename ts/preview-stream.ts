@@ -1,4 +1,9 @@
 import {
+  processedFormatCode,
+  processedFormatName,
+  type ProcessedFormat,
+} from './processed-format'
+import {
   native as n,
   storage,
   view,
@@ -14,7 +19,7 @@ export interface PreviewStreamInfo {
   stream: PreviewStream
   width: number
   height: number
-  format?: 'BGR888' | 'YUV420'
+  format?: ProcessedFormat
   colorSpace?: StreamColorSpace
   suspended: boolean
 }
@@ -55,20 +60,16 @@ export function readPreviewInput(
     height = d.getUint32(20, true)
     format = text(pipeline, 32, 32)
   }
-  if (format !== 'BGR888' && format !== 'YUV420')
-    throw new CameraError(-8, 'preview stream format')
+  const formatCode = processedFormatCode(format)
   const color = storage(24)
   check(n.zc_get_stream_color_space(camera, id, ptr(color)))
-  check(
-    n.zc_preview_check_color(format === 'YUV420' ? 0 : 1, ptr(color)),
-    'preview color space',
-  )
+  check(n.zc_preview_check_color(formatCode, ptr(color)), 'preview color space')
   return {
     info: Object.freeze({
       stream,
       width,
       height,
-      format,
+      format: processedFormatName(formatCode),
       colorSpace: Object.freeze(decodeStreamColorSpace(color)),
     }),
     id,
