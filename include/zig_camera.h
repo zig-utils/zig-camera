@@ -643,6 +643,13 @@ int zc_video_check_codec_limits(const zc_video_config *,const zc_codec_options *
 /* Pristine/unattached only. NULL restores defaults; failure preserves state. */
 int zc_video_set_codec_limits(zc_recorder *,const zc_codec_limits *);
 int zc_video_get_codec_limits(zc_recorder *,zc_codec_limits *);
+/* Packet outputs prepend full cached headers once, and by default prepend only
+ * parameter sets again at each keyframe (AVC SPS/PPS, HEVC VPS/SPS/PPS).
+ * Disable for first-only behavior. MJPEG and MP4/MKV sample data are unchanged.
+ * Set only on pristine/unattached recorders; query is caller-serialized. This
+ * copied session policy survives snapshots/splits/recovery. enabled is 0 or 1. */
+int zc_video_set_repeat_headers(zc_recorder *,uint32_t enabled);
+int zc_video_get_repeat_headers(zc_recorder *,uint32_t *enabled);
 /* Counted public keyframe intent: each accepted request applies to one subsequent
  * accepted video input, including an input that already starts a GOP. AVC/HEVC
  * request an IDR; MJPEG is inherently key. Input acceptance can precede delayed
@@ -1036,6 +1043,8 @@ int zc_producer_job_restart_color(zc_producer_job *,const zc_color_space *);
 /* Copied before start, NULL resets defaults; omission retains prior policy.
  * Final codec/rate compatibility is checked before candidate output creation. */
 int zc_producer_job_restart_codec_options(zc_producer_job *,const zc_codec_options *);
+/* Copied before start, enabled strictly 0/1; omission retains prior policy. */
+int zc_producer_job_restart_repeat_headers(zc_producer_job *,uint32_t enabled);
 int zc_producer_job_restart_codec_limits(zc_producer_job *,const zc_codec_limits *);
 int zc_producer_job_restart_io(zc_producer_job *,uint64_t bytes,uint32_t operations,uint64_t wait_ns);
 int zc_producer_job_restart_stage(zc_producer_job *,uint32_t *stage);

@@ -134,6 +134,8 @@ const Output = struct {
     file: ?std.fs.File = null,
     callbacks: ?c.zc_output_callbacks = null,
     callback_headers: []u8 = &.{},
+    callback_parameters: []u8 = &.{},
+    repeat_headers: bool = true,
     callback_buffer: std.ArrayList(u8) = .empty,
     video_codec: u32 = 0,
     writer: ?mkv.Writer = null,
@@ -250,12 +252,17 @@ const Output = struct {
             self.av_writer = try av.Writer.init(.{ .context = self, .write = sink }, .{ .width = cfg.width, .height = cfg.height, .fps_num = cfg.fps_num, .fps_den = cfg.fps_den, .codec = cfg.codec, .sample_rate = recording.sample_rate, .channels = recording.channels, .codec_private = bytes });
         } else if (cfg.codec == c.ZC_MJPEG) self.writer = try mkv.Writer.init(.{ .context = self, .write = sink }, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den) else self.mp4_writer = try mp4.Writer.initWithColor(.{ .context = self, .write = sink }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, try recording_color.container(color));
     }
-    fn initCallbacks(cb: c.zc_output_callbacks, cfg: *const c.zc_video_config, headers: []const u8, recording: *const c.zc_recording_options, bitrate: u32, color: c.zc_color_space) !*Output {
+    fn initCallbacks(cb: c.zc_output_callbacks, cfg: *const c.zc_video_config, headers: []const u8, recording: *const c.zc_recording_options, bitrate: u32, color: c.zc_color_space, repeat_headers: bool) !*Output {
         const self = try A.create(Output);
-        self.* = .{ .callbacks = cb, .video_codec = cfg.codec };
+        self.* = .{ .callbacks = cb, .video_codec = cfg.codec, .repeat_headers = repeat_headers };
         errdefer self.deinit();
         if (cb.format == c.ZC_OUTPUT_PACKETS) {
             self.callback_headers = try A.dupe(u8, headers);
+            if (repeat_headers and cfg.codec != c.ZC_MJPEG) {
+                const codec: packet_output.Codec = if (cfg.codec == c.ZC_H264) .avc else .hevc;
+                self.callback_parameters = try A.alloc(u8, try packet_output.parameterSetSize(headers, codec));
+                _ = try packet_output.parameterSets(headers, codec, self.callback_parameters);
+            }
         } else {
             if (aac_enabled and cb.format == c.ZC_OUTPUT_MP4 and recording.sample_rate != 0) self.aac_encoder = try aac.Encoder.init(.{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = if (bitrate != 0) bitrate else 64000 * recording.channels });
             try self.initWriters(cfg, headers, recording, color);
@@ -284,6 +291,7 @@ const Output = struct {
         if (self.next) |out| out.deinit();
         if (self.file) |file| file.close();
         A.free(self.callback_headers);
+        A.free(self.callback_parameters);
         self.callback_buffer.deinit(A);
         if (aac_enabled) {
             if (self.aac_encoder) |*encoder| encoder.deinit();
@@ -321,11 +329,9 @@ const Output = struct {
             var payload = data;
             var flags: u32 = @intFromBool(key);
             if (self.video_codec != c.ZC_MJPEG) {
-                const prefix = if (self.frames == 0) self.callback_headers else &.{};
-                try self.callback_buffer.resize(A, try std.math.add(usize, prefix.len, data.len));
-                if (prefix.len != 0) _ = try packet_output.annexB(prefix, self.callback_buffer.items[0..prefix.len]);
-                _ = try packet_output.annexB(data, self.callback_buffer.items[prefix.len..]);
-                payload = self.callback_buffer.items;
+                const prefix = if (self.frames == 0) self.callback_headers else if (key and self.repeat_headers) self.callback_parameters else &.{};
+                try self.callback_buffer.resize(A, try packet_output.annexBAccessUnitSize(prefix, data));
+                payload = try packet_output.annexBAccessUnit(prefix, data, self.callback_buffer.items);
                 flags |= 4;
             }
             try self.notify(payload, timestamp - self.first_ns, self.video_codec, flags);
@@ -394,6 +400,7 @@ const Output = struct {
     }
 };
 const Recorder = struct {
+    repeat_headers: bool = true,
     keyframes: @import("home/keyframe_requests.zig").Requests = .{},
     finalization: @import("home/recording_policy.zig").Finalization = .{},
     accepting: std.atomic.Value(bool) = .init(true),
@@ -883,6 +890,18 @@ fn replaceEncoder(self: *Recorder, color: c.zc_color_space, policy: native.Optio
     self.color = color;
     self.codec_options = policy;
     self.codec_limits = limits;
+    return c.ZC_OK;
+}
+pub fn setRepeatHeaders(p: *c.zc_recorder, enabled: u32) c_int {
+    if (enabled > 1) return c.ZC_INVALID;
+    const self = recorder(p);
+    const admission = pristine(self);
+    if (admission != c.ZC_OK) return admission;
+    self.repeat_headers = enabled != 0;
+    return c.ZC_OK;
+}
+pub fn getRepeatHeaders(p: *c.zc_recorder, enabled: *u32) c_int {
+    enabled.* = @intFromBool(recorder(p).repeat_headers);
     return c.ZC_OK;
 }
 pub fn setCodecOptions(p: *c.zc_recorder, requested: ?*const c.zc_codec_options) c_int {
@@ -1483,7 +1502,7 @@ fn checkSessionCallbacks(self: *Recorder, session: *Recorder, cb: *const c.zc_ou
 }
 fn callbackOutput(self: *Recorder, cb: *const c.zc_output_callbacks, splitting: bool) !*Output {
     try checkCallbacks(self, cb, splitting);
-    return Output.initCallbacks(cb.*, &self.config, self.headers, &self.recording, self.audio_bitrate, self.color);
+    return Output.initCallbacks(cb.*, &self.config, self.headers, &self.recording, self.audio_bitrate, self.color, self.repeat_headers);
 }
 // Create an output-less direct recorder; attachment can run user lifecycle hooks
 // only after source metadata and the owned encoder are available.
@@ -1803,6 +1822,7 @@ const Prepared = struct {
     recording: c.zc_recording_options,
     bitrate: u32,
     color: c.zc_color_space,
+    repeat_headers: bool,
     headers: []u8,
     callbacks: ?c.zc_output_callbacks,
     file: ?std.fs.File,
@@ -1856,7 +1876,7 @@ fn prepareImpl(self: *Recorder, old: *Output, id: u64, path: ?[*:0]const u8, cb:
     const deferred_path = if (deferred and path != null) try A.dupeZ(u8, std.mem.span(path.?)) else null;
     errdefer if (deferred_path) |name| A.free(name);
     const job = try A.create(Prepared);
-    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .color = self.color, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = if (cb != null and @import("output_mailbox.zig").isMailbox(cb.?.*)) null else old.io_config, .predecessor = if (recovering) null else old.worker, .recovering = recovering, .deferred_path = deferred_path };
+    job.* = .{ .owner = self, .registry = registry, .slot = slot, .id = id, .generation = old.generation, .config = self.config, .recording = self.recording, .bitrate = self.audio_bitrate, .color = self.color, .repeat_headers = self.repeat_headers, .headers = headers, .callbacks = if (cb) |value| value.* else null, .file = file, .is_mp4 = if (path) |name| std.mem.endsWith(u8, std.mem.span(name), ".mp4") else false, .io_config = if (cb != null and @import("output_mailbox.zig").isMailbox(cb.?.*)) null else old.io_config, .predecessor = if (recovering) null else old.worker, .recovering = recovering, .deferred_path = deferred_path };
     self.preparing[slot] = job;
     result.* = @ptrCast(job);
 }
@@ -1875,7 +1895,7 @@ pub fn buildPrepared(p: *c.zc_prepared_output) c_int {
         job.registry.opening[job.slot] = false;
         job.registry.mutex.unlock();
     }
-    job.output = if (job.callbacks) |cb| Output.initCallbacks(cb, &job.config, job.headers, &job.recording, job.bitrate, job.color) catch |err| return status(err) else Output.initFile(job.file.?, job.is_mp4, &job.config, job.headers, &job.recording, job.bitrate, job.color) catch |err| return status(err);
+    job.output = if (job.callbacks) |cb| Output.initCallbacks(cb, &job.config, job.headers, &job.recording, job.bitrate, job.color, job.repeat_headers) catch |err| return status(err) else Output.initFile(job.file.?, job.is_mp4, &job.config, job.headers, &job.recording, job.bitrate, job.color) catch |err| return status(err);
     job.file = null;
     // The registered recipe prevents removal/recovery/close of its predecessor.
     // Worker allocation and startup therefore also happen off capture locks.
@@ -2328,7 +2348,7 @@ const Replay = struct {
 };
 fn cloneHistory(self: *Recorder, start: usize, end: u64) !*Recorder {
     const copy = try A.create(Recorder);
-    copy.* = .{ .encoder = jpeg.Encoder.init(A), .config = self.config, .recording = self.recording, .color = self.color, .codec_options = self.codec_options, .codec_limits = self.codec_limits, .audio_bitrate = self.audio_bitrate, .first_ns = self.first_ns, .last_ns = self.last_ns, .last_packet_ns = self.last_packet_ns, .frames = self.frames };
+    copy.* = .{ .encoder = jpeg.Encoder.init(A), .config = self.config, .recording = self.recording, .color = self.color, .codec_options = self.codec_options, .codec_limits = self.codec_limits, .repeat_headers = self.repeat_headers, .audio_bitrate = self.audio_bitrate, .first_ns = self.first_ns, .last_ns = self.last_ns, .last_packet_ns = self.last_packet_ns, .frames = self.frames };
     errdefer copy.deinit();
     copy.headers = try A.dupe(u8, self.headers);
     copy.ring = try self.ring.?.cloneFrom(A, start);
@@ -2493,7 +2513,7 @@ pub fn openSnapshotCallbacks(p: *c.zc_snapshot, live: ?*c.zc_recorder, cb: *cons
         for (s.avoid_ids) |other| if (other) |value| if (ids[i].?.equal(value)) return c.ZC_INVALID;
     };
     s.reservations.bindSnapshot(s.slot, ids) catch |err| return status(err);
-    s.output = Output.initCallbacks(cb.*, &s.data.config, s.data.headers, &s.data.recording, s.data.audio_bitrate, s.data.color) catch |err| return status(err);
+    s.output = Output.initCallbacks(cb.*, &s.data.config, s.data.headers, &s.data.recording, s.data.audio_bitrate, s.data.color, s.data.repeat_headers) catch |err| return status(err);
     return c.ZC_OK;
 }
 pub fn stepSnapshot(p: *c.zc_snapshot) c_int {
@@ -2852,11 +2872,20 @@ pub fn restartCodecLimits(job: *@import("producer.zig").Job, requested: ?*const 
     job.restart_codec_limits = value;
     return c.ZC_OK;
 }
+pub fn restartRepeatHeaders(job: *@import("producer.zig").Job, enabled: u32) c_int {
+    job.owner.mutex.lock();
+    defer job.owner.mutex.unlock();
+    if (job.operation != .restart or job.started or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
+    if (enabled > 1) return c.ZC_INVALID;
+    job.restart_repeat_headers = enabled != 0;
+    return c.ZC_OK;
+}
 fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
     const next = self.finalization.nextSession() catch |err| return status(err);
     const generation = std.math.add(u64, @max(self.primary_generation, if (self.output) |out| out.generation else 0), 1) catch return c.ZC_STATE;
     const cfg = if (job.restart_config) |settings| settings.video else self.config;
     const candidate = initWithRecipe(&cfg, job.restart_color orelse self.color, job.restart_codec_options orelse self.codec_options, job.restart_codec_limits orelse self.codec_limits) catch |err| return status(err);
+    candidate.repeat_headers = job.restart_repeat_headers orelse self.repeat_headers;
     var committed = false;
     defer {
         job.owner.mutex.lock();
@@ -2906,7 +2935,7 @@ fn runRestart(self: *Recorder, job: *@import("producer.zig").Job) c_int {
     } else if (job.restart_kind == 2) {
         const cb = job.restart_callbacks.?;
         checkSessionCallbacks(self, candidate, &cb, true) catch |err| return status(err);
-        candidate.output = Output.initCallbacks(cb, &candidate.config, candidate.headers, &candidate.recording, candidate.audio_bitrate, candidate.color) catch |err| return status(err);
+        candidate.output = Output.initCallbacks(cb, &candidate.config, candidate.headers, &candidate.recording, candidate.audio_bitrate, candidate.color, candidate.repeat_headers) catch |err| return status(err);
     }
     if (candidate.output) |out| {
         out.generation = generation;

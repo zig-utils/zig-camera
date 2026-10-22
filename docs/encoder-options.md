@@ -69,4 +69,5 @@ coordinated modes and AVC/HEVC/AAC recovery. Linux CI independently decodes thos
 MP4 samples; local tests check headers/container ownership without a local video
 decoder. Version 0.71 adds [level ceilings and VBV](encoder-limits.md), including
 their current HEVC CTU limits. Full codec conformance, upstream quality-tier
-heuristics, repeated in-band parameter sets and hardware encoder paths remain work.
+heuristics and hardware encoder paths remain work. Version 0.74 adds
+[repeated packet parameter sets](repeated-headers.md).

@@ -203,11 +203,18 @@ static void keyframe_abi(void) {
     zc_video_config video;zc_default_video_config(&video);video.width=16;video.height=16;
     zc_recording_options recording;zc_default_recording_options(&recording);
     zc_recorder *recorder=NULL;assert(zc_video_create(&video,&recording,0,&recorder)==ZC_OK);
+    uint32_t repeat_headers=9;assert(zc_video_get_repeat_headers(recorder,&repeat_headers)==ZC_OK && repeat_headers==1);
+    assert(zc_video_set_repeat_headers(recorder,2)==ZC_INVALID);
+    assert(zc_video_get_repeat_headers(recorder,&repeat_headers)==ZC_OK && repeat_headers==1);
+    assert(zc_video_set_repeat_headers(recorder,0)==ZC_OK);
+    assert(zc_video_get_repeat_headers(recorder,&repeat_headers)==ZC_OK && repeat_headers==0);
     zc_keyframe_state state={0};assert(zc_video_keyframe_state(recorder,&state)==ZC_OK && !state.pending);
     assert(zc_video_request_keyframe(recorder)==ZC_OK && zc_video_request_keyframe(recorder)==ZC_OK);
     for(unsigned cancelled=0;cancelled<2;cancelled++) {
         zc_producer_job *job=NULL;assert(zc_video_producer_keyframe(recorder,&job)==ZC_OK);
         assert(zc_video_request_keyframe(recorder)==ZC_BUSY);
+        assert(zc_video_set_repeat_headers(recorder,1)==ZC_BUSY);
+        assert(zc_producer_job_restart_repeat_headers(job,1)==ZC_STATE);
         if(cancelled)assert(zc_producer_job_cancel(job)==ZC_OK);
         assert(zc_producer_job_start(job)==ZC_OK);
         int code=ZC_TIMEOUT,status=ZC_TIMEOUT;
@@ -1091,6 +1098,8 @@ int main(void) {
     assert(zc_video_session_state(recorder,&session_state)==ZC_OK && session_state.session==0 && session_state.phase==2);
     zc_producer_job *restart=NULL;
     assert(zc_video_producer_restart(recorder,0,NULL,&restart)==ZC_OK);
+    assert(zc_producer_job_restart_repeat_headers(restart,2)==ZC_INVALID);
+    assert(zc_producer_job_restart_repeat_headers(restart,0)==ZC_OK);
     zc_video_config session_config=video;
     session_config.quality=65;session_config.fps_num=20;
     assert(zc_producer_job_restart_configure(restart,&session_config,&recording,0)==ZC_OK);

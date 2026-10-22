@@ -342,3 +342,12 @@ continues to put media algorithms in Home's shared library. The reusable counted
 ledger therefore improves Home first; zig-camera retains hosted producer and
 session lifetime coordination. No kernel code is copied, modified or executed,
 and these checks do not establish physical camera timing, decoding or acceleration.
+
+The 0.74 repeated-header audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and checks camera/video media sources for
+SPS/PPS/VPS, NAL, Annex B and encoder support. Its nominal camera/decoder routines
+do not implement parameter-set extraction, hosted packet assembly or encoder
+header lifetimes. ADR-MC3 retains the shared-media-library boundary, so the checked
+filter/assembly improvements go to Home and are reused verbatim here. No OS code
+is copied, modified or executed, and no hardware decode, camera timing or Pi
+throughput result follows from these inspections.

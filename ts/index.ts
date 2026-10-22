@@ -5491,6 +5491,8 @@ export interface RecorderOptions {
   codec?: keyof typeof Codec
   encoder?: EncoderOptions
   limits?: EncoderLimits
+  /** Repeat parameter sets at AVC/HEVC packet keyframes; default true. */
+  repeatHeaders?: boolean
   bitrate?: number
   quality?: number
   gop?: number
@@ -5533,9 +5535,15 @@ export type RecorderSessionOptions = Partial<
   colorSpace?: ColorSpaceRequest | null
   encoder?: EncoderOptions | null
   limits?: EncoderLimits | null
+  repeatHeaders?: boolean | null
 }
 function snapshotRecorderOptions(options: RecorderOptions): RecorderOptions {
   options = { ...options }
+  if (
+    options.repeatHeaders !== undefined &&
+    typeof options.repeatHeaders !== 'boolean'
+  )
+    throw new TypeError('repeatHeaders must be boolean')
   options.stream = processedImageStream(options.stream)
   const colorSpace = snapshotColorSpace(options.colorSpace)
   return Object.freeze({
@@ -5593,6 +5601,9 @@ function mergeSessionOptions(
     merged.encoder = settings.encoder ?? undefined
   if (settings.limits !== undefined)
     merged.limits = settings.limits ?? undefined
+  const repeatHeaders = settings.repeatHeaders
+  if (repeatHeaders !== undefined)
+    merged.repeatHeaders = repeatHeaders ?? undefined
   return snapshotRecorderOptions(merged)
 }
 function resolvedSession(
@@ -5652,6 +5663,7 @@ function sessionFields(options: RecorderOptions) {
         : encodeColorSpace(options.colorSpace),
     encoder: encodeEncoderOptions(options.encoder),
     limits: encodeEncoderLimits(options.limits),
+    repeatHeaders: options.repeatHeaders ?? true,
   }
   check(
     n.zc_video_check_color(
@@ -6004,7 +6016,8 @@ export class Recorder {
       path !== null &&
       (color !== undefined ||
         options.encoder !== undefined ||
-        options.limits !== undefined)
+        options.limits !== undefined ||
+        options.repeatHeaders !== undefined)
     const out = outPointer()
     if (options.circular) {
       const ring = fields(24, n.zc_default_buffer_config, [
@@ -6062,6 +6075,14 @@ export class Recorder {
     }
     this.handle = handle(out)
     try {
+      if (options.repeatHeaders !== undefined)
+        check(
+          n.zc_video_set_repeat_headers(
+            this.handle,
+            Number(options.repeatHeaders),
+          ),
+          'packet header configuration',
+        )
       if (options.encoder)
         check(
           n.zc_video_set_codec_options(this.handle, ptr(encoder)),
@@ -6106,6 +6127,15 @@ export class Recorder {
     if (this.coordinator && !this.coordinatorEntry)
       throw new CameraError(-4, 'coordinated mode owns recorder')
     this.assertOwned(allowProducer)
+  }
+  repeatedHeaders(): boolean {
+    this.assertOpen()
+    const enabled = new Uint32Array(1)
+    check(
+      n.zc_video_get_repeat_headers(this.handle, ptr(enabled)),
+      'packet header policy',
+    )
+    return enabled[0] !== 0
   }
   encoderOptions() {
     this.assertOpen()
@@ -7794,6 +7824,7 @@ export class Recorder {
               colorSpace: settings.colorSpace ?? null,
               encoder: settings.encoder ?? null,
               limits: settings.limits ?? null,
+              repeatHeaders: settings.repeatHeaders ?? true,
             },
             output,
             {},
@@ -7904,6 +7935,14 @@ export class Recorder {
             config.color ? ptr(config.color) : null,
           ),
           'session color settings',
+        )
+      if (config)
+        check(
+          n.zc_producer_job_restart_repeat_headers(
+            native,
+            Number(config.repeatHeaders),
+          ),
+          'session packet headers',
         )
       if (config)
         check(

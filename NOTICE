@@ -526,3 +526,8 @@ Home counted keyframe requests (0.73):
 - src/home/keyframe_requests.zig is the verbatim Home allocation-free ledger for
   bounded pending intent and nonwrapping per-session request/input counters.
   The Home MIT license and copyright above apply.
+
+Home repeated packet headers (0.74):
+- src/home/packet_output.zig additionally supplies checked parameter-set filtering
+  and atomic Annex B prefix/access-unit assembly, copied verbatim from Home.
+  The Home MIT license and copyright above apply.

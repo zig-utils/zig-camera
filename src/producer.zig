@@ -24,6 +24,7 @@ pub const Job = struct {
     operation: enum { write, drain, flush, restart, keyframe } = .write,
     restart_config: ?struct { video: c.zc_video_config, audio: c.zc_recording_options, bitrate: u32 } = null,
     restart_color: ?c.zc_color_space = null,
+    restart_repeat_headers: ?bool = null,
     restart_codec_options: ?@import("home/native_encoder.zig").Options = null,
     restart_codec_limits: ?@import("home/native_encoder.zig").Limits = null,
     restart_kind: u32 = 0,

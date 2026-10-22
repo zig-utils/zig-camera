@@ -1004,3 +1004,35 @@ The normal macOS build runner still fails SDK linkage before project compilation
 the direct target-qualified native build succeeds. Home-hosted Actions remain
 separate from these local checks and the camera CI matrix; no Home-hosted success
 is asserted. See keyframes.md for public semantics and outstanding limitations.
+
+The 0.74 repeated-header audit fast-forwards unrelated Home TypeScript fixes to
+9ed10f32f06f28c30c31fd04662e5406cbc72b01 and improves packet_output at
+f071c988992aa76bd2feeadb18c128fb5c77ed2a. It inspects the shared Annex B/NAL
+helpers, native_encoder's length-prefixed header cache, and the broader x264/x265
+wrappers. The latter do not supply a safe replacement for the header-checked
+bridge; the x265 wrapper's repeated-header comment is attached to an AUD setting.
+The working encoder keeps vendor header repetition disabled, preserving cached
+HEVC conformance crops and header-free container samples.
+
+The verbatim shared helper now extracts required AVC/HEVC parameter sets while
+excluding other header NALs, checks output capacity/overlap, and preflights the
+header prefix plus access unit before any destination write. Each packet output
+owns a filtered parameter-set cache prepared once; no codec restart or per-frame
+filtering is introduced. Prefix bytes count toward sink queues and output byte
+accounting. The camera owns the copied default-true/first-only session policy,
+its C/Bun admission and prepared/snapshot/restart publication. No output scheduling
+or lifecycle ownership moves into Home's allocation-free helper.
+
+Home's nine focused tests pass pinned and development Zig in Debug/ReleaseSafe.
+Local camera validation passes 342 native tests, C ABI and 794 Bun tests,
+including 15 focused repeated-header cases and the final single-read session
+accessor fix. New fixtures inspect exact parameter bytes, raw file/PTS output,
+queue byte accounting, header-free muxed samples, snapshots, delayed splits,
+recovered sinks, session rollback/null reset and coordinated modes. Linux CI
+supplies independent decoding of raw clips beginning at a later IDR with no
+separate header message. Local tests without that decoder prove stream assembly
+and ownership only. The standard macOS build runner still fails SDK linkage
+before project compilation, while the direct target-qualified native build
+passes. Home-hosted Actions remain distinct from local checks and copied camera
+CI; no Home-hosted success is inferred. See repeated-headers.md for policy and
+remaining codec/hardware limitations.

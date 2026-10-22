@@ -65,6 +65,17 @@ pub export fn zc_video_open(path: [*:0]const u8, cfg: *const c.zc_video_config, 
     if (!options.video) return c.ZC_UNSUPPORTED;
     return @import("video.zig").open(path, cfg, out);
 }
+pub export fn zc_video_set_repeat_headers(p: *c.zc_recorder, enabled: u32) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").setRepeatHeaders(p, enabled);
+}
+pub export fn zc_video_get_repeat_headers(p: *c.zc_recorder, enabled: *u32) c_int {
+    if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
+    return @import("video.zig").getRepeatHeaders(p, enabled);
+}
+pub export fn zc_producer_job_restart_repeat_headers(p: *c.zc_producer_job, enabled: u32) c_int {
+    return @import("video.zig").restartRepeatHeaders(@ptrCast(@alignCast(p)), enabled);
+}
 pub export fn zc_video_request_keyframe(p: *c.zc_recorder) c_int {
     if (@import("video.zig").producerBusy(p)) return c.ZC_BUSY;
     return @import("video.zig").requestKeyframe(p);
