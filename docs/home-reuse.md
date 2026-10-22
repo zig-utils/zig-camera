@@ -798,3 +798,12 @@ leases. Bun pins one reservation through existing Home-gated camera/recorder job
 reusing their joined rollback/cancellation rather than adding another scheduler.
 No codec/container, kernel camera or process environment implementation is
 imported from OS. Physical IPA/hotplug/tuning results remain unverified.
+
+The 0.65.1 follow-up pins the environment source/public wrapper regression to
+3888e242056533d2da2e0c082129354885d920ec. Owned reads now allocate plain slices
+to match env.get's existing nonsentinel return type; hiding a sentinel allocation
+behind that type lost the extra byte during caller frees. A checked-allocator
+regression deliberately aborts against the earlier helper and passes the fixed
+public wrappers in Debug/ReleaseSafe. Pure tests pass on pinned/current compilers.
+The camera's standalone catalogue test now links the actual built Zig library
+for manager policy hooks; it does not replace those hooks with test stubs.

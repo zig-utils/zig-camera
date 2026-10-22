@@ -6,7 +6,9 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.65 adds [manager-lifetime tuning application](docs/tuning-sessions.md):
+Version 0.65.1 includes checked-allocator Home environment ownership and the
+real-library catalogue test integration. Version 0.65 adds
+[manager-lifetime tuning application](docs/tuning-sessions.md):
 owned Raspberry Pi IPA snapshots, matching-profile sharing/conflict rejection,
 environment restoration and camera reservations across mode/recording jobs.
 

@@ -182,7 +182,7 @@ jobs:
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
-          c++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/catalog_bridge.cpp $(pkg-config --cflags --libs libcamera) -o zig-out/catalog-bridge-test
+          c++ -std=c++17 -Wall -Wextra -Werror -Iinclude tests/catalog_bridge.cpp $(pkg-config --cflags --libs libcamera) -Lzig-out/lib -lzigcamera -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/catalog-bridge-test
           ./zig-out/catalog-bridge-test
           ./zig-out/bin/zig-camera list
           bun tests/ts/native-smoke.ts

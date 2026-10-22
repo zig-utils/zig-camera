@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87
+          ref: 3888e242056533d2da2e0c082129354885d920ec
           path: home-env-upstream
           sparse-checkout: packages/env
           persist-credentials: false

@@ -404,9 +404,9 @@ The Home MIT license and copyright reproduced above apply.
 Home owned POSIX environment values and overrides (0.65):
 - src/home/posix_env.zig and tests/home_env_no_libc.zig are copied verbatim from
   Home packages/env/src/posix_env.zig and packages/env/tests/no_libc.zig at
-  465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87. They supply owned raw-byte reads,
+  3888e242056533d2da2e0c082129354885d920ec. They supply owned raw-byte reads,
   allocation-atomic overrides, retryable restoration and unsupported-libc checks.
-  https://github.com/home-lang/home/commit/465a71b4e8fefbdd7f1004c93e5b64c10b3b6d87
+  https://github.com/home-lang/home/commit/3888e242056533d2da2e0c082129354885d920ec
 The Home MIT license and copyright reproduced above apply.
 
 Home relative capture intervals (0.61):
