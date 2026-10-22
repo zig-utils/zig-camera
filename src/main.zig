@@ -15,9 +15,9 @@ const help =
     \\  --color-space NAME       srgb/sycc/smpte170m/rec709/rec2020 (otherwise sYCC request)
     \\  --strict-color-space     Reject backend color adjustments; requires --color-space
     \\  --video-color-space NAME AVC/HEVC output profile; source gamut/transfer must match
-    \\  --main-format NAME       BGR888 (default), RGB888, XBGR8888, XRGB8888, YUV420, YVU420, NV12, NV21, YUYV, YVYU, UYVY, VYUY
+    \\  --main-format NAME       BGR888 (default), RGB888, XBGR8888, XRGB8888, YUV420, YVU420, NV12, NV21, YUYV, YVYU, UYVY, VYUY, BGR161616, RGB161616
     \\  --align PROFILE          Round explicit processed sizes down: pisp/vc4/minimum
-    \\  --lores-format NAME      YUV420 (default), BGR888, RGB888, XBGR8888, XRGB8888, YVU420, NV12, NV21, YUYV, YVYU, UYVY, VYUY
+    \\  --lores-format NAME      YUV420 (default), BGR888, RGB888, XBGR8888, XRGB8888, YVU420, NV12, NV21, YUYV, YVYU, UYVY, VYUY, BGR161616, RGB161616
     \\  --rotation N --hflip --vflip  Clockwise 0/90/180/270, then output-axis flips
     \\  --strict-transform       Reject adjusted camera orientation
     \\  --transpose              Final diagonal transpose after rotation/flips

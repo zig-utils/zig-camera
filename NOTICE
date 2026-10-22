@@ -555,3 +555,10 @@ Home packed YUV 4:2:2 (0.78):
   Home checked packed-pair RGB conversion and direct I420 sampling/remapping.
   https://github.com/home-lang/home/commit/49793c1fe7b6d65e58833cdc880ec1dd48326f0e
   The Home MIT license and copyright above apply.
+
+Home RGB16 word views (0.79):
+- src/home/rgb16_view.zig is copied verbatim from
+  home-lang/home packages/image/src/ops/rgb16_view.zig at
+  0e0dc7d39b71f422ac22e5707e0ce44dfaf72ecd (MIT, Home contributors).
+- Checked allocation-free RGB/BGR u16 views, endian/layout conversion and explicit
+  high-byte RGB8 reduction. Existing Home raster encoders/codecs are unchanged.

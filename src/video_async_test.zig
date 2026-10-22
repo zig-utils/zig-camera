@@ -1120,3 +1120,45 @@ test "packed 422 producer keeps physical pair bytes and two-byte budget after or
         try t.expectEqual(@as(usize, 1), delivered);
     }
 }
+
+test "RGB16 producer preserves six-byte physical words and low bits before worker reduction" {
+    const t = std.testing;
+    const m = @import("media.zig");
+    const pf = @import("processed_format.zig");
+    for ([_]u32{ c.ZC_RGB48, c.ZC_BGR48 }) |format| {
+        var delivered: usize = 0;
+        const rec = try recorder(&delivered);
+        defer _ = m.zc_video_close(rec);
+        try t.expectEqual(c.ZC_OK, m.zc_video_set_producer_limits(rec, 1536, 1));
+        var data: [1581]u8 = @splat(99);
+        const layout = pf.layout16(pf.name(format)).?;
+        for (0..16) |y| for (0..16) |x| layout.write(data[y * 99 + x * 6 ..], .little, .{ 0x1234, 0x8001, 0xfe02 });
+        var frame = std.mem.zeroes(c.zc_frame);
+        frame.token = 1;
+        frame.main.width = 16;
+        frame.main.height = 16;
+        frame.main.stride = 99;
+        frame.main.plane_count = 1;
+        const name = pf.name(format);
+        @memcpy(frame.main.format[0..name.len], name);
+        frame.main.planes[0] = .{ .data = &data, .length = data.len, .bytes_used = data.len, .fd = -1 };
+        var job: ?*c.zc_producer_job = null;
+        try t.expectEqual(c.ZC_OK, m.zc_video_producer_frame(rec, &frame, 0, &job));
+        const owned: *@import("producer.zig").Job = @ptrCast(@alignCast(job.?));
+        try t.expectEqual(@as(usize, 1536), owned.data.len);
+        try t.expectEqual(@as(u32, 96), owned.frame.main.stride);
+        try t.expectEqualStrings(name, std.mem.sliceTo(&owned.frame.main.format, 0));
+        for (0..256) |i| try t.expectEqual([3]u16{ 0x1234, 0x8001, 0xfe02 }, layout.read(owned.data[i * 6 ..], .little));
+        @memset(&data, 0);
+        try t.expectEqual(c.ZC_OK, m.zc_producer_job_start(job.?));
+        var timer = try std.time.Timer.start();
+        var result: c_int = undefined;
+        while (m.zc_producer_job_finish(job.?, &result) == c.ZC_TIMEOUT) {
+            try t.expect(timer.read() < 5 * std.time.ns_per_s);
+            std.Thread.sleep(std.time.ns_per_ms);
+        }
+        try t.expectEqual(c.ZC_OK, result);
+        try t.expectEqual(c.ZC_OK, m.zc_producer_job_close(job.?));
+        try t.expectEqual(@as(usize, 1), delivered);
+    }
+}

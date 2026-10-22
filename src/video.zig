@@ -1011,6 +1011,14 @@ fn writeImpl(self: *Recorder, stream: *const c.zc_stream, ns: u64, pts: u64, col
             normalized.planes[0].length = self.input_rgb.len;
         }
     }
+    if (@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0))) {
+        if (self.input_rgb.len == 0) self.input_rgb = try A.alloc(u8, try @import("stream_rgb.zig").size(stream.*));
+        try @import("stream_rgb.zig").copy(stream.*, std.mem.zeroes(c.zc_color_space), self.input_rgb);
+        normalized.stride = stream.width * 3;
+        normalized.planes[0].data = self.input_rgb.ptr;
+        normalized.planes[0].bytes_used = self.input_rgb.len;
+        normalized.planes[0].length = self.input_rgb.len;
+    }
     const input = &normalized;
     const yuv = @import("processed_format.zig").isYuv(std.mem.sliceTo(&stream.format, 0));
     if (self.keyframes.pending() != 0) try self.forceKey();
@@ -2734,7 +2742,7 @@ pub fn producerInputAv(p: *c.zc_recorder, f: *const c.zc_frame, timestamp: u64, 
     job.input_color = color;
     job.frame.main.width = s.width;
     job.frame.main.height = s.height;
-    job.frame.main.stride = s.width * @as(u32, if (@import("processed_format.zig").is422(std.mem.sliceTo(&s.format, 0))) 2 else if (yuv) 1 else @intCast(@import("processed_format.zig").layout(std.mem.sliceTo(&s.format, 0)).?.bytes()));
+    job.frame.main.stride = s.width * @as(u32, if (@import("processed_format.zig").is422(std.mem.sliceTo(&s.format, 0))) 2 else if (yuv) 1 else if (@import("processed_format.zig").isWide(std.mem.sliceTo(&s.format, 0))) 6 else @intCast(@import("processed_format.zig").layout(std.mem.sliceTo(&s.format, 0)).?.bytes()));
     job.frame.main.plane_count = 1;
     job.frame.main.format = s.format;
     job.frame.main.planes[0] = .{ .fd = -1, .offset = 0, .length = pixel_size, .bytes_used = pixel_size, .data = job.data.ptr };

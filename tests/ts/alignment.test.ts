@@ -333,7 +333,7 @@ test('invalid and empty alignment rejects instead of selecting unintended backen
     alignConfiguration({
       width: 1919,
       height: 1081,
-      format: 'RGB161616' as never,
+      format: 'RGB161616_INVALID' as never,
     }),
   ).toThrow('invalid main stream format')
 })

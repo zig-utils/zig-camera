@@ -298,7 +298,7 @@ struct ManagerWatch {
     }
 };
 
-static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;case ZC_YVU420:return formats::YVU420;case ZC_NV12:return formats::NV12;case ZC_NV21:return formats::NV21;case ZC_YUYV:return formats::YUYV;case ZC_YVYU:return formats::YVYU;case ZC_UYVY:return formats::UYVY;case ZC_VYUY:return formats::VYUY;default:return formats::YUV420; } }
+static PixelFormat processedPixelFormat(uint32_t format) { switch(format) { case ZC_RGB24:return formats::BGR888;case ZC_BGR24:return formats::RGB888;case ZC_RGBX32:return formats::XBGR8888;case ZC_BGRX32:return formats::XRGB8888;case ZC_YVU420:return formats::YVU420;case ZC_NV12:return formats::NV12;case ZC_NV21:return formats::NV21;case ZC_YUYV:return formats::YUYV;case ZC_YVYU:return formats::YVYU;case ZC_UYVY:return formats::UYVY;case ZC_VYUY:return formats::VYUY;case ZC_RGB48:return PixelFormat::fromString("BGR161616");case ZC_BGR48:return PixelFormat::fromString("RGB161616");default:return formats::YUV420; } }
 static bool processed422(uint32_t format) { return format>=ZC_YUYV && format<=ZC_VYUY; }
 static bool processedYuv(uint32_t format) { return processed422(format) || format==ZC_YUV420 || format==ZC_YVU420 || format==ZC_NV12 || format==ZC_NV21; }
 static bool processedGeometry(uint32_t format,Size size,uint32_t stride) { return !processedYuv(format) || (processed422(format) ? !(size.width&1) && stride>=(uint64_t)size.width*2 : !((size.width|size.height|stride)&1)); }
@@ -529,6 +529,7 @@ struct Device {
         auto &main_request = config->at(0);
         // libcamera's BGR888 fourcc stores R,G,B bytes on little endian hosts.
         main_request.pixelFormat = processedPixelFormat(main_format);
+        if(!main_request.pixelFormat.isValid())return ZC_UNSUPPORTED;
         main_request.colorSpace = requestedProcessedColorSpace(main_format,processed.color_space);
         if(!main_request.colorSpace)return ZC_UNSUPPORTED;
         if (cfg.width) main_request.size = {cfg.width, cfg.height};
@@ -537,6 +538,7 @@ struct Device {
             auto &lores=config->at(1);
             lores.size={pipe.lores_width,pipe.lores_height};
             lores.pixelFormat=processedPixelFormat(pipe.lores_format);
+            if(!lores.pixelFormat.isValid())return ZC_UNSUPPORTED;
             lores.colorSpace=requestedProcessedColorSpace(pipe.lores_format,processed.color_space);
             if(!lores.colorSpace)return ZC_UNSUPPORTED;
             lores.bufferCount=cfg.buffer_count;

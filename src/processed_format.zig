@@ -3,10 +3,12 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 pub const rgb = @import("home/packed_rgb.zig");
 pub fn valid(value: u32) bool {
-    return value <= c.ZC_VYUY;
+    return value <= c.ZC_BGR48;
 }
 pub fn name(value: u32) []const u8 {
     return switch (value) {
+        c.ZC_RGB48 => "BGR161616",
+        c.ZC_BGR48 => "RGB161616",
         c.ZC_YUYV => "YUYV",
         c.ZC_YVYU => "YVYU",
         c.ZC_UYVY => "UYVY",
@@ -23,7 +25,7 @@ pub fn name(value: u32) []const u8 {
     };
 }
 pub fn code(value: []const u8) ?u32 {
-    for (0..c.ZC_VYUY + 1) |i| if (std.mem.eql(u8, value, name(@intCast(i)))) return @intCast(i);
+    for (0..c.ZC_BGR48 + 1) |i| if (std.mem.eql(u8, value, name(@intCast(i)))) return @intCast(i);
     return null;
 }
 pub fn layout(value: []const u8) ?rgb.Layout {
@@ -41,6 +43,7 @@ pub fn bytes(value: u32) u32 {
         c.ZC_YUYV, c.ZC_YVYU, c.ZC_UYVY, c.ZC_VYUY => 2,
         c.ZC_RGB24, c.ZC_BGR24 => 3,
         c.ZC_RGBX32, c.ZC_BGRX32 => 4,
+        c.ZC_RGB48, c.ZC_BGR48 => 6,
         else => unreachable,
     };
 }
@@ -58,10 +61,12 @@ pub fn planes(value: u32) u32 {
     return if (semi(value)) 2 else if (yuv420(value)) 3 else 1;
 }
 pub fn alignment(value: u32) @import("home/stream_alignment.zig").Layout {
-    return if (value == c.ZC_YUV420 or value == c.ZC_YVU420) .planar420 else if (bytes(value) == 4) .wide else .packed_pixels;
+    return if (value == c.ZC_YUV420 or value == c.ZC_YVU420) .planar420 else if (bytes(value) >= 4) .wide else .packed_pixels;
 }
 pub fn suffix(value: u32) []const u8 {
     return switch (value) {
+        c.ZC_RGB48 => "rgb48le",
+        c.ZC_BGR48 => "bgr48le",
         c.ZC_YUV420 => "i420",
         c.ZC_YVU420 => "yv12",
         c.ZC_NV12 => "nv12",
@@ -94,4 +99,18 @@ pub fn layout422(value: []const u8) ?@import("home/packed_yuv422.zig").Layout {
 }
 pub fn geometry(value: u32, width: u32, height: u32) bool {
     return if (packed422(value)) width & 1 == 0 else if (yuv420(value)) (width | height) & 1 == 0 else true;
+}
+
+pub fn wide(value: u32) bool {
+    return value == c.ZC_RGB48 or value == c.ZC_BGR48;
+}
+pub fn isWide(value: []const u8) bool {
+    return wide(code(value) orelse return false);
+}
+pub fn layout16(value: []const u8) ?@import("home/rgb16_view.zig").Layout {
+    return switch (code(value) orelse return null) {
+        c.ZC_RGB48 => .rgb,
+        c.ZC_BGR48 => .bgr,
+        else => null,
+    };
 }

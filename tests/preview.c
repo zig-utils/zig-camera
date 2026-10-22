@@ -175,7 +175,23 @@ static void packed_inputs(void) {
         assert(zcm_preview_close(p)==ZC_OK);
     }
 }
+static void rgb16_preview(void){
+    const char *names[]={"BGR161616","RGB161616"};
+    for(unsigned layout=0;layout<2;layout++){
+        zc_preview *p=NULL;assert(zc_preview_open("RGB16",2,2,&p)==ZC_OK);uint8_t src[27]={0};uint8_t expected[12],actual[12];
+        for(unsigned y=0;y<2;y++)for(unsigned x=0;x<2;x++)for(unsigned c=0;c<3;c++){
+            const unsigned channel=layout?2-c:c;const uint16_t value=(uint16_t)((30+x*50+y*70+channel*20)*256+17+channel);
+            const unsigned at=y*15+x*6+c*2;src[at]=value&255;src[at+1]=value>>8;
+            expected[(y*2+x)*3+channel]=(uint8_t)(value>>8);
+        }
+        zc_frame f={0};f.token=1;f.main.width=2;f.main.height=2;f.main.stride=15;f.main.plane_count=1;strcpy(f.main.format,names[layout]);f.main.planes[0].data=src;f.main.planes[0].length=sizeof(src);f.main.planes[0].bytes_used=sizeof(src);
+        assert(zc_preview_show_input(p,&f,NULL)==ZC_OK);read_small(p,actual);assert(!memcmp(expected,actual,sizeof(expected)));
+        f.main.planes[0].bytes_used--;assert(zc_preview_show_input(p,&f,NULL)==ZC_INVALID);read_small(p,actual);assert(!memcmp(expected,actual,sizeof(expected)));
+        assert(zc_preview_close(p)==ZC_OK);
+    }
+}
 int main(void) {
+    rgb16_preview();
     packed_inputs();
     assert(SDL_setenv("SDL_VIDEODRIVER","dummy",1)==0);
     SDL_SetHint(SDL_HINT_RENDER_DRIVER,"software");

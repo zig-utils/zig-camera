@@ -1174,3 +1174,36 @@ runner again fails macOS SDK/libSystem linkage before project compilation;
 target-qualified direct native/library/CLI builds pass. Linux CI supplies the
 independent AVC/HEVC decoding and real-backend compile/load/no-camera evidence;
 local independent still decoding is available, but physical capture is not.
+
+The 0.79 RGB16 audit checks Home image raster Views (existing 16-bit PNG/TIFF
+preservation and BMP high-byte policy), packed RGB views and video converters at
+49793c1fe7b6d65e58833cdc880ec1dd48326f0e. Those byte-oriented converters cannot
+represent three independent u16 channels. Home main commit
+0e0dc7d39b71f422ac22e5707e0ce44dfaf72ecd contributes image ops/rgb16_view.zig,
+its public Rgb16View alias, documentation and helper workflow coverage. The std-only
+view preserves low bits across checked byte/word-order conversion, supports
+unaligned/padded rows and explicitly reduces to RGB8 via sample >> 8. It is copied
+verbatim here, with existing Home raster/JPEG/codecs/containers reused unchanged.
+The recorded Home OS audit excludes RGB565/gamma kernel code from this boundary.
+
+Pinned Zig 0.15.2 and Home development Zig pass both helper tests in Debug and
+ReleaseSafe. The complete Home image API passes 119 tests on development Zig.
+Home-hosted Actions still returns no run for this exact published head; these
+local and camera-consumer checks do not substitute for Home-hosted CI evidence.
+
+Hosted main/lores capture, raw copies/mappings and producer admission preserve
+six physical bytes per pixel. Owned RGB16 copies and PNG/TIFF/PPM preserve every
+word, including existing ICC/Exif paths where applicable. RGB8 JPEG/BMP/preview
+and current video codecs use the explicit high-byte policy. Workers reuse their
+RGB scratch; producer queues retain low bits and release camera leases before
+output I/O. Mode switches and fresh-camera recovery carry these formats through
+existing transaction owners. Synthetic gradients expand an 8-bit pattern; tests
+write deliberately different high/low words to verify precision independently.
+
+Local evidence: 905 Bun tests, 360 target-qualified ReleaseSafe native tests,
+C ABI and SDL pixel readback, typecheck, fmt and CLI raw/image/recording checks.
+The normal local build runner still fails macOS SDK/libSystem linkage before
+project compilation; direct library/CLI builds succeed. Linux CI supplies raw16
+libpng/libtiff and AVC/HEVC independent decoding, plus old-SDK real-backend
+compile/load/no-camera cleanup. No sensor precision or physical performance result
+is inferred, and higher-bit-depth video/gamut/transfer conversion remains open.

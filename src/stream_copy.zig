@@ -6,7 +6,7 @@ pub fn byteCount(m: *const c.zc_stream, out: *u64) c_int {
     if (m.width == 0 or m.height == 0 or m.width > 16384 or m.height > 16384) return c.ZC_INVALID;
     const name = std.mem.sliceTo(&m.format, 0);
     const pixels = @as(u64, m.width) * m.height;
-    const size = if (@import("processed_format.zig").layout(name)) |layout| pixels * layout.bytes() else if (@import("processed_format.zig").is422(name)) blk: {
+    const size = if (@import("processed_format.zig").layout(name)) |layout| pixels * layout.bytes() else if (@import("processed_format.zig").isWide(name)) pixels * 6 else if (@import("processed_format.zig").is422(name)) blk: {
         if (m.width & 1 != 0) return c.ZC_INVALID;
         break :blk pixels * 2;
     } else if (@import("processed_format.zig").isYuv(name)) blk: {
@@ -61,7 +61,7 @@ pub fn plan(m: *const c.zc_stream, out: *[3]@import("home/plane_pack.zig").Plane
         return 3;
     }
     if (m.plane_count != 1) return error.InvalidGeometry;
-    const row: usize = if (@import("processed_format.zig").is422(name)) @as(usize, m.width) * 2 else if (@import("processed_format.zig").layout(name)) |layout| @as(usize, m.width) * layout.bytes() else blk: {
+    const row: usize = if (@import("processed_format.zig").isWide(name)) @as(usize, m.width) * 6 else if (@import("processed_format.zig").is422(name)) @as(usize, m.width) * 2 else if (@import("processed_format.zig").layout(name)) |layout| @as(usize, m.width) * layout.bytes() else blk: {
         const format = @import("raw.zig").Format.parse(name) catch return error.UnsupportedFormat;
         break :blk format.rowBytes(m.width) catch return error.InvalidGeometry;
     };

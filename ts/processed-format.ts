@@ -12,6 +12,8 @@ export const processedFormats = [
   'YVYU',
   'UYVY',
   'VYUY',
+  'BGR161616',
+  'RGB161616',
 ] as const
 export type ProcessedFormat = (typeof processedFormats)[number]
 export function processedFormatCode(value: unknown): number {

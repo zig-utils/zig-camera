@@ -774,6 +774,28 @@ export class Frame {
     )
     return data
   }
+  /** Owned RGB16 words. Requires a 16-bit RGB source; no precision is invented. */
+  copyRGB16(stream: 'main' | 'lores' = 'main'): Uint16Array {
+    this.open()
+    const id = imageStreamId(processedImageStream(stream)),
+      descriptor = storage(208)
+    check(n.zc_get_stream(this.camera.handle, this.token, id, ptr(descriptor)))
+    const format = text(descriptor, 16, 32)
+    if (format !== 'BGR161616' && format !== 'RGB161616')
+      throw new CameraError(-8, 'RGB16 source required')
+    const d = view(descriptor),
+      data = storage(d.getUint32(0, true) * d.getUint32(4, true) * 6)
+    check(
+      n.zc_copy_stream_rgb16(
+        this.camera.handle,
+        this.token,
+        id,
+        ptr(data),
+        BigInt(data.length),
+      ),
+    )
+    return new Uint16Array(data.buffer)
+  }
   copyStream(stream: StreamName = 'main'): PackedStream {
     const names = streamNames([stream])
     this.open()
@@ -3195,6 +3217,17 @@ export class Camera {
   ) {
     const stream = processedImageStream(options.stream)
     return this.captureAsync((frame) => frame.copyRGB(stream), options)
+  }
+  captureRGB16Async(
+    options: CaptureOptions<Uint16Array> & { stream?: 'main' | 'lores' } = {},
+  ) {
+    const stream = processedImageStream(options.stream)
+    return this.captureAsync((frame) => frame.copyRGB16(stream), options)
+  }
+  captureRGB16(
+    options: CaptureOptions<Uint16Array> & { stream?: 'main' | 'lores' } = {},
+  ) {
+    return this.captureRGB16Async(options).wait()
   }
   captureMetadataAsync(
     options: CaptureOptions<ReturnType<Frame['metadata']>> = {},

@@ -248,13 +248,13 @@ pub export fn zc_open_id_processed_pipeline(cfg: *const c.zc_config, pipeline: *
 pub export fn zc_check_camera_configuration(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32) c_int {
     if (colors.zc_check_processed_options(processed, pipeline) != c.ZC_OK) return c.ZC_INVALID;
     const main_format = processed.main_format;
-    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_VYUY or !@import("processed_format.zig").geometry(main_format, cfg.width, cfg.height)) return c.ZC_INVALID;
+    if (orientation < 1 or orientation > 8 or strict > 1 or main_format > c.ZC_BGR48 or !@import("processed_format.zig").geometry(main_format, cfg.width, cfg.height)) return c.ZC_INVALID;
     const opts = &pipeline.capture;
     if (pipeline.struct_size != @sizeOf(c.zc_pipeline_options) or
         pipeline.sensor_width > 16384 or pipeline.sensor_height > 16384 or pipeline.sensor_bit_depth > 16 or
         ((pipeline.sensor_width == 0) != (pipeline.sensor_height == 0)) or ((pipeline.sensor_width == 0) != (pipeline.sensor_bit_depth == 0)) or
         pipeline.lores_width > 16384 or pipeline.lores_height > 16384 or
-        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_VYUY or
+        ((pipeline.lores_width == 0) != (pipeline.lores_height == 0)) or pipeline.lores_format > c.ZC_BGR48 or
         !@import("processed_format.zig").geometry(pipeline.lores_format, pipeline.lores_width, pipeline.lores_height)) return c.ZC_INVALID;
     if (!valid(cfg) or opts.struct_size != @sizeOf(c.zc_capture_options) or opts.role > c.ZC_VIDEO or opts.unpacked_raw > 1 or
         (opts.unpacked_raw != 0 and cfg.raw == 0) or (opts.noise_reduction > 4 and opts.noise_reduction != std.math.maxInt(u32))) return c.ZC_INVALID;
@@ -497,6 +497,20 @@ pub export fn zc_copy_stream_rgb(p: *c.zc_camera, token: u64, stream: u32, out: 
     rc = driver.colorSpace(self.device.?, stream, &space);
     if (rc != 0) return rc;
     @import("stream_rgb.zig").copy(selected, space, out[0..@intCast(length)]) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
+pub export fn zc_copy_stream_rgb16(p: *c.zc_camera, token: u64, stream: u32, out: [*c]u8, length: u64) c_int {
+    if (stream > c.ZC_LORES or out == null or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    if (stream == c.ZC_RAW) return c.ZC_UNSUPPORTED;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    var selected: c.zc_stream = undefined;
+    const rc = streamLocked(self, index, stream, &selected);
+    if (rc != 0) return rc;
+    @import("stream_rgb.zig").copy16(selected, out[0..@intCast(length)]) catch |err| return still.status(err);
     return c.ZC_OK;
 }
 fn streamLocked(self: *Session, i: u32, stream: u32, out: *c.zc_stream) c_int {
@@ -1565,7 +1579,7 @@ pub export fn zc_encode_stream_image_metadata(p: *c.zc_camera, token: u64, strea
         const rc = driver.colorSpace(self.device.?, stream, &space);
         if (rc != 0) return rc;
         still.checkProfileSource(profile, space) catch |err| return still.status(err);
-        source = @import("stream_rgb.zig").Selected.init(allocator, source.frame, selected, space) catch |err| return still.status(err);
+        source = @import("stream_rgb.zig").Selected.image(allocator, source.frame, selected, space, opts.format) catch |err| return still.status(err);
     }
     defer source.deinit(allocator);
     const blob = allocator.create(still.Blob) catch return c.ZC_NOMEM;

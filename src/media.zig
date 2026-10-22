@@ -105,12 +105,12 @@ pub export fn zc_video_write_input(p: *c.zc_recorder, f: *const c.zc_frame, colo
     return @import("video.zig").writeInput(p, f, ts, color.*);
 }
 pub export fn zc_video_check_input_color(color: *const c.zc_color_space, format: u32) c_int {
-    if (format > c.ZC_VYUY) return c.ZC_INVALID;
+    if (format > c.ZC_BGR48) return c.ZC_INVALID;
     @import("video_input.zig").validateColor(color.*, @import("processed_format.zig").yuv(format)) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
 pub export fn zc_video_check_input_color_for(color: *const c.zc_color_space, format: u32, target: ?*const c.zc_color_space) c_int {
-    if (format > c.ZC_VYUY) return c.ZC_INVALID;
+    if (format > c.ZC_BGR48) return c.ZC_INVALID;
     @import("video_input.zig").validateColorFor(color.*, @import("processed_format.zig").yuv(format), if (target) |value| value.* else @import("recording_color.zig").legacy()) catch |err| return if (err == error.InvalidConfiguration) c.ZC_INVALID else c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
@@ -162,8 +162,18 @@ pub export fn zc_video_close(p: *c.zc_recorder) c_int {
     return @import("video.zig").close(p);
 }
 
+pub export fn zc_copy_rgb16(f: *const c.zc_frame, out: [*c]u8, length: u64) c_int {
+    if (f.token == 0 or out == null or length > @import("std").math.maxInt(usize)) return c.ZC_INVALID;
+    @import("stream_rgb.zig").copy16(f.main, out[0..@intCast(length)]) catch |err| return @import("still.zig").status(err);
+    return c.ZC_OK;
+}
 pub export fn zc_copy_rgb(f: *const c.zc_frame, out: [*]u8, length: u64) c_int {
     if (f.token == 0 or length > @import("std").math.maxInt(usize)) return c.ZC_INVALID;
+    if (@import("processed_format.zig").isWide(@import("std").mem.sliceTo(&f.main.format, 0))) {
+        const wide = @import("stream_rgb.zig").wideView(f.main) catch return c.ZC_INVALID;
+        wide.toRgb8(out[0..@intCast(length)], @as(usize, f.main.width) * 3) catch return c.ZC_INVALID;
+        return c.ZC_OK;
+    }
     const view = @import("stream_rgb.zig").packedView(f.main) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
     view.convert(out[0..@intCast(length)], @as(usize, f.main.width) * 3, .rgb) catch return c.ZC_INVALID;
     return c.ZC_OK;

@@ -39,6 +39,16 @@ pub fn rgbView(stream: c.zc_stream) !raster.View {
     _ = try view.validate();
     return view;
 }
+pub fn wideView(stream: c.zc_stream) !@import("home/rgb16_view.zig").View {
+    _ = try size(stream);
+    if (stream.plane_count != 1) return error.UnsupportedFormat;
+    const layout = @import("processed_format.zig").layout16(std.mem.sliceTo(&stream.format, 0)) orelse return error.UnsupportedFormat;
+    return @import("home/rgb16_view.zig").View.init(try plane(stream.planes[0]), stream.width, stream.height, stream.stride, layout, .little);
+}
+pub fn copy16(stream: c.zc_stream, out: []u8) !void {
+    const view = try wideView(stream);
+    try view.convert(out, @as(usize, stream.width) * 6, .rgb, .little);
+}
 pub fn packed422View(stream: c.zc_stream) !@import("home/packed_yuv422.zig").View {
     _ = try size(stream);
     if (stream.plane_count != 1) return error.UnsupportedFormat;
@@ -82,7 +92,7 @@ pub fn copy(stream: c.zc_stream, space: c.zc_color_space, out: []u8) !void {
     if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
         const view = try packedView(stream);
         try view.convert(out, @as(usize, stream.width) * 3, .rgb);
-    } else if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) try (try packed422View(stream)).decodeRgb(try conversion(space), out, stream.width * 3) else try home.decode420(try i420View(stream), try conversion(space), out, stream.width * 3);
+    } else if (@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0))) try (try wideView(stream)).toRgb8(out, @as(usize, stream.width) * 3) else if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) try (try packed422View(stream)).decodeRgb(try conversion(space), out, stream.width * 3) else try home.decode420(try i420View(stream), try conversion(space), out, stream.width * 3);
 }
 /// Borrow canonical RGB rows directly; other layouts own one RGB conversion buffer.
 pub const Selected = struct {
@@ -96,6 +106,8 @@ pub const Selected = struct {
         } else {
             if (@import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)) != null) {
                 _ = try packedView(stream);
+            } else if (@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0))) {
+                _ = try wideView(stream);
             } else {
                 if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) {
                     _ = try packed422View(stream);
@@ -115,6 +127,25 @@ pub const Selected = struct {
             result.frame.main.planes = @splat(std.mem.zeroes(c.zc_plane));
             result.frame.main.planes[0] = .{ .data = data.ptr, .length = data.len, .bytes_used = data.len, .offset = 0, .fd = -1, .reserved = 0 };
         }
+        return result;
+    }
+    /// Preserve word precision for non-JPEG raster output; canonical RGB16 can
+    /// borrow rows, while BGR16 owns one checked word-order conversion.
+    pub fn image(allocator: std.mem.Allocator, source: c.zc_frame, stream: c.zc_stream, space: c.zc_color_space, format: u32) !Selected {
+        if (!@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0)) or format == c.ZC_IMAGE_JPEG) return init(allocator, source, stream, space);
+        const view = try wideView(stream);
+        var result = Selected{ .frame = source };
+        result.frame.main = stream;
+        if (view.layout == .rgb) return result;
+        const data = try allocator.alloc(u8, @as(usize, stream.width) * stream.height * 6);
+        errdefer allocator.free(data);
+        try view.convert(data, @as(usize, stream.width) * 6, .rgb, .little);
+        result.owned = data;
+        result.frame.main.stride = stream.width * 6;
+        result.frame.main.planes = @splat(std.mem.zeroes(c.zc_plane));
+        result.frame.main.planes[0] = .{ .data = data.ptr, .length = data.len, .bytes_used = data.len, .fd = -1 };
+        @memset(&result.frame.main.format, 0);
+        @memcpy(result.frame.main.format[0..9], "BGR161616");
         return result;
     }
     pub fn deinit(self: Selected, allocator: std.mem.Allocator) void {

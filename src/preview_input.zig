@@ -11,7 +11,7 @@ pub export fn zc_preview_check_color(format: u32, color: ?*const c.zc_color_spac
     _ = streams.conversion(value.*) catch return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
-const Input = struct { stream: c.zc_stream, yuv: ?home.I420 = null, conversion: ?home.Conversion = null, packed_rgb: ?@import("home/packed_rgb.zig").View = null, packed422: ?@import("home/packed_yuv422.zig").View = null };
+const Input = struct { stream: c.zc_stream, yuv: ?home.I420 = null, conversion: ?home.Conversion = null, packed_rgb: ?@import("home/packed_rgb.zig").View = null, packed422: ?@import("home/packed_yuv422.zig").View = null, wide: ?@import("home/rgb16_view.zig").View = null };
 fn prepare(frame: *const c.zc_frame, color: ?*const c.zc_color_space) !Input {
     if (frame.token == 0) return error.InvalidGeometry;
     const selected = frame.main;
@@ -20,6 +20,7 @@ fn prepare(frame: *const c.zc_frame, color: ?*const c.zc_color_space) !Input {
         return .{ .stream = selected };
     }
     if (@import("processed_format.zig").layout(std.mem.sliceTo(&selected.format, 0)) != null) return .{ .stream = selected, .packed_rgb = try streams.packedView(selected) };
+    if (@import("processed_format.zig").isWide(std.mem.sliceTo(&selected.format, 0))) return .{ .stream = selected, .wide = try streams.wideView(selected) };
     const value = color orelse return error.UnsupportedFormat;
     const checked = zc_preview_check_color(c.ZC_YUV420, value);
     if (checked == c.ZC_INVALID) return error.InvalidGeometry;
@@ -43,7 +44,7 @@ pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, 
     const dimensions = zcm_preview_extent(p, &width, &height);
     if (dimensions != c.ZC_OK) return dimensions;
     if (input.stream.width != width or input.stream.height != height) return c.ZC_INVALID;
-    if (input.yuv != null or input.packed_rgb != null or input.packed422 != null) {
+    if (input.yuv != null or input.packed_rgb != null or input.packed422 != null or input.wide != null) {
         var pixels: ?[*]u8 = null;
         var length: u64 = 0;
         var stride: u32 = 0;
@@ -58,6 +59,8 @@ pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, 
             home.decode420(source, input.conversion.?, pixels.?[0..@intCast(length)], stride) catch return c.ZC_IO;
         } else if (input.packed422) |source| {
             source.decodeRgb(input.conversion.?, pixels.?[0..@intCast(length)], stride) catch return c.ZC_IO;
+        } else if (input.wide) |source| {
+            source.toRgb8(pixels.?[0..@intCast(length)], stride) catch return c.ZC_IO;
         } else input.packed_rgb.?.convert(pixels.?[0..@intCast(length)], stride, .rgb) catch return c.ZC_IO;
         ended = true;
         return zcm_preview_rgb_end(p, 1);

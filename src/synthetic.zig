@@ -81,6 +81,11 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
             const value = sampleRGB(transform, output, main_source, x, y, index);
             layout.write(buf[y * stream.stride + x * layout.bytes() ..], .{ value[0], value[1], value[2], 255 });
         };
+    } else if (@import("processed_format.zig").layout16(std.mem.sliceTo(&stream.format, 0))) |layout| {
+        for (0..stream.height) |y| for (0..stream.width) |x| {
+            const value = sampleRGB(transform, output, main_source, x, y, index);
+            layout.write(buf[y * stream.stride + x * 6 ..], .little, .{ @as(u16, value[0]) * 257, @as(u16, value[1]) * 257, @as(u16, value[2]) * 257 });
+        };
     } else {
         // Synthetic setup only: real hardware supplies the negotiated YUV planes.
         const tmp = try Alloc.alloc(u8, @as(usize, stream.width) * stream.height * 3);

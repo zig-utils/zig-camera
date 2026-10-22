@@ -392,3 +392,14 @@ capture stub provide no packed-pair processing, checked row spans or hosted
 converter is improved there and reused here. Kernel buffers/addresses and
 unimplemented decoder declarations do not substitute for libcamera ownership.
 No OS code is copied, changed or executed, and no physical result is inferred.
+
+The 0.79 RGB16 audit checks unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65. Camera, framebuffer and VideoCore7 gamma
+sources do not supply a checked hosted RGB48 word view. RGB565 bitfield packing
+and kernel framebuffer bpp/pitch are different from three 16-bit channel words;
+gamma LUT control does not implement word-order conversion or lossless still
+encoding. Camera capture remains a size-returning stub and nominal decoder
+interfaces do not provide working libcamera support. ADR-MC3 keeps shared media
+algorithms in Home stdlib, so rgb16_view is contributed there and reused here.
+No OS source is copied, changed or executed. Physical Pi format/bit-depth,
+DMA/coherency, hardware encoding and performance remain hardware acceptance work.

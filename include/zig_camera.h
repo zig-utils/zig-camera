@@ -31,7 +31,7 @@ typedef struct {
 } zc_plane;
 typedef struct {
     uint32_t width, height, stride, plane_count;
-    char format[32]; /* processed: BGR888/RGB888/XBGR8888/XRGB8888/YUV420/YVU420/NV12/NV21/YUYV/YVYU/UYVY/VYUY; raw: negotiated name */
+    char format[32]; /* processed: BGR888/RGB888/XBGR8888/XRGB8888/YUV420/YVU420/NV12/NV21/YUYV/YVYU/UYVY/VYUY/BGR161616/RGB161616; raw: negotiated name */
     zc_plane planes[ZC_MAX_PLANES];
 } zc_stream;
 typedef struct {
@@ -60,8 +60,9 @@ typedef struct zc_camera zc_camera;
  * Lores: both dimensions zero disable; YUV420 requires even dimensions.
  * Its negotiated size must not exceed main. All three streams share one lease. */
 enum { ZC_MAIN=0, ZC_RAW=1, ZC_LORES=2 };
-/* Processed format names use libcamera FourCC; constants describe memory bytes. */
-enum { ZC_YUV420=0, ZC_RGB24=1, ZC_BGR24=2, ZC_RGBX32=3, ZC_BGRX32=4, ZC_YVU420=5, ZC_NV12=6, ZC_NV21=7, ZC_YUYV=8, ZC_YVYU=9, ZC_UYVY=10, ZC_VYUY=11 };
+/* Processed format names use libcamera FourCC; constants describe memory bytes.
+ * RGB48/BGR48 contain three little-endian u16 words (BGR161616/RGB161616). */
+enum { ZC_YUV420=0, ZC_RGB24=1, ZC_BGR24=2, ZC_RGBX32=3, ZC_BGRX32=4, ZC_YVU420=5, ZC_NV12=6, ZC_NV21=7, ZC_YUYV=8, ZC_YVYU=9, ZC_UYVY=10, ZC_VYUY=11, ZC_RGB48=12, ZC_BGR48=13 };
 /* Negotiated color values, not configuration defaults. Zero means unknown.
  * Decoding YCbCr converts encoded R'G'B' values; it does not transform primaries
  * or transfer functions. present=0 means the pipeline supplied no color space. */
@@ -513,6 +514,9 @@ const char *zc_status_string(int status);
  * 1 for a window-close request, 0 success, negative status for errors. */
 typedef struct zc_preview zc_preview;
 /* Copy active RGB pixels into an owned tightly packed buffer; caller keeps lease. */
+/* RGB16 copies normalize to little-endian R,G,B words; other source formats reject. */
+int zc_copy_rgb16(const zc_frame *,uint8_t *,uint64_t);
+int zc_copy_stream_rgb16(zc_camera *,uint64_t token,uint32_t stream,uint8_t *,uint64_t);
 int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);
 /* Display with no image texture allocation; logical dimensions place overlays. */

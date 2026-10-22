@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.79 adds [RGB16 processed streams](docs/rgb16.md): BGR161616/RGB161616
+main/lores capture, owned RGB16 copies, full-precision PNG/TIFF/PPM, and explicit
+high-byte preview/JPEG/video input through existing Home codecs and containers.
+
 Version 0.78 adds [packed YUV 4:2:2 streams](docs/yuv422-layouts.md): YUYV/YVYU/
 UYVY/VYUY capture and preview, odd-height stills, raw layout ownership and direct
 I420 codec downsampling through improved shared Home conversion.

@@ -638,6 +638,10 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, out.ptr, out.len));
     }
+    pub fn copyStreamRgb16(self: *const Frame, id: u32, out: []u8) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
+        try check(core.zc_copy_stream_rgb16(self.camera.handle, self.value.token, id, out.ptr, out.len));
+    }
     pub fn copyStreams(self: *const Frame, allocator: std.mem.Allocator, ids: []const u32) Error!StreamBundle {
         if (self.value.token == 0) return error.StaleFrame;
         if (ids.len == 0 or ids.len > 3) return error.Invalid;
@@ -1023,7 +1027,7 @@ test "formatted main I420 admission preserves legacy layouts and never exposes l
     var pipeline: c.zc_pipeline_options = undefined;
     core.zc_default_pipeline_options(&pipeline);
     var invalid: ?*c.zc_camera = undefined;
-    for ([_]u32{ 12, std.math.maxInt(u32) }) |format| {
+    for ([_]u32{ 14, std.math.maxInt(u32) }) |format| {
         try std.testing.expectEqual(c.ZC_INVALID, core.zc_open_formatted_pipeline(&cfg, &pipeline, format, 1, 0, &invalid));
         try std.testing.expectEqual(null, invalid);
     }

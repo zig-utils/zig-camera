@@ -84,10 +84,12 @@ fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_meta
         return buffer.bytes.toOwnedSlice(allocator);
     }
     const stream = frame.main;
-    if (stream.plane_count != 1 or !std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR888")) return error.UnsupportedFormat;
+    const wide = std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR161616");
+    if (stream.plane_count != 1 or (!wide and !std.mem.eql(u8, std.mem.sliceTo(&stream.format, 0), "BGR888"))) return error.UnsupportedFormat;
+    if (wide and options.format == c.ZC_IMAGE_JPEG) return error.UnsupportedFormat;
     const plane = stream.planes[0];
     if (plane.bytes_used > plane.length or plane.bytes_used > std.math.maxInt(usize)) return error.BufferTooSmall;
-    const view = raster.View{ .data = plane.data[0..@intCast(plane.bytes_used)], .width = stream.width, .height = stream.height, .stride = stream.stride };
+    const view = raster.View{ .data = plane.data[0..@intCast(plane.bytes_used)], .width = stream.width, .height = stream.height, .stride = stream.stride, .bits = if (wide) 16 else 8 };
     const row_bytes = try view.validate();
     return switch (options.format) {
         c.ZC_IMAGE_PNG => raster.png(allocator, view, .{ .compression = options.png_compression, .filter = @enumFromInt(options.png_filter) }),
@@ -102,8 +104,21 @@ fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_meta
             var buffer = Buffer{ .allocator = allocator };
             errdefer buffer.bytes.deinit(allocator);
             var text: [64]u8 = undefined;
-            try buffer.writeAll(try std.fmt.bufPrint(&text, "P6\n{d} {d}\n255\n", .{ view.width, view.height }));
-            for (0..view.height) |y| try buffer.writeAll(view.data[y * view.stride ..][0..row_bytes]);
+            try buffer.writeAll(try std.fmt.bufPrint(&text, "P6\n{d} {d}\n{d}\n", .{ view.width, view.height, if (wide) @as(u32, 65535) else @as(u32, 255) }));
+            for (0..view.height) |y| {
+                const row = view.data[y * view.stride ..][0..row_bytes];
+                if (!wide) {
+                    try buffer.writeAll(row);
+                } else {
+                    try buffer.bytes.ensureUnusedCapacity(allocator, row_bytes);
+                    const start = buffer.bytes.items.len;
+                    buffer.bytes.items.len += row_bytes;
+                    for (0..row_bytes / 2) |i| {
+                        buffer.bytes.items[start + i * 2] = row[i * 2 + 1];
+                        buffer.bytes.items[start + i * 2 + 1] = row[i * 2];
+                    }
+                }
+            }
             break :block buffer.bytes.toOwnedSlice(allocator);
         },
         else => error.UnsupportedFormat,

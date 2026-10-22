@@ -37,6 +37,8 @@ jobs:
             cc -Wall -Wextra -Werror tests/decode_images.c -framework CoreGraphics -framework ImageIO -framework CoreFoundation -o zig-out/decode-images
           else
             cc -Wall -Wextra -Werror tests/decode_images.c $(pkg-config --cflags --libs libpng libtiff-4 sdl2 libjpeg) -o zig-out/decode-images
+            cc -std=c11 -Wall -Wextra -Werror tests/decode_rgb16.c $(pkg-config --cflags --libs libpng libtiff-4) -o zig-out/decode-rgb16
+            echo "ZC_RGB16_DECODER=$PWD/zig-out/decode-rgb16" >> "$GITHUB_ENV"
             cc -std=c11 -Wall -Wextra -Werror tests/read_image_icc.c $(pkg-config --cflags --libs libpng libtiff-4 libjpeg lcms2) -o zig-out/read-image-icc
             echo "ZC_ICC_READER=$PWD/zig-out/read-image-icc" >> "$GITHUB_ENV"
           fi
@@ -62,6 +64,7 @@ jobs:
           bun tests/ts/check-packed-cli.ts zig-out/bin/zig-camera
           bun tests/ts/check-yuv-cli.ts zig-out/bin/zig-camera
           bun tests/ts/check-yuv422-cli.ts zig-out/bin/zig-camera
+          bun tests/ts/check-rgb16-cli.ts zig-out/bin/zig-camera
           ./zig-out/bin/zig-camera list --simulate
           ./zig-out/bin/zig-camera info --simulate --camera-id synthetic
           if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi
@@ -182,7 +185,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           zig build -Dlibcamera=false -Djpeg=true -Doptimize=ReleaseSafe
-          bun test tests/ts/yuv422-layouts.test.ts tests/ts/yuv420-layouts.test.ts tests/ts/packed-rgb.test.ts tests/ts/request-stop.test.ts tests/ts/image-exif.test.ts tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/staged-files.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
+          bun test tests/ts/rgb16.test.ts tests/ts/yuv422-layouts.test.ts tests/ts/yuv420-layouts.test.ts tests/ts/packed-rgb.test.ts tests/ts/request-stop.test.ts tests/ts/image-exif.test.ts tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/staged-files.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true

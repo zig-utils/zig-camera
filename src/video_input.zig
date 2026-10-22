@@ -34,13 +34,17 @@ pub fn validateFor(stream: c.zc_stream, color: ?c.zc_color_space, target: c.zc_c
             _ = try streams.i420View(stream);
         }
     } else {
-        _ = try streams.packedView(stream);
+        if (@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0))) {
+            _ = try streams.wideView(stream);
+        } else {
+            _ = try streams.packedView(stream);
+        }
     }
     return yuv;
 }
 pub fn packedSize(stream: c.zc_stream, yuv: bool) usize {
     const pixels = @as(usize, stream.width) * stream.height;
-    return if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) pixels * 2 else if (yuv) pixels + pixels / 2 else pixels * @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)).?.bytes();
+    return if (@import("processed_format.zig").isWide(std.mem.sliceTo(&stream.format, 0))) pixels * 6 else if (@import("processed_format.zig").is422(std.mem.sliceTo(&stream.format, 0))) pixels * 2 else if (yuv) pixels + pixels / 2 else pixels * @import("processed_format.zig").layout(std.mem.sliceTo(&stream.format, 0)).?.bytes();
 }
 /// Preserve the actual physical layout; workers consume logical chroma views.
 pub fn copy(stream: c.zc_stream, yuv: bool, out: []u8) !void {
