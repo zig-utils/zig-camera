@@ -246,8 +246,8 @@ int zc_frame_map_open(zc_camera *,uint64_t token,uint32_t stream,uint32_t write,
 int zc_frame_map_stream(const zc_frame_map *,zc_stream *out);
 int zc_frame_map_close(zc_frame_map *);
 /* Tight owned copies preserve byte layout (RGB/BGR/RGBX/BGRX); YUV420/YVU420/NV12/NV21 preserve plane order; Bayer => unchanged
- * unpacked samples or CSI-2 packed rows, with row padding removed. PiSP compressed
- * formats are unsupported. The size query never dereferences plane pointers. */
+ * unpacked samples, CSI-2 packed rows or PiSP COMP1 blocks, with row padding removed.
+ * Raw packing and monochrome/Bayer order remain unchanged. The size query never dereferences plane pointers. */
 int zc_stream_copy_size(const zc_stream *,uint64_t *bytes);
 int zc_copy_stream(const zc_stream *,uint8_t *out,uint64_t length);
 typedef struct {
@@ -516,6 +516,8 @@ typedef struct zc_preview zc_preview;
 /* Copy active RGB pixels into an owned tightly packed buffer; caller keeps lease. */
 /* RGB16 copies normalize to little-endian R,G,B words; other source formats reject. */
 int zc_copy_rgb16(const zc_frame *,uint8_t *,uint64_t);
+/* Tight LE u16 sensor samples, with CSI-2/driver-standard PiSP COMP1 decoded. */
+int zc_copy_raw16(zc_camera *,uint64_t token,uint8_t *,uint64_t);
 int zc_copy_stream_rgb16(zc_camera *,uint64_t token,uint32_t stream,uint8_t *,uint64_t);
 int zc_copy_rgb(const zc_frame *,uint8_t *out,uint64_t length);
 int zc_preview_open(const char *title, uint32_t width, uint32_t height, zc_preview **);

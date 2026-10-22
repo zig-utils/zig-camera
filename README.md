@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.80 adds [sensor raw formats](docs/sensor-raw.md): monochrome, CSI-2 and
+Pi 5 PiSP COMP1 capture, owned raw16 jobs and streaming Bayer/mono DNG through a
+checked Home helper. Explicit raw packing survives temporary DNG capture jobs.
+
 Version 0.79 adds [RGB16 processed streams](docs/rgb16.md): BGR161616/RGB161616
 main/lores capture, owned RGB16 copies, full-precision PNG/TIFF/PPM, and explicit
 high-byte preview/JPEG/video input through existing Home codecs and containers.
@@ -158,8 +162,7 @@ it is not physical capture pacing or evidence of real-time throughput. The CLI
 smoke checks exact frame accounting across segments and exclusive-path failure.
 
 
-JPEG defaults to quality 98 with 4:4:4 sampling. DNG requires uncompressed Bayer;
-PiSP compressed raw is unsupported. Codec options enable direct x264/x265 links.
+JPEG defaults to quality 98 with 4:4:4 sampling. DNG accepts supported Bayer/mono formats, including PiSP COMP1 with standard driver reconstruction. See [raw formats](docs/sensor-raw.md). Codec options enable direct x264/x265 links.
 Add `-Daac=true` with standalone FDK AAC installed for AAC MP4, `-Daudio=true`
 with ALSA for microphone capture. Hardware encoding remains unsupported.
 The libcamera bridge uses the system C++ toolchain and distribution STL ABI.

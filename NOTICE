@@ -562,3 +562,37 @@ Home RGB16 word views (0.79):
   0e0dc7d39b71f422ac22e5707e0ce44dfaf72ecd (MIT, Home contributors).
 - Checked allocation-free RGB/BGR u16 views, endian/layout conversion and explicit
   high-byte RGB8 reduction. Existing Home raster encoders/codecs are unchanged.
+
+Home sensor raw views (0.80):
+- src/home/sensor_raw.zig and sensor_raw_vectors.zig are verbatim Home image
+  ops modules at 82d0989566ca6f4e01a48fc0d6d581a54072e5ef. Checked views and
+  packing use Home contributor MIT terms. COMP1 decoding/reference equations
+  adapt raspberrypi/picamera2 request.py Helpers.decompress at
+  5e2a35d3bb230825c98c56d98e01b41ddeb43e86; the retained license follows.
+- tests/ts/sensor-reference.ts is a scalar numeric reference of those equations.
+
+BSD 2-Clause License
+
+Copyright (c) 2021, Raspberry Pi
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

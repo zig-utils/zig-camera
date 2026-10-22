@@ -1207,3 +1207,38 @@ project compilation; direct library/CLI builds succeed. Linux CI supplies raw16
 libpng/libtiff and AVC/HEVC independent decoding, plus old-SDK real-backend
 compile/load/no-camera cleanup. No sensor precision or physical performance result
 is inferred, and higher-bit-depth video/gamut/transfer conversion remains open.
+
+The 0.80 sensor-raw audit inspects Home image raw.zig (BayerPattern/RawImage), its
+formats/raw.zig TIFF decoder, checked image views and video conversions at
+0e0dc7d39b71f422ac22e5707e0ce44dfaf72ecd, plus Home OS at the recorded revision.
+RawImage stores Bayer u16 data but provides no checked borrowed CSI-2/mono/COMP1
+view; generic TIFF decode is not sensor-block decompression. Home main commit
+82d0989566ca6f4e01a48fc0d6d581a54072e5ef adds ops/sensor_raw.zig, reference vectors,
+Bun vector tooling, public SensorRaw alias, docs/license and workflow coverage.
+Both Zig modules are copied verbatim here. COMP1 adapts Picamera2's pinned
+Helpers.decompress under its retained BSD-2-Clause license; the other checked
+view/packing code uses Home's MIT terms. No Python or FFmpeg dependency is added.
+
+Five helper tests pass pinned/development Zig in Debug and ReleaseSafe, including
+455 scalar reference words, every legal companding-code pair, canonical formats,
+partial groups, padding/unaligned input, clipping, overlap/overflow/truncation and
+late sample errors without output changes. Home's full image API passes 125 tests
+on development Zig. Home-hosted Actions has no run for this head; local and copied
+camera checks are distinct from that unavailable evidence.
+
+Hosted raw16 copies use existing lease/mapping exclusion. Physical bundles retain
+COMP1/CSI-2 bytes, while DNG decodes only row scratch and mono omits fabricated
+color/CFA calibration. Synthetic raw generation now covers all supported packing;
+its COMP1 output is deterministic quantizer fixtures, not general compression.
+Temporary DNG jobs/CLI preserve explicit raw formats instead of forcing unpacked
+input. Native discovery includes mono modes and retains compressed Bayer CFA
+renaming without inferring ADC depth from a compressed format name.
+
+Local evidence: 964 Bun tests, 364 target-qualified ReleaseSafe native tests, C
+ABI ownership/atomic-copy tests, full CLI format regressions, typecheck/fmt and the
+Home matrix. The normal macOS build runner still fails SDK/libSystem linkage
+before project compilation; direct library/CLI builds succeed. Linux CI adds
+independent libtiff DNG sample readback and LibRaw recognition, plus real-backend
+old-SDK compile/load/no-camera cleanup on ARM/x86. Physical Pi format/quality,
+calibration/precision, additional compression/DNG behavior and performance remain
+unverified; no parity completion is inferred from format coverage.

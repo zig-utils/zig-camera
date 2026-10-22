@@ -796,6 +796,23 @@ export class Frame {
     )
     return new Uint16Array(data.buffer)
   }
+  /** Owned raw sensor u16 samples. COMP1 uses standard driver offset 2048. */
+  copyRaw16(): Uint16Array {
+    this.open()
+    const descriptor = storage(208)
+    check(n.zc_get_stream(this.camera.handle, this.token, 1, ptr(descriptor)))
+    const d = view(descriptor),
+      data = storage(d.getUint32(0, true) * d.getUint32(4, true) * 2)
+    check(
+      n.zc_copy_raw16(
+        this.camera.handle,
+        this.token,
+        ptr(data),
+        BigInt(data.length),
+      ),
+    )
+    return new Uint16Array(data.buffer)
+  }
   copyStream(stream: StreamName = 'main'): PackedStream {
     const names = streamNames([stream])
     this.open()
@@ -3218,6 +3235,14 @@ export class Camera {
     const stream = processedImageStream(options.stream)
     return this.captureAsync((frame) => frame.copyRGB(stream), options)
   }
+  captureRaw16Async(options: CaptureOptions<Uint16Array> = {}) {
+    return this.captureAsync((frame) => frame.copyRaw16(), options)
+  }
+  captureRaw16(
+    options: CaptureOptions<Uint16Array> = {},
+  ): Promise<Uint16Array> {
+    return this.captureRaw16Async(options).wait()
+  }
   captureRGB16Async(
     options: CaptureOptions<Uint16Array> & { stream?: 'main' | 'lores' } = {},
   ) {
@@ -4547,7 +4572,11 @@ export class Camera {
     const prepared = prepareImage(jobOptions, path)
     return this.submitMode(
       prepared.format === 6
-        ? { ...options, raw: true, unpackedRaw: true }
+        ? {
+            ...options,
+            raw: true,
+            unpackedRaw: options.unpackedRaw ?? options.rawFormat === undefined,
+          }
         : options,
       {
         kind: 'file',
@@ -4567,7 +4596,11 @@ export class Camera {
     const prepared = prepareImage(jobOptions)
     return this.submitMode(
       prepared.format === 6
-        ? { ...options, raw: true, unpackedRaw: true }
+        ? {
+            ...options,
+            raw: true,
+            unpackedRaw: options.unpackedRaw ?? options.rawFormat === undefined,
+          }
         : options,
       {
         kind: 'encoded',

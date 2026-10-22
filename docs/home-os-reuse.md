@@ -403,3 +403,13 @@ interfaces do not provide working libcamera support. ADR-MC3 keeps shared media
 algorithms in Home stdlib, so rgb16_view is contributed there and reused here.
 No OS source is copied, changed or executed. Physical Pi format/bit-depth,
 DMA/coherency, hardware encoding and performance remain hardware acceptance work.
+
+The 0.80 sensor-raw audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and searches camera, media and VideoCore7
+sources for CSI-2 packing, Bayer/mono and PiSP COMP1 decompression. No checked
+hosted sensor-row decoder exists there; camera_capture remains a size-returning
+stub and gamma/display format declarations do not implement raw reconstruction.
+Per ADR-MC3, the std-only sensor decoder is contributed to Home's image package
+and reused here, while libcamera leases/DMA/calibration remain camera ownership.
+No OS source is copied, changed or executed. Software fixtures do not prove
+physical Pi compressed raw, mono metadata, sensor quality or hardware throughput.

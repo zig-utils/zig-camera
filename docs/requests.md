@@ -66,7 +66,9 @@ change them. Names are validated/copied at admission. copyStreams on a retained
 Frame offers the same operation. Each stream includes width, height, format,
 rowBytes and data. BGR888 bytes are RGB; YUV420 bytes are tight I420. Bayer buffers
 preserve CSI-2 packed bytes or unpacked little-endian samples and omit row padding.
-PiSP compressed raw is still unsupported. This is a capability-oriented API, not
+PiSP COMP1 copies retain complete physical blocks. copyRaw16/captureRaw16 jobs
+provide explicit decoded sensor words without demosaicing or precision expansion.
+See [sensor raw formats](sensor-raw.md). This is a capability-oriented API, not
 an emulation of NumPy array shapes or Python objects.
 
 captureFile saves JPEG or DNG from the current mode; DNG requires an enabled raw

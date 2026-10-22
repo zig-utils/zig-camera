@@ -44,7 +44,8 @@ returns a tight RGB or supported Bayer row without padding. I420 logical
 components use row(y, 0), row(y, 1), row(y, 2) for Y/U/V, handling one contiguous
 plane or three physical planes. Unknown formats still expose raw planes;
 unsupported row layouts reject rather than inventing a shape. Packed Bayer stays
-packed. PiSP compressed raw and general pixel-format conversions remain separate
+packed. PiSP COMP1 rows retain physical complete blocks; explicit copyRaw16 owns decoded
+samples. General pixel-format conversions remain separate
 parity work.
 
 map.close and Symbol.dispose detach every ordinary Bun ArrayBuffer alias before

@@ -513,6 +513,22 @@ pub export fn zc_copy_stream_rgb16(p: *c.zc_camera, token: u64, stream: u32, out
     @import("stream_rgb.zig").copy16(selected, out[0..@intCast(length)]) catch |err| return still.status(err);
     return c.ZC_OK;
 }
+pub export fn zc_copy_raw16(p: *c.zc_camera, token: u64, out: [*c]u8, length: u64) c_int {
+    if (out == null or length > std.math.maxInt(usize)) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    const selected = self.slots[index].frame.raw;
+    if (selected.plane_count != 1) return c.ZC_UNSUPPORTED;
+    const plane = selected.planes[0];
+    if (plane.data == null or plane.bytes_used > plane.length or plane.bytes_used > std.math.maxInt(usize)) return c.ZC_INVALID;
+    const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&selected.format, 0)) catch |err| return still.status(err);
+    const view = @import("raw.zig").View.init(plane.data[0..@intCast(plane.bytes_used)], selected.width, selected.height, selected.stride, format) catch |err| return still.status(err);
+    view.copy16(out[0..@intCast(length)], @as(usize, selected.width) * 2) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
 fn streamLocked(self: *Session, i: u32, stream: u32, out: *c.zc_stream) c_int {
     if (stream == c.ZC_MAIN) out.* = self.slots[i].frame.main else if (stream == c.ZC_RAW) out.* = self.slots[i].frame.raw else if (stream == c.ZC_LORES) return driver.lores(self.device.?, i, out) else return c.ZC_INVALID;
     return if (out.plane_count == 0) c.ZC_UNSUPPORTED else c.ZC_OK;

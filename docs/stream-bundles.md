@@ -28,8 +28,10 @@ The returned `CapturedStreams` has a `streams` mapping in selection order and
 request metadata. Each `PackedStream` reports width, height, format, rowBytes and
 a `Uint8Array`. Main/lores BGR888 is tight RGB8; YUV420 is tight I420 with Y, U, V
 planes in that order (`rowBytes` is the Y row width). Bayer rows preserve packed
-CSI-2 bytes or unpacked little-endian samples and omit stride padding. No demosaic,
-color conversion or PiSP compressed-raw decoding is added. Selected streams share
+CSI-2 bytes, unpacked little-endian samples or complete PiSP COMP1 blocks and
+omit stride padding. Physical bundles do not demosaic or decode COMP1; explicit
+copyRaw16/captureRaw16 jobs provide owned sensor samples, as described in
+[sensor raw formats](sensor-raw.md). Selected streams share
 one request, sequence and control revision; no sequence is fabricated from separate
 acquisitions.
 

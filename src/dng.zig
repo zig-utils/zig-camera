@@ -8,12 +8,13 @@ const count = 30;
 const Directory = struct {
     bytes: [4096]u8 = @splat(0),
     n: usize = 0,
-    end: usize = 8 + 2 + count * 12 + 4,
-    fn init() Directory {
-        var d: Directory = .{};
+    end: usize = 0,
+    target: u16 = count,
+    fn init(entries: u16) Directory {
+        var d: Directory = .{ .end = 8 + 2 + @as(usize, entries) * 12 + 4, .target = entries };
         d.bytes[0..4].* = .{ 0x49, 0x49, 42, 0 };
         std.mem.writeInt(u32, d.bytes[4..8], 8, .little);
-        std.mem.writeInt(u16, d.bytes[8..10], count, .little);
+        std.mem.writeInt(u16, d.bytes[8..10], entries, .little);
         return d;
     }
     fn append(self: *Directory, bytes: []const u8) u32 {
@@ -25,7 +26,7 @@ const Directory = struct {
         return @intCast(offset);
     }
     fn tag(self: *Directory, id: u16, typ: u16, n: u32, bytes: []const u8) void {
-        std.debug.assert(self.n < count);
+        std.debug.assert(self.n < self.target);
         const off = 10 + self.n * 12;
         self.n += 1;
         const entry = Entry{ .tag = id, .field_type = typ, .count = n, .value_offset = 0 };
@@ -97,16 +98,18 @@ pub fn save(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const
     try atom.finish();
 }
 pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, sink: anytype) !void {
-    if (meta.valid & 7 != 7) return error.MissingCalibration;
     const stream = frame.raw;
     if (stream.plane_count != 1) return error.UnsupportedFormat;
     const format = try raw.Format.parse(std.mem.sliceTo(&stream.format, 0));
-    if (stream.planes[0].bytes_used > stream.planes[0].length) return error.BufferTooSmall;
+    const mono = format.pattern == .mono;
+    const required: u32 = if (mono) 1 else 7;
+    if (meta.valid & required != required) return error.MissingCalibration;
+    if (stream.planes[0].data == null or stream.planes[0].bytes_used > stream.planes[0].length or stream.planes[0].bytes_used > std.math.maxInt(usize)) return error.BufferTooSmall;
     const view = try raw.View.init(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, format);
     const pixels = try std.math.mul(u64, stream.width, stream.height);
     const size = std.math.mul(u64, pixels, 2) catch return error.FileTooLarge;
     if (size > std.math.maxInt(u32) - 4096) return error.FileTooLarge;
-    const matrix = try colorMatrix(meta.camera_to_srgb, frame.red_gain, frame.blue_gain);
+    const matrix = if (mono) [9]f64{ 1, 0, 0, 0, 1, 0, 0, 0, 1 } else try colorMatrix(meta.camera_to_srgb, frame.red_gain, frame.blue_gain);
     var cm: [72]u8 = undefined;
     for (matrix, 0..) |v, i| try rational(cm[i * 8 ..][0..8], v, 1_000_000, true);
     var black: [32]u8 = undefined;
@@ -116,14 +119,14 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
         try rational(black[i * 8 ..][0..8], level, 1024, false);
     }
     var neutral: [24]u8 = undefined;
-    for ([3]f64{ 1.0 / frame.red_gain, 1, 1.0 / frame.blue_gain }, 0..) |v, i| try rational(neutral[i * 8 ..][0..8], v, 1_000_000, false);
-    var dir = Directory.init();
+    if (!mono) for ([3]f64{ 1.0 / frame.red_gain, 1, 1.0 / frame.blue_gain }, 0..) |v, i| try rational(neutral[i * 8 ..][0..8], v, 1_000_000, false);
+    var dir = Directory.init(if (mono) 23 else count);
     dir.long(254, 0);
     dir.long(256, stream.width);
     dir.long(257, stream.height);
     dir.short(258, 16);
     dir.short(259, 1);
-    dir.short(262, 32803);
+    dir.short(262, if (mono) 34892 else 32803);
     dir.text(271, "zig-camera/libcamera");
     dir.text(272, std.mem.sliceTo(&meta.model, 0));
     const strip_entry = dir.n;
@@ -134,8 +137,10 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.long(279, @intCast(size));
     dir.short(284, 1);
     dir.text(305, "zig-camera 0.2");
-    dir.tag(33421, 3, 2, &.{ 2, 0, 2, 0 });
-    dir.tag(33422, 1, 4, &format.pattern.cfa());
+    if (!mono) {
+        dir.tag(33421, 3, 2, &.{ 2, 0, 2, 0 });
+        dir.tag(33422, 1, 4, &format.pattern.cfa());
+    }
     var exif: [26]u8 = @splat(0);
     std.mem.writeInt(u16, exif[0..2], 1, .little);
     std.mem.writeInt(u16, exif[2..4], 33434, .little);
@@ -149,19 +154,23 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.tag(50706, 1, 4, &.{ 1, 4, 0, 0 });
     dir.tag(50707, 1, 4, &.{ 1, 1, 0, 0 });
     dir.text(50708, std.mem.sliceTo(&meta.model, 0));
-    dir.tag(50710, 1, 3, &.{ 0, 1, 2 });
-    dir.short(50711, 1);
-    dir.tag(50713, 3, 2, &.{ 2, 0, 2, 0 });
-    dir.tag(50714, 5, 4, &black);
+    if (!mono) {
+        dir.tag(50710, 1, 3, &.{ 0, 1, 2 });
+        dir.short(50711, 1);
+    }
+    dir.tag(50713, 3, 2, if (mono) &.{ 1, 0, 1, 0 } else &.{ 2, 0, 2, 0 });
+    dir.tag(50714, 5, if (mono) 1 else 4, if (mono) black[0..8] else &black);
     dir.long(50717, format.white());
-    dir.tag(50721, 10, 9, &cm);
-    dir.tag(50728, 5, 3, &neutral);
-    dir.short(50778, 21);
+    if (!mono) {
+        dir.tag(50721, 10, 9, &cm);
+        dir.tag(50728, 5, 3, &neutral);
+        dir.short(50778, 21);
+    }
     var active: [16]u8 = @splat(0);
     std.mem.writeInt(u32, active[8..12], stream.height, .little);
     std.mem.writeInt(u32, active[12..16], stream.width, .little);
     dir.tag(50829, 4, 4, &active);
-    std.debug.assert(dir.n == count);
+    std.debug.assert(dir.n == dir.target);
     dir.end = std.mem.alignForward(usize, dir.end, 4);
     std.mem.writeInt(u32, dir.bytes[10 + strip_entry * 12 + 8 ..][0..4], @intCast(dir.end), .little);
     const scratch = try allocator.alloc(u8, @as(usize, stream.width) * 2);
@@ -177,4 +186,44 @@ test "colour calibration rejects singular and invalid transforms" {
     try std.testing.expectError(error.InvalidCalibration, colorMatrix(.{ 1, 0, 0, 0, 1, 0, 0, 0, 1 }, 0, 1));
     const m = try colorMatrix(.{ 1, 0, 0, 0, 1, 0, 0, 0, 1 }, 2, 1.5);
     try std.testing.expectApproxEqAbs(@as(f64, 3.2404548 / 2.0), m[0], 0.00001);
+}
+test "monochrome DNG needs scalar black calibration and emits no invented CFA or color matrices" {
+    const t = std.testing;
+    const Sink = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        pub fn writeAll(self: *@This(), data: []const u8) !void {
+            try self.bytes.appendSlice(t.allocator, data);
+        }
+    };
+    var sink: Sink = .{};
+    defer sink.bytes.deinit(t.allocator);
+    const pixels = [_]u8{ 1, 2, 255, 0, 0, 0, 0, 0, 0, 7, 8, 9 };
+    var frame = std.mem.zeroes(c.zc_frame);
+    frame.raw.width = 3;
+    frame.raw.height = 2;
+    frame.raw.stride = 9;
+    frame.raw.plane_count = 1;
+    @memcpy(frame.raw.format[0..2], "R8");
+    frame.raw.planes[0] = .{ .data = &pixels, .bytes_used = pixels.len, .length = pixels.len };
+    var meta = std.mem.zeroes(c.zc_raw_metadata);
+    meta.valid = 1;
+    try write(t.allocator, &frame, &meta, &sink);
+    const bytes = sink.bytes.items;
+    try t.expectEqual(@as(u16, 23), std.mem.readInt(u16, bytes[8..10], .little));
+    var strip: usize = 0;
+    for (0..23) |i| {
+        const p = 10 + i * 12;
+        const tag = std.mem.readInt(u16, bytes[p..][0..2], .little);
+        try t.expect(tag != 33421 and tag != 33422 and tag != 50710 and tag != 50711 and tag != 50721 and tag != 50728 and tag != 50778);
+        if (tag == 262) try t.expectEqual(@as(u16, 34892), std.mem.readInt(u16, bytes[p + 8 ..][0..2], .little));
+        if (tag == 273) strip = std.mem.readInt(u32, bytes[p + 8 ..][0..4], .little);
+    }
+    try t.expectEqualSlices(u8, &.{ 1, 0, 2, 0, 255, 0, 7, 0, 8, 0, 9, 0 }, bytes[strip..]);
+    const old_len = sink.bytes.items.len;
+    meta.valid = 0;
+    try t.expectError(error.MissingCalibration, write(t.allocator, &frame, &meta, &sink));
+    try t.expectEqual(old_len, sink.bytes.items.len);
+    meta.valid = 1;
+    @memcpy(frame.raw.format[0..6], "SRGGB8");
+    try t.expectError(error.MissingCalibration, write(t.allocator, &frame, &meta, &sink));
 }

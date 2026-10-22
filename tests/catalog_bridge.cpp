@@ -145,6 +145,14 @@ int main() {
     assert(!nativeOrientation(0,invalid_orientation) && !nativeOrientation(9,invalid_orientation));
     uint32_t untouched=123;
     assert(negotiatedOrientation(1,static_cast<Orientation>(99),false,untouched)==ZC_UNSUPPORTED && untouched==123);
+    assert(sensorModeDepth("R10_CSI2P")==10 && sensorModeDepth("R16")==16);
+    assert(sensorModeDepth("RGGB_PISP_COMP1")==0 && sensorModeDepth("MONO_PISP_COMP1")==0);
+    assert(sensorModeDepth("R08")==0 && sensorModeDepth("SRGGB12_bad")==0);
+    assert(unpackedSensorFormat("R8") && unpackedSensorFormat("SRGGB16"));
+    assert(!unpackedSensorFormat("R10_CSI2P") && !unpackedSensorFormat("MONO_PISP_COMP1"));
+    assert(sameBayerLayout("RGGB_PISP_COMP1","BGGR_PISP_COMP1"));
+    assert(!sameBayerLayout("MONO_PISP_COMP1","BGGR_PISP_COMP1"));
+    assert(!sameBayerLayout("RGGB_PISP_COMP1","BGGR_PISP_COMP2"));
     assert(sameBayerLayout("SRGGB12","SBGGR12"));
     assert(sameBayerLayout("SGRBG10_CSI2P","SGBRG10_CSI2P"));
     assert(!sameBayerLayout("SRGGB12","SBGGR10"));

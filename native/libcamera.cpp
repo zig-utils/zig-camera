@@ -53,13 +53,28 @@ int negotiatedOrientation(uint32_t requested,Orientation actual,bool strict,uint
     }
     return ZC_UNSUPPORTED;
 }
+static uint32_t sensorModeDepth(const std::string &name) {
+    std::string suffix;
+    if(name.size()>5 && name[0]=='S') {
+        const auto p=name.substr(1,4);
+        if(p!="RGGB" && p!="BGGR" && p!="GRBG" && p!="GBRG")return 0;
+        suffix=name.substr(5);
+    } else if(name.size()>1 && name[0]=='R')suffix=name.substr(1);else return 0;
+    const auto underscore=suffix.find('_');
+    if(underscore!=std::string::npos){if(suffix.substr(underscore)!="_CSI2P")return 0;suffix.resize(underscore);}
+    if(suffix=="8")return 8;if(suffix=="10")return 10;if(suffix=="12")return 12;if(suffix=="14")return 14;if(suffix=="16")return 16;
+    return 0;
+}
+static bool unpackedSensorFormat(const std::string &name) {return name.find('_')==std::string::npos && sensorModeDepth(name)!=0;}
 bool sameBayerLayout(const std::string &requested,const std::string &actual) {
     const auto bayer=[](const std::string &name) {
         if(name.size()<6 || name[0]!='S')return false;
         const auto pattern=name.substr(1,4);
         return pattern=="RGGB" || pattern=="BGGR" || pattern=="GRBG" || pattern=="GBRG";
     };
-    return bayer(requested) && bayer(actual) && requested.substr(5)==actual.substr(5);
+    if(bayer(requested) && bayer(actual))return requested.substr(5)==actual.substr(5);
+    const auto compressed=[](const std::string &name){return name.size()==15 && name.substr(4)=="_PISP_COMP1" && (name.substr(0,4)=="RGGB" || name.substr(0,4)=="BGGR" || name.substr(0,4)=="GRBG" || name.substr(0,4)=="GBRG");};
+    return compressed(requested) && compressed(actual);
 }
 int cpuSync(int fd,uint64_t flags) {
     dma_buf_sync value{};value.flags=flags;
@@ -507,11 +522,8 @@ struct Device {
             const auto &formats=raw_modes->at(0).formats();
             for(const auto &pixel:formats.pixelformats()) {
                 const auto name=pixel.toString();
-                if(name.empty() || name[0]!='S')continue;
-                const auto digit=name.find_first_of("0123456789");
-                if(digit==std::string::npos)continue;
-                const auto depth=std::stoul(name.substr(digit));
-                if(depth<8 || depth>16)continue;
+                const auto depth=sensorModeDepth(name);
+                if(!depth)continue;
                 for(const auto &size:formats.sizes(pixel)) {
                     zc_sensor_mode mode{};mode.width=size.width;mode.height=size.height;mode.bit_depth=depth;
                     text(mode.format,sizeof(mode.format),name);modes.push_back(mode);
@@ -558,10 +570,11 @@ struct Device {
                 const auto native = raw.pixelFormat.toString();
                 std::string pattern;
                 for (const char *p : {"RGGB", "BGGR", "GRBG", "GBRG"}) if (native.find(p) != std::string::npos) pattern = p;
-                if (pattern.empty()) return ZC_UNSUPPORTED;
+                const bool mono=native=="MONO_PISP_COMP1" || (!native.empty() && native[0]=='R' && sensorModeDepth(native));
+                if (pattern.empty() && !mono) return ZC_UNSUPPORTED;
                 // Ask for uncompressed 16-bit Bayer; validate() can choose a native
                 // unpacked depth, but compressed/packed substitutions are rejected below.
-                raw.pixelFormat = PixelFormat::fromString("S" + pattern + "16");
+                raw.pixelFormat = PixelFormat::fromString(mono ? "R16" : "S" + pattern + "16");
             }
             if (cfg.raw_format[0]) {
                 raw.pixelFormat = PixelFormat::fromString(cfg.raw_format);
@@ -581,7 +594,7 @@ struct Device {
         }
         if (cfg.raw && opts.unpacked_raw) {
             const auto name = config->at(raw_index).pixelFormat.toString();
-            if (name.empty() || name[0] != 'S' || name.find('_') != std::string::npos) return ZC_UNSUPPORTED;
+            if (!unpackedSensorFormat(name)) return ZC_UNSUPPORTED;
         }
         pipeline.struct_size=sizeof(pipeline);
         if(config->sensorConfig) {

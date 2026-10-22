@@ -352,7 +352,22 @@ static void rgb16_inputs(void){
         assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_copy_stream_rgb16(camera,frame.token,ZC_MAIN,pixels,sizeof(pixels))==ZC_STALE);assert(zc_close(camera)==ZC_OK);
     }
 }
+static void raw16_inputs(void){
+    const char *names[]={"R8","R10_CSI2P","RGGB_PISP_COMP1","MONO_PISP_COMP1"};
+    for(unsigned k=0;k<4;k++){
+        zc_config cfg;zc_default_config(&cfg);cfg.width=17;cfg.height=3;cfg.raw=1;strcpy(cfg.raw_format,names[k]);
+        zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK);assert(zc_enable_writable(camera)==ZC_OK&&zc_start(camera)==ZC_OK);
+        zc_frame frame;assert(zc_acquire(camera,1000,&frame)==ZC_OK);uint8_t data[104];memset(data,73,sizeof(data));
+        assert(zc_copy_raw16(camera,frame.token,NULL,102)==ZC_INVALID);assert(zc_copy_raw16(camera,frame.token,data,101)==ZC_INVALID);
+        for(unsigned i=0;i<sizeof(data);i++){assert(data[i]==73);}
+        assert(zc_copy_raw16(camera,frame.token,data,sizeof(data))==ZC_OK);assert(data[102]==73&&data[103]==73);
+        zc_frame_map *map=NULL;assert(zc_frame_map_open(camera,frame.token,ZC_RAW,1,&map)==ZC_OK);
+        assert(zc_copy_raw16(camera,frame.token,data,sizeof(data))==ZC_BUSY);assert(zc_frame_map_close(map)==ZC_OK);
+        assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_copy_raw16(camera,frame.token,data,sizeof(data))==ZC_STALE);assert(zc_close(camera)==ZC_OK);
+    }
+}
 int main(void) {
+    raw16_inputs();
     rgb16_inputs();
     yuv422_processed_inputs();
     yuv_processed_inputs();

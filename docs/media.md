@@ -95,9 +95,11 @@ Picamera2 is claimed without hardware measurements. Software HEVC can be costly.
 ./zig-out/bin/zig-camera capture --output trail.dng --warmup 60
 ```
 
-The CLI automatically adds raw capture and asks for uncompressed Bayer. DNG
-requires all of libcamera's SensorBlackLevels, ColourGains and
-ColourCorrectionMatrix metadata. Missing/singular/nonfinite calibration is an
+The CLI automatically adds raw capture and asks for unpacked data when no raw
+format is explicit. Explicit --raw-format is preserved, including mono/CSI-2/COMP1.
+Bayer DNG requires libcamera's SensorBlackLevels, ColourGains and
+ColourCorrectionMatrix metadata; monochrome DNG requires scalar black calibration
+and omits invented CFA/colour tags. See [sensor raw formats](sensor-raw.md). Missing/singular/nonfinite calibration is an
 error, not an invented identity camera profile. The per-frame colour transform
 is `inverse(sRGB_to_XYZ * CCM * diag(WB))`, following the general approach in
 [Raspberry Pi's DNG implementation](https://github.com/raspberrypi/rpicam-apps/blob/main/image/dng.cpp).
@@ -110,9 +112,10 @@ White level retains the source depth; black levels are scaled from libcamera's
 active area, camera model, as-shot neutral, colour matrix and exposure time. Only
 row scratch space and a bounded directory are allocated. Files use atomic rename
 so failed conversion preserves an existing destination. Classic TIFF is limited
-to 4GiB. PiSP compressed formats are rejected; select uncompressed raw instead.
+to 4GiB. PiSP COMP1 reconstructs standard driver data into 16-bit rows; other
+compression schemes remain unsupported.
 
-Independent tests use Pillow for JPEG, libmatroska/MKVToolNix for container demux,
+Independent tests use system JPEG/ImageIO decoders, MKVToolNix for container demux,
 TIFF readers for exact Bayer samples/tags, and LibRaw for DNG recognition/development.
 Real camera calibration, autofocus, display backends and long recording runs
 still need Pi acceptance testing.

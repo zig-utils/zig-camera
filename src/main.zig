@@ -22,7 +22,7 @@ const help =
     \\  --strict-transform       Reject adjusted camera orientation
     \\  --transpose              Final diagonal transpose after rotation/flips
     \\  --raw                    Add paired native raw stream
-    \\  --raw-format NAME        Request exact raw format (e.g. SRGGB12)
+    \\  --raw-format NAME        Request exact raw format (e.g. R10_CSI2P, RGGB_PISP_COMP1)
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
     \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
     \\  --image-stream NAME      Select main/lores for images, raw for DNG
@@ -303,7 +303,7 @@ fn run() !void {
     }
     if (eq(command, "capture") and image_options.format == camera.c.ZC_IMAGE_DNG) {
         cfg.raw = 1;
-        capture_opts.unpacked_raw = 1;
+        if (cfg.raw_format[0] == 0) capture_opts.unpacked_raw = 1;
     }
     if (eq(command, "preview") or eq(command, "record")) {
         if (cfg.width == 0) {

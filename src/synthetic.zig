@@ -155,23 +155,26 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         const raw_output = transform.extent(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height });
         h.info.raw.width = @intCast(raw_output.width);
         h.info.raw.height = @intCast(raw_output.height);
-        h.info.raw.stride = std.mem.alignForward(u32, h.info.raw.width * 2, 64);
+        // Raw pitch is derived from physical packing after format validation.
         h.info.raw.plane_count = 1;
         const name = if (config.raw_format[0] == 0) (if (h.pipeline.sensor_bit_depth == 10) "SRGGB10" else "SRGGB12") else std.mem.sliceTo(&config.raw_format, 0);
         const format = @import("raw.zig").Format.parse(name) catch {
             Alloc.destroy(h);
             return c.ZC_UNSUPPORTED;
         };
-        if (format.csi2_packed or format.bits == 8) {
+        if (opts.capture.unpacked_raw != 0 and (format.csi2_packed or format.pisp_comp1)) {
             Alloc.destroy(h);
             return c.ZC_UNSUPPORTED;
         }
-        const cfa = transform.tile(u8, format.pattern.cfa(), .{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }) catch unreachable;
-        var pattern: []const u8 = "";
-        inline for (.{ .{ @import("raw.zig").Pattern.rggb, "RGGB" }, .{ @import("raw.zig").Pattern.bggr, "BGGR" }, .{ @import("raw.zig").Pattern.grbg, "GRBG" }, .{ @import("raw.zig").Pattern.gbrg, "GBRG" } }) |entry| {
-            if (std.mem.eql(u8, &cfa, &entry[0].cfa())) pattern = entry[1];
+        h.info.raw.stride = std.mem.alignForward(u32, @intCast(format.rowBytes(h.info.raw.width) catch unreachable), 64);
+        var raw_format = format;
+        if (format.pattern != .mono) {
+            const cfa = transform.tile(u8, format.pattern.cfa(), .{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }) catch unreachable;
+            inline for (.{ @import("raw.zig").Pattern.rggb, @import("raw.zig").Pattern.bggr, @import("raw.zig").Pattern.grbg, @import("raw.zig").Pattern.gbrg }) |p| if (std.mem.eql(u8, &cfa, &p.cfa())) {
+                raw_format.pattern = p;
+            };
         }
-        _ = std.fmt.bufPrint(&h.info.raw.format, "S{s}{s}", .{ pattern, name[5..] }) catch unreachable;
+        _ = raw_format.writeName(&h.info.raw.format) catch unreachable;
     }
     for (0..config.buffer_count) |i| {
         h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 2 else 1)) catch {
@@ -191,11 +194,36 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
             @memset(h.raw_buffers[i], 0);
             const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&raw.format, 0)) catch unreachable;
             const black: u32 = @as(u32, 1) << @intCast(format.bits - 6);
-            for (0..raw.height) |y| for (0..raw.width) |x| {
-                const point = transform.sourcePoint(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }, .{ .x = x, .y = y }) catch unreachable;
-                const value: u16 = @intCast(black + (point.x * 17 + point.y * 31 + i * 13) % (format.white() - black));
-                std.mem.writeInt(u16, h.raw_buffers[i][y * raw.stride + x * 2 ..][0..2], value, .little);
+            const sample_row = Alloc.alloc(u16, raw.width) catch {
+                close(h);
+                return c.ZC_NOMEM;
             };
+            defer Alloc.free(sample_row);
+            for (0..raw.height) |y| {
+                if (format.pisp_comp1) {
+                    const row_bytes = format.rowBytes(raw.width) catch unreachable;
+                    for (0..row_bytes / 8) |group| {
+                        var codes: [8]u8 = @splat(0);
+                        for (0..8) |k| {
+                            const x = group * 8 + k;
+                            if (x < raw.width) {
+                                const point = transform.sourcePoint(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }, .{ .x = x, .y = y }) catch unreachable;
+                                codes[k] = @intCast((point.x * 17 + point.y * 31 + i * 13) % 176);
+                            }
+                        }
+                        const even = @import("raw.zig").compandedWord(.{ codes[0], codes[2], codes[4], codes[6] }) catch unreachable;
+                        const odd = @import("raw.zig").compandedWord(.{ codes[1], codes[3], codes[5], codes[7] }) catch unreachable;
+                        std.mem.writeInt(u32, h.raw_buffers[i][y * raw.stride + group * 8 ..][0..4], even, .little);
+                        std.mem.writeInt(u32, h.raw_buffers[i][y * raw.stride + group * 8 + 4 ..][0..4], odd, .little);
+                    }
+                } else {
+                    for (sample_row, 0..) |*v, x| {
+                        const point = transform.sourcePoint(.{ .width = h.pipeline.sensor_width, .height = h.pipeline.sensor_height }, .{ .x = x, .y = y }) catch unreachable;
+                        v.* = @intCast(black + (point.x * 17 + point.y * 31 + i * 13) % (format.white() - black));
+                    }
+                    @import("raw.zig").packRow(format, sample_row, h.raw_buffers[i][y * raw.stride ..]) catch unreachable;
+                }
+            }
         }
         if (opts.lores_width != 0) {
             const l = h.pipeline.lores;

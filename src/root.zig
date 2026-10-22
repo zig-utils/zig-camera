@@ -638,6 +638,10 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, out.ptr, out.len));
     }
+    pub fn copyRaw16(self: *const Frame, out: []u8) Error!void {
+        if (self.value.token == 0) return error.StaleFrame;
+        try check(core.zc_copy_raw16(self.camera.handle, self.value.token, out.ptr, out.len));
+    }
     pub fn copyStreamRgb16(self: *const Frame, id: u32, out: []u8) Error!void {
         if (self.value.token == 0) return error.StaleFrame;
         try check(core.zc_copy_stream_rgb16(self.camera.handle, self.value.token, id, out.ptr, out.len));

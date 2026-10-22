@@ -74,6 +74,7 @@ export const native = dlopen(library, {
   zc_save_stream_image_profile: { args: [p, n, u, p, p, p], returns: i },
   zc_save_stream_image: { args: [p, n, u, p, p], returns: i },
   zc_get_stream_color_space: { args: [p, u, p], returns: i },
+  zc_copy_raw16: { args: [p, n, p, n], returns: i },
   zc_copy_stream_rgb16: { args: [p, n, u, p, n], returns: i },
   zc_copy_rgb16: { args: [p, p, n], returns: i },
   zc_copy_stream_rgb: { args: [p, n, u, p, n], returns: i },
