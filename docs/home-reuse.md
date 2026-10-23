@@ -1299,3 +1299,44 @@ C ABI checks, typecheck/fmt and 216 copied independent libpng fixtures. The norm
 local build runner still fails macOS SDK/libSystem linkage before compilation;
 the direct library and native-test builds succeed. These local results do not
 substitute for Linux real-backend CI or attached Pi/camera measurements.
+
+The 0.82 APNG-job audit starts at Home
+7c07be74d6ff5680b8fda6c3fe7c79f379653ec6 and checks image APNG/raster/zlib,
+async preparation_gate and video owned_admission, plus Home OS. The shared
+encoder already supplies frame format/rectangle/delay/sequence validation and
+streaming PNG algorithms; the missing worker boundary is cooperative cancellation
+while compressible rows have no emitted chunk. Home contribution
+9992b0608a44d6bca818900e0f2170e55adc48b1 forwards an optional synchronous sink
+checkpoint into every filtered row and compressor finish, with unchanged behavior
+for writeAll-only sinks. Both modules are reused verbatim in camera. The existing
+Home preparation gate and retained admission registry also bound native encoder
+jobs and staged-file thread owners; no duplicate queue/state algorithm is added.
+
+The four-build pinned/development Zig Debug/ReleaseSafe matrix passes 16 APNG,
+raster and zlib tests plus 216 independent libpng fixtures per build. Checkpoint
+failure rejects before allocation and after 5,000 buffered rows with unchanged
+inputs. The complete Home Image API passes 141 tests on development Zig. Hosted
+Home Actions has no exact-head run and is not described as green.
+
+Camera adds C native jobs with compact copied inputs, bounded encoded payloads,
+joined cancellation and existing staged file publication, then exposes Bun raster
+jobs and sequential main/lores RGB8/RGB16 capture bursts. Leases retire before
+compression. A 32-owner staged-file factory limit prevents rejected file bursts
+from creating unbounded waiting threads. Scoped request RGB16/raw16 copies retain
+full precision without extending callback request lifetimes. Native tests inject Zig allocator failures across
+worker/owner allocations and check retained admission; C tests verify ABI
+and blobs after job close. Bun tests and test-only C/libpng readback cover actual
+job output pixels/controls, camera precision and metadata alignment, aborts,
+deadlines, callback faults, mode exclusion, stop/close joining, late publication
+claims and burst pressure/reuse. No Python or FFmpeg is added; generic animation
+compositing/objects, metadata and temporary-mode animation conveniences remain
+required work. Software fixtures do not establish physical camera acceptance.
+
+Final camera-local validation passes 381 target-qualified ReleaseSafe native
+tests, all 1,001 Bun tests with independent APNG/image/ICC/Exif/AVC/HEVC/AAC
+readback and SDL enabled, C ABI execution, typecheck/fmt and strict C compilation.
+Thirty-three APNG Bun cases include every filter, effective compression settings,
+ready-file cancellation preventing C publication and internal byte-blob transfer
+remaining cancellable until Bun publication. The normal local build runner still
+fails SDK/libSystem linkage before project compilation; direct library/native
+builds pass. Linux real-backend compile/load/no-camera checks remain CI gates.

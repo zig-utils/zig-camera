@@ -432,3 +432,12 @@ encoding improves Home and is reused verbatim here. No OS source is copied,
 modified or executed. Kernel buffers/hardware support remain distinct from
 libcamera leases and borrowed host raster views, and no hardware acceptance or
 performance result follows from these software tests.
+
+The 0.82 APNG-job audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and inspects camera/media sources,
+compositor animation state and ADR-MC3. The compositor's window opacity/progress
+loop is a display animation policy, not a checked PNG/APNG encoder, hosted job
+admission, libcamera request owner or atomic file publisher. Per ADR-MC3, row
+checkpoint support improves the shared Home codec; camera job/input/file owners
+remain hosted Zig/Bun. No OS source is copied, modified or executed, and none of
+these software checks proves physical Pi image quality or throughput.

@@ -502,6 +502,9 @@ int zc_save_stream_image_metadata(zc_camera *,uint64_t token,uint32_t stream,con
  * No durability/fsync guarantee. Crash cleanup of orphan temporaries is external. */
 typedef struct zc_image_file zc_image_file;
 typedef struct { uint32_t struct_size,phase,preparing,released,finished,committed; int32_t result,cleanup_code; } zc_image_file_state;
+/* Factory admission is globally bounded to 32 retained handles, including ready
+ * and finished handles. BUSY preserves a null output; close releases the slot
+ * after joining. This also bounds threads for rejected async file submissions. */
 int zc_image_file_create(const char *,zc_image_file **);
 int zc_image_file_prepare(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *);
 int zc_image_file_prepare_metadata(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
@@ -509,6 +512,42 @@ int zc_image_file_cancel(zc_image_file *); /* 1 accepted, 0 too late/already can
 int zc_image_file_finish(zc_image_file *,uint32_t publish);
 int zc_image_file_state_get(zc_image_file *,zc_image_file_state *);
 int zc_image_file_close(zc_image_file *); /* BUSY until owner/job retired */
+/* Borrowed input descriptors. data must be readable for the submit call only;
+ * submission copies active rows, never retains a camera/lease or row padding. */
+enum { ZC_APNG_GRAY=0, ZC_APNG_RGB=1, ZC_APNG_RGBA=2 };
+enum { ZC_APNG_DISPOSE_NONE=0, ZC_APNG_DISPOSE_BACKGROUND=1, ZC_APNG_DISPOSE_PREVIOUS=2 };
+enum { ZC_APNG_BLEND_SOURCE=0, ZC_APNG_BLEND_OVER=1 };
+typedef struct {
+    uint32_t struct_size,width,height,format,bits,big_endian;
+    uint64_t stride,length;
+    const uint8_t *data;
+} zc_apng_raster;
+typedef struct {
+    zc_apng_raster raster;
+    uint32_t x,y,delay_num,delay_den,dispose,blend;
+} zc_apng_frame;
+typedef struct {
+    uint32_t struct_size,width,height,plays,png_compression,png_filter;
+    uint64_t max_input_bytes,max_output_bytes;
+} zc_apng_config;
+typedef struct zc_apng_job zc_apng_job;
+/* phase uses ZC_PREPARATION_*; file publication is observed on its separate
+ * image_file owner. finished reports encoding completion; close still joins. */
+typedef struct { uint32_t struct_size,phase,finished; int32_t result; uint64_t input_bytes,output_bytes; } zc_apng_job_state;
+void zc_default_apng_config(zc_apng_config *);
+/* 1..256 frames; optional full-canvas poster is excluded from playback. Each
+ * payload cap is 1..256 MiB. Global admission retains four jobs / 512 MiB of
+ * input/output reservations and owner descriptors until close, including completed jobs.
+ * A file handle, when supplied, must stay alive through job close. It is staged
+ * privately; only zc_image_file_finish(file,1) publishes it. Submit never opens
+ * or replaces a destination. Output is null on failure. */
+int zc_apng_encode_async(const zc_apng_config *,const zc_apng_frame *,uint32_t count,const zc_apng_raster *poster,zc_image_file *,zc_apng_job **);
+int zc_apng_job_state_get(zc_apng_job *,zc_apng_job_state *);
+int zc_apng_job_cancel(zc_apng_job *); /* 1 accepted, 0 already cancelled/published/failed */
+/* Byte jobs publish once; the blob then survives job close. File jobs return
+ * UNSUPPORTED here and publish through their separate staged file owner. */
+int zc_apng_job_take_blob(zc_apng_job *,zc_image_blob **);
+int zc_apng_job_close(zc_apng_job *); /* null OK; BUSY while worker is active; joins before release */
 const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */

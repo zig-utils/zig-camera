@@ -6,11 +6,16 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.82 adds [async APNG capture and encoding](docs/apng.md) through Bun/C:
+bounded copied inputs, RGB8/RGB16 main/lores bursts, cancellable native row
+encoding and joined atomic file publication. Scoped request callbacks now expose
+owned RGB16/raw16 copies, and staged-file thread admission is bounded.
+
 Version 0.81 exposes Home's checked [APNG encoder](docs/apng.md) to Zig callers
 over copied capture rasters and reuses its shared PNG row/chunk implementation.
 It supports frame rectangles, exact rational delays, disposal/blend controls,
-8/16-bit gray/RGB/RGBA and a separate optional static image. Bun/C animation
-capture scheduling remains open.
+8/16-bit gray/RGB/RGBA and a separate optional static image. That shared codec
+now supplies the jobs in version 0.82.
 
 Version 0.80.1 fixes duplicate owner cleanup when native zlib stream initialization
 fails. The Home adapter now tests native initialization errors independently of

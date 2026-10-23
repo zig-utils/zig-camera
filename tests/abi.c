@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_apng_raster)==48,"APNG raster ABI");
+_Static_assert(offsetof(zc_apng_raster,data)==40,"APNG pointer ABI");
+_Static_assert(sizeof(zc_apng_frame)==72,"APNG frame ABI");
+_Static_assert(sizeof(zc_apng_config)==40,"APNG config ABI");
+_Static_assert(sizeof(zc_apng_job_state)==32,"APNG job state ABI");
 _Static_assert(sizeof(zc_keyframe_state)==24,"keyframe state ABI");
 _Static_assert(offsetof(zc_keyframe_state,pending)==16,"keyframe pending ABI");
 _Static_assert(sizeof(zc_packed_stream)==64,"packed stream ABI");
@@ -366,7 +371,39 @@ static void raw16_inputs(void){
         assert(zc_release(camera,frame.token)==ZC_OK);assert(zc_copy_raw16(camera,frame.token,data,sizeof(data))==ZC_STALE);assert(zc_close(camera)==ZC_OK);
     }
 }
+static void apng_jobs(void) {
+    uint8_t pixels[]={1,2,3,4,5,6,99,99,7,8,9,10,11,12};
+    zc_apng_config cfg;zc_default_apng_config(&cfg);
+    assert(cfg.struct_size==40);cfg.width=2;cfg.height=2;cfg.max_output_bytes=4096;
+    zc_apng_frame frame={{48,2,2,ZC_APNG_RGB,8,0,8,sizeof(pixels),pixels},0,0,1,25,0,0};
+    zc_apng_job *job=NULL;
+    assert(zc_apng_encode_async(&cfg,NULL,1,NULL,NULL,&job)==ZC_INVALID && !job);
+    frame.raster.length=13;
+    assert(zc_apng_encode_async(&cfg,&frame,1,NULL,NULL,&job)==ZC_INVALID && !job);
+    frame.raster.length=sizeof(pixels);
+    assert(zc_apng_encode_async(&cfg,&frame,1,NULL,NULL,&job)==ZC_OK && job);
+    memset(pixels,0xee,sizeof(pixels));
+    zc_apng_job_state state={0};
+    for(unsigned i=0;i<100000;i++) {
+        assert(zc_apng_job_state_get(job,&state)==ZC_OK && state.struct_size==32);
+        if(state.finished)break;
+        struct timespec delay={0,100000};nanosleep(&delay,NULL);
+    }
+    assert(state.finished && state.result==ZC_OK && state.input_bytes==12);
+    zc_image_blob *blob=NULL,*again=NULL;
+    assert(zc_apng_job_take_blob(job,&blob)==ZC_OK && blob);
+    assert(zc_apng_job_cancel(job)==0);
+    assert(zc_apng_job_take_blob(job,&again)==ZC_STATE && !again);
+    assert(zc_apng_job_close(job)==ZC_OK);
+    uint64_t size=0;assert(zc_image_blob_copy(blob,NULL,0,&size)==ZC_OK && size==state.output_bytes && size>40);
+    uint8_t *encoded=malloc((size_t)size);assert(encoded);
+    assert(zc_image_blob_copy(blob,encoded,size,&size)==ZC_OK);
+    assert(!memcmp(encoded,"\211PNG\r\n\032\n",8));
+    free(encoded);zc_image_blob_close(blob);
+    assert(zc_apng_job_close(NULL)==ZC_OK);
+}
 int main(void) {
+    apng_jobs();
     raw16_inputs();
     rgb16_inputs();
     yuv422_processed_inputs();

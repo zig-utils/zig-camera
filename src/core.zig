@@ -1456,6 +1456,7 @@ extern fn zcd_write_jpeg_fd_markers(*const c.zc_frame, c_int, u32, ?[*]const u8,
 const image_file = @import("image_file.zig");
 comptime {
     _ = image_file;
+    _ = @import("apng_job.zig");
 }
 pub export fn zc_image_file_prepare(output: *c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
     return zc_image_file_prepare_metadata(output, p, token, stream, opts, profile, null);

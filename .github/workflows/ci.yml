@@ -47,6 +47,8 @@ jobs:
           fi
           cc -std=c11 -Wall -Wextra -Werror tests/read_image_exif.c $(pkg-config --cflags --libs libexif libjpeg libpng) -o zig-out/read-image-exif
           echo "ZC_EXIF_READER=$PWD/zig-out/read-image-exif" >> "$GITHUB_ENV"
+          cc -std=c11 -Wall -Wextra -Werror tests/decode_apng.c $(pkg-config --cflags --libs libpng) -o zig-out/decode-apng
+          echo "ZC_APNG_DECODER=$PWD/zig-out/decode-apng" >> "$GITHUB_ENV"
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck

@@ -613,3 +613,11 @@ Home checked APNG and shared PNG streaming (0.81):
   924bbf199cc3a7ffed382fb5c8d44f891eb8b786. The raster copy supersedes its
   earlier version. Home MIT attribution above applies. libpng/zlib readback
   in the C harness is test-only and retains those projects' own licenses.
+
+Home cooperative PNG/APNG checkpoints (0.82):
+- src/home/apng_encoder.zig and src/home/raster_encoder.zig are verbatim
+  Home packages/image/src/formats modules at
+  9992b0608a44d6bca818900e0f2170e55adc48b1, superseding their 0.81 copies.
+  Home MIT attribution above applies. src/apng_job.zig and bounded staged-file
+  admission reuse the already attributed Home preparation_gate and
+  owned_admission modules; camera/worker/file ownership remains hosted glue.

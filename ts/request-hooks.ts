@@ -16,6 +16,8 @@ export interface RequestFrame extends Pick<
   | 'metadataCatalog'
   | 'synchronization'
   | 'copyRGB'
+  | 'copyRGB16'
+  | 'copyRaw16'
   | 'copyStream'
   | 'copyStreams'
   | 'retain'
@@ -95,6 +97,12 @@ class ScopedRequest implements RequestFrame {
   }
   copyRGB(stream: 'main' | 'lores' = 'main') {
     return this.current().copyRGB(stream)
+  }
+  copyRGB16(stream: 'main' | 'lores' = 'main') {
+    return this.current().copyRGB16(stream)
+  }
+  copyRaw16() {
+    return this.current().copyRaw16()
   }
   colorSpace(stream: StreamName = 'main') {
     return this.current().colorSpace(stream)

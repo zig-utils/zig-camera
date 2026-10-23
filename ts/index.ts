@@ -1,4 +1,21 @@
 import {
+  prepareApng,
+  runApng,
+  apngSettings,
+  apngInteger,
+  apngDelay,
+  type PngAnimationLimits,
+  type PngAnimationFrame,
+} from './apng'
+export {
+  encodePngAnimationAsync,
+  savePngAnimationAsync,
+  type PngRaster,
+  type PngAnimationFrame,
+  type PngAnimation,
+  type PngAnimationLimits,
+} from './apng'
+import {
   processedFormatCode,
   isYuv,
   type ProcessedFormat,
@@ -323,6 +340,29 @@ export interface CaptureOptions<T = unknown> extends JobOptions<T> {
   dropFrames?: number
   /** Select only requests with explicitly true backend SyncReady metadata. */
   syncReady?: boolean
+}
+export type PngAnimationMetadata = Readonly<
+  Omit<ReturnType<Frame['metadata']>, 'crop'>
+> & { readonly crop: Readonly<ReturnType<Frame['metadata']>['crop']> }
+export interface CapturedPngAnimation {
+  readonly data: Uint8Array
+  readonly metadata: readonly PngAnimationMetadata[]
+}
+export interface CapturedPngAnimationFile {
+  readonly path: string
+  readonly metadata: readonly PngAnimationMetadata[]
+}
+export interface CapturePngAnimationOptions<T = CapturedPngAnimation>
+  extends CaptureOptions<T>, PngAnimationLimits {
+  stream?: 'main' | 'lores'
+  /** Defaults to native RGB precision; 16 rejects 8-bit/YUV sources. */
+  bits?: 8 | 16
+  intervalMs?: number
+  delayMs?: number
+  onFrame?: (frame: {
+    readonly index: number
+    readonly metadata: PngAnimationMetadata
+  }) => void
 }
 export function captureClockNs(): bigint {
   const out = new BigUint64Array(1)
@@ -1924,6 +1964,7 @@ export class Camera {
   private coordinatedRecorder?: Recorder
   private coordinatedInitial?: Recording
   private captureFilesJob?: CaptureFilesJob
+  private pngCaptureJob?: { readonly done: boolean }
   private captureProgressCallback = false
   private modeJobs = new Set<{
     cancel: (reason?: unknown) => boolean
@@ -2200,7 +2241,10 @@ export class Camera {
     if (this.hasRequestCallbacks) this.ensurePump()
   }
   acquire(timeoutMs = 0) {
-    if (this.captureFilesJob && !this.captureFilesJob.done)
+    if (
+      (this.captureFilesJob && !this.captureFilesJob.done) ||
+      (this.pngCaptureJob && !this.pngCaptureJob.done)
+    )
       throw new CameraError(-4, 'capture series active')
     guardRequestCallback()
     return this.acquireOwned(timeoutMs)
@@ -3286,6 +3330,210 @@ export class Camera {
   }
   captureEncodedImage(options: CaptureOptions<Uint8Array> & ImageOptions = {}) {
     return this.captureEncodedImageAsync(options).wait()
+  }
+  capturePngAnimationAsync(
+    count: number,
+    options: CapturePngAnimationOptions = {},
+  ): BunJob<CapturedPngAnimation> {
+    return this.submitPngAnimation(
+      count,
+      options,
+    ) as BunJob<CapturedPngAnimation>
+  }
+  capturePngAnimation(count: number, options: CapturePngAnimationOptions = {}) {
+    return this.capturePngAnimationAsync(count, options).wait()
+  }
+  capturePngAnimationFileAsync(
+    path: string,
+    count: number,
+    options: CapturePngAnimationOptions<CapturedPngAnimationFile> = {},
+  ): BunJob<CapturedPngAnimationFile> {
+    return this.submitPngAnimation(
+      count,
+      options,
+      path,
+    ) as BunJob<CapturedPngAnimationFile>
+  }
+  capturePngAnimationFile(
+    path: string,
+    count: number,
+    options: CapturePngAnimationOptions<CapturedPngAnimationFile> = {},
+  ) {
+    return this.capturePngAnimationFileAsync(path, count, options).wait()
+  }
+  private submitPngAnimation<
+    T extends CapturedPngAnimation | CapturedPngAnimationFile,
+  >(
+    count: number,
+    options: CapturePngAnimationOptions<T>,
+    path?: string,
+  ): BunJob<T> {
+    guardRequestCallback()
+    guardOutputHook()
+    this.assertOpen()
+    this.checkModeAdmission()
+    if (this.hasPendingModes())
+      throw new CameraError(-4, 'camera modes pending')
+    this.checkModeLeases()
+    const total = apngInteger(count, 1, 256, 'frame count'),
+      settings = apngSettings(options),
+      effective = snapshotJobOptions(options, 30000),
+      stream = processedImageStream(options.stream),
+      requestedBits = options.bits,
+      interval = apngInteger(
+        options.intervalMs ?? 0,
+        0,
+        0xffffffff,
+        'capture interval',
+      ),
+      delay = apngDelay(options.delayMs ?? 40),
+      drop = uint(options.dropFrames ?? 0),
+      offeredFlush = options.flush,
+      syncReady = options.syncReady,
+      onFrame = options.onFrame
+    if (onFrame !== undefined && typeof onFrame !== 'function')
+      throw new TypeError('invalid APNG frame callback')
+    if (
+      requestedBits !== undefined &&
+      requestedBits !== 8 &&
+      requestedBits !== 16
+    )
+      throw new RangeError('invalid APNG capture depth')
+    if (path !== undefined && typeof path !== 'string')
+      throw new TypeError('invalid APNG path')
+    const destination = path === undefined ? undefined : cstring(path)
+    const selection = {
+      dropFrames: drop,
+      flush: offeredFlush === true ? captureClockNs() : offeredFlush,
+      syncReady,
+    }
+    captureSelection(selection)
+    this.assertOpen()
+    this.checkModeAdmission()
+    if (this.hasPendingModes())
+      throw new CameraError(-4, 'camera admission changed')
+    this.checkModeLeases()
+    let width: number, height: number, format: string
+    if (stream === 'main') {
+      const info = this.readInfo()
+      width = info.width
+      height = info.height
+      format = info.format
+    } else {
+      const bytes = storage(224)
+      check(n.zc_get_pipeline_info(this.handle, ptr(bytes)))
+      const d = view(bytes)
+      if (!d.getUint32(28, true))
+        throw new CameraError(-8, 'lores capture disabled')
+      width = d.getUint32(16, true)
+      height = d.getUint32(20, true)
+      format = text(bytes, 32, 32)
+    }
+    const wide = format === 'BGR161616' || format === 'RGB161616',
+      bits = requestedBits ?? (wide ? 16 : 8)
+    if (bits === 16 && !wide) throw new CameraError(-8, 'RGB16 source required')
+    const payload = width * height * 3 * (bits / 8) * total
+    if (!Number.isSafeInteger(payload) || payload > settings.maxInput)
+      throw new RangeError('APNG capture exceeds input cap')
+    const deadline = Date.now() + (effective.timeoutMs ?? 30000)
+    const job = new BunJob<T>(
+      (current) =>
+        withStagedImageFile(destination, current, async (file) => {
+          const frames: PngAnimationFrame[] = [],
+            metadata: PngAnimationMetadata[] = []
+          for (let index = 0; index < total; index++) {
+            current.check()
+            if (index && interval) await waitCaptureInterval(interval, current)
+            const child = this.submitCapture(
+              (frame) => {
+                const data =
+                  bits === 16
+                    ? new Uint8Array(frame.copyRGB16(stream).buffer)
+                    : frame.copyRGB(stream)
+                const m = frame.metadata()
+                return {
+                  data,
+                  metadata: Object.freeze({
+                    ...m,
+                    crop: Object.freeze({ ...m.crop }),
+                  }),
+                }
+              },
+              {
+                ...selection,
+                signal: current.signal,
+                timeoutMs: Math.max(0, deadline - Date.now()),
+              },
+              undefined,
+              false,
+              current,
+            )
+            const result = await child.wait()
+            await child.cleanupDone
+            metadata.push(result.metadata)
+            frames.push({ data: result.data, width, height, bits, delay })
+            if (onFrame) {
+              this.captureProgressCallback = true
+              try {
+                const response = onFrame(
+                  Object.freeze({ index, metadata: result.metadata }),
+                ) as unknown
+                if (
+                  response &&
+                  typeof (response as { then?: unknown }).then === 'function'
+                ) {
+                  void Promise.resolve(response).catch(() => {})
+                  throw new TypeError('APNG frame callback must be synchronous')
+                }
+              } finally {
+                this.captureProgressCallback = false
+              }
+            }
+            current.check()
+          }
+          const prepared = prepareApng({
+            width,
+            height,
+            frames,
+            plays: settings.plays,
+            compressLevel: settings.compression,
+            pngFilter: (
+              ['adaptive', 'none', 'sub', 'up', 'average', 'paeth'] as const
+            )[settings.filter],
+            maxInputBytes: settings.maxInput,
+            maxOutputBytes: settings.maxOutput,
+          })
+          frames.length = 0
+          const data = await runApng(prepared, current, file?.handle)
+          current.check()
+          if (file) await file.publish(current, deadline)
+          current.seal()
+          return Object.freeze(
+            path === undefined
+              ? { data: data!, metadata: Object.freeze(metadata) }
+              : { path, metadata: Object.freeze(metadata) },
+          ) as T
+        }),
+      () => {
+        this.modeJobs.delete(job)
+        if (this.pngCaptureJob === job) this.pngCaptureJob = undefined
+      },
+      effective,
+    )
+    try {
+      this.assertOpen()
+      this.checkModeAdmission()
+      this.checkModeLeases()
+      if (this.hasPendingModes())
+        throw new CameraError(-4, 'camera admission changed')
+    } catch (error) {
+      job.cancel(error)
+      throw error
+    }
+    this.pngCaptureJob = job
+    this.modeJobs.add(job)
+    void job.start()
+    return job
   }
   captureRGB(
     options: CaptureOptions<Uint8Array> & { stream?: 'main' | 'lores' } = {},
@@ -4633,6 +4881,12 @@ export class Camera {
   }
   private checkModeAdmission(owner?: object) {
     this.ensureConnected()
+    if (
+      this.pngCaptureJob &&
+      !this.pngCaptureJob.done &&
+      owner !== this.pngCaptureJob
+    )
+      throw new CameraError(-4, 'APNG capture active')
     if (
       this.captureFilesJob &&
       !this.captureFilesJob.done &&

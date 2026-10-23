@@ -4,7 +4,16 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 const Gate = @import("home/preparation_gate.zig").Gate;
 const A = std.heap.c_allocator;
+const Admission = @import("home/owned_admission.zig").Registry(32);
+var admission: Admission = .{ .max_bytes = 32, .max_items = 32 };
+var admission_mutex: std.Thread.Mutex = .{};
+fn releaseAdmission(ticket: Admission.Ticket) void {
+    admission_mutex.lock();
+    defer admission_mutex.unlock();
+    admission.release(ticket) catch unreachable;
+}
 const File = struct {
+    ticket: Admission.Ticket,
     path: [:0]u8,
     mutex: std.Thread.Mutex = .{},
     gate: Gate = .{},
@@ -72,18 +81,27 @@ pub export fn zc_image_file_create(path: [*:0]const u8, out: *?*c.zc_image_file)
     out.* = null;
     const text = std.mem.span(path);
     if (text.len == 0 or text.len > 4096) return c.ZC_INVALID;
+    admission_mutex.lock();
+    const ticket = admission.reserve(1) catch |err| {
+        admission_mutex.unlock();
+        return if (err == error.BufferFull) c.ZC_BUSY else c.ZC_STATE;
+    };
+    admission_mutex.unlock();
+    var published = false;
+    defer if (!published) releaseAdmission(ticket);
     const name = A.dupeZ(u8, text) catch return c.ZC_NOMEM;
     const self = A.create(File) catch {
         A.free(name);
         return c.ZC_NOMEM;
     };
-    self.* = .{ .path = name };
+    self.* = .{ .ticket = ticket, .path = name };
     self.thread = std.Thread.spawn(.{}, File.run, .{self}) catch {
         A.free(name);
         A.destroy(self);
         return c.ZC_NOMEM;
     };
     out.* = @ptrCast(self);
+    published = true;
     return c.ZC_OK;
 }
 /// Caller owns a live handle and serializes preparation against close. Other
@@ -169,9 +187,28 @@ pub export fn zc_image_file_close(p: ?*c.zc_image_file) c_int {
     const thread = self.thread;
     self.mutex.unlock();
     if (thread) |worker| worker.join();
+    const ticket = self.ticket;
     A.free(self.path);
     A.destroy(self);
+    releaseAdmission(ticket);
     return c.ZC_OK;
+}
+
+test "staged file creation bounds thread owners and charges finished handles until close" {
+    const t = std.testing;
+    var owners: [32]?*c.zc_image_file = @splat(null);
+    defer for (owners) |owner| if (owner) |p| cleanupForTest(p);
+    for (&owners) |*out| try t.expectEqual(c.ZC_OK, zc_image_file_create("factory-cap-never-opened", out));
+    for (owners) |owner| {
+        try t.expectEqual(c.ZC_OK, zc_image_file_finish(owner.?, 0));
+        _ = try waitForTest(owner.?);
+    }
+    var rejected: ?*c.zc_image_file = null;
+    try t.expectEqual(c.ZC_BUSY, zc_image_file_create("factory-cap-never-opened", &rejected));
+    try t.expect(rejected == null);
+    try t.expectEqual(c.ZC_OK, zc_image_file_close(owners[0]));
+    owners[0] = null;
+    try t.expectEqual(c.ZC_OK, zc_image_file_create("factory-cap-never-opened", &owners[0]));
 }
 
 fn waitForTest(p: *c.zc_image_file) !c.zc_image_file_state {
