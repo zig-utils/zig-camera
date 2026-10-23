@@ -441,3 +441,13 @@ admission, libcamera request owner or atomic file publisher. Per ADR-MC3, row
 checkpoint support improves the shared Home codec; camera job/input/file owners
 remain hosted Zig/Bun. No OS source is copied, modified or executed, and none of
 these software checks proves physical Pi image quality or throughput.
+
+The 0.83 GIF audit again fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3 plus camera/media
+sources. Searches for GIF, LZW, median cut and quantization find a file-preview
+extension mention and unrelated PCI/network names, not a working raster codec.
+Camera capture still returns a nominal size and nominal video routines still
+return status without decoding. Per ADR-MC3, the checked GIF/palette algorithms
+improve Home stdlib and are reused in camera; hosted file jobs/libcamera leases
+remain camera ownership. No OS source is copied, changed or executed, and no
+physical support or throughput result is inferred.

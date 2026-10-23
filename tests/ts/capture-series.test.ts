@@ -469,7 +469,7 @@ test('invalid series options and paths reject before camera lifecycle changes', 
   try {
     const targets = [
       [],
-      ['bad.gif'],
+      ['bad.webp'],
       Array(1),
       { pattern: 'out.jpg', count: 0 },
       { pattern: 'out.jpg', count: NaN },

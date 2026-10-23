@@ -84,6 +84,9 @@ pub const still = @import("still.zig");
 /// Home animation encoding over borrowed or owned raster copies. Capture
 /// scheduling and sink staging remain explicit caller-owned operations.
 pub const ApngEncoder = @import("home/apng_encoder.zig");
+/// Home still GIF89a over borrowed gray/RGB/RGBA8/16 rows; checked palette,
+/// explicit high-byte reduction and thresholded one-bit unassociated alpha.
+pub const GifEncoder = @import("home/gif_encoder.zig");
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;
@@ -677,6 +680,7 @@ test {
     _ = raw;
     _ = dng;
     _ = ApngEncoder;
+    _ = GifEncoder;
     _ = @import("video.zig");
     _ = output_mailbox;
 }

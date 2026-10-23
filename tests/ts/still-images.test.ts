@@ -31,7 +31,7 @@ const failure = (job: PromiseLike<unknown>) =>
     () => undefined,
     (error) => error,
   )
-const formats: ImageFormat[] = ['jpeg', 'png', 'bmp', 'tiff', 'ppm', 'dng']
+const formats: ImageFormat[] = ['jpeg', 'png', 'bmp', 'tiff', 'ppm', 'dng', 'gif']
 function signature(bytes: Uint8Array, format: ImageFormat) {
   const expected: Record<string, number[]> = {
     jpeg: [255, 216],
@@ -40,6 +40,7 @@ function signature(bytes: Uint8Array, format: ImageFormat) {
     tiff: [73, 73, 42, 0],
     ppm: [80, 54, 10],
     dng: [73, 73, 42, 0],
+    gif: [71, 73, 70, 56, 57, 97],
   }
   expect([...bytes.subarray(0, expected[format].length)]).toEqual(
     expected[format],
@@ -216,7 +217,7 @@ test('invalid formats, PNG settings and pre-aborted capture jobs do not acquire 
       { compressLevel: 10 },
       { compressLevel: NaN },
       { pngFilter: 'unknown' },
-      { format: 'gif' },
+      { format: 'webp' },
       { format: 'jpeg', quality: 0 },
     ]) {
       // @ts-expect-error Exercise JavaScript validation too.

@@ -24,7 +24,7 @@ const help =
     \\  --raw                    Add paired native raw stream
     \\  --raw-format NAME        Request exact raw format (e.g. R10_CSI2P, RGGB_PISP_COMP1)
     \\  --output PATH            capture: .ppm/.jpg/.png/.bmp/.tif/.dng; record: .mkv/.mp4
-    \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng)
+    \\  --image-format NAME      Override still-file extension (jpeg/png/bmp/tiff/ppm/dng/gif)
     \\  --image-stream NAME      Select main/lores for images, raw for DNG
     \\  --exif auto|none|PATH  JPEG defaults to request Exif; PATH supplies raw TIFF/Exif
     \\  --icc-profile srgb|PATH  Embed an RGB ICC profile in JPEG/PNG/TIFF

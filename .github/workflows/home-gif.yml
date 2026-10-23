@@ -1,0 +1,46 @@
+name: Home GIF conformance
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
+  pull_request:
+    paths: ['src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Independent GIF decoder and raster compression dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install giflib zlib
+            echo "GIF_TEST_PREFIX=$(brew --prefix giflib)" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=$(brew --prefix zlib)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update && sudo apt-get install -y libgif-dev zlib1g-dev
+            echo "GIF_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+          fi
+      - name: Ownership, cancellation and independent giflib raster samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz -L"$ZLIB_TEST_PREFIX/lib" -rpath "$ZLIB_TEST_PREFIX/lib" src/home/gif_encoder.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep gif -Mroot=tests/gif_raster_fixture.zig -Mgif=src/home/gif_encoder.zig -femit-bin=/tmp/home-gif-raster.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -DHOME_GIF_FIXTURE tests/decode_gif.c /tmp/home-gif-raster.o -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o /tmp/home-gif-raster
+            /tmp/home-gif-raster
+          done

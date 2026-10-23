@@ -18,7 +18,7 @@ const fail = (job: PromiseLike<unknown>) =>
     () => undefined,
     (error) => error,
   )
-const formats: ImageFormat[] = ['jpeg', 'png', 'bmp', 'tiff', 'ppm', 'dng']
+const formats: ImageFormat[] = ['jpeg', 'png', 'bmp', 'tiff', 'ppm', 'dng', 'gif']
 for (const format of formats)
   test(`temporary ${format} stays unpublished through post-capture callbacks and rolls back errors`, async () => {
     const c = cam(),

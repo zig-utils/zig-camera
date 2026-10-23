@@ -1637,7 +1637,7 @@ test "encoded image blobs own all formats after frame and camera release and nev
     try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
     var frame: c.zc_frame = undefined;
     try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
-    var blobs: [6]?*c.zc_image_blob = @splat(null);
+    var blobs: [7]?*c.zc_image_blob = @splat(null);
     defer for (blobs) |blob| zc_image_blob_close(blob);
     var opts: c.zc_image_options = undefined;
     zc_default_image_options(&opts);
@@ -1649,7 +1649,7 @@ test "encoded image blobs own all formats after frame and camera release and nev
     try std.testing.expectEqual(c.ZC_OK, zc_stop(camera.?));
     try std.testing.expectEqual(c.ZC_OK, zc_close(camera.?));
     camera = null;
-    const signatures = [6][]const u8{ &.{ 255, 216 }, &.{ 137, 80, 78, 71, 13, 10, 26, 10 }, "BM", "II", "P6\n", "II" };
+    const signatures = [7][]const u8{ &.{ 255, 216 }, &.{ 137, 80, 78, 71, 13, 10, 26, 10 }, "BM", "II", "P6\n", "II", "GIF89a" };
     for (blobs, signatures) |blob, signature| {
         var length: u64 = 0;
         try std.testing.expectEqual(c.ZC_OK, zc_image_blob_copy(blob.?, null, 0, &length));

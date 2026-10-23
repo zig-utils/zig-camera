@@ -687,6 +687,12 @@ int main(void) {
         assert(zc_copy_stream_rgb(camera,frame.token,ZC_LORES,rgb,sizeof(rgb))==ZC_OK && rgb[0]==0);
         zc_image_options image;zc_default_image_options(&image);image.format=ZC_IMAGE_PPM;
         zc_image_blob *blob=NULL;assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_OK && blob);zc_image_blob_close(blob);
+        image.format=ZC_IMAGE_GIF;
+        assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_OK && blob);
+        uint64_t gif_length=0;assert(zc_image_blob_copy(blob,NULL,0,&gif_length)==ZC_OK && gif_length>6 && gif_length<4096);
+        uint8_t gif[4096];memset(gif,0xa7,sizeof(gif));
+        assert(zc_image_blob_copy(blob,gif,5,&gif_length)==ZC_INVALID && gif[0]==0xa7);
+        assert(zc_image_blob_copy(blob,gif,sizeof(gif),&gif_length)==ZC_OK && !memcmp(gif,"GIF89a",6) && gif[gif_length]==0xa7);zc_image_blob_close(blob);
         image.format=ZC_IMAGE_DNG;
         assert(zc_encode_stream_image(camera,frame.token,ZC_LORES,&image,&blob)==ZC_UNSUPPORTED && !blob);
         zc_frame selected=frame;assert(zc_get_stream(camera,frame.token,ZC_LORES,&selected.main)==ZC_OK);

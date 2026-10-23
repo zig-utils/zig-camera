@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.83 adds [GIF still capture](docs/gif.md) through C/Zig/Bun/CLI, reusing
+Home's bounded palette and dictionary LZW with independent giflib readback.
+Ordinary and focus-locked file captures now keep output private through request
+callbacks and CAF restoration before joined native publication.
+
 Version 0.82 adds [async APNG capture and encoding](docs/apng.md) through Bun/C:
 bounded copied inputs, RGB8/RGB16 main/lores bursts, cancellable native row
 encoding and joined atomic file publication. Scoped request callbacks now expose

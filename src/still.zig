@@ -31,7 +31,7 @@ pub fn embedProfile(allocator: std.mem.Allocator, options: *const c.zc_image_opt
     }, bytes, generated orelse profile.data[0..@intCast(profile.length)]);
 }
 pub fn formatFromName(name: []const u8) !u32 {
-    inline for (.{ .{ "jpg", c.ZC_IMAGE_JPEG }, .{ "jpeg", c.ZC_IMAGE_JPEG }, .{ "png", c.ZC_IMAGE_PNG }, .{ "bmp", c.ZC_IMAGE_BMP }, .{ "tif", c.ZC_IMAGE_TIFF }, .{ "tiff", c.ZC_IMAGE_TIFF }, .{ "ppm", c.ZC_IMAGE_PPM }, .{ "dng", c.ZC_IMAGE_DNG } }) |entry| {
+    inline for (.{ .{ "jpg", c.ZC_IMAGE_JPEG }, .{ "jpeg", c.ZC_IMAGE_JPEG }, .{ "png", c.ZC_IMAGE_PNG }, .{ "bmp", c.ZC_IMAGE_BMP }, .{ "tif", c.ZC_IMAGE_TIFF }, .{ "tiff", c.ZC_IMAGE_TIFF }, .{ "ppm", c.ZC_IMAGE_PPM }, .{ "dng", c.ZC_IMAGE_DNG }, .{ "gif", c.ZC_IMAGE_GIF } }) |entry| {
         if (std.ascii.eqlIgnoreCase(name, entry[0])) return entry[1];
     }
     return error.UnsupportedFormat;
@@ -41,7 +41,7 @@ pub fn formatFromPath(path: []const u8) !u32 {
     return formatFromName(path[dot + 1 ..]);
 }
 pub fn valid(options: *const c.zc_image_options) bool {
-    return options.struct_size == @sizeOf(c.zc_image_options) and options.format >= c.ZC_IMAGE_JPEG and options.format <= c.ZC_IMAGE_DNG and options.png_compression <= 9 and options.png_filter <= c.ZC_PNG_PAETH and (options.format != c.ZC_IMAGE_JPEG or (options.quality >= 1 and options.quality <= 100));
+    return options.struct_size == @sizeOf(c.zc_image_options) and options.format >= c.ZC_IMAGE_JPEG and options.format <= c.ZC_IMAGE_GIF and options.png_compression <= 9 and options.png_filter <= c.ZC_PNG_PAETH and (options.format != c.ZC_IMAGE_JPEG or (options.quality >= 1 and options.quality <= 100));
 }
 pub fn status(err: anyerror) c_int {
     return switch (err) {
@@ -95,6 +95,7 @@ fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_meta
         c.ZC_IMAGE_PNG => raster.png(allocator, view, .{ .compression = options.png_compression, .filter = @enumFromInt(options.png_filter) }),
         c.ZC_IMAGE_BMP => raster.bmp(allocator, view),
         c.ZC_IMAGE_TIFF => raster.tiff(allocator, view),
+        c.ZC_IMAGE_GIF => @import("home/gif_encoder.zig").encode(allocator, view, .{}),
         c.ZC_IMAGE_JPEG => block: {
             var encoder = @import("home/jpeg_encoder.zig").Encoder.init(allocator);
             defer encoder.deinit();

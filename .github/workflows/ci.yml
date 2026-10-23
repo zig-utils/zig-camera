@@ -23,11 +23,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libtiff-dev liblcms2-dev libexif-dev
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libgif-dev libtiff-dev liblcms2-dev libexif-dev
+          echo "GIF_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
         run: |
-          brew install zlib pkgconf libexif jpeg-turbo libpng
+          brew install zlib pkgconf libexif jpeg-turbo libpng giflib
+          echo "GIF_TEST_PREFIX=$(brew --prefix giflib)" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=$(brew --prefix zlib)/lib/pkgconfig:$(brew --prefix jpeg-turbo)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
       - name: Build independent image decoder
         shell: bash
@@ -49,6 +51,8 @@ jobs:
           echo "ZC_EXIF_READER=$PWD/zig-out/read-image-exif" >> "$GITHUB_ENV"
           cc -std=c11 -Wall -Wextra -Werror tests/decode_apng.c $(pkg-config --cflags --libs libpng zlib) -o zig-out/decode-apng
           echo "ZC_APNG_DECODER=$PWD/zig-out/decode-apng" >> "$GITHUB_ENV"
+          cc -std=c11 -Wall -Wextra -Werror tests/decode_gif.c -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o zig-out/decode-gif
+          echo "ZC_GIF_DECODER=$PWD/zig-out/decode-gif" >> "$GITHUB_ENV"
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
@@ -71,6 +75,7 @@ jobs:
           bun tests/ts/check-yuv422-cli.ts zig-out/bin/zig-camera
           bun tests/ts/check-rgb16-cli.ts zig-out/bin/zig-camera
           bun tests/ts/check-sensor-cli.ts zig-out/bin/zig-camera
+          bun tests/ts/check-gif-cli.ts zig-out/bin/zig-camera
           ./zig-out/bin/zig-camera list --simulate
           ./zig-out/bin/zig-camera info --simulate --camera-id synthetic
           if ./zig-out/bin/zig-camera info --simulate --camera-id absent; then exit 1; fi

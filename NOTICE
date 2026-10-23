@@ -24,6 +24,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/gif_encoder.zig, gif_lzw.zig and palette_quantizer.zig are verbatim
+  Home Image checked GIF/weighted palette/dictionary modules at
+  c206b47164384ae99c3abb842ed2816afa34df0b. Tests/gif_raster_fixture.zig and
+  tests/decode_gif.c reuse that revision's independent test-only giflib fixtures.
 - src/raw.zig and src/dng.zig adapt Bayer/IFD conventions from packages/image.
 - src/home/jpeg_encoder.zig and jpeg_dct.zig are the native Home baseline JPEG
   implementation; src/home/mjpeg_stream.zig uses Home Matroska/EBML conventions.

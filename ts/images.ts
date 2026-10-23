@@ -17,7 +17,7 @@ import {
   type Pointer,
 } from './ffi'
 type LowerImageFormat =
-  'jpeg' | 'jpg' | 'png' | 'bmp' | 'tiff' | 'tif' | 'ppm' | 'dng'
+  'jpeg' | 'jpg' | 'png' | 'bmp' | 'tiff' | 'tif' | 'ppm' | 'dng' | 'gif'
 export type ImageFormat = LowerImageFormat | Uppercase<LowerImageFormat>
 export type PngFilter = 'adaptive' | 'none' | 'sub' | 'up' | 'average' | 'paeth'
 export type ImageStream = 'main' | 'raw' | 'lores'
@@ -92,6 +92,7 @@ const formats: Record<LowerImageFormat, number> = {
   tif: 4,
   ppm: 5,
   dng: 6,
+  gif: 7,
 }
 const filters: Record<PngFilter, number> = {
   adaptive: 0,

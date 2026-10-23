@@ -442,7 +442,8 @@ int zc_close_with_device_state(zc_camera *,zc_device_state *out);
 int zc_get_stats(zc_camera *, zc_stats *out);
 /* quality 1..100, 4:4:4 sampling; operates on an outstanding lease, no RGB copy. */
 int zc_save_jpeg(zc_camera *, uint64_t token, const char *path, uint32_t quality);
-enum { ZC_IMAGE_JPEG=1,ZC_IMAGE_PNG=2,ZC_IMAGE_BMP=3,ZC_IMAGE_TIFF=4,ZC_IMAGE_PPM=5,ZC_IMAGE_DNG=6 };
+/* GIF uses an adaptive <=256-color palette. RGB16 reduces to high bytes. */
+enum { ZC_IMAGE_JPEG=1,ZC_IMAGE_PNG=2,ZC_IMAGE_BMP=3,ZC_IMAGE_TIFF=4,ZC_IMAGE_PPM=5,ZC_IMAGE_DNG=6,ZC_IMAGE_GIF=7 };
 enum { ZC_PNG_ADAPTIVE=0,ZC_PNG_NONE=1,ZC_PNG_SUB=2,ZC_PNG_UP=3,ZC_PNG_AVERAGE=4,ZC_PNG_PAETH=5 };
 typedef struct { uint32_t struct_size,format,quality,png_compression,png_filter; } zc_image_options;
 enum { ZC_IMAGE_PROFILE_SRGB=1 };

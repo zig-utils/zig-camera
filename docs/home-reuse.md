@@ -1340,3 +1340,38 @@ ready-file cancellation preventing C publication and internal byte-blob transfer
 remaining cancellable until Bun publication. The normal local build runner still
 fails SDK/libSystem linkage before project compilation; direct library/native
 builds pass. Linux real-backend compile/load/no-camera checks remain CI gates.
+
+The 0.83 GIF audit starts at Home cdd2c62d2102c6d646dacc61c1134e4fa385f9f0
+and reuses the bounded video palette quantizer, image dictionary LZW and checked
+raster view. Home contribution c206b47164384ae99c3abb842ed2816afa34df0b adds
+borrowed sparse sources with checkpoint/transparent-pixel exclusion, a streaming
+checked still-GIF encoder and a corrected public Image adapter. It replaces the
+old equal-luminance palette hash, getPixel-based black RGB16 output and ignored
+alpha. PNG/GIF share checked indexed expansion. The standalone image/video
+quantizer copies remain verbatim and are compared in Home CI. Nonempty Image
+animation explicitly rejects instead of silently discarding frames; general
+animation/compositing is still required work.
+
+All three media modules and independent fixture/readback are reused verbatim in
+camera, with additive C format 7 and unchanged options layout. Four local pinned/
+development Zig Debug/ReleaseSafe builds each pass 21 raster-GIF helper tests,
+13 video-GIF/palette tests and 252 independent giflib raster fixtures. The prior
+writer's 357 independent LZW and 11 two-frame giflib fixtures also pass per build
+after the quantizer extension. Home's complete Image API passes 153 tests. Hosted
+Home Actions has no exact-head run and is not described as green.
+
+The existing staged native file owner also fixes ordinary/focus-locked Bun file
+publication: callbacks and CAF restoration now finish before replacement;
+selection is snapshotted once, cleanup is joined and camera stop/close track the
+outer file owner through publication. This reuses Home's preparation/admission
+primitives rather than adding another native I/O queue. No Python or FFmpeg is
+added. GIF color reduction, synthetic tests and format checks do not establish
+physical camera acceptance or a performance improvement.
+
+Final camera-local validation passes 394 target-qualified ReleaseSafe native
+tests and all 1,045 Bun tests with independent GIF/APNG/image/ICC/Exif/AVC/HEVC/AAC
+readback and SDL enabled, plus C ABI execution, typecheck/fmt and CLI GIF checks.
+The callback/publication fix is also checked against the previous 0.82 library,
+including CAF restoration failure and cancellation. The normal local runner
+still fails macOS SDK/libSystem linkage before project compilation; direct
+native/library builds pass. Linux real-backend/platform CI remains a release gate.
