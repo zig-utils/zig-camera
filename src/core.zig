@@ -25,6 +25,7 @@ const CaptureFilter = @import("capture_filter.zig");
 const colors = @import("color_policy.zig");
 const Session = struct {
     identity: Identity = .{},
+    properties: ?*@import("catalog.zig").Catalog = null,
     desired: ControlState = .{},
     native_desired: ?@import("catalog.zig").wire.Writer = null,
     native_restored: bool = false,
@@ -1216,6 +1217,7 @@ fn closeWithState(p: *c.zc_camera, out: ?*c.zc_device_state) c_int {
         self.mutex.unlock();
     }
     if (self.native_desired) |*writer| writer.deinit();
+    if (self.properties) |properties| properties.destroy();
     self.operation.unlock();
     std.heap.c_allocator.destroy(self);
     return c.ZC_OK;
@@ -2865,11 +2867,33 @@ fn appendFrameConfiguration(self: *Session, index: u32, writer: *catalogs.wire.W
     configuration.append(writer, .{ .config = self.config, .pipeline = self.pipeline_options, .processed = self.processed, .orientation = self.orientation, .strict_orientation = self.strict_orientation, .id = self.identity.bytes(), .backend = self.info.backend, .buffers = self.info.buffer_count, .sensor_width = self.pipeline.sensor_width, .sensor_height = self.pipeline.sensor_height, .sensor_bit_depth = self.pipeline.sensor_bit_depth, .streams = streams }) catch |err| return catalogs.status(err);
     return c.ZC_OK;
 }
+fn cachePropertiesLocked(self: *Session) c_int {
+    if (self.properties != null) return c.ZC_OK;
+    const saved = catalogs.Catalog.create(c.ZC_CATALOG_PROPERTIES) catch |err| return catalogs.status(err);
+    var success = false;
+    defer if (!success) saved.destroy();
+    const sink = saved.sink();
+    const rc = driver.catalog(self.device.?, c.ZC_CATALOG_PROPERTIES, 0, &sink);
+    if (rc != 0) return rc;
+    _ = saved.writer.finish() catch |err| return catalogs.status(err);
+    self.properties = saved;
+    success = true;
+    return c.ZC_OK;
+}
+fn propertiesLocked(self: *Session, out: *?*c.zc_catalog) c_int {
+    const rc = cachePropertiesLocked(self);
+    if (rc != 0) return rc;
+    const bytes = self.properties.?.writer.finish() catch |err| return catalogs.status(err);
+    const result = catalogs.Catalog.copyOf(bytes) catch |err| return catalogs.status(err);
+    out.* = result.ptr();
+    return c.ZC_OK;
+}
 fn cameraCatalog(p: *c.zc_camera, kind: u32, token: u64, out: *?*c.zc_catalog) c_int {
     out.* = null;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
+    if (kind == c.ZC_CATALOG_PROPERTIES) return propertiesLocked(self, out);
     const index = if (kind == 4 or kind == c.ZC_CATALOG_CONFIGURATION) self.leaseIndex(token) orelse return c.ZC_STALE else 0;
     const result = catalogs.Catalog.create(kind) catch |e| return catalogs.status(e);
     var success = false;
@@ -2881,6 +2905,12 @@ fn cameraCatalog(p: *c.zc_camera, kind: u32, token: u64, out: *?*c.zc_catalog) c
         const configured = appendFrameConfiguration(self, index, &result.writer);
         if (configured != c.ZC_OK) return configured;
     }
+    if (kind == c.ZC_CATALOG_METADATA) {
+        const properties = cachePropertiesLocked(self);
+        if (properties != 0) return properties;
+        const bytes = self.properties.?.writer.finish() catch |err| return catalogs.status(err);
+        @import("frame_properties.zig").append(&result.writer, bytes) catch |err| return catalogs.status(err);
+    }
     _ = result.writer.finish() catch |e| return catalogs.status(e);
     out.* = result.ptr();
     success = true;
@@ -2889,6 +2919,14 @@ fn cameraCatalog(p: *c.zc_camera, kind: u32, token: u64, out: *?*c.zc_catalog) c
 pub export fn zc_camera_properties(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
     return cameraCatalog(p, 2, 0, out);
 }
+pub export fn zc_frame_properties_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
+    out.* = null;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    _ = self.leaseIndex(token) orelse return c.ZC_STALE;
+    return propertiesLocked(self, out);
+}
 pub export fn zc_camera_controls(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
     return cameraCatalog(p, 3, 0, out);
 }
@@ -2896,6 +2934,96 @@ pub export fn zc_frame_metadata_catalog(p: *c.zc_camera, token: u64, out: *?*c.z
     return cameraCatalog(p, 4, token, out);
 }
 
+test "session property cache and request envelopes own exact independent backend catalogs" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 18;
+    cfg.height = 10;
+    var p: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &p));
+    var active = true;
+    defer if (active) {
+        _ = zc_stop(p.?);
+        _ = zc_close(p.?);
+    };
+    var first: ?*c.zc_catalog = null;
+    try t.expectEqual(c.ZC_OK, zc_camera_properties(p.?, &first));
+    defer catalogs.zc_catalog_close(first);
+    const cache = session(p.?).properties.?;
+    const expected = try t.allocator.dupe(u8, try cache.writer.finish());
+    defer t.allocator.free(expected);
+    const mutated: *catalogs.Catalog = @ptrCast(@alignCast(first.?));
+    @memset(mutated.writer.bytes.items, 99);
+    try t.expectEqual(c.ZC_OK, zc_start(p.?));
+    var f: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(p.?, 0, &f));
+    var properties: ?*c.zc_catalog = null;
+    try t.expectEqual(c.ZC_OK, zc_frame_properties_catalog(p.?, f.token, &properties));
+    defer catalogs.zc_catalog_close(properties);
+    var metadata: ?*c.zc_catalog = null;
+    try t.expectEqual(c.ZC_OK, zc_frame_metadata_catalog(p.?, f.token, &metadata));
+    defer catalogs.zc_catalog_close(metadata);
+    try t.expect(session(p.?).properties.? == cache);
+    try t.expectEqual(c.ZC_OK, zc_release(p.?, f.token));
+    var stale: ?*c.zc_catalog = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_STALE, zc_frame_properties_catalog(p.?, f.token, &stale));
+    try t.expect(stale == null);
+    try t.expectEqual(c.ZC_OK, zc_stop(p.?));
+    try t.expectEqual(c.ZC_OK, zc_close(p.?));
+    active = false;
+    const owner: *catalogs.Catalog = @ptrCast(@alignCast(properties.?));
+    try t.expectEqualSlices(u8, expected, try owner.writer.finish());
+    const full: *catalogs.Catalog = @ptrCast(@alignCast(metadata.?));
+    const data = try t.allocator.alloc(u8, expected.len);
+    defer t.allocator.free(data);
+    var size: u64 = 0;
+    try t.expectEqual(c.ZC_OK, @import("frame_properties.zig").copy(try full.writer.finish(), data.ptr, data.len, &size));
+    try t.expectEqualSlices(u8, expected, data);
+}
+test "combined property metadata limits reject exports without stranding source or admission" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 2;
+    cfg.height = 2;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    }
+    const source = session(camera.?);
+    const properties = try catalogs.Catalog.create(c.ZC_CATALOG_PROPERTIES);
+    const name = "LargeVendor";
+    const bytes = try t.allocator.alloc(u8, catalogs.limit - catalogs.wire.header_size - catalogs.wire.record_size - name.len - catalogs.wire.value_size);
+    defer t.allocator.free(bytes);
+    @memset(bytes, 73);
+    try properties.writer.begin(.{ .name = name, .kind = .unknown, .native_type = 777 });
+    try properties.writer.append(.{ .kind = .unknown, .native_type = 777, .data = bytes });
+    try properties.writer.end();
+    source.properties = properties;
+    try t.expectEqual(@as(usize, catalogs.limit), (try properties.writer.finish()).len);
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    defer _ = zc_release(camera.?, frame.token);
+    for (0..36) |_| {
+        var loan: ?*c.zc_frame_export = @ptrFromInt(1);
+        try t.expectEqual(c.ZC_BUSY, @import("frame_export.zig").zc_frame_export_open(camera.?, frame.token, 1, 0, &loan));
+        try t.expect(loan == null);
+        var refs: u32 = 0;
+        try t.expectEqual(c.ZC_OK, zc_frame_references(camera.?, frame.token, &refs));
+        try t.expectEqual(@as(u32, 1), refs);
+    }
+    properties.destroy();
+    source.properties = null;
+    var loan: ?*c.zc_frame_export = null;
+    try t.expectEqual(c.ZC_OK, @import("frame_export.zig").zc_frame_export_open(camera.?, frame.token, 1, 0, &loan));
+    try t.expectEqual(c.ZC_OK, @import("frame_export.zig").zc_frame_export_close(loan.?));
+}
 test "owned catalogs survive source release and reject undersized copies without writes" {
     if (options.libcamera) return error.SkipZigTest;
     var discovery: ?*c.zc_catalog = null;

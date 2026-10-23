@@ -397,6 +397,9 @@ int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);
  * Startup hints are distinct from per-frame applied controls/metadata. */
 #define ZC_CONFIGURATION_GROUP_BASE 0x5a430000u
 int zc_frame_configuration_catalog(zc_camera *,uint64_t token,zc_catalog **out);
+/* Session properties are snapshotted lazily once per camera owner, independent
+ * of runtime controls. Returned catalogs own exact backend bytes after close. */
+int zc_frame_properties_catalog(zc_camera *,uint64_t token,zc_catalog **out);
 int zc_catalog_copy(const zc_catalog *, uint8_t *data, uint64_t capacity, uint64_t *length);
 void zc_catalog_close(zc_catalog *);
 /* Low-level process handoff owner. Hold until every consumer has unmapped and
@@ -428,6 +431,9 @@ int zc_frame_export_info(const zc_frame_export *,zc_export_info *out);
 int zc_frame_export_catalog_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Immutable request-time configuration projected from the retained full catalog. */
 int zc_frame_export_configuration_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
+/* Properties embedded in this export's existing full metadata. Legacy absence
+ * => UNSUPPORTED/length=0. Copies reject malformed, short or overlapping output. */
+int zc_frame_export_properties_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Immutable request-time calibration; validity bits preserve unavailable fields. */
 int zc_frame_export_raw_metadata(const zc_frame_export *,zc_raw_metadata *out);
 int zc_frame_export_close(zc_frame_export *);
@@ -459,6 +465,7 @@ int zc_remote_frame_stream(const zc_remote_frame *,uint32_t stream,zc_stream *ou
 int zc_remote_frame_copy_rgb(const zc_remote_frame *,uint32_t stream,uint32_t bits,uint8_t *data,uint64_t capacity,uint64_t *length);
 /* Missing configuration namespace => UNSUPPORTED, zero length; pixels remain usable. */
 int zc_remote_frame_configuration_copy(const zc_remote_frame *,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_remote_frame_properties_copy(const zc_remote_frame *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact calibration from the sender. Legacy v1 records return zero validity. */
 int zc_remote_frame_raw_metadata(const zc_remote_frame *,zc_raw_metadata *out);
 /* Tight owned bundle in caller order, removing padding but preserving format/

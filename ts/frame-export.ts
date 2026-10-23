@@ -13,6 +13,7 @@ import {
 import { decodeMetadata } from './metadata'
 import { decodeCatalog } from './catalog'
 import { readConfigurationCatalog, decodeFrameConfiguration } from './request-configuration'
+import {readPropertiesCatalog} from './request-properties'
 import { decodeStreamColorSpace } from './images'
 const admission = Symbol('frame export admission')
 const processAdmission = Symbol('native process ownership transfer')
@@ -77,6 +78,10 @@ export class FrameExport implements Disposable {
     return readConfigurationCatalog((data, capacity, size) => n.zc_frame_export_configuration_copy(owner, data, capacity, size))
   }
   configuration() { return decodeFrameConfiguration(this.configurationCatalog()) }
+  properties() {
+    const owner=this.open()
+    return readPropertiesCatalog((data,capacity,length)=>n.zc_frame_export_properties_copy(owner,data,capacity,length))
+  }
   metadataCatalog() {
     const owner = this.open(),
       size = new BigUint64Array(1)

@@ -620,6 +620,9 @@ pub export fn zc_remote_frame_save_image_metadata(p: *const c.zc_remote_frame, s
 pub export fn zc_remote_frame_configuration_copy(p: *const c.zc_remote_frame, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     return @import("frame_configuration.zig").copy(owner(p).catalog, data, capacity, length);
 }
+pub export fn zc_remote_frame_properties_copy(p: *const c.zc_remote_frame, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    return @import("frame_properties.zig").copy(owner(p).catalog, data, capacity, length);
+}
 
 pub export fn zc_remote_frame_encode_async(p: *const c.zc_remote_frame, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
     out.* = null;

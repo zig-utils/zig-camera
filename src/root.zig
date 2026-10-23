@@ -588,6 +588,16 @@ pub const FrameExport = struct {
         try check(configuration_api.zc_frame_export_configuration_copy(owned, bytes.ptr, bytes.len, &size));
         return bytes;
     }
+    pub fn properties(self: FrameExport, allocator: std.mem.Allocator) Error![]u8 {
+        const api = @import("frame_export.zig");
+        const p = self.handle orelse return error.StaleFrame;
+        var size: u64 = 0;
+        try check(api.zc_frame_export_properties_copy(p, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(api.zc_frame_export_properties_copy(p, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
     pub fn metadataCatalog(self: FrameExport, allocator: std.mem.Allocator) ![]u8 {
         const owned = self.handle orelse return error.StaleFrame;
         const api = @import("frame_export.zig");
@@ -702,6 +712,15 @@ pub const RemoteFrame = struct {
         const bytes = try allocator.alloc(u8, @intCast(size));
         errdefer allocator.free(bytes);
         try check(configuration_api.zc_remote_frame_configuration_copy(owned, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn properties(self: RemoteFrame, allocator: std.mem.Allocator) Error![]u8 {
+        const p = self.handle orelse return error.StaleFrame;
+        var size: u64 = 0;
+        try check(api.zc_remote_frame_properties_copy(p, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(api.zc_remote_frame_properties_copy(p, bytes.ptr, bytes.len, &size));
         return bytes;
     }
     pub fn metadataCatalog(self: RemoteFrame, allocator: std.mem.Allocator) ![]u8 {
@@ -912,6 +931,12 @@ pub const Frame = struct {
         if (self.value.token == 0) return error.StaleFrame;
         var out: ?*c.zc_catalog = null;
         try check(core.zc_frame_configuration_catalog(self.camera.handle, self.value.token, &out));
+        return .{ .handle = out.? };
+    }
+    pub fn properties(self: *const Frame) Error!Catalog {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_catalog = null;
+        try check(core.zc_frame_properties_catalog(self.camera.handle, self.value.token, &out));
         return .{ .handle = out.? };
     }
     pub fn metadataCatalog(self: *const Frame) Error!Catalog {
@@ -1952,6 +1977,53 @@ test "request configuration owns pointer-free negotiated records across export r
     try t.expectError(error.StaleFrame, receipt.frame.configurationCatalog(t.allocator));
 }
 
+test "public Zig source properties survive request export remote and camera retirement" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var props = try frame.properties();
+    defer props.deinit();
+    const expected = try props.copy(t.allocator);
+    defer t.allocator.free(expected);
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    const exported = try loan.properties(t.allocator);
+    defer t.allocator.free(exported);
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    try ends[0].send(loan, 123);
+    var receipt = try ends[1].receive();
+    defer receipt.frame.deinit() catch {};
+    const remote = try receipt.frame.properties(t.allocator);
+    defer t.allocator.free(remote);
+    try frame.release();
+    try receipt.frame.deinit();
+    try ends[1].acknowledge(123);
+    try t.expectEqual(@as(u64, 123), try ends[0].receiveAcknowledgement());
+    try loan.deinit();
+    try camera.stop();
+    try camera.deinit();
+    active = false;
+    try t.expectEqualSlices(u8, expected, exported);
+    try t.expectEqualSlices(u8, expected, remote);
+    const after = try props.copy(t.allocator);
+    defer t.allocator.free(after);
+    try t.expectEqualSlices(u8, expected, after);
+    try t.expectError(error.StaleFrame, frame.properties());
+    try t.expectError(error.StaleFrame, loan.properties(t.allocator));
+    try t.expectError(error.StaleFrame, receipt.frame.properties(t.allocator));
+}
 test "public Zig async local image owns request input through camera closure" {
     if (@import("options").libcamera) return error.SkipZigTest;
     const t = std.testing;

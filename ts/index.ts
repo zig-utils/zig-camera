@@ -955,6 +955,10 @@ export class Frame {
     return readCatalog(out => n.zc_frame_configuration_catalog(this.camera.handle, this.token, out))
   }
   configuration() { return decodeFrameConfiguration(this.configurationCatalog()) }
+  properties() {
+    this.open()
+    return readCatalog(out=>n.zc_frame_properties_catalog(this.camera.handle,this.token,out))
+  }
   metadataCatalog() {
     this.open()
     return readCatalog((out) =>

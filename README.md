@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.97 adds [source property snapshots](docs/request-properties.md) across
+frames, callback scopes, retained exports and remote/process workers. Home's
+checked nested catalogs preserve backend/vendor/opaque bytes within the existing
+metadata channel. Immutable session property caching avoids repeat backend walks.
+
 Version 0.96 adds [camera capture outputs](docs/capture-outputs.md), including
 focus-locked and temporary-mode jobs. Native input is copied before source
 release; selected request callbacks, CAF/camera/preview restoration and bounded

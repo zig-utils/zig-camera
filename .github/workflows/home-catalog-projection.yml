@@ -1,10 +1,10 @@
-name: Home catalog projection
+name: Home catalog projection and envelopes
 on:
   push:
     branches: [main]
-    paths: ['src/home/catalog_projection.zig', 'src/home/typed_catalog.zig', '.github/workflows/home-catalog-projection.yml']
+    paths: ['src/home/catalog_projection.zig', 'src/home/catalog_envelope.zig', 'src/home/typed_catalog.zig', '.github/workflows/home-catalog-projection.yml']
   pull_request:
-    paths: ['src/home/catalog_projection.zig', 'src/home/typed_catalog.zig', '.github/workflows/home-catalog-projection.yml']
+    paths: ['src/home/catalog_projection.zig', 'src/home/catalog_envelope.zig', 'src/home/typed_catalog.zig', '.github/workflows/home-catalog-projection.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,4 +27,5 @@ jobs:
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" src/home/catalog_projection.zig
+            zig test -O "$mode" src/home/catalog_envelope.zig
           done

@@ -5,6 +5,7 @@ import {
 import { decodeFrameExportInfo, decodeRawMetadata } from './frame-export'
 import { decodeCatalog } from './catalog'
 import { readConfigurationCatalog, decodeFrameConfiguration } from './request-configuration'
+import {readPropertiesCatalog} from './request-properties'
 import { imageStreamId,prepareImage,imageProfileDescriptor,type ImageStream,type ImageOptions } from './images'
 import { imageExifDescriptor } from './exif'
 import { BunJob, snapshotJobOptions, type JobOptions } from './jobs'
@@ -115,6 +116,10 @@ export class RemoteFrame implements Disposable {
     return readConfigurationCatalog((data, capacity, size) => n.zc_remote_frame_configuration_copy(owned, data, capacity, size))
   }
   configuration() { return decodeFrameConfiguration(this.configurationCatalog()) }
+  properties() {
+    const owner=this.#open()
+    return readPropertiesCatalog((data,capacity,length)=>n.zc_remote_frame_properties_copy(owner,data,capacity,length))
+  }
   metadataCatalog() {
     const owned = this.#open(), size = new BigUint64Array(1)
     check(n.zc_remote_frame_catalog_copy(owned, null, 0n, ptr(size)))

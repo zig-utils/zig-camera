@@ -14,6 +14,7 @@ export interface RequestFrame extends Pick<
   | 'referenceCount'
   | 'metadata'
   | 'metadataCatalog'
+  | 'properties'
   | 'synchronization'
   | 'copyRGB'
   | 'copyRGB16'
@@ -93,6 +94,7 @@ class ScopedRequest implements RequestFrame {
   metadataCatalog() {
     return this.current().metadataCatalog()
   }
+  properties() { return this.current().properties() }
   synchronization() {
     return this.current().synchronization()
   }

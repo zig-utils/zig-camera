@@ -24,6 +24,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/catalog_envelope.zig is verbatim Home video exact nested HCAT
+  snapshots at a7987b68f0b0648f33594ca32acfeb7d214c8b9c (implementation introduced
+  at 0804c17f111cb0dc4184e8cbef948615cdb3ed29). Camera owns property
+  namespace/session caching and request/process lifetimes; no Home OS source
+  is copied.
 - src/home/dispatch_pool.zig is verbatim Home video bounded least-pending/joined
   dispatch policy at 4fdf531deac44b87f435f9b44cc576b10d64f35b, reusing the
   already attributed owned_admission module. Native/Bun process ownership and

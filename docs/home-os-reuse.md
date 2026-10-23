@@ -578,3 +578,11 @@ restoration or joined sink promise. The documented stdlib boundary therefore
 continues to apply: Home supplies codecs/admission/preparation primitives and
 camera owns its hosted transactions. No OS source is copied, changed or executed;
 kernel stubs and architecture policy do not supply physical acceptance evidence.
+
+The 0.97 source-property audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads drivers/camera.home and
+ADR-MC3, with targeted camera-property/catalog searches. Global camera geometry
+and the explicit capture stub are not a typed hosted property snapshot or a
+libcamera request owner. Home stdlib gains the checked nested-catalog helper;
+camera owns its source-session cache, namespace and exported lifetime. No OS code
+is copied, changed or executed, and no kernel state proves physical acceptance.

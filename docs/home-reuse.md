@@ -1691,3 +1691,24 @@ and output writes. A Bun barrier connects existing camera/CAF/preview transactio
 to that native consumer. Mode workers own no new image-job handles. Still hooks
 reuse the recording output's async reentrancy scope. This keeps camera source
 ownership and lifecycle policy hosted rather than moving it into media codecs.
+
+## Source property snapshots (0.97)
+
+Fetched Home main at 0349186f0cc38bdf6be2a714f04ae0a6ae543b2a and inspected typed
+catalog, projection and state helpers, plus targeted nested-catalog searches in
+video, IO and async packages. The reader/projection already preserve opaque bytes
+but there was no checked exact nested snapshot helper. Home improvement
+0804c17f111cb0dc4184e8cbef948615cdb3ed29 adds video/core/catalog_envelope.zig,
+its root export, documentation and portable compiler/platform workflow coverage.
+It validates complete outer/nested records, exact identity/shape/kinds, limits,
+duplicates and overlap; bounded append is atomic under allocation failure.
+Follow-up a7987b68f0b0648f33594ca32acfeb7d214c8b9c explicitly forces writer
+growth so failing allocation covers append rollback independently of construction.
+
+Fourteen envelope/reader tests pass Zig 0.15.2 and local 0.18 development compilers
+in Debug and ReleaseSafe; existing projection dependents pass pinned checks.
+Upstream exact-head Actions currently returns no runs, so consumer workflow and
+camera native/platform tests provide separate evidence. The final module is copied
+verbatim with attribution. Camera retains the namespace, immutable session cache,
+request ownership and existing full-metadata transport/admission. No identity
+rebasing, extra codec, Python, FFmpeg or Home OS source is introduced.

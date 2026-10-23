@@ -20,6 +20,16 @@ pub const Catalog = struct {
         p.writer.deinit();
         alloc.destroy(p);
     }
+    pub fn copyOf(bytes: []const u8) !*Catalog {
+        if (bytes.len > limit) return error.CatalogFull;
+        const reader = try wire.Reader.init(bytes);
+        const p = try create(reader.catalog_kind);
+        errdefer p.destroy();
+        p.writer.bytes.clearRetainingCapacity();
+        try p.writer.bytes.appendSlice(alloc, bytes);
+        p.writer.count = reader.count;
+        return p;
+    }
     pub fn sink(p: *Catalog) Sink {
         return .{ .context = p, .begin = begin, .value = value, .end = end };
     }

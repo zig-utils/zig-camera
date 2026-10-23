@@ -169,3 +169,11 @@ capture-outputs.md. Still hooks share asynchronous lifecycle reentrancy guards.
 Burst/series sink conveniences, further properties/allocator/recovery behavior,
 incremental encoding, complete metadata/device integrations and all physical
 acceptance remain open. This does not complete full Picamera2 parity.
+
+Version 0.97 adds exact owned source properties across local frames, callback
+scopes, retained exports and actual remote/process workers. Home's new checked
+nested-catalog helper preserves vendor/native/opaque bytes within existing
+metadata transport; camera caches immutable session properties and preserves
+legacy absence and bounded combined-catalog failure. See request-properties.md.
+Mapping conveniences, remaining allocator/GPU/recovery/output/device behaviors,
+complete metadata semantics and all physical acceptance remain open.

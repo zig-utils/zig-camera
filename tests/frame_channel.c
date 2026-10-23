@@ -58,6 +58,11 @@ static int native_child(uint64_t expected,int abrupt,int version){
     ready(STDIN_FILENO);zc_remote_frame *frame=NULL;uint64_t cookie=0;assert(zc_frame_channel_receive(STDIN_FILENO,&frame,&cookie)==ZC_OK);
     zc_export_info info;assert(zc_remote_frame_info(frame,&info)==ZC_OK && info.stream_count==3);
     uint64_t configuration_size=0;
+    uint64_t properties_size=0;assert(zc_remote_frame_properties_copy(frame,NULL,0,&properties_size)==ZC_OK && properties_size>=16 && properties_size<=4*1024*1024);
+    uint8_t *properties=malloc((size_t)properties_size);assert(properties);memset(properties,91,(size_t)properties_size);
+    uint64_t property_required=0;assert(zc_remote_frame_properties_copy(frame,properties,properties_size-1,&property_required)==ZC_INVALID && property_required==properties_size);
+    for(uint64_t i=0;i<properties_size;i++)assert(properties[i]==91);
+    assert(zc_remote_frame_properties_copy(frame,properties,properties_size,&property_required)==ZC_OK && get(properties+8,4)==ZC_CATALOG_PROPERTIES);free(properties);
     assert(zc_remote_frame_configuration_copy(frame,NULL,0,&configuration_size)==ZC_OK && configuration_size>16 && configuration_size<=65536);
     uint8_t *configuration=malloc((size_t)configuration_size);assert(configuration);memset(configuration,42,(size_t)configuration_size);
     uint64_t required=0;assert(zc_remote_frame_configuration_copy(frame,configuration,configuration_size-1,&required)==ZC_INVALID && required==configuration_size);
@@ -101,6 +106,11 @@ static void run(const char *exe,int raw,int writable,int abrupt,int version){
     zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);zc_stream source[3];uint64_t expected=UINT64_C(1469598103934665603);uint8_t first[12];uint32_t count=0;
     for(uint32_t i=0;i<3;i++){assert(zc_get_stream(camera,frame.token,i,&source[i])==ZC_OK);for(uint32_t j=0;j<source[i].plane_count;j++){const zc_plane *p=&source[i].planes[j];expected=hash(expected,p->data,(size_t)p->bytes_used);first[count++]=p->data[0];}}
     zc_frame_export *loan=NULL;assert(zc_frame_export_open(camera,frame.token,7,writable?1:0,&loan)==ZC_OK);zc_export_info info;assert(zc_frame_export_info(loan,&info)==ZC_OK);zc_raw_metadata calibration;assert(zc_frame_export_raw_metadata(loan,&calibration)==ZC_OK && calibration.valid==7);
+    zc_catalog *session_properties=NULL,*frame_properties=NULL;assert(zc_camera_properties(camera,&session_properties)==ZC_OK && zc_frame_properties_catalog(camera,frame.token,&frame_properties)==ZC_OK);
+    uint64_t ps=0,fs=0,es=0;assert(zc_catalog_copy(session_properties,NULL,0,&ps)==ZC_OK && zc_catalog_copy(frame_properties,NULL,0,&fs)==ZC_OK && zc_frame_export_properties_copy(loan,NULL,0,&es)==ZC_OK && ps==fs && ps==es);
+    uint8_t *pb=malloc((size_t)ps),*fb=malloc((size_t)fs),*eb=malloc((size_t)es);assert(pb && fb && eb);
+    assert(zc_catalog_copy(session_properties,pb,ps,&ps)==ZC_OK && zc_catalog_copy(frame_properties,fb,fs,&fs)==ZC_OK && zc_frame_export_properties_copy(loan,eb,es,&es)==ZC_OK);
+    assert(!memcmp(pb,fb,(size_t)ps) && !memcmp(pb,eb,(size_t)ps) && get(pb+8,4)==ZC_CATALOG_PROPERTIES);free(pb);free(fb);free(eb);zc_catalog_close(session_properties);zc_catalog_close(frame_properties);
     uint64_t size=0;assert(zc_frame_export_catalog_copy(loan,NULL,0,&size)==ZC_OK);uint8_t *catalog=malloc((size_t)size);assert(catalog);assert(zc_frame_export_catalog_copy(loan,catalog,size,&size)==ZC_OK);
     int32_t ends[2];assert(zc_frame_channel_pair(ends)==ZC_OK);char hash_string[32];assert(snprintf(hash_string,sizeof(hash_string),"%llu",(unsigned long long)expected)>0);
     const pid_t child=fork();assert(child>=0);if(child==0){assert(dup2(ends[1],STDIN_FILENO)>=0 && fcntl(STDIN_FILENO,F_SETFD,0)==0);close(ends[0]);if(ends[1]!=STDIN_FILENO)close(ends[1]);execl(exe,exe,raw?"--raw":abrupt?"--abrupt":version==2?"--native2":"--native",hash_string,(char *)NULL);_exit(127);}
@@ -125,6 +135,7 @@ static void legacy_configuration_absent(void){
     zc_remote_frame *remote=NULL;uint64_t cookie=0;assert(zc_frame_channel_receive(ends[1],&remote,&cookie)==ZC_OK && cookie==99);
     uint64_t size=999;uint8_t output[32];memset(output,42,sizeof(output));
     assert(zc_remote_frame_configuration_copy(remote,output,sizeof(output),&size)==ZC_UNSUPPORTED && size==0);
+    size=999;assert(zc_remote_frame_properties_copy(remote,output,sizeof(output),&size)==ZC_UNSUPPORTED && size==0);
     for(size_t i=0;i<sizeof(output);i++)assert(output[i]==42);
     assert(zc_remote_frame_copy_rgb(remote,ZC_MAIN,8,NULL,0,&size)==ZC_OK && size==12);
     assert(zc_remote_frame_catalog_copy(remote,output,sizeof(output),&size)==ZC_OK && size==16 && !memcmp(output,catalog,16));
