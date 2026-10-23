@@ -18,6 +18,8 @@ import {
 import { imageExifDescriptor } from './exif'
 import { BunJob, snapshotJobOptions, type JobOptions } from './jobs'
 import { withStagedImageFile } from './staged-image'
+import {prepareImageJobLimits,runImageJob,type ImageJobLimits} from './native-image-job'
+import {prepareImageOutput,writeImageOutput,type ImageOutput} from './image-output'
 import type { decodeMetadata } from './metadata'
 export type RasterFormat = 'gray' | 'rgb' | 'rgba'
 export type RasterEndian = 'little' | 'big'
@@ -495,34 +497,43 @@ export class CapturedImage implements Disposable {
       ),
     )
   }
+  encodeAsync(options:ImageObjectOptions & ImageJobLimits & JobOptions<Uint8Array>={}) {
+    const prepared=this.prepared(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
+    const source=this.descriptor(),p=imageProfileDescriptor(prepared.profile),e=imageExifDescriptor(prepared.exif),color=this.sourceColor?.bytes,deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const job=new BunJob<Uint8Array>(async current=>{
+      const bytes=await runImageJob(out=>n.zc_raster_encode_async(ptr(source.data),ptr(prepared.options),p?ptr(p):null,e?ptr(e):null,color?ptr(color):null,ptr(limits),null,out),current,deadline)
+      current.seal();return bytes!
+    },()=>{},admitted)
+    void job.start();return job
+  }
+  saveToAsync(output:ImageOutput,options:ImageObjectOptions & ImageJobLimits & JobOptions<void>={}) {
+    const destination=prepareImageOutput(output),prepared=this.prepared(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
+    const source=this.descriptor(),p=imageProfileDescriptor(prepared.profile),e=imageExifDescriptor(prepared.exif),color=this.sourceColor?.bytes,deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const job=new BunJob<void>(async current=>{
+      await runImageJob(out=>n.zc_raster_encode_async(ptr(source.data),ptr(prepared.options),p?ptr(p):null,e?ptr(e):null,color?ptr(color):null,ptr(limits),null,out),current,deadline,undefined,false,bytes=>writeImageOutput(bytes,destination,current,deadline))
+      current.seal()
+    },()=>{},admitted)
+    void job.start();return job
+  }
   saveAsync(
     path: string,
-    options: ImageObjectOptions & JobOptions<void> = {},
+    options: ImageObjectOptions & ImageJobLimits & JobOptions<void> = {},
   ) {
     if (typeof path !== 'string')
       throw new TypeError('image path must be a string')
     const prepared = this.prepared(options, path),
+      limits = prepareImageJobLimits(options),
       admitted = snapshotJobOptions(options, 30000),
       source = this.descriptor(),
       p = imageProfileDescriptor(prepared.profile),
       e = imageExifDescriptor(prepared.exif),
+      color = this.sourceColor?.bytes,
       deadline = Date.now() + (admitted.timeoutMs ?? Infinity)
     const job = new BunJob<void>(
       async (current) => {
         current.check()
         await withStagedImageFile(prepared.path, current, async (file) => {
-          await Promise.resolve()
-          current.check()
-          check(
-            n.zc_image_file_prepare_raster(
-              file!.handle!,
-              ptr(source.data),
-              ptr(prepared.options),
-              p ? ptr(p) : null,
-              e ? ptr(e) : null,
-              this.sourceColor ? ptr(this.sourceColor.bytes) : null,
-            ),
-          )
+          await runImageJob(out=>n.zc_raster_encode_async(ptr(source.data),ptr(prepared.options),p?ptr(p):null,e?ptr(e):null,color?ptr(color):null,ptr(limits),file!.handle!,out),current,deadline,file!.handle!,true)
           await file!.publish(current, deadline)
           current.seal()
         })

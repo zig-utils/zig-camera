@@ -974,6 +974,14 @@ pub const Frame = struct {
     pub fn encodeImage(self: *const Frame, allocator: std.mem.Allocator, options: ImageOptions) Error![]u8 {
         return self.encodeStreamImage(allocator, if (options.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, options);
     }
+    /// Input is copied under the request gate before returning. Release the
+    /// frame independently; retain this job until its worker finishes and joins.
+    pub fn encodeImageAsync(self: *const Frame, id: u32, opts: ImageOptions, profile: ?*const ImageProfile, image_exif: ?*const ImageExif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file) Error!ImageEncodeJob {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_image_job = null;
+        try check(core.zc_encode_stream_image_async(self.camera.handle, self.value.token, id, &opts, profile, image_exif, limits, file, &out));
+        return .{ .handle = out.? };
+    }
     pub fn encodeStreamImage(self: *const Frame, allocator: std.mem.Allocator, id: u32, options: ImageOptions) Error![]u8 {
         return self.encodeStreamImageProfile(allocator, id, options, null);
     }
@@ -1944,6 +1952,44 @@ test "request configuration owns pointer-free negotiated records across export r
     try t.expectError(error.StaleFrame, receipt.frame.configurationCatalog(t.allocator));
 }
 
+test "public Zig async local image owns request input through camera closure" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var opts = defaultImageOptions();
+    opts.format = c.ZC_IMAGE_PNG;
+    const expected = try frame.encodeImage(t.allocator, opts);
+    defer t.allocator.free(expected);
+    var worker = try frame.encodeImageAsync(c.ZC_MAIN, opts, null, null, null, null);
+    defer worker.deinit() catch {};
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    active = false;
+    try t.expectError(error.StaleFrame, frame.encodeImageAsync(c.ZC_MAIN, opts, null, null, null, null));
+    var timer = try std.time.Timer.start();
+    while ((try worker.state()).finished == 0) {
+        if (timer.read() > 10 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try t.expectEqual(c.ZC_OK, (try worker.state()).result);
+    const bytes = try worker.take(t.allocator);
+    defer t.allocator.free(bytes);
+    try t.expectEqualSlices(u8, expected, bytes);
+    try worker.deinit();
+    try t.expectError(error.StaleFrame, worker.state());
+}
 test "public Zig async remote image owns copied source beyond maps frame export and camera close" {
     if (@import("options").libcamera) return error.SkipZigTest;
     const t = std.testing;

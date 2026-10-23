@@ -637,6 +637,9 @@ typedef struct {uint32_t struct_size,reserved;uint64_t max_input_bytes,max_outpu
 typedef struct {uint32_t struct_size,phase,finished;int32_t result;uint64_t input_bytes,output_bytes,working_peak,budget_denials;} zc_image_job_state;
 void zc_default_image_job_limits(zc_image_job_limits *);
 int zc_remote_frame_encode_async(const zc_remote_frame *,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_image_job_limits *,zc_image_file *,zc_image_job **out);
+/* Copies the selected request under its read gate, including local Exif
+ * provenance. The request/camera may be released immediately on success. */
+int zc_encode_stream_image_async(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_image_job_limits *,zc_image_file *,zc_image_job **out);
 int zc_image_job_state_get(zc_image_job *,zc_image_job_state *);
 int zc_image_job_cancel(zc_image_job *);
 int zc_image_job_take_blob(zc_image_job *,zc_image_blob **out);
@@ -690,6 +693,9 @@ int zc_raster_resize(const zc_raster *,uint32_t width,uint32_t height,uint32_t a
  * JPEG defaults are chosen by the binding. RGB ICC requires non-gray pixels;
  * built-in sRGB additionally requires the supplied matching color description. */
 int zc_raster_encode(const zc_raster *,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *,zc_image_blob **out);
+/* Copies tight logical rows (padding excluded), ICC and explicit Exif before
+ * returning. Shares the image-job quota, workspace budget and joined lifecycle. */
+int zc_raster_encode_async(const zc_raster *,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *,const zc_image_job_limits *,zc_image_file *,zc_image_job **out);
 int zc_raster_save(const zc_raster *,const char *path,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *);
 int zc_image_file_prepare_raster(zc_image_file *,const zc_raster *,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *);
 typedef struct {

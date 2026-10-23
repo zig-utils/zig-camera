@@ -58,7 +58,7 @@ pub export fn zc_raster_resize(source: ?*const c.zc_raster, width: u32, height: 
     resample.into(A, view, data[0..size], width, height, row, filter, .{}) catch |err| return still.status(err);
     return c.ZC_OK;
 }
-fn encoded(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space) ![]u8 {
+fn validated(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space) !pixel.View {
     const view = try read(source);
     if (options.format == c.ZC_IMAGE_PPM or options.format == c.ZC_IMAGE_BMP) {
         const channels: usize = if (options.format == c.ZC_IMAGE_BMP and view.format == .rgba) 4 else 3;
@@ -76,12 +76,21 @@ fn encoded(source: ?*const c.zc_raster, options: *const c.zc_image_options, prof
         space = value.*;
     }
     try still.checkProfileSource(profile, space);
+    return view;
+}
+fn encoded(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space) ![]u8 {
+    const view = try validated(source, options, profile, metadata, color);
     const bytes = try still.encodeRasterMetadata(A, view, options, profile, exif.bytes(metadata));
     if (bytes.len > maximum) {
         A.free(bytes);
         return error.InvalidGeometry;
     }
     return bytes;
+}
+pub export fn zc_raster_encode_async(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, output: *?*c.zc_image_job) c_int {
+    output.* = null;
+    const view = validated(source, options, profile, metadata, color) catch |err| return still.status(err);
+    return @import("image_job.zig").submitRaster(view, options, profile, metadata, limits, file, output);
 }
 pub export fn zc_raster_encode(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space, output: *?*c.zc_image_blob) c_int {
     output.* = null;

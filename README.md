@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.95 adds [file-like still outputs](docs/image-outputs.md) for local frames,
+remote frames and owned image objects. Bounded partial writes, joined cancellation
+and flushes reuse Home codec/admission ownership; local and raster encoding also
+gain native asynchronous jobs. Caller-owned outputs remain reusable.
+
 Version 0.94 adds [parent-controlled process file publication](docs/process-files.md):
 workers return bounded encoded bytes, and the parent stages/publishes only after
 matching result and ACK. Camera ownership retires before parent I/O; task drains

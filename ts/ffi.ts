@@ -113,6 +113,8 @@ export const native = dlopen(library, {
   zc_frame_export_configuration_copy: { args:[p,p,n,p], returns:i },
   zc_default_image_job_limits: {args:[p],returns:v},
   zc_remote_frame_encode_async: {args:[p,u,p,p,p,p,p,p],returns:i},
+  zc_encode_stream_image_async: {args:[p,n,u,p,p,p,p,p,p],returns:i},
+  zc_raster_encode_async: {args:[p,p,p,p,p,p,p,p],returns:i},
   zc_image_job_state_get: {args:[p,p],returns:i},
   zc_image_job_cancel: {args:[p],returns:i},
   zc_image_job_take_blob: {args:[p,p],returns:i},

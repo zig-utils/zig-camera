@@ -1657,3 +1657,21 @@ publication and callbacks. A separate instance of Home's existing admission regi
 copied staging input at 512 MiB/32 owners. Named temporary ownership and inode
 identity remain in the parent if the child is killed. Full-result copies are
 explicit; no zero-copy or physical throughput improvement is claimed.
+
+## Sequential still output ownership (0.95)
+
+Fetched clean Home main at 0349186f0cc38bdf6be2a714f04ae0a6ae543b2a and inspected
+image/formats/pixel_view.zig, image/streaming.zig, video/core/budget_allocator.zig,
+owned_admission.zig and stream_alignment.zig. Checked pixel views already validate
+logical row spans and expose exact rows; the existing Home codecs and allocator
+budgets already encode native-precision raster data. Their verbatim camera copies
+are reused. The generic tile image module does not supply a joined Bun sink or
+camera lease owner, and stream alignment is geometric rather than output I/O.
+
+Camera adds owned raster/local-frame adapters to its existing joined worker;
+selected request read gates, Exif provenance and sink lifetime remain hosted.
+File-like delivery retains Home's existing four-owner/512 MiB input-plus-workspace
+reservation through partial writes, flush and cancellation, avoiding a parallel
+unbounded queue after native encoding. Existing bounded staged saves retain their
+immutable snapshot while waiting for worker capacity. No Home code change is
+needed for this capability; no codec is forked and no speedup is inferred.

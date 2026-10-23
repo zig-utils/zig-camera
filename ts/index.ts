@@ -203,6 +203,11 @@ import {
 export type { NativeControl, NativeControlSnapshot } from './control-values'
 import { decodeFrameConfiguration } from './request-configuration'
 export type { ImageJobLimits } from './native-image-job'
+import {prepareImageJobLimits,runImageJob,type ImageJobLimits} from './native-image-job'
+import {prepareImageOutput,writeImageOutput,type ImageOutput} from './image-output'
+import {imageProfileDescriptor} from './images'
+import {imageExifDescriptor} from './exif'
+export type {ImageOutput} from './image-output'
 export type { FrameConfiguration } from './request-configuration'
 import { readCatalog, cameraDescriptors } from './catalog'
 export type {
@@ -972,6 +977,27 @@ export class Frame {
   }
   encodeImage(options: ImageOptions = {}) {
     return this[encodePreparedImage](prepareImage(options))
+  }
+  /** Copies the selected request before returning, then joins native encoding. */
+  encodeImageAsync(options:ImageOptions & ImageJobLimits & JobOptions<Uint8Array>={}) {
+    const prepared=prepareImage(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
+    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    this.open()
+    const job=new BunJob<Uint8Array>(async current=>{
+      const bytes=await runImageJob(out=>{this.open();return n.zc_encode_stream_image_async(this.camera.handle,this.token,prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out)},current,deadline)
+      current.seal();return bytes!
+    },()=>{},admitted)
+    void job.start();return job
+  }
+  saveToAsync(output:ImageOutput,options:ImageOptions & ImageJobLimits & JobOptions<void>={}) {
+    const destination=prepareImageOutput(output),prepared=prepareImage(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
+    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    this.open()
+    const job=new BunJob<void>(async current=>{
+      await runImageJob(out=>{this.open();return n.zc_encode_stream_image_async(this.camera.handle,this.token,prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out)},current,deadline,undefined,false,bytes=>writeImageOutput(bytes,destination,current,deadline))
+      current.seal()
+    },()=>{},admitted)
+    void job.start();return job
   }
   [savePreparedImage](prepared: PreparedImage) {
     this.open()

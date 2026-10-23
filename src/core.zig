@@ -1713,6 +1713,46 @@ pub export fn zc_encode_stream_image_metadata(p: *c.zc_camera, token: u64, strea
     out.* = @ptrCast(blob);
     return c.ZC_OK;
 }
+/// Copies under the request operation/read gate; no camera handle survives admission.
+pub export fn zc_encode_stream_image_async(p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+    out.* = null;
+    const source_status = imageStreamStatus(stream, opts);
+    if (source_status != 0) return source_status;
+    const status = zc_check_image_metadata(opts, profile, metadata);
+    if (status != 0) return status;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    if (self.slots[index].access.writer) return c.ZC_BUSY;
+    var selected: c.zc_stream = undefined;
+    const rc = streamLocked(self, index, stream, &selected);
+    if (rc != 0) return rc;
+    var raw = std.mem.zeroes(c.zc_raw_metadata);
+    var color = std.mem.zeroes(c.zc_color_space);
+    if (opts.format == c.ZC_IMAGE_DNG) {
+        const raw_status = driver.metadata(self.device.?, index, &raw);
+        if (raw_status != 0) return raw_status;
+    } else {
+        const color_status = driver.colorSpace(self.device.?, stream, &color);
+        if (color_status != 0) return color_status;
+        still.checkProfileSource(profile, color) catch |err| return still.status(err);
+    }
+    // Resolve local clock/model provenance while the original request is owned.
+    // The worker then receives an ordinary copied explicit Exif payload.
+    const generated = captureExifLocked(self, index, selected, metadata) catch |err| return still.status(err);
+    defer if (generated) |bytes| std.heap.c_allocator.free(bytes);
+    var explicit: c.zc_image_exif = undefined;
+    if (generated) |bytes| {
+        explicit = metadata.?.*;
+        explicit.flags &= ~@as(u32, c.ZC_IMAGE_EXIF_CAPTURE);
+        explicit.data = bytes.ptr;
+        explicit.length = bytes.len;
+    }
+    var frame = self.slots[index].frame;
+    if (opts.format == c.ZC_IMAGE_DNG) frame.raw = selected else frame.main = selected;
+    return @import("image_job.zig").submit(frame, color, raw, self.slots[index].metadata, &.{}, opts, profile, if (generated != null) &explicit else metadata, limits, file, out);
+}
 pub export fn zc_image_blob_copy(p: *const c.zc_image_blob, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     const blob: *const still.Blob = @ptrCast(@alignCast(p));
     length.* = blob.bytes.len;

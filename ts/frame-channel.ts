@@ -10,6 +10,7 @@ import { imageExifDescriptor } from './exif'
 import { BunJob, snapshotJobOptions, type JobOptions } from './jobs'
 import { withStagedImageFile } from './staged-image'
 import { prepareImageJobLimits, runImageJob, type ImageJobLimits } from './native-image-job'
+import {prepareImageOutput,writeImageOutput,type ImageOutput} from './image-output'
 import { adoptCapturedImage, type ImageObjectOptions } from './image-object'
 import { streamNames,decodePackedStreams,type StreamName,type CapturedStreams } from './streams'
 export interface RemoteArray {
@@ -216,6 +217,17 @@ export class RemoteFrame implements Disposable {
     const job=new BunJob<Uint8Array>(async current=>{
       const bytes=await runImageJob(out=>n.zc_remote_frame_encode_async(this.#readable(),prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out),current,deadline)
       current.seal();return bytes!
+    },()=>{},admitted)
+    void job.start();return job
+  }
+  /** Encodes owned input and writes a caller-owned sequential destination. */
+  saveToAsync(output:ImageOutput,options:ImageOptions & ImageJobLimits & JobOptions<void>={}) {
+    const destination=prepareImageOutput(output),prepared=prepareImage(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
+    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    this.#readable()
+    const job=new BunJob<void>(async current=>{
+      await runImageJob(out=>n.zc_remote_frame_encode_async(this.#readable(),prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out),current,deadline,undefined,false,bytes=>writeImageOutput(bytes,destination,current,deadline))
+      current.seal()
     },()=>{},admitted)
     void job.start();return job
   }

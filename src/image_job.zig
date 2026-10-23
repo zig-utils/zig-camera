@@ -1,8 +1,9 @@
-//! Copied remote still inputs, bounded Home codec workspace and joined workers.
+//! Copied still inputs, bounded Home codec workspace and joined workers.
 const std = @import("std");
 const c = @import("abi.zig").c;
 const still = @import("still.zig");
 const rgb = @import("stream_rgb.zig");
+const pixel = @import("home/pixel_view.zig");
 const files = @import("image_file.zig");
 const Gate = @import("home/preparation_gate.zig").Gate;
 const Budget = @import("home/budget_allocator.zig").Budget;
@@ -20,6 +21,7 @@ const Job = struct {
     ticket: Admission.Ticket,
     data: []u8,
     frame: c.zc_frame,
+    raster: ?pixel.View = null,
     color: c.zc_color_space,
     raw: c.zc_raw_metadata,
     scalar: c.zc_metadata,
@@ -38,17 +40,21 @@ const Job = struct {
         self.mutex.unlock();
         return !cancelled and (self.file == null or !files.cancelled(self.file.?));
     }
+    fn encodeBytes(self: *Job, a: std.mem.Allocator) ![]u8 {
+        const metadata = if (self.metadata) |*value| value else null;
+        const profile = if (self.profile) |*value| value else null;
+        if (self.raster) |source| return still.encodeRasterMetadata(a, source, &self.options, profile, @import("exif.zig").bytes(metadata));
+        const generated = try @import("remote_exif.zig").generate(a, self.scalar, self.raw, self.frame.main, self.catalog, metadata);
+        defer if (generated) |bytes| a.free(bytes);
+        var source = if (self.options.format == c.ZC_IMAGE_DNG) rgb.Selected{ .frame = self.frame } else try rgb.Selected.image(a, self.frame, self.frame.main, self.color, self.options.format);
+        defer source.deinit(a);
+        if (!self.checkpoint()) return error.Cancelled;
+        return still.encodeMetadata(a, &source.frame, if (self.options.format == c.ZC_IMAGE_DNG) &self.raw else null, &self.options, profile, generated orelse @import("exif.zig").bytes(metadata));
+    }
     fn encode(self: *Job) c_int {
         if (!self.checkpoint()) return c.ZC_CANCELLED;
         const a = self.budget.allocator();
-        const metadata = if (self.metadata) |*value| value else null;
-        const profile = if (self.profile) |*value| value else null;
-        const generated = @import("remote_exif.zig").generate(a, self.scalar, self.raw, self.frame.main, self.catalog, metadata) catch |err| return still.status(err);
-        defer if (generated) |bytes| a.free(bytes);
-        var source = if (self.options.format == c.ZC_IMAGE_DNG) rgb.Selected{ .frame = self.frame } else rgb.Selected.image(a, self.frame, self.frame.main, self.color, self.options.format) catch |err| return still.status(err);
-        defer source.deinit(a);
-        if (!self.checkpoint()) return c.ZC_CANCELLED;
-        const encoded = still.encodeMetadata(a, &source.frame, if (self.options.format == c.ZC_IMAGE_DNG) &self.raw else null, &self.options, profile, generated orelse @import("exif.zig").bytes(metadata)) catch |err| return still.status(err);
+        const encoded = self.encodeBytes(a) catch |err| return if (err == error.Cancelled) c.ZC_CANCELLED else still.status(err);
         var transferred = false;
         defer if (!transferred) a.free(encoded);
         if (encoded.len > self.output_limit) return c.ZC_INVALID;
@@ -97,6 +103,12 @@ fn copy(data: []u8, offset: *usize, source: []const u8) []u8 {
     return out;
 }
 pub fn submit(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+    return submitOwned(frame, null, color, raw, scalar, catalog, options, profile, metadata, supplied, file, out);
+}
+pub fn submitRaster(source: pixel.View, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+    return submitOwned(std.mem.zeroes(c.zc_frame), source, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, options, profile, metadata, limits, file, out);
+}
+fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
     out.* = null;
     var defaults: c.zc_image_job_limits = undefined;
     zc_default_image_job_limits(&defaults);
@@ -104,11 +116,17 @@ pub fn submit(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata
     if (limits.struct_size != @sizeOf(c.zc_image_job_limits) or limits.reserved != 0) return c.ZC_INVALID;
     inline for (.{ limits.max_input_bytes, limits.max_output_bytes, limits.max_working_bytes }) |limit| if (limit == 0 or limit > cap) return c.ZC_INVALID;
     const selected = if (options.format == c.ZC_IMAGE_DNG) frame.raw else frame.main;
-    if (selected.plane_count == 0 or selected.plane_count > c.ZC_MAX_PLANES) return c.ZC_INVALID;
     var size: usize = 0;
-    for (selected.planes[0..selected.plane_count]) |plane| {
-        if (plane.data == null or plane.bytes_used > plane.length or plane.bytes_used > cap) return c.ZC_INVALID;
-        size = std.math.add(usize, size, @intCast(plane.bytes_used)) catch return c.ZC_INVALID;
+    var row_bytes: usize = 0;
+    if (raster) |source| {
+        row_bytes = source.validate() catch |err| return still.status(err);
+        size = std.math.mul(usize, row_bytes, source.height) catch return c.ZC_INVALID;
+    } else {
+        if (selected.plane_count == 0 or selected.plane_count > c.ZC_MAX_PLANES) return c.ZC_INVALID;
+        for (selected.planes[0..selected.plane_count]) |plane| {
+            if (plane.data == null or plane.bytes_used > plane.length or plane.bytes_used > cap) return c.ZC_INVALID;
+            size = std.math.add(usize, size, @intCast(plane.bytes_used)) catch return c.ZC_INVALID;
+        }
     }
     const profile_bytes: []const u8 = if (profile != null and profile.?.data != null) profile.?.data[0..@intCast(profile.?.length)] else &.{};
     const exif_bytes = @import("exif.zig").bytes(metadata) orelse &.{};
@@ -140,9 +158,16 @@ pub fn submit(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata
     owned.* = selected;
     owned.planes = @splat(std.mem.zeroes(c.zc_plane));
     var offset: usize = 0;
-    for (selected.planes[0..selected.plane_count], owned.planes[0..selected.plane_count]) |plane, *dest| {
-        const bytes = copy(data, &offset, plane.data[0..@intCast(plane.bytes_used)]);
-        dest.* = .{ .data = bytes.ptr, .length = bytes.len, .bytes_used = bytes.len, .fd = -1 };
+    if (raster) |source| {
+        self.raster = source;
+        for (0..source.height) |y| _ = copy(data, &offset, source.row(y, row_bytes));
+        self.raster.?.data = data[0..offset];
+        self.raster.?.stride = row_bytes;
+    } else {
+        for (selected.planes[0..selected.plane_count], owned.planes[0..selected.plane_count]) |plane, *dest| {
+            const bytes = copy(data, &offset, plane.data[0..@intCast(plane.bytes_used)]);
+            dest.* = .{ .data = bytes.ptr, .length = bytes.len, .bytes_used = bytes.len, .fd = -1 };
+        }
     }
     const icc = copy(data, &offset, profile_bytes);
     if (profile) |p| {
@@ -217,6 +242,38 @@ pub export fn zc_image_job_close(p: ?*c.zc_image_job) c_int {
     return c.ZC_OK;
 }
 
+test "raster jobs copy tight Home rows at native precision independently of source and padding" {
+    const t = std.testing;
+    for ([_]pixel.Format{ .gray, .rgb, .rgba }) |format| for ([_]u8{ 8, 16 }) |bits| for ([_]std.builtin.Endian{ .little, .big }) |endian| {
+        var data: [96]u8 = undefined;
+        for (&data, 0..) |*byte, i| byte.* = @truncate(i * 37);
+        const row = try pixel.packedRow(2, format, bits);
+        const source = pixel.View{ .data = &data, .width = 2, .height = 2, .stride = row + 7, .format = format, .bits = bits, .endian = endian };
+        const expected = try still.encodeRasterMetadata(A, source, &testOptions(), null, null);
+        defer A.free(expected);
+        var limits = testLimits();
+        limits.max_input_bytes = row * 2;
+        var owner: ?*c.zc_image_job = null;
+        try t.expectEqual(c.ZC_OK, submitRaster(source, &testOptions(), null, null, &limits, null, &owner));
+        defer testCleanup(owner);
+        @memset(&data, 99);
+        const state = try testWait(owner.?);
+        try t.expectEqual(c.ZC_OK, state.result);
+        try t.expectEqual(@as(u64, row * 2), state.input_bytes);
+        var blob: ?*c.zc_image_blob = null;
+        try t.expectEqual(c.ZC_OK, zc_image_job_take_blob(owner.?, &blob));
+        const result: *still.Blob = @ptrCast(@alignCast(blob.?));
+        defer {
+            A.free(result.bytes);
+            A.destroy(result);
+        }
+        try t.expectEqualSlices(u8, expected, result.bytes);
+        limits.max_input_bytes -= 1;
+        var rejected: ?*c.zc_image_job = @ptrFromInt(1);
+        try t.expectEqual(c.ZC_INVALID, submitRaster(source, &testOptions(), null, null, &limits, null, &rejected));
+        try t.expect(rejected == null);
+    };
+}
 fn testOptions() c.zc_image_options {
     return .{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_PNG, .quality = 98, .png_compression = 1, .png_filter = 0 };
 }

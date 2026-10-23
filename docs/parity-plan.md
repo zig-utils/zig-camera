@@ -153,3 +153,11 @@ result/ACK transport and bounded copied-byte native staging; see process-files.m
 Direct descriptor streaming, file-like destinations, full property snapshots,
 allocator/recovery and optional camera integration families and physical
 acceptance remain open. This does not complete the overall goal.
+
+Version 0.95 adds joined sequential still destinations on local frames, remote
+frames and owned image objects, native async local/raster encoding, bounded
+partial writes and flush/cancellation, and retained Home admission through slow
+output I/O; see image-outputs.md. Existing staged image bursts preserve their
+32-file bound with cancellable codec-capacity waits. Capture/mode sink convenience
+jobs, incremental streaming, full metadata/property/allocator/recovery behavior,
+optional integrations and physical acceptance remain open. This is not parity.

@@ -558,3 +558,14 @@ Home's existing admission/dispatch/preparation helpers are reused unchanged;
 camera retains hosted ACK/exit proof, parent temporary identity and joined I/O.
 No OS source is copied, changed or run, and namespace atomicity is not presented
 as power-failure durability or hardware acceptance.
+
+The 0.95 sequential-output audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3, camera.home,
+fs/homefs.home and fs/tmpfs.home. Camera capture remains explicitly stubbed.
+Homefs documents whole-write-or-zero filesystem object semantics; tmpfs bounds
+writes to remaining allocated extent. Neither owns a hosted asynchronous sink
+promise, a libcamera request or a partial-write cancellation join. ADR-MC3 places
+the checked image algorithms in Home stdlib, which camera reuses unchanged.
+Camera owns native copied-input jobs, caller-owned output methods and joined I/O;
+no OS source is copied, changed or run, and no kernel write success is treated as
+sensor, storage durability or codec-performance acceptance evidence.

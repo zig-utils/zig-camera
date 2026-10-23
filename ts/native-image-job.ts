@@ -20,10 +20,17 @@ export function prepareImageJobLimits(source: ImageJobLimits) {
 }
 const pause=()=>new Promise<void>(resolve=>setTimeout(resolve,1))
 /** @internal Admit synchronously before the first await; always join before returning. */
-export async function runImageJob<T>(open:(out:Pointer)=>number,current:BunJob<T>,deadline:number,file?:Pointer):Promise<Uint8Array|undefined>{
+export async function runImageJob<T>(open:(out:Pointer)=>number,current:BunJob<T>,deadline:number,file?:Pointer,waitForAdmission=false,consume?:(bytes:Uint8Array)=>Promise<void>):Promise<Uint8Array|undefined>{
   current.check()
   const out=outPointer()
-  check(open(ptr(out)),'image job admission')
+  let admission=open(ptr(out))
+  // Only callers retaining an immutable owned snapshot and a bounded staged
+  // file reservation may wait. Borrowed camera/remote adapters never opt in.
+  while(admission===-4&&waitForAdmission){
+    if(Date.now()>=deadline&&!current.cancelRequested)current.cancel(new CameraError(-3,'image admission deadline'))
+    current.check();await pause();current.check();admission=open(ptr(out))
+  }
+  check(admission,'image job admission')
   const owned=handle(out),cancel=()=>{n.zc_image_job_cancel(owned)}
   current.signal.addEventListener('abort',cancel,{once:true})
   if(current.cancelRequested)cancel()
@@ -39,12 +46,17 @@ export async function runImageJob<T>(open:(out:Pointer)=>number,current:BunJob<T
     if(file)return undefined
     const output=outPointer();check(n.zc_image_job_take_blob(owned,ptr(output)),'image job result')
     const blob=handle(output)
+    let bytes:Uint8Array
     try{
       const size=new BigUint64Array(1);check(n.zc_image_blob_copy(blob,null,0n,ptr(size)))
       if(size[0]>256n*1024n*1024n)throw new RangeError('image result too large')
-      const bytes=storage(Number(size[0]));check(n.zc_image_blob_copy(blob,ptr(bytes),BigInt(bytes.length),ptr(size)))
-      return bytes
+      bytes=storage(Number(size[0]));check(n.zc_image_blob_copy(blob,ptr(bytes),BigInt(bytes.length),ptr(size)))
     }finally{n.zc_image_blob_close(blob)}
+    // Keep Home's native input/workspace reservation through output I/O. The
+    // copied JS result replaces the transferred native allocation in that
+    // reservation; an arbitrarily slow sink cannot escape the four-owner cap.
+    if(consume){await consume(bytes);return undefined}
+    return bytes
   }catch(error){failure=error;throw error}
   finally{
     current.signal.removeEventListener('abort',cancel)

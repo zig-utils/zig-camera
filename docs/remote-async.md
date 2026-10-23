@@ -68,8 +68,9 @@ encoding, budget, cancellation and staging failures.
 A process handler must await its image jobs before returning. Process termination
 is an external boundary: files already published cannot be rolled back, and a
 process killed while owning a named temporary may leave that temporary behind.
-Parent-controlled cross-process publication/cleanup and file-like destinations
-remain open. These cooperative job guarantees do not claim rollback after SIGKILL.
+Parent-controlled cross-process publication is added in 0.94 (`process-files.md`)
+and joined file-like destinations in 0.95 (`image-outputs.md`). Neither cooperative
+job cleanup nor parent publication claims rollback after parent SIGKILL.
 
 Software coverage includes all 14 processed layouts and 46 raw layouts, exact
 synchronous/async bytes, independent DNG/Exif/ICC readback, early source retirement,
