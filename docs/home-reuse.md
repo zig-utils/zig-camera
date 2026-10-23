@@ -1641,3 +1641,19 @@ metadata; existing staged-file ownership controls publication. No frame/map/fd
 is borrowed by the worker, and no manager callback performs this work. No second
 codec or Python/FFmpeg tooling is added. Process termination/publication and full
 file-like semantics remain explicit open work, distinct from cooperative cleanup.
+
+## Parent process publication (0.94)
+
+Fetched clean Home main at 0349186f0cc38bdf6be2a714f04ae0a6ae543b2a and rechecked
+video/core/owned_admission.zig, dispatch_pool.zig and preparation_gate.zig. Their
+existing byte/item reservations, ACK/exit-gated source retirement and publication
+claims already supply the required policy. Camera reuses them unchanged rather
+than adding another result gate or parallel serializer. No new Home API is needed.
+
+The existing bounded result channel delivers owned encoded bytes; the parent
+stages them on its reserved file I/O thread only after result plus ACK. Source
+ownership retires before parent I/O, while task admission survives through file
+publication and callbacks. A separate instance of Home's existing admission registry bounds
+copied staging input at 512 MiB/32 owners. Named temporary ownership and inode
+identity remain in the parent if the child is killed. Full-result copies are
+explicit; no zero-copy or physical throughput improvement is claimed.

@@ -31,6 +31,18 @@ export const run:ProcessModule['run']=async (frame,data:any,context)=>{
     frame.close=()=>{}
     return {priorClosed,jpeg:frame.encodeImage()}
   }
+  if(data?.action==='parent-image'){
+    const bytes=await frame.encodeImageAsync({format:data.format??'png',stream:data.stream??'main',exif:data.exif??false})
+    if(data.encoded)await Bun.write(data.encoded,'encoded')
+    if(data.release)while(!(await Bun.file(data.release).exists()))await Bun.sleep(2)
+    return bytes
+  }
+  if(data?.action==='image-no-ack'){
+    const bytes=await frame.encodeImageAsync({format:'png',exif:false})
+    const {FrameChannel}=await import('../../ts')
+    FrameChannel.prototype.tryAcknowledge=()=>{process.exit(19)}
+    return bytes
+  }
   if(data?.action==='async-image'){
     const bytes=await frame.encodeImageAsync({format:'png',exif:true,stream:'lores'})
     await frame.saveAsync(data.path,{format:'jpeg',exif:{artist:'Async child'}},'lores')

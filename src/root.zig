@@ -235,6 +235,40 @@ pub fn defaultConfig() Config {
     core.zc_default_config(&cfg);
     return cfg;
 }
+/// Parent-owned atomic output; finish only after joined source/result validation.
+pub const StagedImageFile = struct {
+    handle: ?*c.zc_image_file,
+    const api = @import("image_file.zig");
+    pub fn init(path: [:0]const u8) Error!StagedImageFile {
+        var out: ?*c.zc_image_file = null;
+        try check(api.zc_image_file_create(path.ptr, &out));
+        return .{ .handle = out.? };
+    }
+    pub fn prepareBytes(self: StagedImageFile, bytes: []const u8) Error!void {
+        try check(api.zc_image_file_prepare_bytes(self.handle orelse return error.StaleFrame, bytes.ptr, bytes.len));
+    }
+    pub fn prepared(self: StagedImageFile) Error!bool {
+        var result: c_int = undefined;
+        const rc = api.zc_image_file_preparation_result(self.handle orelse return error.StaleFrame, &result);
+        if (rc == c.ZC_TIMEOUT) return false;
+        try check(rc);
+        try check(result);
+        return true;
+    }
+    pub fn state(self: StagedImageFile) Error!c.zc_image_file_state {
+        var out: c.zc_image_file_state = undefined;
+        try check(api.zc_image_file_state_get(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn finish(self: StagedImageFile, publish: bool) Error!void {
+        try check(api.zc_image_file_finish(self.handle orelse return error.StaleFrame, @intFromBool(publish)));
+    }
+    pub fn deinit(self: *StagedImageFile) Error!void {
+        const owned = self.handle orelse return;
+        try check(api.zc_image_file_close(owned));
+        self.handle = null;
+    }
+};
 pub const catalog_format = @import("catalog.zig").wire;
 pub const Catalog = struct {
     handle: ?*c.zc_catalog,
@@ -1957,4 +1991,30 @@ test "public Zig async remote image owns copied source beyond maps frame export 
     try t.expectEqualSlices(u8, expected, captured);
     try worker.deinit();
     try t.expectError(error.StaleFrame, worker.state());
+}
+
+test "public Zig staged bytes preserve a retryable close owner until explicit publication joins" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realpathAlloc(t.allocator, ".");
+    defer t.allocator.free(dir);
+    const path = try std.fmt.allocPrintSentinel(t.allocator, "{s}/encoded", .{dir}, 0);
+    defer t.allocator.free(path);
+    var file = try StagedImageFile.init(path);
+    defer file.deinit() catch {};
+    try t.expectError(error.Busy, file.deinit());
+    try file.prepareBytes("encoded image");
+    var timer = try std.time.Timer.start();
+    while (!try file.prepared()) {
+        if (timer.read() > 10 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try file.finish(true);
+    while ((try file.state()).finished == 0) std.Thread.sleep(std.time.ns_per_ms);
+    try file.deinit();
+    try t.expectError(error.StaleFrame, file.state());
+    const bytes = try tmp.dir.readFileAlloc(t.allocator, "encoded", 1024);
+    defer t.allocator.free(bytes);
+    try t.expectEqualStrings("encoded image", bytes);
 }

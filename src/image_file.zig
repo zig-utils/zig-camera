@@ -1,5 +1,6 @@
 //! Staged still-file ownership. Encoding/staging run on the capture owner;
-//! publication/disposal run on a joined native I/O thread. No frame is retained.
+//! publication/disposal run on a joined native I/O thread. Copied byte staging
+//! uses that same reserved thread. No frame is retained.
 const std = @import("std");
 const c = @import("abi.zig").c;
 const Gate = @import("home/preparation_gate.zig").Gate;
@@ -7,6 +8,8 @@ const A = std.heap.c_allocator;
 const Admission = @import("home/owned_admission.zig").Registry(32);
 var admission: Admission = .{ .max_bytes = 32, .max_items = 32 };
 var admission_mutex: std.Thread.Mutex = .{};
+const ByteAdmission = @import("home/owned_admission.zig").Registry(32);
+var byte_admission: ByteAdmission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 32 };
 fn releaseAdmission(ticket: Admission.Ticket) void {
     admission_mutex.lock();
     defer admission_mutex.unlock();
@@ -21,7 +24,10 @@ const File = struct {
     atom: ?std.fs.AtomicFile = null,
     identity: ?std.posix.Stat = null,
     thread: ?std.Thread = null,
+    prepare_start: std.Thread.ResetEvent = .{},
     release: std.Thread.ResetEvent = .{},
+    payload: ?[]u8 = null,
+    payload_ticket: ?ByteAdmission.Ticket = null,
     finished: bool = false,
     released: bool = false,
     committed: bool = false,
@@ -58,6 +64,13 @@ const File = struct {
         }
     }
     fn run(self: *File) void {
+        self.prepare_start.wait();
+        if (self.payload) |bytes| {
+            const code = write(@ptrCast(self), bytes);
+            A.free(bytes);
+            self.payload = null;
+            _ = prepared(@ptrCast(self), code);
+        }
         self.release.wait();
         if (self.publish) {
             if (self.sameTemporary() catch false) {
@@ -146,6 +159,40 @@ pub fn prepared(p: *c.zc_image_file, code: c_int) c_int {
     if (code != c.ZC_OK and !(code == c.ZC_STALE and self.gate.cancel_requested)) _ = self.gate.fail() else if (!self.gate.ready()) return c.ZC_STALE;
     return code;
 }
+/// Copies before return; the file's already-reserved worker stages independently.
+pub export fn zc_image_file_prepare_bytes(p: *c.zc_image_file, data: ?[*]const u8, length: u64) c_int {
+    if (data == null or length == 0 or length > 256 * 1024 * 1024) return c.ZC_INVALID;
+    const rc = begin(p);
+    if (rc != c.ZC_OK) return rc;
+    admission_mutex.lock();
+    const ticket = byte_admission.reserve(@intCast(length)) catch |err| {
+        admission_mutex.unlock();
+        return prepared(p, if (err == error.BufferFull) c.ZC_BUSY else c.ZC_INVALID);
+    };
+    admission_mutex.unlock();
+    const bytes = A.dupe(u8, data.?[0..@intCast(length)]) catch {
+        admission_mutex.lock();
+        byte_admission.release(ticket) catch unreachable;
+        admission_mutex.unlock();
+        return prepared(p, c.ZC_NOMEM);
+    };
+    const self = file(p);
+    self.payload = bytes;
+    self.payload_ticket = ticket;
+    self.prepare_start.set();
+    return c.ZC_OK;
+}
+/// Result is readable before publication only while preparation has completed.
+pub export fn zc_image_file_preparation_result(p: *c.zc_image_file, out: *c_int) c_int {
+    out.* = c.ZC_TIMEOUT;
+    const self = file(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.released) return c.ZC_STATE;
+    if (self.active or self.gate.phase == .queued) return c.ZC_TIMEOUT;
+    out.* = if (self.result == c.ZC_OK and (self.gate.cancel_requested or self.gate.phase == .cancelled)) c.ZC_STALE else self.result;
+    return c.ZC_OK;
+}
 pub export fn zc_image_file_cancel(p: *c.zc_image_file) c_int {
     const self = file(p);
     self.mutex.lock();
@@ -166,6 +213,7 @@ pub export fn zc_image_file_finish(p: *c.zc_image_file, publish: u32) c_int {
     if (self.publish) {
         std.debug.assert(self.gate.publish());
     } else _ = self.gate.cancel();
+    self.prepare_start.set();
     self.release.set();
     return c.ZC_OK;
 }
@@ -188,6 +236,11 @@ pub export fn zc_image_file_close(p: ?*c.zc_image_file) c_int {
     self.mutex.unlock();
     if (thread) |worker| worker.join();
     const ticket = self.ticket;
+    if (self.payload_ticket) |payload_ticket| {
+        admission_mutex.lock();
+        byte_admission.release(payload_ticket) catch unreachable;
+        admission_mutex.unlock();
+    }
     A.free(self.path);
     A.destroy(self);
     releaseAdmission(ticket);
@@ -390,4 +443,83 @@ test "claimed preparation stays owned while a second thread polls cancels and at
     try t.expectEqual(@as(u32, 4), result.phase);
     try t.expectEqual(@as(u32, 0), result.committed);
     try t.expectError(error.FileNotFound, tmp.dir.openFile("photo", .{}));
+}
+
+fn waitPreparationForTest(p: *c.zc_image_file) !c_int {
+    var timer = try std.time.Timer.start();
+    while (timer.read() < 10 * std.time.ns_per_s) {
+        var result: c_int = undefined;
+        const rc = zc_image_file_preparation_result(p, &result);
+        if (rc != c.ZC_TIMEOUT) {
+            try std.testing.expectEqual(c.ZC_OK, rc);
+            return result;
+        }
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    return error.Timeout;
+}
+test "copied encoded staging retains parent identity publication and byte admission until joined close" {
+    const t = std.testing;
+    inline for (.{ false, true }) |cancel| {
+        var tmp = t.tmpDir(.{ .iterate = true });
+        defer tmp.cleanup();
+        try tmp.dir.writeFile(.{ .sub_path = "image", .data = "old" });
+        const parent = try tmp.dir.realpathAlloc(t.allocator, ".");
+        defer t.allocator.free(parent);
+        const path = try std.fmt.allocPrintSentinel(t.allocator, "{s}/image", .{parent}, 0);
+        defer t.allocator.free(path);
+        var output: ?*c.zc_image_file = null;
+        try t.expectEqual(c.ZC_OK, zc_image_file_create(path, &output));
+        defer if (output) |p| cleanupForTest(p);
+        var code: c_int = 99;
+        try t.expectEqual(c.ZC_TIMEOUT, zc_image_file_preparation_result(output.?, &code));
+        try t.expectEqual(c.ZC_INVALID, zc_image_file_prepare_bytes(output.?, null, 0));
+        var bytes: [64]u8 = @splat(73);
+        try t.expectEqual(c.ZC_OK, zc_image_file_prepare_bytes(output.?, &bytes, bytes.len));
+        @memset(&bytes, 99);
+        try t.expectEqual(c.ZC_OK, try waitPreparationForTest(output.?));
+        const old = try tmp.dir.readFileAlloc(t.allocator, "image", 1024);
+        defer t.allocator.free(old);
+        try t.expectEqualStrings("old", old);
+        if (cancel) {
+            try t.expectEqual(@as(c_int, 1), zc_image_file_cancel(output.?));
+            try t.expectEqual(c.ZC_OK, zc_image_file_preparation_result(output.?, &code));
+            try t.expectEqual(c.ZC_STALE, code);
+            try t.expectEqual(c.ZC_STATE, zc_image_file_finish(output.?, 1));
+        }
+        try t.expectEqual(c.ZC_OK, zc_image_file_finish(output.?, if (cancel) 0 else 1));
+        const final = try waitForTest(output.?);
+        try t.expectEqual(@as(u32, if (cancel) 0 else 1), final.committed);
+        try t.expectEqual(c.ZC_STATE, zc_image_file_preparation_result(output.?, &code));
+        admission_mutex.lock();
+        const held = byte_admission.used;
+        admission_mutex.unlock();
+        try t.expectEqual(@as(usize, 64), held);
+        try t.expectEqual(c.ZC_OK, zc_image_file_close(output));
+        output = null;
+        try t.expectEqual(@as(usize, 0), byte_admission.used);
+        const saved = try tmp.dir.readFileAlloc(t.allocator, "image", 1024);
+        defer t.allocator.free(saved);
+        if (cancel) try t.expectEqualStrings("old", saved) else try t.expect(std.mem.allEqual(u8, saved, 73));
+        var entries = tmp.dir.iterate();
+        try t.expectEqualStrings("image", (try entries.next()).?.name);
+        try t.expect((try entries.next()) == null);
+    }
+}
+test "encoded staging failure preserves unpublished output and permits joined discard" {
+    const t = std.testing;
+    var out: ?*c.zc_image_file = null;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const parent = try tmp.dir.realpathAlloc(t.allocator, ".");
+    defer t.allocator.free(parent);
+    const path = try std.fmt.allocPrintSentinel(t.allocator, "{s}/missing/image", .{parent}, 0);
+    defer t.allocator.free(path);
+    try t.expectEqual(c.ZC_OK, zc_image_file_create(path, &out));
+    defer cleanupForTest(out.?);
+    try t.expectEqual(c.ZC_OK, zc_image_file_prepare_bytes(out.?, "bytes", 5));
+    try t.expectEqual(c.ZC_IO, try waitPreparationForTest(out.?));
+    try t.expectEqual(c.ZC_STATE, zc_image_file_finish(out.?, 1));
+    try t.expectEqual(c.ZC_OK, zc_image_file_finish(out.?, 0));
+    try t.expectEqual(@as(u32, 0), (try waitForTest(out.?)).committed);
 }

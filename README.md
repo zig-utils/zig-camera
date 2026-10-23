@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.94 adds [parent-controlled process file publication](docs/process-files.md):
+workers return bounded encoded bytes, and the parent stages/publishes only after
+matching result and ACK. Camera ownership retires before parent I/O; task drains
+still cover publication and callbacks, including cancellation and worker reuse.
+
 Version 0.93 adds [asynchronous remote still encoding and saves](docs/remote-async.md)
 through bounded native Home codec workers. Jobs own copied pixels/Exif/ICC before
 source closure; joined cancellation and staged publication preserve destinations.

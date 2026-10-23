@@ -73,6 +73,8 @@ export const native = dlopen(library, {
   zc_image_file_prepare_metadata: { args: [p, p, n, u, p, p, p], returns: i },
   zc_image_file_create: { args: [p, p], returns: i },
   zc_image_file_prepare: { args: [p, p, n, u, p, p], returns: i },
+  zc_image_file_prepare_bytes: {args:[p,p,n],returns:i},
+  zc_image_file_preparation_result: {args:[p,p],returns:i},
   zc_image_file_finish: { args: [p, u], returns: i },
   zc_image_file_cancel: { args: [p], returns: i },
   zc_image_file_state_get: { args: [p, p], returns: i },

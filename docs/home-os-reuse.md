@@ -549,3 +549,12 @@ user-file publication primitive. Shared allocation budgets and zlib workspace
 ownership therefore improve Home stdlib; existing camera staged files retain
 hosted identity/publication/cleanup policy. No OS source is copied, changed or
 executed, and no kernel result is treated as camera or performance evidence.
+
+The 0.94 parent-publication audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads camera.home and the journal's
+WAL modes, transaction lifecycle and bounded kernel records. Those filesystem
+block transactions do not own hosted child-process results or libcamera leases.
+Home's existing admission/dispatch/preparation helpers are reused unchanged;
+camera retains hosted ACK/exit proof, parent temporary identity and joined I/O.
+No OS source is copied, changed or run, and namespace atomicity is not presented
+as power-failure durability or hardware acceptance.

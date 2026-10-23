@@ -3,9 +3,10 @@ import { resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { FrameChannel, type RemoteFrame } from './frame-channel'
 import { FrameExport, transferExportToProcess, type FrameExportOptions } from './frame-export'
-import { native as n, ptr, storage, view, check, outPointer, handle, CameraError, type Pointer } from './ffi'
+import { native as n, ptr, storage, view, check, outPointer, handle, cstring, CameraError, type Pointer } from './ffi'
 import { BunJob, snapshotJobOptions, JobCancelledError, type JobOptions } from './jobs'
 import { armDeadline } from './deadline'
+import { withStagedImageFile } from './staged-image'
 import { encodeProcessValue, decodeProcessValue } from './process-values'
 export type { ProcessValue } from './process-values'
 export interface ProcessWorkerContext {
@@ -237,7 +238,28 @@ export class ProcessPool implements AsyncDisposable {
       if(this.#timer===undefined)this.#timer=setTimeout(()=>{this.#timer=undefined;this.#pump()},2)
     }
   }
+  /** Child must return encoded Uint8Array bytes. Only the parent owns the path. */
+  submitToFile(frame:{exportFrame(options?:FrameExportOptions):FrameExport},path:string,data?:unknown,options:ProcessSubmitOptions<void>={}):BunJob<void>{
+    this.#admit()
+    if(typeof path!=='string')throw new TypeError('process output path must be a string')
+    if(path.length===0)throw new RangeError('invalid process output path')
+    const encoded=cstring(resolve(path))
+    if(encoded.byteLength<2||encoded.byteLength>4097)throw new RangeError('invalid process output path')
+    return this.#submit<void>(frame,data,options,encoded)
+  }
   submit<T=unknown>(frame:{exportFrame(options?:FrameExportOptions):FrameExport},data?:unknown,options:ProcessSubmitOptions<T>={}):BunJob<T>{
+    return this.#submit(frame,data,options)
+  }
+  #retireEntry(entry:Entry){
+    if(entry.retired)return
+    entry.finished=true
+    const rc=n.zc_process_retire(this.#open(),entry.cookie)
+    if(rc!==-4)entry.retired=true
+    if(entry.worker.active===entry)entry.worker.active=undefined
+    this.#schedule()
+    check(rc,'retire process camera ownership')
+  }
+  #submit<T>(frame:{exportFrame(options?:FrameExportOptions):FrameExport},data:unknown,options:ProcessSubmitOptions<T>,publication?:Uint8Array):BunJob<T>{
     this.#admit()
     const suppliedTimeout=options.timeoutMs
     const settings=snapshotJobOptions({timeoutMs:suppliedTimeout===null?undefined:suppliedTimeout,signal:options.signal,signalFunction:options.signalFunction}),streams=options.streams,writable=options.writable??false
@@ -285,17 +307,26 @@ export class ProcessPool implements AsyncDisposable {
         const value=decodeProcessValue(entry.result.payload,entry.result.ok?this.options.resultLimit:64*1024)
         if(!entry.result.ok)throw new ProcessRemoteError(value)
         entry.result=undefined // release the serialized copy before callbacks
+        if(publication){
+          if(!(value instanceof Uint8Array)||value.byteLength===0)throw new TypeError('process file result must be nonempty Uint8Array bytes')
+          // Both result and ACK are proven. Return source ownership/worker now,
+          // retaining the task reservation through parent publication/callbacks.
+          this.#retireEntry(entry)
+          await withStagedImageFile(publication,job,async file=>{
+            await file!.prepareBytes(value,job)
+            const wallDeadline=Number.isFinite(deadline)?Date.now()+Math.max(0,deadline-performance.now()):Infinity
+            await file!.publish(job,wallDeadline)
+            job.seal()
+            return undefined as T
+          })
+          return undefined as T
+        }
         return value as T
       }finally{
         job.signal.removeEventListener('abort',cancel)
-        entry.finished=true
-        // Native refuses this for SENT work without ACK or verified peer exit.
-        const rc=n.zc_process_retire(this.#open(),entry.cookie)
-        if(rc!==-4)entry.retired=true
-        if(worker.active===entry)worker.active=undefined
-        this.#schedule()
+        // Native refuses SENT retirement without ACK or verified peer exit.
+        this.#retireEntry(entry)
         entry.deadlineTimer?.()
-        check(rc,'retire process camera ownership')
         if(performance.now()>=deadline)job.cancel(new CameraError(-3,'process job deadline'))
         job.check()
       }

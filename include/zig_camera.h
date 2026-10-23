@@ -649,6 +649,13 @@ int zc_image_file_create(const char *,zc_image_file **);
 int zc_image_file_prepare(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *);
 int zc_image_file_prepare_metadata(zc_image_file *,zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
 int zc_image_file_cancel(zc_image_file *); /* 1 accepted, 0 too late/already cancelled */
+/* Copy 1..256 MiB of encoded bytes, stage on the reserved I/O worker, then
+ * query preparation_result before finish. No source pointer survives admission.
+ * Shared 512 MiB reservation stays charged until close, even after completion.
+ * preparation_result returns TIMEOUT while pending, STATE after release; otherwise
+ * writes the staging result code. Failed preparation still needs discard/close. */
+int zc_image_file_prepare_bytes(zc_image_file *,const uint8_t *,uint64_t length);
+int zc_image_file_preparation_result(zc_image_file *,int32_t *out);
 int zc_image_file_finish(zc_image_file *,uint32_t publish);
 int zc_image_file_state_get(zc_image_file *,zc_image_file_state *);
 int zc_image_file_close(zc_image_file *); /* BUSY until owner/job retired */

@@ -193,3 +193,11 @@ cancellation joins native encoding and disposal; supervisor termination remains
 an external boundary and cannot undo published files or guarantee removal of a
 named temporary owned by a killed process. Parent-controlled publication/cleanup
 and file-like destinations remain open.
+
+Version 0.94 adds [parent-controlled file publication](process-files.md) through
+`submitToFile`. Return encoded bytes instead of saving inside the child; the
+parent waits for matching result plus ACK before staging/publishing. Source
+ownership can retire before disk I/O while pool admission and drains still cover
+publication and callbacks. This handles child termination without a child-owned
+temporary for the managed output. Arbitrary child side effects, direct descriptor
+streaming, file-like destinations and parent-crash durability remain separate.

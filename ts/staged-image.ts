@@ -50,6 +50,16 @@ class StagedImageFile {
       await new Promise<void>((resolve) => setTimeout(resolve, 1))
     }
   }
+  async prepareBytes<T>(bytes:Uint8Array,job:BunJob<T>) {
+    job.check()
+    check(n.zc_image_file_prepare_bytes(this.handle!,ptr(bytes),BigInt(bytes.byteLength)),'stage encoded bytes')
+    const result=new Int32Array(1)
+    for(;;){
+      const rc=n.zc_image_file_preparation_result(this.handle!,ptr(result))
+      if(rc!==-3){check(rc,'encoded staging state');if(result[0]!==-5)check(result[0],'stage encoded bytes');job.check();check(result[0],'stage encoded bytes');return}
+      job.check();await new Promise<void>(resolve=>setTimeout(resolve,1))
+    }
+  }
   async publish<T>(job: BunJob<T>, deadline: number) {
     if (Date.now() >= deadline && !job.cancelRequested)
       job.cancel(new CameraError(-3, 'image file deadline'))
