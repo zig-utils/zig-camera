@@ -60,6 +60,9 @@ and generation alongside it. When `camera` is supplied, initial input has
 is the supplied context directly. Those snapshots are owned, subject to clone
 limits, and do not track later camera changes. Per-request negotiated geometry,
 formats, color and scalar/full typed metadata come from the remote frame.
+Use `frame.configuration()` or `frame.configurationCatalog()` for the immutable
+source-session recipe and negotiated fields, including streams not selected for
+pixel export; see [request configuration](request-configuration.md).
 
 Native code owns queued exports and argument bytes. A successful submit moves
 the export; failure consumes neither caller-owned input nor an unaccepted job.
@@ -176,3 +179,9 @@ The 0.91 bootstrap also captures RemoteFrame close before importing the handler.
 Application close-method overrides cannot replace worker-owned map retirement
 before ACK; retained per-job frame objects become closed. Low-level channel users
 still own their explicit close/ACK protocol.
+
+Version 0.92 adds source-request configuration catalogs and frozen Bun values
+across retained exports and actual child processes, including reused workers
+after mode switches. Startup context remains independently owned and unchanged.
+Full per-request property catalogs, remaining remote conveniences and the broader
+parity families remain open.

@@ -217,3 +217,9 @@ pub export fn zc_frame_export_raw_metadata(p: *const c.zc_frame_export, out: *c.
     out.* = owner(p).raw_metadata;
     return c.ZC_OK;
 }
+
+pub export fn zc_frame_export_configuration_copy(p: *const c.zc_frame_export, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    const catalog: *const catalogs.Catalog = @ptrCast(@alignCast(owner(p).catalog));
+    const bytes = catalog.writer.finish() catch return c.ZC_INVALID;
+    return @import("frame_configuration.zig").copy(bytes, data, capacity, length);
+}

@@ -544,6 +544,16 @@ pub const FrameExport = struct {
         try check(@import("frame_export.zig").zc_frame_export_info(self.handle orelse return error.StaleFrame, &out));
         return out;
     }
+    pub fn configurationCatalog(self: FrameExport, allocator: std.mem.Allocator) ![]u8 {
+        const owned = self.handle orelse return error.StaleFrame;
+        const configuration_api = @import("frame_export.zig");
+        var size: u64 = 0;
+        try check(configuration_api.zc_frame_export_configuration_copy(owned, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(configuration_api.zc_frame_export_configuration_copy(owned, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
     pub fn metadataCatalog(self: FrameExport, allocator: std.mem.Allocator) ![]u8 {
         const owned = self.handle orelse return error.StaleFrame;
         const api = @import("frame_export.zig");
@@ -615,6 +625,16 @@ pub const RemoteFrame = struct {
         var out: c.zc_stream = undefined;
         try check(api.zc_remote_frame_stream(self.handle orelse return error.StaleFrame, id, &out));
         return out;
+    }
+    pub fn configurationCatalog(self: RemoteFrame, allocator: std.mem.Allocator) ![]u8 {
+        const owned = self.handle orelse return error.StaleFrame;
+        const configuration_api = @import("frame_channel.zig");
+        var size: u64 = 0;
+        try check(configuration_api.zc_remote_frame_configuration_copy(owned, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(configuration_api.zc_remote_frame_configuration_copy(owned, bytes.ptr, bytes.len, &size));
+        return bytes;
     }
     pub fn metadataCatalog(self: RemoteFrame, allocator: std.mem.Allocator) ![]u8 {
         const owned = self.handle orelse return error.StaleFrame;
@@ -813,6 +833,12 @@ pub const Frame = struct {
         var out: c.zc_stream = undefined;
         try check(core.zc_get_stream(self.camera.handle, self.value.token, id, &out));
         return out;
+    }
+    pub fn configurationCatalog(self: *const Frame) Error!Catalog {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_catalog = null;
+        try check(core.zc_frame_configuration_catalog(self.camera.handle, self.value.token, &out));
+        return .{ .handle = out.? };
     }
     pub fn metadataCatalog(self: *const Frame) Error!Catalog {
         if (self.value.token == 0) return error.StaleFrame;
@@ -1790,4 +1816,56 @@ test "public remote packed bundles raw samples and calibrated DNG own results af
     active = false;
     try t.expectEqualSlices(u8, "II*\x00", captured_dng[0..4]);
     try t.expectEqualSlices(u8, original.data, copied_bundle.data);
+}
+
+test "request configuration owns pointer-free negotiated records across export remote and complete closure" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const wire = @import("home/typed_catalog.zig");
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    cfg.raw = 1;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var catalog = try frame.configurationCatalog();
+    defer catalog.deinit();
+    const original = try catalog.copy(t.allocator);
+    defer t.allocator.free(original);
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    const exported = try loan.configurationCatalog(t.allocator);
+    defer t.allocator.free(exported);
+    try t.expectEqualSlices(u8, original, exported);
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    try ends[0].send(loan, 42);
+    var receipt = try ends[1].receive();
+    defer receipt.frame.deinit() catch {};
+    const remote = try receipt.frame.configurationCatalog(t.allocator);
+    defer t.allocator.free(remote);
+    try t.expectEqualSlices(u8, original, remote);
+    const token = frame.value.token;
+    try frame.release();
+    try camera.stop();
+    try receipt.frame.deinit();
+    try ends[1].acknowledge(42);
+    try t.expectEqual(@as(u64, 42), try ends[0].receiveAcknowledgement());
+    try loan.deinit();
+    var stale: ?*c.zc_catalog = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_STALE, core.zc_frame_configuration_catalog(camera.handle, token, &stale));
+    try t.expect(stale == null);
+    try camera.deinit();
+    active = false;
+    try t.expectEqual(@as(u32, 7), (try wire.Reader.init(remote)).catalog_kind);
+    try t.expectError(error.StaleFrame, frame.configurationCatalog());
+    try t.expectError(error.StaleFrame, loan.configurationCatalog(t.allocator));
+    try t.expectError(error.StaleFrame, receipt.frame.configurationCatalog(t.allocator));
 }

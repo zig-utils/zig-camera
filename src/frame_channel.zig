@@ -616,3 +616,7 @@ pub export fn zc_remote_frame_save_image_metadata(p: *const c.zc_remote_frame, s
     atom.finish() catch return c.ZC_IO;
     return c.ZC_OK;
 }
+
+pub export fn zc_remote_frame_configuration_copy(p: *const c.zc_remote_frame, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    return @import("frame_configuration.zig").copy(owner(p).catalog, data, capacity, length);
+}

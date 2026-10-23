@@ -57,6 +57,12 @@ static int raw_child(uint64_t expected){
 static int native_child(uint64_t expected,int abrupt,int version){
     ready(STDIN_FILENO);zc_remote_frame *frame=NULL;uint64_t cookie=0;assert(zc_frame_channel_receive(STDIN_FILENO,&frame,&cookie)==ZC_OK);
     zc_export_info info;assert(zc_remote_frame_info(frame,&info)==ZC_OK && info.stream_count==3);
+    uint64_t configuration_size=0;
+    assert(zc_remote_frame_configuration_copy(frame,NULL,0,&configuration_size)==ZC_OK && configuration_size>16 && configuration_size<=65536);
+    uint8_t *configuration=malloc((size_t)configuration_size);assert(configuration);memset(configuration,42,(size_t)configuration_size);
+    uint64_t required=0;assert(zc_remote_frame_configuration_copy(frame,configuration,configuration_size-1,&required)==ZC_INVALID && required==configuration_size);
+    for(uint64_t i=0;i<configuration_size;i++)assert(configuration[i]==42);
+    assert(zc_remote_frame_configuration_copy(frame,configuration,configuration_size,&required)==ZC_OK && required==configuration_size && !memcmp(configuration,"HCAT",4) && get(configuration+8,4)==ZC_CATALOG_CONFIGURATION);free(configuration);
     zc_raw_metadata calibration;assert(zc_remote_frame_raw_metadata(frame,&calibration)==ZC_OK);assert(calibration.valid==(version==2?7u:0u));
     zc_image_blob *dng=NULL;assert(zc_remote_frame_encode_dng(frame,&dng)==(version==2?ZC_OK:ZC_UNSUPPORTED));if(dng)zc_image_blob_close(dng);else assert(version==1);
     zc_image_options opts;zc_default_image_options(&opts);zc_image_exif exif;zc_default_image_exif(&exif);
@@ -98,6 +104,27 @@ static void run(const char *exe,int raw,int writable,int abrupt,int version){
     count=0;for(uint32_t i=0;i<3;i++)for(uint32_t j=0;j<source[i].plane_count;j++){assert(source[i].planes[j].data[0]==(uint8_t)(first[count]^(writable?0x5a:0)));count++;}
     assert(zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);free(catalog);assert(count_fds()==before);
 }
+static void legacy_configuration_absent(void){
+    const int before=count_fds();zc_config cfg;zc_default_config(&cfg);cfg.width=2;cfg.height=2;
+    zc_camera *camera=NULL;assert(zc_open(&cfg,&camera)==ZC_OK && zc_start(camera)==ZC_OK);
+    zc_frame frame;assert(zc_acquire(camera,0,&frame)==ZC_OK);
+    zc_frame_export *loan=NULL;assert(zc_frame_export_open(camera,frame.token,1,0,&loan)==ZC_OK);
+    zc_export_info info;assert(zc_frame_export_info(loan,&info)==ZC_OK);
+    uint8_t catalog[16]={0};memcpy(catalog,"HCAT",4);put(catalog+4,1,4);put(catalog+8,4,4);
+    int32_t ends[2];assert(zc_frame_channel_pair(ends)==ZC_OK);
+    send_c(ends[0],&info,99,catalog,sizeof(catalog),NULL,1);
+    zc_remote_frame *remote=NULL;uint64_t cookie=0;assert(zc_frame_channel_receive(ends[1],&remote,&cookie)==ZC_OK && cookie==99);
+    uint64_t size=999;uint8_t output[32];memset(output,42,sizeof(output));
+    assert(zc_remote_frame_configuration_copy(remote,output,sizeof(output),&size)==ZC_UNSUPPORTED && size==0);
+    for(size_t i=0;i<sizeof(output);i++)assert(output[i]==42);
+    assert(zc_remote_frame_copy_rgb(remote,ZC_MAIN,8,NULL,0,&size)==ZC_OK && size==12);
+    assert(zc_remote_frame_catalog_copy(remote,output,sizeof(output),&size)==ZC_OK && size==16 && !memcmp(output,catalog,16));
+    assert(zc_remote_frame_close(remote)==ZC_OK && zc_frame_channel_ack(ends[1],99)==ZC_OK);
+    assert(zc_frame_channel_receive_ack(ends[0],&cookie)==ZC_OK && cookie==99);
+    assert(zc_frame_channel_close(ends[0])==ZC_OK && zc_frame_channel_close(ends[1])==ZC_OK);
+    assert(zc_frame_export_close(loan)==ZC_OK && zc_release(camera,frame.token)==ZC_OK && zc_close(camera)==ZC_OK);
+    assert(count_fds()==before);
+}
 int main(int argc,char **argv){
     _Static_assert(sizeof(zc_export_info)==736,"local wire ABI");
     _Static_assert(sizeof(zc_raw_metadata)==184,"calibration wire ABI");
@@ -106,5 +133,6 @@ int main(int argc,char **argv){
     int udp=socket(AF_INET,SOCK_DGRAM,0);assert(udp>=0);assert(zc_frame_channel_duplicate(udp,&output)==ZC_INVALID && output==-1 && fcntl(udp,F_GETFD)>=0);close(udp);
     int stream[2];assert(socketpair(AF_UNIX,SOCK_STREAM,0,stream)==0);assert(zc_frame_channel_duplicate(stream[0],&output)==ZC_INVALID && output==-1);close(stream[0]);close(stream[1]);assert(count_fds()==before);
     run(argv[0],1,0,0,2);run(argv[0],1,1,0,2);run(argv[0],0,0,0,1);run(argv[0],0,1,0,1);run(argv[0],0,0,0,2);run(argv[0],0,1,0,2);run(argv[0],0,1,1,1);
+    legacy_configuration_absent();
     puts("C/Zig descriptor wire interoperates across exec, owns metadata/maps, and joins ACK or peer exit before export retirement");return 0;
 }

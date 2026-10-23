@@ -1597,3 +1597,21 @@ needed. Camera-specific provenance/clock/lease and atomic-file policy stay here.
 429 native and 1,326 Bun tests pass, including independent metadata/container
 readback and actual process results/saves. No Python or FFmpeg is added or run;
 no physical metadata/quality/FPS result is inferred.
+
+## Request configuration (0.92)
+
+Home main at e260034eebf954ad99415ea04bdb117d560bae15 adds the allocation-free
+video/core/catalog_projection.zig helper, copied verbatim into camera. It validates
+all records before planning/copying a selected group/vendor namespace, keeps exact
+record bytes including opaque extensions, changes only the output catalog kind,
+and rejects short/overlapping output atomically. Its 12 focused tests pass pinned
+and development Zig in Debug/ReleaseSafe locally; both compiler lines cross-link
+actual Linux ARM/x86 test executables. The upstream exact-head Actions listing is
+unavailable, so hosted acceptance is supplied separately by the camera consumer
+matrix. No duplicate camera-specific HCAT serializer is added.
+
+Camera retains the session/request schema and lease locks. Configuration shares
+existing owned full metadata and its bounded accounting; no second fd, cache,
+process initialization dependency or channel packet version is introduced. Home
+OS's current capture/configuration stub cannot supply an owned request snapshot;
+see the separate OS audit. No Python or FFmpeg is added or executed.

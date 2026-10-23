@@ -35,6 +35,7 @@ export const run:ProcessModule['run']=async (frame,data:any,context)=>{
     frame.save(data.path,{format:'png',exif:true},'lores')
     return {pid:process.pid,jpeg:frame.encodeImage()}
   }
+  if(data?.action==='configuration')return {pid:process.pid,configuration:frame.configuration(),catalog:frame.configurationCatalog(),initial:context.initial,calls:state.calls}
   if(data?.action==='media'){
     if(data.path)frame.saveDng(data.path)
     return {pid:process.pid,bundle:frame.copyStreams(['lores','raw','main']),array:frame.makeArray('main'),buffer:frame.makeBuffer('raw'),words:frame.copyRaw16(),dng:frame.encodeDng(),calibration:frame.rawMetadata()}

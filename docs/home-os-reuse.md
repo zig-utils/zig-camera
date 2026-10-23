@@ -531,3 +531,12 @@ reused verbatim, alongside existing Home image Exif/ICC/codec implementations.
 Request clock/provenance, camera maps and atomic-file ownership remain hosted.
 No OS code is copied, changed or run, and no kernel stub, register path or
 architectural statement supplies physical sensor or color acceptance evidence.
+
+The 0.92 configuration audit confirms clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads camera.home and ADR-MC3.
+`camera_set_resolution` changes global width/height while the fixed RGB allocation
+and explicit capture stub remain; there is no immutable completed-request or
+hosted process configuration snapshot to import. Home stdlib therefore gains the
+bounded exact catalog projection used here. Native camera session negotiation,
+lease ownership and source-request provenance stay in zig-camera. No OS source
+is changed or executed, and no stub success is counted as hardware acceptance.

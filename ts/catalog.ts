@@ -14,6 +14,7 @@ export type CatalogKind =
   | 'metadata'
   | 'control-state'
   | 'control-update'
+  | 'configuration'
 export type ValueKind =
   | 'none'
   | 'boolean'
@@ -116,6 +117,7 @@ const catalogKinds = [
   'metadata',
   'control-state',
   'control-update',
+  'configuration',
 ] as const
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 const text = new TextDecoder()

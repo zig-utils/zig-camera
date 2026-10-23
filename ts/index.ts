@@ -201,6 +201,8 @@ import {
   type NativeControlSnapshot,
 } from './control-values'
 export type { NativeControl, NativeControlSnapshot } from './control-values'
+import { decodeFrameConfiguration } from './request-configuration'
+export type { FrameConfiguration } from './request-configuration'
 import { readCatalog, cameraDescriptors } from './catalog'
 export type {
   TypedCatalog,
@@ -940,6 +942,11 @@ export class Frame {
     check(n.zc_frame_references(this.camera.handle, this.token, ptr(count)))
     return count[0]
   }
+  configurationCatalog() {
+    this.open()
+    return readCatalog(out => n.zc_frame_configuration_catalog(this.camera.handle, this.token, out))
+  }
+  configuration() { return decodeFrameConfiguration(this.configurationCatalog()) }
   metadataCatalog() {
     this.open()
     return readCatalog((out) =>

@@ -651,3 +651,7 @@ Home exact typed scalar reads (0.91):
   lookup with absent and ambiguous values kept distinct. The Home MIT license
   above applies. Camera Exif policy reuses existing Home image writers.
   https://github.com/home-lang/home/commit/6ebca8044eaa09f0430ec722cad8b1d91b0237b8
+
+- src/home/catalog_projection.zig is verbatim Home video/core catalog projection at
+  e260034eebf954ad99415ea04bdb117d560bae15. Camera owns the request schema,
+  source-session lifetime and process admission; no Home OS source is copied.

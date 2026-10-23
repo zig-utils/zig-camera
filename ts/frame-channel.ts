@@ -4,6 +4,7 @@ import {
 } from './ffi'
 import { decodeFrameExportInfo, decodeRawMetadata } from './frame-export'
 import { decodeCatalog } from './catalog'
+import { readConfigurationCatalog, decodeFrameConfiguration } from './request-configuration'
 import { imageStreamId,prepareImage,imageProfileDescriptor,type ImageStream,type ImageOptions } from './images'
 import { imageExifDescriptor } from './exif'
 import { adoptCapturedImage, type ImageObjectOptions } from './image-object'
@@ -105,6 +106,11 @@ export class RemoteFrame implements Disposable {
     check(n.zc_remote_frame_info(this.#open(), ptr(bytes)))
     return decodeFrameExportInfo(bytes)
   }
+  configurationCatalog() {
+    const owned = this.#open()
+    return readConfigurationCatalog((data, capacity, size) => n.zc_remote_frame_configuration_copy(owned, data, capacity, size))
+  }
+  configuration() { return decodeFrameConfiguration(this.configurationCatalog()) }
   metadataCatalog() {
     const owned = this.#open(), size = new BigUint64Array(1)
     check(n.zc_remote_frame_catalog_copy(owned, null, 0n, ptr(size)))

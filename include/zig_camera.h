@@ -373,7 +373,7 @@ int zc_autofocus_wait(zc_camera *,uint64_t job_id,uint32_t timeout_ms,uint32_t *
  * null/zero obtains size; too-small destinations remain untouched. Close after
  * use; snapshots outlive camera/frame close. Unknown backend types retain bytes.
  * backend: ZC_LIBCAMERA=1 or ZC_SYNTHETIC=0, never implicit fallback. */
-enum { ZC_CATALOG_DISCOVERY=1, ZC_CATALOG_PROPERTIES=2, ZC_CATALOG_CONTROLS=3, ZC_CATALOG_METADATA=4, ZC_CATALOG_CONTROL_STATE=5, ZC_CATALOG_CONTROL_UPDATE=6 };
+enum { ZC_CATALOG_DISCOVERY=1, ZC_CATALOG_PROPERTIES=2, ZC_CATALOG_CONTROLS=3, ZC_CATALOG_METADATA=4, ZC_CATALOG_CONTROL_STATE=5, ZC_CATALOG_CONTROL_UPDATE=6, ZC_CATALOG_CONFIGURATION=7 };
 enum { ZC_CATALOG_INPUT=1, ZC_CATALOG_OUTPUT=2, ZC_CATALOG_ARRAY=4,
        ZC_CATALOG_DIRECTION_KNOWN=8, ZC_CATALOG_EXTENT_KNOWN=16,
        ZC_CATALOG_VENDOR_KNOWN=32, ZC_CATALOG_ENUMERATORS_KNOWN=64 };
@@ -392,6 +392,11 @@ int zc_restore_native_controls(zc_camera *,const uint8_t *,uint64_t,uint64_t bas
 int zc_camera_properties(zc_camera *, zc_catalog **out);
 int zc_camera_controls(zc_camera *, zc_catalog **out);
 int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);
+/* Owned request-time recipe/negotiated configuration, <=64 KiB, HCAT kind 7.
+ * Full metadata additionally carries these reserved groups, vendor zig-camera.
+ * Startup hints are distinct from per-frame applied controls/metadata. */
+#define ZC_CONFIGURATION_GROUP_BASE 0x5a430000u
+int zc_frame_configuration_catalog(zc_camera *,uint64_t token,zc_catalog **out);
 int zc_catalog_copy(const zc_catalog *, uint8_t *data, uint64_t capacity, uint64_t *length);
 void zc_catalog_close(zc_catalog *);
 /* Low-level process handoff owner. Hold until every consumer has unmapped and
@@ -421,6 +426,8 @@ typedef struct {
 int zc_frame_export_open(zc_camera *,uint64_t token,uint32_t streams,uint32_t flags,zc_frame_export **out);
 int zc_frame_export_info(const zc_frame_export *,zc_export_info *out);
 int zc_frame_export_catalog_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
+/* Immutable request-time configuration projected from the retained full catalog. */
+int zc_frame_export_configuration_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Immutable request-time calibration; validity bits preserve unavailable fields. */
 int zc_frame_export_raw_metadata(const zc_frame_export *,zc_raw_metadata *out);
 int zc_frame_export_close(zc_frame_export *);
@@ -450,6 +457,8 @@ int zc_remote_frame_stream(const zc_remote_frame *,uint32_t stream,zc_stream *ou
 /* Independent tight RGB8/RGB16 copies through Home conversions. Query with
  * data=NULL,capacity=0; raw is unsupported. No borrowed pixels escape. */
 int zc_remote_frame_copy_rgb(const zc_remote_frame *,uint32_t stream,uint32_t bits,uint8_t *data,uint64_t capacity,uint64_t *length);
+/* Missing configuration namespace => UNSUPPORTED, zero length; pixels remain usable. */
+int zc_remote_frame_configuration_copy(const zc_remote_frame *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact calibration from the sender. Legacy v1 records return zero validity. */
 int zc_remote_frame_raw_metadata(const zc_remote_frame *,zc_raw_metadata *out);
 /* Tight owned bundle in caller order, removing padding but preserving format/

@@ -52,6 +52,8 @@ const Session = struct {
     leases: @import("home/lease_pool.zig").Pool(c.ZC_MAX_BUFFERS, c.ZC_MAX_FRAME_REFERENCES) = .{},
     config: c.zc_config,
     processed: c.zc_processed_options = colors.defaults(),
+    pipeline_options: c.zc_pipeline_options = std.mem.zeroes(c.zc_pipeline_options),
+    strict_orientation: bool = false,
     info: c.zc_info = std.mem.zeroes(c.zc_info),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     device: ?*driver.Handle = null,
@@ -288,7 +290,7 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
     out.* = null;
     if (zc_check_camera_configuration(cfg, pipeline, processed, orientation, strict) != c.ZC_OK) return c.ZC_INVALID;
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
-    self.* = .{ .config = cfg.*, .processed = processed.* };
+    self.* = .{ .config = cfg.*, .processed = processed.*, .pipeline_options = pipeline.*, .strict_orientation = strict != 0 };
     var actual: u32 = 0;
     const rc = if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
@@ -2807,18 +2809,38 @@ pub export fn zc_discover(backend: u32, out: *?*c.zc_catalog) c_int {
     success = true;
     return c.ZC_OK;
 }
+fn appendFrameConfiguration(self: *Session, index: u32, writer: *catalogs.wire.Writer) c_int {
+    const configuration = @import("frame_configuration.zig");
+    var streams: [3]?configuration.Stream = @splat(null);
+    for (0..3) |id| {
+        var stream: c.zc_stream = undefined;
+        const rc = streamLocked(self, index, @intCast(id), &stream);
+        if (rc == c.ZC_UNSUPPORTED) continue;
+        if (rc != c.ZC_OK) return rc;
+        var color: c.zc_color_space = undefined;
+        const color_rc = driver.colorSpace(self.device.?, @intCast(id), &color);
+        if (color_rc != c.ZC_OK) return color_rc;
+        streams[id] = .{ .description = stream, .color = color };
+    }
+    configuration.append(writer, .{ .config = self.config, .pipeline = self.pipeline_options, .processed = self.processed, .orientation = self.orientation, .strict_orientation = self.strict_orientation, .id = self.identity.bytes(), .backend = self.info.backend, .buffers = self.info.buffer_count, .sensor_width = self.pipeline.sensor_width, .sensor_height = self.pipeline.sensor_height, .sensor_bit_depth = self.pipeline.sensor_bit_depth, .streams = streams }) catch |err| return catalogs.status(err);
+    return c.ZC_OK;
+}
 fn cameraCatalog(p: *c.zc_camera, kind: u32, token: u64, out: *?*c.zc_catalog) c_int {
     out.* = null;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
-    const index = if (kind == 4) self.leaseIndex(token) orelse return c.ZC_STALE else 0;
+    const index = if (kind == 4 or kind == c.ZC_CATALOG_CONFIGURATION) self.leaseIndex(token) orelse return c.ZC_STALE else 0;
     const result = catalogs.Catalog.create(kind) catch |e| return catalogs.status(e);
     var success = false;
     defer if (!success) result.destroy();
     const sink = result.sink();
-    const rc = driver.catalog(self.device.?, kind, index, &sink);
+    const rc = if (kind == c.ZC_CATALOG_CONFIGURATION) c.ZC_OK else driver.catalog(self.device.?, kind, index, &sink);
     if (rc != 0) return rc;
+    if (kind == c.ZC_CATALOG_METADATA or kind == c.ZC_CATALOG_CONFIGURATION) {
+        const configured = appendFrameConfiguration(self, index, &result.writer);
+        if (configured != c.ZC_OK) return configured;
+    }
     _ = result.writer.finish() catch |e| return catalogs.status(e);
     out.* = result.ptr();
     success = true;
@@ -3647,4 +3669,8 @@ test "acquire-and-stop publishes one readable lease and clears every failed priv
     try t.expectEqual(@as(u32, 0), self.stats.leased);
     self.device.?.fail_sync_begin = false;
     try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
+}
+
+pub export fn zc_frame_configuration_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
+    return cameraCatalog(p, c.ZC_CATALOG_CONFIGURATION, token, out);
 }

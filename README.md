@@ -6,6 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.92 adds [request-owned configuration](docs/request-configuration.md)
+for source frames, retained exports and remote/process frames. Snapshots include
+requested and negotiated geometry, formats, color, sensor settings and orientation;
+reused workers see each source request's configuration after mode changes. Home's
+bounded catalog projection preserves the existing transport and ownership rules.
+
 Version 0.91 adds [request-derived remote image metadata](docs/remote-exif.md):
 Home image encoding and atomic saves with source dimensions, exposure, gain-based
 ISO, UTC, model and copied ICC/Exif. JPEG defaults now match request capture.
