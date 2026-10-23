@@ -1581,6 +1581,12 @@ pub export fn zc_image_file_prepare_metadata(output: *c.zc_image_file, p: *c.zc_
     }
     return image_file.prepared(output, rc);
 }
+fn sourceModelLocked(self: *Session, raw: *const c.zc_raw_metadata) ![]const u8 {
+    const rc = cachePropertiesLocked(self);
+    if (rc != c.ZC_OK) return if (rc == c.ZC_NOMEM) error.OutOfMemory else error.InvalidCatalog;
+    const legacy = std.mem.sliceTo(&raw.model, 0);
+    return @import("source_model.zig").properties(try self.properties.?.writer.finish(), if (legacy.len != 0) legacy else self.identity.bytes());
+}
 fn captureExifLocked(self: *Session, index: u32, selected: c.zc_stream, metadata: ?*const c.zc_image_exif) !?[]u8 {
     if (!exif.enabled(metadata) or metadata.?.flags & c.ZC_IMAGE_EXIF_CAPTURE == 0) return null;
     const before = std.time.nanoTimestamp();
@@ -1592,11 +1598,11 @@ fn captureExifLocked(self: *Session, index: u32, selected: c.zc_stream, metadata
     const stamp: ?i128 = if (photo.valid & 2 != 0 and photo.wallclock_ns > 0) photo.wallclock_ns else if (frame_metadata.valid & 16 != 0 and capture_now != null) exif.correlateUtc(before, capture_now.?, after, frame_metadata.timestamp_ns) else null;
     var raw = std.mem.zeroes(c.zc_raw_metadata);
     _ = driver.metadata(self.device.?, index, &raw);
-    const model = std.mem.sliceTo(&raw.model, 0);
+    const model = try sourceModelLocked(self, &raw);
     return exif.generate(std.heap.c_allocator, metadata, .{
         .width = selected.width,
         .height = selected.height,
-        .model = if (model.len != 0) model else self.identity.bytes(),
+        .model = model,
         .exposure_us = if (frame_metadata.valid & 64 != 0) frame_metadata.exposure_us else null,
         .analogue_gain = self.slots[index].frame.analogue_gain,
         .digital_gain = if (photo.valid & 1 != 0) photo.digital_gain else null,
@@ -1707,7 +1713,11 @@ pub export fn zc_encode_stream_image_metadata(p: *c.zc_camera, token: u64, strea
     }
     defer source.deinit(allocator);
     const blob = allocator.create(still.Blob) catch return c.ZC_NOMEM;
-    const bytes = still.encodeMetadata(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, opts, profile, exif_bytes) catch |err| {
+    const model = if (opts.format == c.ZC_IMAGE_DNG) sourceModelLocked(self, &metadata) catch |err| {
+        allocator.destroy(blob);
+        return still.status(err);
+    } else null;
+    const bytes = still.encodeModel(allocator, &source.frame, if (opts.format == c.ZC_IMAGE_DNG) &metadata else null, model, opts, profile, exif_bytes) catch |err| {
         std.heap.c_allocator.destroy(blob);
         return still.status(err);
     };
@@ -1753,7 +1763,8 @@ pub export fn zc_encode_stream_image_async(p: *c.zc_camera, token: u64, stream: 
     }
     var frame = self.slots[index].frame;
     if (opts.format == c.ZC_IMAGE_DNG) frame.raw = selected else frame.main = selected;
-    return @import("image_job.zig").submit(frame, color, raw, self.slots[index].metadata, &.{}, opts, profile, if (generated != null) &explicit else metadata, limits, file, out);
+    const model = if (opts.format == c.ZC_IMAGE_DNG) sourceModelLocked(self, &raw) catch |err| return still.status(err) else null;
+    return @import("image_job.zig").submitModel(frame, color, raw, self.slots[index].metadata, &.{}, model, opts, profile, if (generated != null) &explicit else metadata, limits, file, out);
 }
 pub export fn zc_image_blob_copy(p: *const c.zc_image_blob, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     const blob: *const still.Blob = @ptrCast(@alignCast(p));
@@ -1922,10 +1933,11 @@ pub export fn zc_save_dng(p: *c.zc_camera, token: u64, path: [*:0]const u8) c_in
             var meta: c.zc_raw_metadata = undefined;
             const rc = driver.metadata(self.device.?, @intCast(i), &meta);
             if (rc != 0) return rc;
-            @import("dng.zig").save(std.heap.c_allocator, &slot.frame, &meta, std.mem.span(path)) catch |err| return switch (err) {
+            const model = sourceModelLocked(self, &meta) catch |err| return still.status(err);
+            @import("dng.zig").saveModel(std.heap.c_allocator, &slot.frame, &meta, model, std.mem.span(path)) catch |err| return switch (err) {
                 error.OutOfMemory => c.ZC_NOMEM,
                 error.UnsupportedFormat, error.MissingCalibration => c.ZC_UNSUPPORTED,
-                error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge => c.ZC_INVALID,
+                error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge, error.InvalidModel => c.ZC_INVALID,
                 else => c.ZC_IO,
             };
             return c.ZC_OK;
@@ -3841,4 +3853,139 @@ test "acquire-and-stop publishes one readable lease and clears every failed priv
 
 pub export fn zc_frame_configuration_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
     return cameraCatalog(p, c.ZC_CATALOG_CONFIGURATION, token, out);
+}
+
+test "full source models survive native Exif DNG sync and copied jobs after camera close" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const jobs = @import("image_job.zig");
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 4;
+    cfg.height = 2;
+    cfg.raw = 1;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    var live = true;
+    defer if (live) {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    };
+    const model = "complete/source/model/" ** 4000;
+    const property = try catalogs.Catalog.create(c.ZC_CATALOG_PROPERTIES);
+    session(camera.?).properties = property;
+    try property.writer.begin(.{ .name = "Model", .vendor = "libcamera", .kind = .string });
+    try property.writer.append(.{ .kind = .string, .count = model.len, .data = model });
+    try property.writer.end();
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var descriptor: c.zc_image_exif = undefined;
+    exif.zc_default_image_exif(&descriptor);
+    const metadata = (try captureExifLocked(session(camera.?), session(camera.?).leaseIndex(frame.token).?, frame.main, &descriptor)).?;
+    defer std.heap.c_allocator.free(metadata);
+    var parsed = try @import("home/metadata/exif.zig").parse(t.allocator, metadata);
+    defer parsed.deinit();
+    try t.expectEqualStrings(model, parsed.model.?);
+    var opts: c.zc_image_options = undefined;
+    zc_default_image_options(&opts);
+    opts.format = c.ZC_IMAGE_DNG;
+    var sync: ?*c.zc_image_blob = null;
+    try t.expectEqual(c.ZC_OK, zc_encode_stream_image(camera.?, frame.token, c.ZC_RAW, &opts, &sync));
+    defer zc_image_blob_close(sync);
+    var directory = t.tmpDir(.{});
+    defer directory.cleanup();
+    const root = try directory.dir.realpathAlloc(t.allocator, ".");
+    defer t.allocator.free(root);
+    const path = try std.fmt.allocPrintSentinel(t.allocator, "{s}/model.dng", .{root}, 0);
+    defer t.allocator.free(path);
+    try t.expectEqual(c.ZC_OK, zc_save_dng(camera.?, frame.token, path));
+    const saved = try directory.dir.readFileAlloc(t.allocator, "model.dng", 1024 * 1024);
+    defer t.allocator.free(saved);
+    const expected: *const still.Blob = @ptrCast(@alignCast(sync.?));
+    try t.expectEqualSlices(u8, expected.bytes, saved);
+    const channels = @import("frame_channel.zig");
+    const exports = @import("frame_export.zig");
+    var ends: [2]c_int = undefined;
+    try t.expectEqual(c.ZC_OK, channels.zc_frame_channel_pair(&ends));
+    defer {
+        for (ends) |fd| _ = channels.zc_frame_channel_close(fd);
+    }
+    var loan: ?*c.zc_frame_export = null;
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_open(camera.?, frame.token, 3, 0, &loan));
+    defer {
+        if (loan != null) _ = exports.zc_frame_export_close(loan);
+    }
+    try t.expectEqual(c.ZC_OK, channels.zc_frame_channel_send(ends[0], loan.?, 42));
+    var remote: ?*c.zc_remote_frame = null;
+    var cookie: u64 = 0;
+    try t.expectEqual(c.ZC_OK, channels.zc_frame_channel_receive(ends[1], &remote, &cookie));
+    defer {
+        if (remote != null) _ = channels.zc_remote_frame_close(remote);
+    }
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_close(loan));
+    loan = null;
+    var job: ?*c.zc_image_job = null;
+    var limits: c.zc_image_job_limits = undefined;
+    jobs.zc_default_image_job_limits(&limits);
+    limits.max_input_bytes = frame.raw.planes[0].bytes_used + model.len - 1;
+    try t.expectEqual(c.ZC_INVALID, zc_encode_stream_image_async(camera.?, frame.token, c.ZC_RAW, &opts, null, null, &limits, null, &job));
+    try t.expect(job == null);
+    limits.max_input_bytes += 1;
+    try t.expectEqual(c.ZC_OK, zc_encode_stream_image_async(camera.?, frame.token, c.ZC_RAW, &opts, null, null, &limits, null, &job));
+    defer _ = jobs.zc_image_job_close(job);
+    // Mutating the source cache cannot alter the already copied job or export.
+    // Valid UTF-8 outside ASCII rejects DNG atomically, without replacing a file.
+    const property_bytes = property.writer.bytes.items;
+    property_bytes[property_bytes.len - 2 ..][0..2].* = .{ 0xc3, 0xa9 };
+    try t.expectEqual(c.ZC_INVALID, zc_save_dng(camera.?, frame.token, path));
+    const untouched = try directory.dir.readFileAlloc(t.allocator, "model.dng", 1024 * 1024);
+    defer t.allocator.free(untouched);
+    try t.expectEqualSlices(u8, saved, untouched);
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_close(camera.?));
+    live = false;
+    var remote_blob: ?*c.zc_image_blob = null;
+    try t.expectEqual(c.ZC_OK, channels.zc_remote_frame_encode_dng(remote.?, &remote_blob));
+    defer zc_image_blob_close(remote_blob);
+    const remote_bytes: *const still.Blob = @ptrCast(@alignCast(remote_blob.?));
+    try t.expectEqualSlices(u8, expected.bytes, remote_bytes.bytes);
+    try t.expectEqual(c.ZC_OK, channels.zc_remote_frame_save_dng(remote.?, path));
+    const remote_saved = try directory.dir.readFileAlloc(t.allocator, "model.dng", 1024 * 1024);
+    defer t.allocator.free(remote_saved);
+    try t.expectEqualSlices(u8, expected.bytes, remote_saved);
+    var remote_job: ?*c.zc_image_job = null;
+    try t.expectEqual(c.ZC_OK, channels.zc_remote_frame_encode_async(remote.?, c.ZC_RAW, &opts, null, null, &limits, null, &remote_job));
+    defer _ = jobs.zc_image_job_close(remote_job);
+    try t.expectEqual(c.ZC_OK, channels.zc_remote_frame_close(remote));
+    remote = null;
+    var state: c.zc_image_job_state = undefined;
+    var timer = try std.time.Timer.start();
+    while (true) {
+        if (timer.read() > 10 * std.time.ns_per_s) return error.TestTimeout;
+        try t.expectEqual(c.ZC_OK, jobs.zc_image_job_state_get(job.?, &state));
+        if (state.finished != 0) break;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try t.expectEqual(c.ZC_OK, state.result);
+    var async_blob: ?*c.zc_image_blob = null;
+    try t.expectEqual(c.ZC_OK, jobs.zc_image_job_take_blob(job.?, &async_blob));
+    defer zc_image_blob_close(async_blob);
+    const actual: *const still.Blob = @ptrCast(@alignCast(async_blob.?));
+    try t.expectEqualSlices(u8, expected.bytes, actual.bytes);
+    try t.expect(state.working_peak >= model.len * 2);
+    timer.reset();
+    while (true) {
+        if (timer.read() > 10 * std.time.ns_per_s) return error.TestTimeout;
+        try t.expectEqual(c.ZC_OK, jobs.zc_image_job_state_get(remote_job.?, &state));
+        if (state.finished != 0) break;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try t.expectEqual(c.ZC_OK, state.result);
+    var remote_async: ?*c.zc_image_blob = null;
+    try t.expectEqual(c.ZC_OK, jobs.zc_image_job_take_blob(remote_job.?, &remote_async));
+    defer zc_image_blob_close(remote_async);
+    const remote_result: *const still.Blob = @ptrCast(@alignCast(remote_async.?));
+    try t.expectEqualSlices(u8, expected.bytes, remote_result.bytes);
 }

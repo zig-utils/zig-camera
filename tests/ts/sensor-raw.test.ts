@@ -152,7 +152,8 @@ for (const format of formats)
       f.saveFile(path, { format: 'dng' })
       expect(dngWords(readFileSync(path))).toEqual(want)
       if (process.env.ZC_RAW16_DECODER) {
-        const result = Bun.spawnSync([process.env.ZC_RAW16_DECODER, path])
+        const model = f.properties().records.find(record => record.name === 'Model')!.values[0]!.value as string
+        const result = Bun.spawnSync([process.env.ZC_RAW16_DECODER, path, model])
         expect(result.exitCode).toBe(0)
         expect(Buffer.from(result.stdout).subarray(8)).toEqual(
           Buffer.from(want.buffer),

@@ -121,7 +121,7 @@ pub fn generate(alloc: std.mem.Allocator, value: ?*const c.zc_image_exif, captur
     const custom = if (raw) |input| try home.layout.validate(input) else null;
     var writer = home.Builder.init(alloc);
     defer writer.deinit();
-    if (capture.model.len != 0 and ascii(capture.model)) try writer.ascii(.image, 0x0110, capture.model);
+    if (!customHas(custom, false, 0x0110) and capture.model.len != 0 and ascii(capture.model)) try writer.ascii(.image, 0x0110, capture.model);
     try writer.ascii(.image, 0x0131, "zig-camera");
     try writer.short(.image, 0x0112, 1); // Encoded pixels already carry actual orientation.
     try writer.bytes(.exif, 0x9000, 7, 4, "0232");
@@ -248,4 +248,35 @@ test "explicit timezone-only override and negative gains never invent conflictin
     defer parsed.deinit();
     try t.expectEqual(null, parsed.date_time_original);
     try t.expectEqual(@as(u32, 0), parsed.iso_speed);
+}
+
+test "explicit Model bypasses oversized automatic text while non-ASCII automatic Model remains absent" {
+    const t = std.testing;
+    var descriptor: c.zc_image_exif = undefined;
+    zc_default_image_exif(&descriptor);
+    var custom = home.Builder.init(t.allocator);
+    defer custom.deinit();
+    try custom.ascii(.image, 0x0110, "Explicit source model");
+    const input = try custom.finish(.{});
+    defer t.allocator.free(input);
+    descriptor.data = input.ptr;
+    descriptor.length = input.len;
+    // This source would exceed Home's Exif size limit if generated first.
+    const huge = try t.allocator.alloc(u8, home.layout.max_bytes + 1);
+    defer t.allocator.free(huge);
+    @memset(huge, 'A');
+    var capture = Capture{ .width = 2, .height = 1, .model = huge, .saved_utc_ns = 0 };
+    const overridden = (try generate(t.allocator, &descriptor, capture)).?;
+    defer t.allocator.free(overridden);
+    var parsed = try home.parse(t.allocator, overridden);
+    defer parsed.deinit();
+    try t.expectEqualStrings("Explicit source model", parsed.model.?);
+    descriptor.data = null;
+    descriptor.length = 0;
+    capture.model = "Camera 光";
+    const omitted = (try generate(t.allocator, &descriptor, capture)).?;
+    defer t.allocator.free(omitted);
+    var without = try home.parse(t.allocator, omitted);
+    defer without.deinit();
+    try t.expectEqual(null, without.model);
 }

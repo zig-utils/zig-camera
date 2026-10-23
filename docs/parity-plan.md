@@ -177,3 +177,11 @@ metadata transport; camera caches immutable session properties and preserves
 legacy absence and bounded combined-catalog failure. See request-properties.md.
 Mapping conveniences, remaining allocator/GPU/recovery/output/device behaviors,
 complete metadata semantics and all physical acceptance remain open.
+
+Version 0.98 preserves full source Model strings in automatic Exif and calibrated
+DNG across local/remote copied jobs, with Home strict borrowed string lookup,
+explicit Exif override precedence, bounded dynamic TIFF directories and charged
+async model ownership. See source-model.md. Localized model/DNG metadata, complete
+image transforms/decoding, remaining allocator/GPU/recovery/output/device families
+and all matched physical/performance acceptance remain open. This is not full
+Picamera2 parity.

@@ -26,6 +26,7 @@ const Job = struct {
     raw: c.zc_raw_metadata,
     scalar: c.zc_metadata,
     catalog: []const u8 = &.{},
+    model: ?[]const u8 = null,
     options: c.zc_image_options,
     profile: ?c.zc_image_profile = null,
     metadata: ?c.zc_image_exif = null,
@@ -49,7 +50,7 @@ const Job = struct {
         var source = if (self.options.format == c.ZC_IMAGE_DNG) rgb.Selected{ .frame = self.frame } else try rgb.Selected.image(a, self.frame, self.frame.main, self.color, self.options.format);
         defer source.deinit(a);
         if (!self.checkpoint()) return error.Cancelled;
-        return still.encodeMetadata(a, &source.frame, if (self.options.format == c.ZC_IMAGE_DNG) &self.raw else null, &self.options, profile, generated orelse @import("exif.zig").bytes(metadata));
+        return still.encodeModel(a, &source.frame, if (self.options.format == c.ZC_IMAGE_DNG) &self.raw else null, self.model, &self.options, profile, generated orelse @import("exif.zig").bytes(metadata));
     }
     fn encode(self: *Job) c_int {
         if (!self.checkpoint()) return c.ZC_CANCELLED;
@@ -103,12 +104,17 @@ fn copy(data: []u8, offset: *usize, source: []const u8) []u8 {
     return out;
 }
 pub fn submit(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
-    return submitOwned(frame, null, color, raw, scalar, catalog, options, profile, metadata, supplied, file, out);
+    out.* = null;
+    const model = if (options.format == c.ZC_IMAGE_DNG) @import("source_model.zig").snapshot(catalog, &raw) catch |err| return still.status(err) else null;
+    return submitModel(frame, color, raw, scalar, catalog, model, options, profile, metadata, supplied, file, out);
+}
+pub fn submitModel(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+    return submitOwned(frame, null, color, raw, scalar, catalog, model, options, profile, metadata, supplied, file, out);
 }
 pub fn submitRaster(source: pixel.View, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
-    return submitOwned(std.mem.zeroes(c.zc_frame), source, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, options, profile, metadata, limits, file, out);
+    return submitOwned(std.mem.zeroes(c.zc_frame), source, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, null, options, profile, metadata, limits, file, out);
 }
-fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
     out.* = null;
     var defaults: c.zc_image_job_limits = undefined;
     zc_default_image_job_limits(&defaults);
@@ -132,7 +138,7 @@ fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, 
     const exif_bytes = @import("exif.zig").bytes(metadata) orelse &.{};
     const capture = metadata != null and metadata.?.flags & c.ZC_IMAGE_EXIF_CAPTURE != 0;
     const catalog_bytes = if (capture) catalog else &.{};
-    inline for (.{ profile_bytes, exif_bytes, catalog_bytes }) |bytes| size = std.math.add(usize, size, bytes.len) catch return c.ZC_INVALID;
+    inline for (.{ profile_bytes, exif_bytes, catalog_bytes, model orelse &.{} }) |bytes| size = std.math.add(usize, size, bytes.len) catch return c.ZC_INVALID;
     if (size > limits.max_input_bytes) return c.ZC_INVALID;
     const charge = size + @as(usize, @intCast(limits.max_working_bytes)) + @sizeOf(Job) + @sizeOf(still.Blob);
     registry_mutex.lock();
@@ -180,6 +186,7 @@ fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, 
         self.metadata.?.data = if (exif.len == 0) null else exif.ptr;
     }
     self.catalog = copy(data, &offset, catalog_bytes);
+    self.model = if (model) |bytes| copy(data, &offset, bytes) else null;
     if (file) |f| {
         const rc = files.begin(f);
         if (rc != 0) return rc;

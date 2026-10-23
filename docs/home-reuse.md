@@ -1712,3 +1712,26 @@ camera native/platform tests provide separate evidence. The final module is copi
 verbatim with attribution. Camera retains the namespace, immutable session cache,
 request ownership and existing full-metadata transport/admission. No identity
 rebasing, extra codec, Python, FFmpeg or Home OS source is introduced.
+
+## Full source model metadata (0.98)
+
+Inspected Home a7987b68f0b0648f33594ca32acfeb7d214c8b9c typed_catalog,
+catalog_envelope and image TIFF/Exif builders and merging. Home's TIFF metadata
+merger retains validated existing structures; it is not a calibrated raw DNG
+writer. No shared DNG implementation was found. The existing string payload could
+be retained opaquely but lacked an exact borrowed UTF-8 lookup. Improvement
+271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1 adds Value.string/Reader.findString,
+sharing the scalar selection scan with explicit shape/provenance/role/duplicate
+checks and no allocation or coercion. Camera copies this module verbatim.
+
+Twelve shared tests pass local pinned Zig 0.15.2 and 0.18.0-dev.146+35accc06e in
+Debug/ReleaseSafe. Exact-head Home Actions currently reports no runs, so camera's
+portable catalog workflow and native CI supply separate consumer evidence.
+Camera keeps source selection, ASCII file-format policy, raw calibration, dynamic
+DNG directory sizing and request/job/file ownership outside the shared reader.
+Existing Home Exif builders, budget allocator and copied-input preparation remain
+reused; no new codec dependency, Python or FFmpeg is introduced.
+
+The string implementation originated at 8890ca0a81f453e687bd09f5e2f5cfa4330725bd;
+271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1 also keeps findScalar primitive-only
+at compile time when sharing its selection implementation with findString.

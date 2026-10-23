@@ -62,7 +62,10 @@ pub fn encode(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metada
     return encodeMetadata(allocator, frame, raw_metadata, options, null, null);
 }
 pub fn encodeMetadata(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
-    return encodeSource(allocator, .{ .frame = .{ .frame = frame, .raw = raw_metadata } }, options, profile, exif);
+    return encodeModel(allocator, frame, raw_metadata, null, options, profile, exif);
+}
+pub fn encodeModel(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
+    return encodeSource(allocator, .{ .frame = .{ .frame = frame, .raw = raw_metadata, .model = model } }, options, profile, exif);
 }
 pub fn encodeRasterMetadata(allocator: std.mem.Allocator, view: raster.View, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
     _ = try view.validate();
@@ -70,11 +73,11 @@ pub fn encodeRasterMetadata(allocator: std.mem.Allocator, view: raster.View, opt
     return encodeSource(allocator, .{ .view = view }, options, profile, exif);
 }
 const Source = union(enum) {
-    frame: struct { frame: *const c.zc_frame, raw: ?*const c.zc_raw_metadata },
+    frame: struct { frame: *const c.zc_frame, raw: ?*const c.zc_raw_metadata, model: ?[]const u8 },
     view: raster.View,
     fn encode(source: Source, allocator: std.mem.Allocator, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
         return switch (source) {
-            .frame => |value| encodePixels(allocator, value.frame, value.raw, options, metadata),
+            .frame => |value| encodePixels(allocator, value.frame, value.raw, value.model, options, metadata),
             .view => |value| encodeView(allocator, value, options, metadata),
         };
     }
@@ -93,12 +96,13 @@ fn encodeSource(allocator: std.mem.Allocator, source: Source, options: *const c.
     defer allocator.free(base);
     return @import("home/metadata_embed.zig").embedMetadata(allocator, format, base, metadata);
 }
-fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
+fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, model: ?[]const u8, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
     if (!valid(options)) return error.InvalidOptions;
     if (options.format == c.ZC_IMAGE_DNG) {
         var buffer = Buffer{ .allocator = allocator };
         errdefer buffer.bytes.deinit(allocator);
-        try @import("dng.zig").write(allocator, frame, raw_metadata orelse return error.MissingCalibration, &buffer);
+        const raw_info = raw_metadata orelse return error.MissingCalibration;
+        try @import("dng.zig").writeModel(allocator, frame, raw_info, model orelse std.mem.sliceTo(&raw_info.model, 0), &buffer);
         return buffer.bytes.toOwnedSlice(allocator);
     }
     const stream = frame.main;

@@ -6,8 +6,12 @@
 #include <string.h>
 static void put32(uint32_t value){for(unsigned i=0;i<4;i++)putchar((int)((value>>(i*8))&255));}
 int main(int argc,char **argv){
-    if(argc!=2)return 2;
+    if(argc!=2&&argc!=3)return 2;
     TIFF *image=TIFFOpen(argv[1],"r");if(!image)return 3;
+    if(argc==3){
+        char *model=NULL,*unique=NULL;
+        if(!TIFFGetField(image,TIFFTAG_MODEL,&model)||!TIFFGetField(image,TIFFTAG_UNIQUECAMERAMODEL,&unique)||!model||!unique||strcmp(model,argv[2])||strcmp(unique,argv[2])){TIFFClose(image);return 8;}
+    }
     uint32_t width=0,height=0;uint16_t bits=0,samples=0,planar=0,photo=0,compression=0;
     if(!TIFFGetField(image,TIFFTAG_IMAGEWIDTH,&width)||!TIFFGetField(image,TIFFTAG_IMAGELENGTH,&height)||!width||!height||width>SIZE_MAX/2/height){TIFFClose(image);return 4;}
     TIFFGetFieldDefaulted(image,TIFFTAG_BITSPERSAMPLE,&bits);TIFFGetFieldDefaulted(image,TIFFTAG_SAMPLESPERPIXEL,&samples);

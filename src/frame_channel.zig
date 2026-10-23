@@ -518,7 +518,19 @@ pub export fn zc_remote_frame_encode_dng(p: *const c.zc_remote_frame, out: *?*c.
     opts.format = c.ZC_IMAGE_DNG;
     const still = @import("still.zig");
     const blob = A.create(still.Blob) catch return c.ZC_NOMEM;
-    const bytes = still.encode(A, &frame, &owner(p).raw_metadata, &opts) catch |err| {
+    const model = @import("source_model.zig").snapshot(owner(p).catalog, &owner(p).raw_metadata) catch |err| {
+        A.destroy(blob);
+        return still.status(err);
+    };
+    const header_limit = @import("dng.zig").directoryCapacity(model) catch |err| {
+        A.destroy(blob);
+        return still.status(err);
+    };
+    if (size > (maximum - header_limit) / 2) {
+        A.destroy(blob);
+        return c.ZC_INVALID;
+    }
+    const bytes = still.encodeModel(A, &frame, &owner(p).raw_metadata, model, &opts, null, null) catch |err| {
         A.destroy(blob);
         return still.status(err);
     };
@@ -530,10 +542,11 @@ pub export fn zc_remote_frame_save_dng(p: *const c.zc_remote_frame, path: [*:0]c
     var frame: c.zc_frame = undefined;
     const rc = dngFrame(p, &frame);
     if (rc != c.ZC_OK) return rc;
-    @import("dng.zig").save(A, &frame, &owner(p).raw_metadata, std.mem.span(path)) catch |err| return switch (err) {
+    const model = @import("source_model.zig").snapshot(owner(p).catalog, &owner(p).raw_metadata) catch |err| return @import("still.zig").status(err);
+    @import("dng.zig").saveModel(A, &frame, &owner(p).raw_metadata, model, std.mem.span(path)) catch |err| return switch (err) {
         error.UnsupportedFormat, error.MissingCalibration => c.ZC_UNSUPPORTED,
         error.OutOfMemory => c.ZC_NOMEM,
-        error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge => c.ZC_INVALID,
+        error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge, error.InvalidModel => c.ZC_INVALID,
         else => c.ZC_IO,
     };
     return c.ZC_OK;

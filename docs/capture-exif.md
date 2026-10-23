@@ -31,7 +31,8 @@ job admission and mode-worker transfer. Documented option properties are read
 once. Async/focus jobs and direct leased-frame methods share the same preparation.
 
 Automatic metadata uses selected stream dimensions, actual exposure in seconds,
-software `zig-camera`, backend model/identity when ASCII, ExifVersion 0232 and
+software `zig-camera`, full backend model/identity when ASCII (see
+[source-model.md](source-model.md)), ExifVersion 0232 and
 Orientation 1 because encoded pixels already reflect camera orientation. It does
 not invent a manufacturer, aperture, focal length, GPS location or calibrated
 sensor sensitivity. Gain-derived ISO is floor(AnalogueGain * DigitalGain * 100),

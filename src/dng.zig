@@ -5,13 +5,22 @@ const c = @import("abi.zig").c;
 const raw = @import("raw.zig");
 const Entry = struct { tag: u16, field_type: u16, count: u32, value_offset: u32 };
 const count = 30;
+pub fn directoryCapacity(model: []const u8) !usize {
+    if (model.len > @import("catalog.zig").limit) return error.InvalidModel;
+    for (model) |byte| if (byte == 0 or byte > 127) return error.InvalidModel;
+    return 4096 + 2 * std.mem.alignForward(usize, model.len + 1, 4);
+}
 const Directory = struct {
-    bytes: [4096]u8 = @splat(0),
+    bytes: []u8,
     n: usize = 0,
     end: usize = 0,
     target: u16 = count,
-    fn init(entries: u16) Directory {
-        var d: Directory = .{ .end = 8 + 2 + @as(usize, entries) * 12 + 4, .target = entries };
+    fn init(allocator: std.mem.Allocator, entries: u16, model: []const u8) !Directory {
+        // 4096 covers fixed tags, calibration and alignment. The two complete
+        // model strings are additional, bounded by the source catalog limit.
+        const bytes = try allocator.alloc(u8, try directoryCapacity(model));
+        @memset(bytes, 0);
+        var d: Directory = .{ .bytes = bytes, .end = 8 + 2 + @as(usize, entries) * 12 + 4, .target = entries };
         d.bytes[0..4].* = .{ 0x49, 0x49, 42, 0 };
         std.mem.writeInt(u32, d.bytes[4..8], 8, .little);
         std.mem.writeInt(u16, d.bytes[8..10], entries, .little);
@@ -46,10 +55,18 @@ const Directory = struct {
         self.tag(id, 4, 1, &b);
     }
     fn text(self: *Directory, id: u16, v: []const u8) void {
-        var b: [256]u8 = @splat(0);
-        const n = @min(v.len, 254);
-        @memcpy(b[0..n], v[0..n]);
-        self.tag(id, 2, @intCast(n + 1), b[0 .. n + 1]);
+        if (v.len < 4) {
+            var b: [4]u8 = @splat(0);
+            @memcpy(b[0..v.len], v);
+            self.tag(id, 2, @intCast(v.len + 1), b[0 .. v.len + 1]);
+        } else {
+            const offset = self.append(v);
+            // Storage starts zeroed, including the terminator after this value.
+            self.end += 1;
+            var b: [4]u8 = undefined;
+            std.mem.writeInt(u32, &b, offset, .little);
+            self.tag(id, 2, @intCast(v.len + 1), &b);
+        }
     }
 };
 fn inverse(m: [9]f64) ![9]f64 {
@@ -92,12 +109,18 @@ fn rational(out: *[8]u8, v: f64, den: u32, signed: bool) !void {
     std.mem.writeInt(u32, out[4..8], den, .little);
 }
 pub fn save(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, path: []const u8) !void {
+    return saveModel(allocator, frame, meta, std.mem.sliceTo(&meta.model, 0), path);
+}
+pub fn saveModel(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, model: []const u8, path: []const u8) !void {
     var atom = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &.{} });
     defer atom.deinit();
-    try write(allocator, frame, meta, atom.file_writer.file);
+    try writeModel(allocator, frame, meta, model, atom.file_writer.file);
     try atom.finish();
 }
 pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, sink: anytype) !void {
+    return writeModel(allocator, frame, meta, std.mem.sliceTo(&meta.model, 0), sink);
+}
+pub fn writeModel(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *const c.zc_raw_metadata, model: []const u8, sink: anytype) !void {
     const stream = frame.raw;
     if (stream.plane_count != 1) return error.UnsupportedFormat;
     const format = try raw.Format.parse(std.mem.sliceTo(&stream.format, 0));
@@ -120,7 +143,8 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     }
     var neutral: [24]u8 = undefined;
     if (!mono) for ([3]f64{ 1.0 / frame.red_gain, 1, 1.0 / frame.blue_gain }, 0..) |v, i| try rational(neutral[i * 8 ..][0..8], v, 1_000_000, false);
-    var dir = Directory.init(if (mono) 23 else count);
+    var dir = try Directory.init(allocator, if (mono) 23 else count, model);
+    defer allocator.free(dir.bytes);
     dir.long(254, 0);
     dir.long(256, stream.width);
     dir.long(257, stream.height);
@@ -128,7 +152,7 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.short(259, 1);
     dir.short(262, if (mono) 34892 else 32803);
     dir.text(271, "zig-camera/libcamera");
-    dir.text(272, std.mem.sliceTo(&meta.model, 0));
+    dir.text(272, model);
     const strip_entry = dir.n;
     dir.long(273, 0);
     dir.short(274, 1);
@@ -153,7 +177,7 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.long(34665, exif_offset);
     dir.tag(50706, 1, 4, &.{ 1, 4, 0, 0 });
     dir.tag(50707, 1, 4, &.{ 1, 1, 0, 0 });
-    dir.text(50708, std.mem.sliceTo(&meta.model, 0));
+    dir.text(50708, model);
     if (!mono) {
         dir.tag(50710, 1, 3, &.{ 0, 1, 2 });
         dir.short(50711, 1);
@@ -172,6 +196,7 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.tag(50829, 4, 4, &active);
     std.debug.assert(dir.n == dir.target);
     dir.end = std.mem.alignForward(usize, dir.end, 4);
+    if (size > std.math.maxInt(u32) - dir.end) return error.FileTooLarge;
     std.mem.writeInt(u32, dir.bytes[10 + strip_entry * 12 + 8 ..][0..4], @intCast(dir.end), .little);
     const scratch = try allocator.alloc(u8, @as(usize, stream.width) * 2);
     defer allocator.free(scratch);
@@ -226,4 +251,71 @@ test "monochrome DNG needs scalar black calibration and emits no invented CFA or
     meta.valid = 1;
     @memcpy(frame.raw.format[0..6], "SRGGB8");
     try t.expectError(error.MissingCalibration, write(t.allocator, &frame, &meta, &sink));
+}
+
+fn modelAllocationTest(allocator: std.mem.Allocator) !void {
+    const t = std.testing;
+    const Sink = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+            try self.bytes.appendSlice(t.allocator, bytes);
+        }
+    };
+    var sink: Sink = .{};
+    defer sink.bytes.deinit(t.allocator);
+    var frame = std.mem.zeroes(c.zc_frame);
+    const pixels = [_]u8{ 7, 13 };
+    frame.raw.width = 2;
+    frame.raw.height = 1;
+    frame.raw.stride = 2;
+    frame.raw.plane_count = 1;
+    @memcpy(frame.raw.format[0..2], "R8");
+    frame.raw.planes[0] = .{ .data = &pixels, .length = 2, .bytes_used = 2 };
+    var meta = std.mem.zeroes(c.zc_raw_metadata);
+    meta.valid = 1;
+    const model = "untruncated-camera/" ** 1000;
+    writeModel(allocator, &frame, &meta, model, &sink) catch |err| {
+        try t.expectEqual(@as(usize, 0), sink.bytes.items.len);
+        return err;
+    };
+    const bytes = sink.bytes.items;
+    const entries = std.mem.readInt(u16, bytes[8..10], .little);
+    var found: usize = 0;
+    for (0..entries) |i| {
+        const entry = bytes[10 + i * 12 ..][0..12];
+        const tag = std.mem.readInt(u16, entry[0..2], .little);
+        if (tag == 272 or tag == 50708) {
+            const length = std.mem.readInt(u32, entry[4..8], .little);
+            const offset = std.mem.readInt(u32, entry[8..12], .little);
+            try t.expectEqual(model.len + 1, length);
+            try t.expectEqualStrings(model, bytes[offset..][0 .. length - 1]);
+            try t.expectEqual(@as(u8, 0), bytes[offset + length - 1]);
+            found += 1;
+        }
+    }
+    try t.expectEqual(@as(usize, 2), found);
+    try t.expectEqualSlices(u8, &.{ 7, 0, 13, 0 }, bytes[bytes.len - 4 ..]);
+    for ([_][]const u8{ "bad\x00tail", "光" }) |bad| {
+        sink.bytes.clearRetainingCapacity();
+        try t.expectError(error.InvalidModel, writeModel(allocator, &frame, &meta, bad, &sink));
+        try t.expectEqual(@as(usize, 0), sink.bytes.items.len);
+    }
+}
+test "DNG models beyond the former directory retain both exact tags with no prefix on allocation failure" {
+    try modelAllocationTest(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelAllocationTest, .{});
+}
+
+test "DNG counted ASCII text includes exact terminators at the inline boundary" {
+    const t = std.testing;
+    for ([_][]const u8{ "", "a", "abc", "abcd", "abcde" }) |model| {
+        var dir = try Directory.init(t.allocator, 1, model);
+        defer t.allocator.free(dir.bytes);
+        dir.text(272, model);
+        const n = std.mem.readInt(u32, dir.bytes[14..18], .little);
+        const offset: usize = if (n <= 4) 18 else std.mem.readInt(u32, dir.bytes[18..22], .little);
+        try t.expectEqual(model.len + 1, n);
+        try t.expectEqualStrings(model, dir.bytes[offset..][0..model.len]);
+        try t.expectEqual(@as(u8, 0), dir.bytes[offset + model.len]);
+    }
 }

@@ -27,7 +27,7 @@ pub fn generate(allocator: std.mem.Allocator, meta: c.zc_metadata, raw: c.zc_raw
     return exif.generate(allocator, descriptor, .{
         .width = selected.width,
         .height = selected.height,
-        .model = std.mem.sliceTo(&raw.model, 0),
+        .model = try @import("source_model.zig").snapshot(catalog, &raw),
         .exposure_us = if (meta.valid & 64 != 0) meta.exposure_us else null,
         .analogue_gain = meta.analogue_gain,
         .digital_gain = photo.digital_gain,
@@ -118,4 +118,42 @@ test "remote Exif uses request wall time and gains while missing invalid and non
     var invalid_gain = try home.parse(t.allocator, nan);
     defer invalid_gain.deinit();
     try t.expectEqual(@as(u32, 0), invalid_gain.iso_speed);
+}
+
+test "remote Exif retains full properties without raw and honors explicit Model beyond JPEG limits" {
+    const t = std.testing;
+    const home = @import("home/metadata/exif.zig");
+    var inner = try wire.Writer.init(t.allocator, c.ZC_CATALOG_PROPERTIES, 256 * 1024);
+    defer inner.deinit();
+    const model = "source-property/model/" ** 4000;
+    try fixture(&inner, "Model", "libcamera", 0, 0, .{ .kind = .string, .count = model.len, .data = model });
+    var outer = try wire.Writer.init(t.allocator, c.ZC_CATALOG_METADATA, 256 * 1024);
+    defer outer.deinit();
+    try @import("frame_properties.zig").append(&outer, try inner.finish());
+    var meta = std.mem.zeroes(c.zc_metadata);
+    meta.struct_size = @sizeOf(c.zc_metadata);
+    var selected = std.mem.zeroes(c.zc_stream);
+    selected.width = 2;
+    selected.height = 1;
+    var descriptor: c.zc_image_exif = undefined;
+    exif.zc_default_image_exif(&descriptor);
+    const bytes = (try generate(t.allocator, meta, std.mem.zeroes(c.zc_raw_metadata), selected, try outer.finish(), &descriptor)).?;
+    defer t.allocator.free(bytes);
+    var parsed = try home.parse(t.allocator, bytes);
+    defer parsed.deinit();
+    try t.expectEqualStrings(model, parsed.model.?);
+    try t.expectError(error.MetadataTooLarge, @import("home/metadata_embed.zig").check(.jpeg, .{ .exif = bytes }));
+    var custom = home.Builder.init(t.allocator);
+    defer custom.deinit();
+    try custom.ascii(.image, 0x0110, "Explicit model");
+    const input = try custom.finish(.{});
+    defer t.allocator.free(input);
+    descriptor.data = input.ptr;
+    descriptor.length = input.len;
+    const overridden = (try generate(t.allocator, meta, std.mem.zeroes(c.zc_raw_metadata), selected, try outer.finish(), &descriptor)).?;
+    defer t.allocator.free(overridden);
+    _ = try @import("home/metadata_embed.zig").check(.jpeg, .{ .exif = overridden });
+    var result = try home.parse(t.allocator, overridden);
+    defer result.deinit();
+    try t.expectEqualStrings("Explicit model", result.model.?);
 }

@@ -33,8 +33,9 @@ policy; request-derived defaults are supplied by these remote-request methods.
 ## Source values and missing fields
 
 Selected dimensions, exposure and analogue gain come from the immutable remote
-stream/scalar snapshot. Camera model comes from the existing request-time raw
-metadata sidecar. Digital gain and `FrameWallClock` already travel in the full
+stream/scalar snapshot. Since 0.98, camera model uses the full source-property
+snapshot, with legacy raw-model and Config.CameraId fallbacks as described in
+[source-model.md](source-model.md). Digital gain and `FrameWallClock` travel in the full
 HCAT metadata catalog, so no new wire packet/version, initial-camera lookup,
 metadata copy file or Python interpretation is introduced.
 
@@ -59,8 +60,9 @@ Non-finite gains and unrepresentable timestamps do not become invented tags.
 Explicit timestamp overrides do not acquire a guessed UTC zone or fraction.
 
 Legacy v1 channel records retain their full metadata catalog but have no raw
-model sidecar. Available gain/time metadata can still produce Exif; an absent
-model stays absent. Legacy DNG calibration remains unsupported. Neither scalar
+model sidecar. A property/configuration snapshot can still supply identity;
+otherwise an absent model stays absent. Available gain/time metadata can still
+produce Exif. Legacy DNG calibration remains unsupported. Neither scalar
 reading nor Exif serialization authenticates a hostile peer or proves physical
 sensor calibration/clock accuracy.
 

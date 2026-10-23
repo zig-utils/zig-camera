@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.98 preserves [full source model metadata](docs/source-model.md) in Exif
+and DNG across local and remote copied jobs. Home supplies strict borrowed string
+lookup; bounded DNG directories retain long ASCII names and charge async inputs.
+
 Version 0.97 adds [source property snapshots](docs/request-properties.md) across
 frames, callback scopes, retained exports and remote/process workers. Home's
 checked nested catalogs preserve backend/vendor/opaque bytes within the existing

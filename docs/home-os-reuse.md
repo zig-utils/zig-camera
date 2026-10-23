@@ -586,3 +586,13 @@ and the explicit capture stub are not a typed hosted property snapshot or a
 libcamera request owner. Home stdlib gains the checked nested-catalog helper;
 camera owns its source-session cache, namespace and exported lifetime. No OS code
 is copied, changed or executed, and no kernel state proves physical acceptance.
+
+The 0.98 still-model audit checks clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, CLAUDE.md, ADR-MC3 and
+kernel/src/drivers/camera.home, with targeted Exif/DNG/UniqueCameraModel searches
+in media, drivers and ADRs. The explicit camera_capture stub and global geometry
+do not implement a hosted Model/property catalog or calibrated DNG metadata.
+ADR-MC3 assigns shared hosted codecs/containers to Home stdlib, so the strict
+string reader is improved there; camera owns its libcamera model policy and async
+lifetimes. No OS code is copied, changed or executed, and the OS stub is not
+physical camera or Pi 5 acceptance evidence.

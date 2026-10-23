@@ -667,3 +667,11 @@ Home exact typed scalar reads (0.91):
 - src/home/apng_encoder.zig is updated verbatim from Home
   0349186f0cc38bdf6be2a714f04ae0a6ae543b2a, counting native workspace in the
   height-independent allocation test. Camera owns native job/lease/file policy.
+
+Home counted typed strings (0.98):
+- src/home/typed_catalog.zig is updated verbatim from
+  packages/video/src/core/typed_catalog.zig at
+  271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1, adding strict borrowed UTF-8
+  values and provenance/role/flag lookup through the existing selection scan.
+  Home MIT attribution above applies.
+  https://github.com/home-lang/home/commit/271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1
