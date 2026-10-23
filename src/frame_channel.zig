@@ -9,7 +9,9 @@ const catalogs = @import("catalog.zig");
 const A = std.heap.c_allocator;
 const info_size = @sizeOf(c.zc_export_info);
 const header_size = 32;
-const packet_size = header_size + info_size;
+const legacy_packet_size: usize = header_size + info_size;
+const raw_size = @sizeOf(c.zc_raw_metadata);
+const packet_size: usize = legacy_packet_size + raw_size;
 const maximum = 256 * 1024 * 1024;
 const Admission = @import("home/owned_admission.zig").Registry(32);
 var admission: Admission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 32 };
@@ -17,6 +19,7 @@ var mutex: std.Thread.Mutex = .{};
 const Remote = struct {
     ticket: Admission.Ticket,
     info: c.zc_export_info,
+    raw_metadata: c.zc_raw_metadata,
     catalog: []u8,
     fds: [c.ZC_MAX_EXPORT_PLANES]shared.Fd = @splat(.{}),
     maps: [c.ZC_MAX_EXPORT_PLANES]?shared.Mapping = @splat(null),
@@ -60,7 +63,7 @@ fn get(comptime T: type, bytes: []const u8, offset: usize) T {
 fn header(kind: u16, cookie: u64, fds: u32, catalog: u64) [header_size]u8 {
     var bytes: [header_size]u8 = @splat(0);
     @memcpy(bytes[0..4], "ZCFD");
-    put(u16, &bytes, 4, 1);
+    put(u16, &bytes, 4, if (kind == 1) 2 else 1);
     put(u16, &bytes, 6, kind);
     put(u32, &bytes, 8, if (kind == 1) info_size else 0);
     put(u32, &bytes, 12, fds);
@@ -69,7 +72,7 @@ fn header(kind: u16, cookie: u64, fds: u32, catalog: u64) [header_size]u8 {
     return bytes;
 }
 fn validHeader(bytes: []const u8, kind: u16) bool {
-    return bytes.len >= header_size and std.mem.eql(u8, bytes[0..4], "ZCFD") and get(u16, bytes, 4) == 1 and get(u16, bytes, 6) == kind and get(u32, bytes, 8) == (if (kind == 1) @as(u32, info_size) else 0) and get(u64, bytes, 16) != 0;
+    return bytes.len >= header_size and std.mem.eql(u8, bytes[0..4], "ZCFD") and (get(u16, bytes, 4) == 1 or (kind == 1 and get(u16, bytes, 4) == 2)) and get(u16, bytes, 6) == kind and get(u32, bytes, 8) == (if (kind == 1) @as(u32, info_size) else 0) and get(u64, bytes, 16) != 0;
 }
 /// Validate all scalar layout/cost fields before any mapping or payload copy.
 fn cost(info: c.zc_export_info, catalog_size: u64) !usize {
@@ -145,7 +148,12 @@ pub export fn zc_frame_channel_send(fd: i32, source: *const c.zc_frame_export, c
     fds[info.plane_count] = metadata_fd;
     var packet: [packet_size]u8 = undefined;
     packet[0..header_size].* = header(1, cookie, info.plane_count + 1, length);
-    @memcpy(packet[header_size..], std.mem.asBytes(&info));
+    @memcpy(packet[header_size..legacy_packet_size], std.mem.asBytes(&info));
+    var raw_metadata: c.zc_raw_metadata = undefined;
+    const raw_rc = exports.zc_frame_export_raw_metadata(source, &raw_metadata);
+    if (raw_rc != c.ZC_OK) return raw_rc;
+    if (!validRaw(raw_metadata)) return c.ZC_INVALID;
+    @memcpy(packet[legacy_packet_size..], std.mem.asBytes(&raw_metadata));
     channel.send(fd, &packet, fds[0 .. info.plane_count + 1]) catch |err| return status(err);
     return c.ZC_OK;
 }
@@ -163,9 +171,14 @@ pub export fn zc_frame_channel_receive(fd: i32, out: *?*c.zc_remote_frame, cooki
     var packet: [packet_size]u8 = undefined;
     var record = channel.receive(fd, &packet) catch |err| return status(err);
     defer record.close() catch {};
-    if (record.bytes != packet_size or !validHeader(&packet, 1)) return c.ZC_INVALID;
+    if (!validHeader(packet[0..record.bytes], 1)) return c.ZC_INVALID;
+    const version = get(u16, &packet, 4);
+    if (record.bytes != (if (version == 1) legacy_packet_size else packet_size)) return c.ZC_INVALID;
     var info: c.zc_export_info = undefined;
-    @memcpy(std.mem.asBytes(&info), packet[header_size..]);
+    @memcpy(std.mem.asBytes(&info), packet[header_size..legacy_packet_size]);
+    var raw_metadata = std.mem.zeroes(c.zc_raw_metadata);
+    if (version == 2) @memcpy(std.mem.asBytes(&raw_metadata), packet[legacy_packet_size..]);
+    if (!validRaw(raw_metadata)) return c.ZC_INVALID;
     const size = get(u64, &packet, 24);
     const bytes = cost(info, size) catch |err| return status(err);
     if (record.count != info.plane_count + 1 or record.count != get(u32, &packet, 12)) return c.ZC_INVALID;
@@ -180,7 +193,7 @@ pub export fn zc_frame_channel_receive(fd: i32, out: *?*c.zc_remote_frame, cooki
         A.destroy(self);
         return c.ZC_NOMEM;
     };
-    self.* = .{ .ticket = ticket, .info = info, .catalog = catalog };
+    self.* = .{ .ticket = ticket, .info = info, .raw_metadata = raw_metadata, .catalog = catalog };
     handed = true;
     var complete = false;
     defer if (!complete) {
@@ -285,7 +298,7 @@ test "local channel header rejects wrong version kind zero cookie and lengths" {
     try t.expect(validHeader(&bytes, 1));
     try t.expect(!validHeader(&bytes, 2));
     try t.expect(!validHeader(bytes[0..31], 1));
-    bytes[4] = 2;
+    bytes[4] = 3;
     try t.expect(!validHeader(&bytes, 1));
     bytes = header(1, 0, 2, 64);
     try t.expect(!validHeader(&bytes, 1));
@@ -364,8 +377,9 @@ test "malformed and late mapping failures consume all fds and restore receiver a
             15 => info.flags ^= c.ZC_EXPORT_STAGED,
             else => unreachable,
         }
-        var bytes: [packet_size]u8 = undefined;
+        var bytes: [legacy_packet_size]u8 = undefined;
         bytes[0..header_size].* = header(1, 1, original.plane_count + 1, metadata_size);
+        put(u16, &bytes, 4, 1);
         @memcpy(bytes[header_size..], std.mem.asBytes(&info));
         try channel.send(ends.ends[0].value, &bytes, fds[0 .. original.plane_count + 1]);
         var remote: ?*c.zc_remote_frame = null;
@@ -374,6 +388,32 @@ test "malformed and late mapping failures consume all fds and restore receiver a
         try t.expectEqual(c.ZC_INVALID, zc_frame_channel_receive(ends.ends[1].value, &remote, &cookie));
         try t.expect(remote == null);
         try t.expectEqual(@as(u64, 0), cookie);
+        try t.expectEqual(before, descriptorCount());
+    }
+    // Independently malformed v2 calibration and exact-length/version contracts.
+    for (0..40) |i| {
+        var bytes: [packet_size]u8 = @splat(0);
+        bytes[0..header_size].* = header(1, 2, original.plane_count + 1, metadata_size);
+        @memcpy(bytes[header_size..legacy_packet_size], std.mem.asBytes(&original));
+        var meta = std.mem.zeroes(c.zc_raw_metadata);
+        var n: usize = bytes.len;
+        switch (i % 5) {
+            0 => meta.valid = 8,
+            1 => meta.model = @splat(65),
+            2 => n -= 1,
+            3 => put(u16, &bytes, 4, 1), // v1 cannot carry an extension
+            4 => put(u16, &bytes, 4, 3),
+            else => unreachable,
+        }
+        @memcpy(bytes[legacy_packet_size..], std.mem.asBytes(&meta));
+        var fds: [c.ZC_MAX_EXPORT_PLANES + 1]c_int = undefined;
+        for (original.planes[0..original.plane_count], 0..) |plane, j| fds[j] = plane.fd;
+        fds[original.plane_count] = metadata_fd;
+        try channel.send(ends.ends[0].value, bytes[0..n], fds[0 .. original.plane_count + 1]);
+        var remote: ?*c.zc_remote_frame = null;
+        var cookie: u64 = 0;
+        try t.expectEqual(c.ZC_INVALID, zc_frame_channel_receive(ends.ends[1].value, &remote, &cookie));
+        try t.expect(remote == null);
         try t.expectEqual(before, descriptorCount());
     }
     // After more than the 32-slot capacity worth of failed imports, valid work
@@ -388,9 +428,138 @@ test "malformed and late mapping failures consume all fds and restore receiver a
     try t.expectEqualSlices(u8, &.{ 99, 99 }, &destination);
     try t.expectEqual(c.ZC_INVALID, zc_remote_frame_copy_rgb(remote.?, c.ZC_MAIN, 8, &destination, 2, &length));
     try t.expectEqualSlices(u8, &.{ 99, 99 }, &destination);
+    var ids = [_]u32{ c.ZC_MAIN, c.ZC_RAW };
+    var layouts: [2]c.zc_packed_stream = @splat(std.mem.zeroes(c.zc_packed_stream));
+    var target: [2000]u8 = @splat(99);
+    var size: u64 = 0;
+    try t.expectEqual(c.ZC_INVALID, zc_remote_frame_copy_streams(remote.?, &ids, 2, &layouts, 2, &target, 1, &size));
+    try t.expectEqual(@as(u64, 0), size);
+    try t.expectEqual(@as(u32, 0), layouts[0].width);
+    // A late malformed raw plane cannot leave main's output prefix behind.
+    const stride = owner(remote.?).info.streams[1].stride;
+    owner(remote.?).info.streams[1].stride = 0;
+    try t.expectEqual(c.ZC_INVALID, zc_remote_frame_copy_streams(remote.?, &ids, 2, &layouts, 2, &target, target.len, &size));
+    try t.expectEqualSlices(u8, &@as([2000]u8, @splat(99)), &target);
+    try t.expectEqual(@as(u32, 0), layouts[0].width);
+    owner(remote.?).info.streams[1].stride = stride;
+    try t.expectEqual(c.ZC_OK, zc_remote_frame_copy_streams(remote.?, &ids, 2, &layouts, 2, &target, target.len, &size));
+    try t.expect(size > 0);
+    try t.expectEqual(c.ZC_INVALID, zc_remote_frame_copy_raw16(remote.?, &destination, destination.len, &length));
+    try t.expectEqualSlices(u8, &.{ 99, 99 }, &destination);
+    try t.expectEqual(c.ZC_INVALID, zc_remote_frame_copy_buffer(remote.?, c.ZC_MAIN, &destination, destination.len, &length));
+    try t.expectEqualSlices(u8, &.{ 99, 99 }, &destination);
     try t.expectEqual(c.ZC_OK, zc_remote_frame_close(remote.?));
     const ack = header(2, 77, 1, 0);
     try channel.send(ends.ends[0].value, &ack, &.{tiny.fd.value});
     try t.expectEqual(c.ZC_INVALID, zc_frame_channel_receive_ack(ends.ends[1].value, &cookie));
     try t.expectEqual(before, descriptorCount());
+}
+
+fn validRaw(meta: c.zc_raw_metadata) bool {
+    return meta.valid & ~@as(u32, 7) == 0 and std.mem.indexOfScalar(u8, &meta.model, 0) != null;
+}
+pub export fn zc_remote_frame_raw_metadata(p: *const c.zc_remote_frame, out: *c.zc_raw_metadata) c_int {
+    out.* = owner(p).raw_metadata;
+    return c.ZC_OK;
+}
+pub export fn zc_remote_frame_copy_streams(p: *const c.zc_remote_frame, ids: ?[*]const u32, count: u32, layouts: ?[*]c.zc_packed_stream, layout_capacity: u32, data: ?[*]u8, capacity: u64, size: *u64) c_int {
+    size.* = 0;
+    if (count == 0 or count > 3 or ids == null or layouts == null or layout_capacity < count or capacity > std.math.maxInt(usize) or (data == null and capacity != 0)) return c.ZC_INVALID;
+    const bundles = @import("stream_bundle.zig");
+    bundles.validate(ids.?[0..count]) catch return c.ZC_INVALID;
+    var sources: [3]c.zc_stream = undefined;
+    for (ids.?[0..count], 0..) |id, i| {
+        const rc = zc_remote_frame_stream(p, id, &sources[i]);
+        if (rc != c.ZC_OK) return rc;
+    }
+    const plan = bundles.Plan.init(ids.?[0..count], sources[0..count]) catch |err| return @import("still.zig").status(err);
+    if (plan.size > maximum) return c.ZC_INVALID;
+    if (data) |out| plan.copy(out[0..@intCast(capacity)]) catch |err| return @import("still.zig").status(err);
+    @memcpy(layouts.?[0..count], plan.layouts[0..count]);
+    size.* = plan.size;
+    return c.ZC_OK;
+}
+pub export fn zc_remote_frame_copy_raw16(p: *const c.zc_remote_frame, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = 0;
+    if (capacity > std.math.maxInt(usize) or (data == null and capacity != 0)) return c.ZC_INVALID;
+    var stream: c.zc_stream = undefined;
+    const rc = zc_remote_frame_stream(p, c.ZC_RAW, &stream);
+    if (rc != c.ZC_OK) return rc;
+    const raw = @import("raw.zig");
+    const format = raw.Format.parse(std.mem.sliceTo(&stream.format, 0)) catch return c.ZC_UNSUPPORTED;
+    if (stream.plane_count != 1 or stream.planes[0].data == null or stream.planes[0].bytes_used > stream.planes[0].length) return c.ZC_INVALID;
+    const size = std.math.mul(u64, @as(u64, stream.width) * stream.height, 2) catch return c.ZC_INVALID;
+    if (size > maximum) return c.ZC_INVALID;
+    const view = raw.View.init(stream.planes[0].data[0..@intCast(stream.planes[0].bytes_used)], stream.width, stream.height, stream.stride, format) catch return c.ZC_INVALID;
+    length.* = size;
+    if (data) |out| {
+        if (capacity < size) return c.ZC_INVALID;
+        view.copy16(out[0..@intCast(capacity)], @as(usize, stream.width) * 2) catch |err| return @import("still.zig").status(err);
+    }
+    return c.ZC_OK;
+}
+fn dngFrame(p: *const c.zc_remote_frame, frame: *c.zc_frame) c_int {
+    frame.* = std.mem.zeroes(c.zc_frame);
+    const meta = owner(p).info.metadata;
+    frame.exposure_us = meta.exposure_us;
+    frame.red_gain = meta.red_gain;
+    frame.blue_gain = meta.blue_gain;
+    return zc_remote_frame_stream(p, c.ZC_RAW, &frame.raw);
+}
+pub export fn zc_remote_frame_encode_dng(p: *const c.zc_remote_frame, out: *?*c.zc_image_blob) c_int {
+    out.* = null;
+    var frame: c.zc_frame = undefined;
+    const rc = dngFrame(p, &frame);
+    if (rc != c.ZC_OK) return rc;
+    const size = @as(u64, frame.raw.width) * frame.raw.height;
+    if (size > (maximum - 4096) / 2) return c.ZC_INVALID;
+    var opts: c.zc_image_options = undefined;
+    @import("core.zig").zc_default_image_options(&opts);
+    opts.format = c.ZC_IMAGE_DNG;
+    const still = @import("still.zig");
+    const blob = A.create(still.Blob) catch return c.ZC_NOMEM;
+    const bytes = still.encode(A, &frame, &owner(p).raw_metadata, &opts) catch |err| {
+        A.destroy(blob);
+        return still.status(err);
+    };
+    blob.* = .{ .bytes = bytes };
+    out.* = @ptrCast(blob);
+    return c.ZC_OK;
+}
+pub export fn zc_remote_frame_save_dng(p: *const c.zc_remote_frame, path: [*:0]const u8) c_int {
+    var frame: c.zc_frame = undefined;
+    const rc = dngFrame(p, &frame);
+    if (rc != c.ZC_OK) return rc;
+    @import("dng.zig").save(A, &frame, &owner(p).raw_metadata, std.mem.span(path)) catch |err| return switch (err) {
+        error.UnsupportedFormat, error.MissingCalibration => c.ZC_UNSUPPORTED,
+        error.OutOfMemory => c.ZC_NOMEM,
+        error.InvalidGeometry, error.InvalidCalibration, error.BufferTooSmall, error.InvalidSample, error.FileTooLarge => c.ZC_INVALID,
+        else => c.ZC_IO,
+    };
+    return c.ZC_OK;
+}
+
+pub export fn zc_remote_frame_copy_buffer(p: *const c.zc_remote_frame, id: u32, data: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = 0;
+    if (capacity > std.math.maxInt(usize) or (data == null and capacity != 0)) return c.ZC_INVALID;
+    var stream: c.zc_stream = undefined;
+    const rc = zc_remote_frame_stream(p, id, &stream);
+    if (rc != c.ZC_OK) return rc;
+    var size: usize = 0;
+    for (stream.planes[0..stream.plane_count]) |plane| {
+        if (plane.bytes_used > plane.length) return c.ZC_INVALID;
+        size = std.math.add(usize, size, @intCast(plane.bytes_used)) catch return c.ZC_INVALID;
+    }
+    if (size > maximum) return c.ZC_INVALID;
+    length.* = size;
+    if (data) |out| {
+        if (capacity < size) return c.ZC_INVALID;
+        var at: usize = 0;
+        for (stream.planes[0..stream.plane_count]) |plane| {
+            const n: usize = @intCast(plane.bytes_used);
+            @memcpy(out[at..][0..n], plane.data[0..n]);
+            at += n;
+        }
+    }
+    return c.ZC_OK;
 }

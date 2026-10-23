@@ -437,45 +437,24 @@ pub export fn zc_get_stream(p: *c.zc_camera, token: u64, stream: u32, out: *c.zc
 pub export fn zc_copy_frame_streams(p: *c.zc_camera, token: u64, streams: ?[*]const u32, count: u32, layouts: ?[*]c.zc_packed_stream, layout_capacity: u32, data: ?[*]u8, capacity: u64, size: *u64, metadata: *c.zc_metadata) c_int {
     size.* = 0;
     if (count == 0 or count > 3 or streams == null or layouts == null or layout_capacity < count or capacity > std.math.maxInt(usize) or (data == null and capacity != 0)) return c.ZC_INVALID;
-    var ids: [3]u32 = undefined;
-    var seen: u32 = 0;
-    for (0..count) |i| {
-        const id = streams.?[i];
-        if (id > c.ZC_LORES) return c.ZC_INVALID;
-        const bit = @as(u32, 1) << @as(u5, @intCast(id));
-        if (seen & bit != 0) return c.ZC_INVALID;
-        seen |= bit;
-        ids[i] = id;
-    }
+    const ids = streams.?[0..count];
+    const bundles = @import("stream_bundle.zig");
+    bundles.validate(ids) catch return c.ZC_INVALID;
     const self = session(p);
     self.operation.lock();
     defer self.operation.unlock();
     const index = self.leaseIndex(token) orelse return c.ZC_STALE;
     if (self.slots[index].access.writer) return c.ZC_BUSY;
-    const pack = @import("home/plane_pack.zig");
-    var planes: [9]pack.Plane = undefined;
-    var plane_count: usize = 0;
-    var descriptions: [3]c.zc_packed_stream = undefined;
-    var total: usize = 0;
-    for (ids[0..count], 0..) |id, i| {
-        var source: c.zc_stream = undefined;
-        const rc = streamLocked(self, index, id, &source);
+    var sources: [3]c.zc_stream = undefined;
+    for (ids, 0..) |id, i| {
+        const rc = streamLocked(self, index, id, &sources[i]);
         if (rc != 0) return rc;
-        var selected: [3]pack.Plane = undefined;
-        const selected_count = @import("media.zig").streamPlanes(&source, &selected) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
-        const length = pack.packedSize(selected[0..selected_count]) catch return c.ZC_INVALID;
-        descriptions[i] = .{ .stream = id, .width = source.width, .height = source.height, .row_bytes = @intCast(selected[0].row_bytes), .format = source.format, .offset = total, .length = length };
-        total = std.math.add(usize, total, length) catch return c.ZC_INVALID;
-        @memcpy(planes[plane_count..][0..selected_count], selected[0..selected_count]);
-        plane_count += selected_count;
     }
-    if (data) |out| {
-        if (capacity < total) return c.ZC_INVALID;
-        _ = pack.pack(planes[0..plane_count], out[0..@intCast(capacity)]) catch return c.ZC_INVALID;
-    }
-    @memcpy(layouts.?[0..count], descriptions[0..count]);
+    const plan = bundles.Plan.init(ids, sources[0..count]) catch |err| return if (err == error.UnsupportedFormat) c.ZC_UNSUPPORTED else c.ZC_INVALID;
+    if (data) |out| plan.copy(out[0..@intCast(capacity)]) catch return c.ZC_INVALID;
+    @memcpy(layouts.?[0..count], plan.layouts[0..count]);
     metadata.* = self.slots[index].metadata;
-    size.* = total;
+    size.* = plan.size;
     return c.ZC_OK;
 }
 pub export fn zc_get_stream_color_space(p: *c.zc_camera, stream: u32, out: *c.zc_color_space) c_int {

@@ -16,6 +16,7 @@ const Export = struct {
     ticket: Admission.Ticket,
     payload_cost: usize,
     info: c.zc_export_info,
+    raw_metadata: c.zc_raw_metadata,
     sources: [c.ZC_MAX_EXPORT_PLANES]c.zc_plane,
     descriptors: [c.ZC_MAX_EXPORT_PLANES]shared.Fd = @splat(.{}),
     staging: [c.ZC_MAX_EXPORT_PLANES]?shared.Region = @splat(null),
@@ -94,6 +95,10 @@ pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u3
     const snapshot = core.zc_frame_metadata_catalog(camera, token, &catalog);
     if (snapshot != c.ZC_OK) return snapshot;
     defer if (!handed) catalogs.zc_catalog_close(catalog);
+    var raw_metadata = std.mem.zeroes(c.zc_raw_metadata);
+    const calibration = core.zc_get_raw_metadata(camera, token, &raw_metadata);
+    if (calibration != c.ZC_OK and calibration != c.ZC_UNSUPPORTED) return calibration;
+    if (calibration == c.ZC_UNSUPPORTED) raw_metadata = std.mem.zeroes(c.zc_raw_metadata);
     var info = std.mem.zeroes(c.zc_export_info);
     for (&info.planes) |*plane| plane.fd = -1;
     info.struct_size = @sizeOf(c.zc_export_info);
@@ -133,7 +138,7 @@ pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u3
     };
     mutex.unlock();
     const self = A.create(Export) catch return c.ZC_NOMEM;
-    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .payload_cost = cost, .info = info, .sources = sources };
+    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .payload_cost = cost, .info = info, .raw_metadata = raw_metadata, .sources = sources };
     handed = true;
     var complete = false;
     defer if (!complete) {
@@ -206,4 +211,9 @@ test "export info remains pointer free and ABI-stable" {
     try std.testing.expectEqual(@as(usize, 736), @sizeOf(c.zc_export_info));
     try std.testing.expectEqual(@as(usize, 352), @offsetOf(c.zc_export_info, "planes"));
     try std.testing.expectEqual(@as(usize, 32), @sizeOf(c.zc_export_plane));
+}
+
+pub export fn zc_frame_export_raw_metadata(p: *const c.zc_frame_export, out: *c.zc_raw_metadata) c_int {
+    out.* = owner(p).raw_metadata;
+    return c.ZC_OK;
 }

@@ -21,6 +21,10 @@ export const run:ProcessModule['run']=async (frame,data:any,context)=>{
   if(data?.action==='oversize')return new Uint8Array(2*1024*1024)
   if(data?.action==='unsupported')return ()=>{}
   if(data?.action==='echo')return data.value
+  if(data?.action==='media'){
+    if(data.path)frame.saveDng(data.path)
+    return {pid:process.pid,bundle:frame.copyStreams(['lores','raw','main']),array:frame.makeArray('main'),buffer:frame.makeBuffer('raw'),words:frame.copyRaw16(),dng:frame.encodeDng(),calibration:frame.rawMetadata()}
+  }
   if(data?.action==='image'){
     using image=frame.makeImage(data.stream??'main')
     return {pid:process.pid,worker:context.worker,generation:context.generation,bits:image.bits,pixels:image.copyPixels(),png:image.encode({format:'png'}),metadata:image.sourceMetadata}

@@ -421,6 +421,8 @@ typedef struct {
 int zc_frame_export_open(zc_camera *,uint64_t token,uint32_t streams,uint32_t flags,zc_frame_export **out);
 int zc_frame_export_info(const zc_frame_export *,zc_export_info *out);
 int zc_frame_export_catalog_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
+/* Immutable request-time calibration; validity bits preserve unavailable fields. */
+int zc_frame_export_raw_metadata(const zc_frame_export *,zc_raw_metadata *out);
 int zc_frame_export_close(zc_frame_export *);
 
 /* Local Linux/Darwin 64-bit little-endian descriptor channel, no process
@@ -430,6 +432,7 @@ int zc_frame_export_close(zc_frame_export *);
  * verified. ACK cookies must be unique among live sends. Sending does not
  * transfer/retire the export owner. Calls on each owner must be serialized. */
 typedef struct zc_remote_frame zc_remote_frame;
+typedef struct zc_image_blob zc_image_blob;
 int zc_frame_channel_pair(int32_t out[2]);
 int zc_frame_channel_duplicate(int32_t borrowed,int32_t *out);
 int zc_frame_channel_close(int32_t owned);
@@ -447,6 +450,20 @@ int zc_remote_frame_stream(const zc_remote_frame *,uint32_t stream,zc_stream *ou
 /* Independent tight RGB8/RGB16 copies through Home conversions. Query with
  * data=NULL,capacity=0; raw is unsupported. No borrowed pixels escape. */
 int zc_remote_frame_copy_rgb(const zc_remote_frame *,uint32_t stream,uint32_t bits,uint8_t *data,uint64_t capacity,uint64_t *length);
+/* Exact calibration from the sender. Legacy v1 records return zero validity. */
+int zc_remote_frame_raw_metadata(const zc_remote_frame *,zc_raw_metadata *out);
+/* Tight owned bundle in caller order, removing padding but preserving format/
+ * plane order/packing. Query data=NULL,capacity=0. No output prefix on failure. */
+int zc_remote_frame_copy_streams(const zc_remote_frame *,const uint32_t *ids,uint32_t count,zc_packed_stream *layouts,uint32_t layout_capacity,uint8_t *data,uint64_t capacity,uint64_t *size);
+/* Concatenate physical bytes_used in plane order, preserving used padding. */
+int zc_remote_frame_copy_buffer(const zc_remote_frame *,uint32_t stream,uint8_t *data,uint64_t capacity,uint64_t *length);
+/* Home raw decoder, tight LE u16 without scaling or demosaicing; <=256 MiB. */
+int zc_remote_frame_copy_raw16(const zc_remote_frame *,uint8_t *data,uint64_t capacity,uint64_t *length);
+/* Existing calibrated DNG writer; no inferred calibration. Owned encoded blob
+ * <=256 MiB, or streaming atomic file (including used rows, no full pixel copy).
+ * Calls are synchronous; process cancellation does not roll back a saved file. */
+int zc_remote_frame_encode_dng(const zc_remote_frame *,zc_image_blob **out);
+int zc_remote_frame_save_dng(const zc_remote_frame *,const char *path);
 int zc_remote_frame_close(zc_remote_frame *);
 
 /* Supervised processing ownership. Up to 8 sessions, 8 workers/session and 32
@@ -558,7 +575,6 @@ typedef struct {
 void zc_default_image_exif(zc_image_exif *);
 int zc_check_image_metadata(const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
 
-typedef struct zc_image_blob zc_image_blob;
 void zc_default_image_options(zc_image_options *);
 /* Owned bare TIFF blob from typed fields. Does not read a camera, retain input
  * pointers or add capture defaults. Thumbnail bytes, if present, are copied. */

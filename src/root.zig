@@ -554,6 +554,11 @@ pub const FrameExport = struct {
         try check(api.zc_frame_export_catalog_copy(owned, data.ptr, data.len, &size));
         return data;
     }
+    pub fn rawMetadata(self: FrameExport) Error!c.zc_raw_metadata {
+        var out: c.zc_raw_metadata = undefined;
+        try check(@import("frame_export.zig").zc_frame_export_raw_metadata(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
 };
 /// Local fd transport. No implicit camera retirement or child supervision.
 /// Move-only owners; join remote views before ACK or sender export deinit.
@@ -628,6 +633,40 @@ pub const RemoteFrame = struct {
         errdefer allocator.free(bytes);
         try check(api.zc_remote_frame_copy_rgb(owned, id, bits, bytes.ptr, bytes.len, &size));
         return bytes;
+    }
+    pub fn rawMetadata(self: RemoteFrame) Error!c.zc_raw_metadata {
+        var out: c.zc_raw_metadata = undefined;
+        try check(api.zc_remote_frame_raw_metadata(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn copyStreams(self: RemoteFrame, allocator: std.mem.Allocator, ids: []const u32) Error!StreamBundle {
+        const owned = self.handle orelse return error.StaleFrame;
+        if (ids.len == 0 or ids.len > 3) return error.Invalid;
+        var result: StreamBundle = .{ .layouts = undefined, .count = @intCast(ids.len), .data = &.{}, .metadata = (try self.info()).metadata };
+        var size: u64 = 0;
+        try check(api.zc_remote_frame_copy_streams(owned, ids.ptr, result.count, &result.layouts, 3, null, 0, &size));
+        result.data = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(result.data);
+        try check(api.zc_remote_frame_copy_streams(owned, ids.ptr, result.count, &result.layouts, 3, result.data.ptr, result.data.len, &size));
+        return result;
+    }
+    pub fn copyRaw16(self: RemoteFrame, out: []u8) Error!void {
+        var size: u64 = 0;
+        try check(api.zc_remote_frame_copy_raw16(self.handle orelse return error.StaleFrame, out.ptr, out.len, &size));
+    }
+    pub fn encodeDng(self: RemoteFrame, allocator: std.mem.Allocator) Error![]u8 {
+        var blob: ?*c.zc_image_blob = null;
+        try check(api.zc_remote_frame_encode_dng(self.handle orelse return error.StaleFrame, &blob));
+        defer core.zc_image_blob_close(blob.?);
+        var size: u64 = 0;
+        try check(core.zc_image_blob_copy(blob.?, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn saveDng(self: RemoteFrame, path: [:0]const u8) Error!void {
+        try check(api.zc_remote_frame_save_dng(self.handle orelse return error.StaleFrame, path.ptr));
     }
 };
 /// Native ownership/dispatch for cooperating process supervisors. The host must
@@ -1680,4 +1719,53 @@ test "public Zig process ownership moves on success and keeps cleanup prefixes u
     try t.expectEqual(@as(u64, 2), try session.restartWorker(0, 1));
     try session.workerJoined(0, 2); // no replacement OS peer was started
     try session.deinit();
+}
+
+test "public remote packed bundles raw samples and calibrated DNG own results after retirement" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 17;
+    cfg.height = 5;
+    cfg.raw = 1;
+    @memcpy(cfg.raw_format[0..13], "SRGGB12_CSI2P");
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var original = try frame.copyStreams(t.allocator, &.{ c.ZC_RAW, c.ZC_MAIN });
+    defer original.deinit(t.allocator);
+    var expected: [17 * 5 * 2]u8 = undefined;
+    try frame.copyRaw16(&expected);
+    var loan = try frame.exportFrame(3, false);
+    defer loan.deinit() catch {};
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    try ends[0].send(loan, 7);
+    var receipt = try ends[1].receive();
+    defer receipt.frame.deinit() catch {};
+    try t.expectEqual(@as(u32, 7), (try receipt.frame.rawMetadata()).valid);
+    var copied_bundle = try receipt.frame.copyStreams(t.allocator, &.{ c.ZC_RAW, c.ZC_MAIN });
+    defer copied_bundle.deinit(t.allocator);
+    try t.expectEqualSlices(u8, original.data, copied_bundle.data);
+    var words: [17 * 5 * 2]u8 = undefined;
+    try receipt.frame.copyRaw16(&words);
+    try t.expectEqualSlices(u8, &expected, &words);
+    const captured_dng = try receipt.frame.encodeDng(t.allocator);
+    defer t.allocator.free(captured_dng);
+    try receipt.frame.deinit();
+    try ends[1].acknowledge(receipt.cookie);
+    try t.expectEqual(receipt.cookie, try ends[0].receiveAcknowledgement());
+    try loan.deinit();
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    active = false;
+    try t.expectEqualSlices(u8, "II*\x00", captured_dng[0..4]);
+    try t.expectEqualSlices(u8, original.data, copied_bundle.data);
 }

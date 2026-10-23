@@ -136,7 +136,7 @@ pub fn write(allocator: std.mem.Allocator, frame: *const c.zc_frame, meta: *cons
     dir.long(278, stream.height);
     dir.long(279, @intCast(size));
     dir.short(284, 1);
-    dir.text(305, "zig-camera 0.2");
+    dir.text(305, "zig-camera");
     if (!mono) {
         dir.tag(33421, 3, 2, &.{ 2, 0, 2, 0 });
         dir.tag(33422, 1, 4, &format.pattern.cfa());

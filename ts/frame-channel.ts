@@ -1,11 +1,19 @@
 import {
   native as n, ptr, check, outPointer, handle, storage, view,
-  toArrayBuffer, CameraError, type Pointer,
+  toArrayBuffer, cstring, CameraError, type Pointer,
 } from './ffi'
-import { decodeFrameExportInfo } from './frame-export'
+import { decodeFrameExportInfo, decodeRawMetadata } from './frame-export'
 import { decodeCatalog } from './catalog'
 import { imageStreamId, type ImageStream } from './images'
-import { adoptCapturedImage } from './image-object'
+import { adoptCapturedImage, type ImageObjectOptions } from './image-object'
+import { streamNames,decodePackedStreams,type StreamName,type CapturedStreams } from './streams'
+export interface RemoteArray {
+  /** Owned, tight row-major values; RGB16 uses native LE words. Raw retains packing as bytes. */
+  data:Uint8Array|Uint16Array
+  shape:readonly number[]
+  format:string
+  rowBytes:number
+}
 const transfer = ArrayBuffer.prototype.transfer
 const receiveAdmission = Symbol('receive remote frame')
 function cookie(value: bigint) {
@@ -90,7 +98,8 @@ export class RemoteFrame implements Disposable {
     return this.#owned
   }
   get closed() { return !this.#owned }
-  info() {
+  info() { return this.#info() }
+  #info() {
     const bytes = storage(736)
     check(n.zc_remote_frame_info(this.#open(), ptr(bytes)))
     return decodeFrameExportInfo(bytes)
@@ -101,6 +110,85 @@ export class RemoteFrame implements Disposable {
     const bytes = storage(Number(size[0]))
     check(n.zc_remote_frame_catalog_copy(owned, ptr(bytes), BigInt(bytes.byteLength), ptr(size)))
     return decodeCatalog(bytes)
+  }
+  rawMetadata() {
+    const bytes=storage(184)
+    check(n.zc_remote_frame_raw_metadata(this.#open(),ptr(bytes)))
+    return decodeRawMetadata(bytes)
+  }
+  #readable() {
+    const owned=this.#open()
+    if(this.#writing)throw new CameraError(-4,'active remote write context')
+    return owned
+  }
+  /** One owned compact backing for the selected streams; padding is removed,
+   * format, channel/plane order and sensor packing are preserved. */
+  copyStreams(streams:readonly StreamName[]=['main']):CapturedStreams {
+    const names=streamNames(streams),owned=this.#readable(),ids=Uint32Array.from(names,name=>imageStreamId(name)),layouts=storage(names.length*64),size=new BigUint64Array(1)
+    const copy=(data?:Uint8Array)=>check(n.zc_remote_frame_copy_streams(owned,ptr(ids),names.length,ptr(layouts),names.length,data?ptr(data):null,BigInt(data?.byteLength??0),ptr(size)))
+    copy()
+    const bytes=storage(Number(size[0]));copy(bytes)
+    return decodePackedStreams(names,layouts,bytes,this.#info().metadata)
+  }
+  copyStream(stream:StreamName='main') {
+    return this.copyStreams([stream]).streams[stream]!
+  }
+  /** Flat physical used bytes, including used row padding, in plane order.
+   * One native pixel copy into an independent allocation. */
+  makeBuffer(stream:StreamName='main') {
+    const id=imageStreamId(stream),owned=this.#readable(),size=new BigUint64Array(1)
+    check(n.zc_remote_frame_copy_buffer(owned,id,null,0n,ptr(size)))
+    const bytes=storage(Number(size[0]))
+    if(bytes.byteLength)check(n.zc_remote_frame_copy_buffer(owned,id,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
+    return bytes
+  }
+  /** Tight shaped array; YUV rows concatenate stored planes without conversion.
+   * Raw is [height,rowBytes] packed u8. Use copyRaw16 for decoded samples. */
+  makeArray(stream:StreamName='main'):RemoteArray {
+    const copy=this.copyStream(stream),{width:w,height:h,format:f,rowBytes}=copy
+    let data:Uint8Array|Uint16Array=copy.data,shape:readonly number[]
+    if(f==='BGR161616'||f==='RGB161616'){
+      data=new Uint16Array(data.buffer,data.byteOffset,data.byteLength/2);shape=[h,w,3]
+    }else if(f==='BGR888'||f==='RGB888')shape=[h,w,3]
+    else if(f==='XBGR8888'||f==='XRGB8888')shape=[h,w,4]
+    else if(f==='YUV420'||f==='YVU420'||f==='NV12'||f==='NV21')shape=[h*3/2,w]
+    else if(['YUYV','YVYU','UYVY','VYUY'].includes(f))shape=[h,w,2]
+    else shape=[h,rowBytes]
+    return {data,shape:Object.freeze(shape),format:f,rowBytes}
+  }
+  /** Home-decoded sensor samples; no scaling, demosaicing or color conversion. */
+  copyRaw16() {
+    const owned=this.#readable(),size=new BigUint64Array(1)
+    check(n.zc_remote_frame_copy_raw16(owned,null,0n,ptr(size)))
+    const bytes=storage(Number(size[0]))
+    check(n.zc_remote_frame_copy_raw16(owned,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
+    return new Uint16Array(bytes.buffer,bytes.byteOffset,bytes.byteLength/2)
+  }
+  /** Owned DNG bytes with this request's sensor calibration. */
+  encodeDng() {
+    const out=outPointer()
+    check(n.zc_remote_frame_encode_dng(this.#readable(),ptr(out)))
+    const blob=handle(out)
+    try {
+      const size=new BigUint64Array(1)
+      check(n.zc_image_blob_copy(blob,null,0n,ptr(size)))
+      const bytes=storage(Number(size[0]))
+      check(n.zc_image_blob_copy(blob,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
+      return bytes
+    }finally{n.zc_image_blob_close(blob)}
+  }
+  /** Synchronous streaming atomic DNG save. A process job cancellation cannot
+   * roll back a successfully published file. */
+  saveDng(path:string) {
+    if(typeof path!=='string')throw new TypeError('image path must be a string')
+    const encoded=cstring(path)
+    check(n.zc_remote_frame_save_dng(this.#readable(),ptr(encoded)))
+  }
+  /** Owned processed image save. Request-derived Exif is not synthesized here;
+   * supply explicit metadata or encode from the source request. */
+  save(path:string,options:ImageObjectOptions={},stream:'main'|'lores'='main') {
+    using image=this.makeImage(stream)
+    image.save(path,options)
   }
   #stream(stream: ImageStream) {
     const id = imageStreamId(stream), bytes = storage(208)
@@ -139,7 +227,7 @@ export class RemoteFrame implements Disposable {
   withWritablePlanes<T>(stream: ImageStream, run: (planes: readonly Uint8Array[]) => T): T {
     this.#open()
     if (typeof run !== 'function') throw new TypeError('write callback required')
-    if (!this.info().writable) throw new CameraError(-8, 'read-only remote export')
+    if (!this.#info().writable) throw new CameraError(-8, 'read-only remote export')
     if (this.#writing) throw new CameraError(-4, 'active remote write context')
     this.#writing = true
     try {
@@ -157,7 +245,7 @@ export class RemoteFrame implements Disposable {
   makeImage(stream: 'main' | 'lores' = 'main', bits?: 8 | 16) {
     const owned = this.#open()
     if (this.#writing) throw new CameraError(-4, 'active remote write context')
-    const info = this.info(), selected = info.streams.find(s => s.stream === stream)
+    const info = this.#info(), selected = info.streams.find(s => s.stream === stream)
     if (stream !== 'main' && stream !== 'lores') throw new RangeError('invalid image stream')
     if (!selected) throw new CameraError(-8, 'remote stream unavailable')
     const depth = bits ?? (selected.format.endsWith('161616') ? 16 : 8)

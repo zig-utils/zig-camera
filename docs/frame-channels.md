@@ -64,8 +64,11 @@ slot/quota failure leaves the record queued; exact payload quota failure after
 decoding consumes it. Supervisors must handle receiver errors and join peers,
 rather than assuming every receive error leaves a retryable record.
 
-The private local wire is a 32-byte little-endian ZCFD v1 header, followed by the
-736-byte pointer-free local export ABI for frame records. It carries version,
+The private local wire has a 32-byte little-endian ZCFD header. Version 0.90
+sends v2 frames: the unchanged 736-byte export ABI followed by 184 bytes of
+request-time raw calibration, 952 total. Receivers also accept exact legacy
+768-byte v1 frames with unavailable calibration; ACKs remain v1/header-only.
+See [remote-media.md](remote-media.md) for versioning and remote media semantics. It carries version,
 kind, descriptor size/count, unique cookie and bounded catalog length. A frame
 has one fd per declared plane and a final HCAT fd; sender integer fd fields are
 sanitized to -1. ACKs contain only the header and cookie. It targets cooperating

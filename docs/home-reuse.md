@@ -1559,3 +1559,19 @@ covered. The normal local runner still fails SDK/libSystem linkage before projec
 compilation; direct tests pass. Consumer CI/real-backend gates and physical Pi
 acceptance remain distinct. Complete remote conveniences/configuration,
 automatic recovery and the broader parity families remain open.
+
+## Remote media (0.90)
+
+Fetched Home main remains 4fdf531deac44b87f435f9b44cc576b10d64f35b. The inspected
+video/core/plane_pack.zig and image/ops/sensor_raw.zig are unchanged and match the
+camera copies verbatim. The former preflights heterogeneous active rows before
+any destination change; the latter supplies sample-checked LE-u16 copies for
+unpacked, CSI-2 and PiSP COMP1 data. No second packer/decoder or unnecessary Home
+API is introduced. Camera local/remote bundles now share one plan over those
+helpers; raw16 and DNG reuse the existing decoder, calibrated writer and atomic
+files. Home image objects supply processed saves. Calibration/descriptor ABI and
+camera lease/process ownership stay in camera, with an immutable request snapshot.
+No Home source change is needed for these already tested algorithms. Independent
+libtiff readback covers all 46 remote raw formats, alongside all 14 processed
+main/lores layouts and actual child-process results/saves. This is software
+acceptance, not physical sensor calibration or a throughput claim.

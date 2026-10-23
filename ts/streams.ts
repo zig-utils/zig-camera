@@ -73,11 +73,11 @@ export function copyNativeStreams(
     throw new RangeError('streams too large')
   const data = storage(Number(size[0]))
   copy(data)
-  const d = view(layouts),
-    result: CapturedStreams = {
-      streams: {},
-      metadata: decodeMetadata(metadata),
-    }
+  return decodePackedStreams(names, layouts, data, decodeMetadata(metadata))
+}
+/** @internal Shared checked native bundle representation. */
+export function decodePackedStreams(names:readonly StreamName[],layouts:Uint8Array,data:Uint8Array,metadata:CapturedStreams['metadata']):CapturedStreams {
+  const d = view(layouts), result:CapturedStreams = {streams:{},metadata}
   for (let i = 0; i < names.length; i++) {
     const at = i * 64,
       offset = Number(d.getBigUint64(at + 48, true)),

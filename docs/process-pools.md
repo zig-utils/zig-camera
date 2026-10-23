@@ -159,7 +159,9 @@ The normal local build runner still fails macOS SDK/libSystem linkage before
 compilation; direct native builds pass. Consumer platform/real-backend CI remains
 a publication gate. No physical Pi DMA, camera latency/FPS or speedup is inferred.
 
-Remaining work includes complete remote tight-array/buffer/save/DNG conveniences,
-per-request configuration/property semantics, richer cloneable values, automatic
+Version 0.90 adds [remote arrays and calibrated media](remote-media.md), including
+compact bundles, physical buffers, raw16, DNG bytes and atomic DNG/processed saves.
+Remaining work includes complete per-request configuration/property semantics,
+remote async/metadata/file-like saves, richer cloneable values, automatic
 recovery policy and persistent allocator/GPU integration, plus the other parity
 families and hardware acceptance in parity-plan.md. This does not complete the goal.

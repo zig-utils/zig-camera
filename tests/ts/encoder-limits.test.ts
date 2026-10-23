@@ -311,6 +311,9 @@ for (const codec of ['h264', 'hevc'] as const)
         rmSync(dir, { recursive: true, force: true })
       }
     },
+    // This exercises 120 encoded frames plus independent decoders. The bounded
+    // framework budget is not a camera/codec latency or bitrate assertion.
+    30_000,
   )
 
 media(

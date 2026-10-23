@@ -58,6 +58,11 @@ export class FrameExport implements Disposable {
     check(n.zc_frame_export_info(this.open(), ptr(bytes)))
     return decodeFrameExportInfo(bytes)
   }
+  rawMetadata() {
+    const bytes=storage(184)
+    check(n.zc_frame_export_raw_metadata(this.open(),ptr(bytes)))
+    return decodeRawMetadata(bytes)
+  }
   /** Low-level send. Hold this owner until all remote views retire and ACK/exit is verified. */
   trySend(channelFd: number, cookie: bigint) {
     if (!Number.isInteger(channelFd) || channelFd < 0 || channelFd > 0x7fffffff || typeof cookie !== 'bigint' || cookie <= 0n || cookie > 0xffffffffffffffffn) throw new RangeError('invalid channel or cookie')
@@ -155,4 +160,15 @@ export function decodeFrameExportInfo(bytes: Uint8Array) {
         crop: Object.freeze({ ...metadata.crop }),
       }),
     })
+}
+
+/** @internal Exact per-request calibration, with availability separate from values. */
+export function decodeRawMetadata(bytes:Uint8Array) {
+  const d=view(bytes),valid=d.getUint32(0,true)
+  return Object.freeze({
+    valid, model:text(bytes,56,128),
+    blackLevels:Object.freeze(Array.from({length:4},(_,i)=>d.getFloat32(4+i*4,true))),
+    cameraToSrgb:Object.freeze(Array.from({length:9},(_,i)=>d.getFloat32(20+i*4,true))),
+    hasBlackLevels:!!(valid&1),hasColorMatrix:!!(valid&2),hasWhiteBalance:!!(valid&4),
+  })
 }

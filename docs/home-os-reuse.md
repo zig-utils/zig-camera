@@ -510,3 +510,14 @@ These are kernel-specific lifecycle references, not hosted Linux/Darwin join
 proof or a libcamera lease owner. The shared bounded dispatch policy improves
 Home video; Bun/OS process exit verification and camera ownership stay hosted.
 No OS code is copied, changed or executed, and no hardware throughput is inferred.
+
+The 0.90 remote-media audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, rereads ADR-MC3, camera.home and
+container/image.home, and searches the media tree for raw/DNG/TIFF algorithms.
+The camera still has an explicit capture stub; container/image.home manages
+container/Docker layers rather than pixel images. There is no hosted calibrated
+DNG writer or request-safe tight row copy to import. ADR-MC3's stdlib boundary
+applies: reuse Home image sensor_raw and video plane_pack unchanged, while camera
+keeps request calibration, native handles and process/atomic-file ownership.
+No OS code is copied, changed or run; kernel state is not used as DMA, camera
+quality, codec or synchronization evidence.
