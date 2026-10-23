@@ -81,9 +81,18 @@ static int native_child(uint64_t expected,int abrupt,int version){
     assert(actual==expected);
     uint64_t size=0;assert(zc_remote_frame_catalog_copy(frame,NULL,0,&size)==ZC_OK);uint8_t *catalog=malloc((size_t)size);assert(catalog);
     assert(zc_remote_frame_catalog_copy(frame,catalog,size,&size)==ZC_OK && !memcmp(catalog,"HCAT",4));
+    zc_image_options async_options;zc_default_image_options(&async_options);async_options.format=ZC_IMAGE_PNG;
+    zc_image_job *worker=NULL;assert(zc_remote_frame_encode_async(frame,ZC_MAIN,&async_options,NULL,NULL,NULL,NULL,&worker)==ZC_OK && worker);
     if(abrupt)_exit(0); /* OS retires live maps/fds; sender must waitpid first. */
     assert(zc_remote_frame_close(frame)==ZC_OK && !memcmp(catalog,"HCAT",4));free(catalog);
-    assert(zc_frame_channel_ack(STDIN_FILENO,cookie)==ZC_OK);return 0;
+    assert(zc_frame_channel_ack(STDIN_FILENO,cookie)==ZC_OK);
+    zc_image_job_state state;int complete=0;
+    for(int attempt=0;attempt<10000;attempt++){assert(zc_image_job_state_get(worker,&state)==ZC_OK);if(state.finished){complete=1;break;}assert(poll(NULL,0,1)==0);}
+    assert(complete && state.result==ZC_OK && state.input_bytes>0 && state.working_peak<=128*1024*1024);
+    zc_image_blob *png=NULL;assert(zc_image_job_take_blob(worker,&png)==ZC_OK && png);
+    uint64_t png_size=0;assert(zc_image_blob_copy(png,NULL,0,&png_size)==ZC_OK && png_size>8);
+    uint8_t *png_bytes=malloc((size_t)png_size);assert(png_bytes);assert(zc_image_blob_copy(png,png_bytes,png_size,&png_size)==ZC_OK && !memcmp(png_bytes,"\x89PNG\r\n\x1a\n",8));
+    free(png_bytes);zc_image_blob_close(png);assert(zc_image_job_close(worker)==ZC_OK);return 0;
 }
 static void run(const char *exe,int raw,int writable,int abrupt,int version){
     const int before=count_fds();zc_config cfg;zc_default_config(&cfg);cfg.width=18;cfg.height=10;cfg.raw=1;strcpy(cfg.raw_format,"SRGGB12");

@@ -608,6 +608,40 @@ pub const FrameChannel = struct {
         return cookie;
     }
 };
+pub fn defaultImageJobLimits() c.zc_image_job_limits {
+    var limits: c.zc_image_job_limits = undefined;
+    @import("image_job.zig").zc_default_image_job_limits(&limits);
+    return limits;
+}
+/// Joined native still encoding. Caller retains an optional staged file until close.
+pub const ImageEncodeJob = struct {
+    handle: ?*c.zc_image_job,
+    const api = @import("image_job.zig");
+    pub fn state(self: ImageEncodeJob) Error!c.zc_image_job_state {
+        var out: c.zc_image_job_state = undefined;
+        try check(api.zc_image_job_state_get(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn cancel(self: ImageEncodeJob) Error!bool {
+        return api.zc_image_job_cancel(self.handle orelse return error.StaleFrame) == 1;
+    }
+    pub fn take(self: ImageEncodeJob, allocator: std.mem.Allocator) Error![]u8 {
+        var blob: ?*c.zc_image_blob = null;
+        try check(api.zc_image_job_take_blob(self.handle orelse return error.StaleFrame, &blob));
+        defer core.zc_image_blob_close(blob.?);
+        var size: u64 = 0;
+        try check(core.zc_image_blob_copy(blob.?, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn deinit(self: *ImageEncodeJob) Error!void {
+        const owned = self.handle orelse return;
+        try check(api.zc_image_job_close(owned));
+        self.handle = null;
+    }
+};
 pub const RemoteFrame = struct {
     handle: ?*c.zc_remote_frame,
     const api = @import("frame_channel.zig");
@@ -698,6 +732,12 @@ pub const RemoteFrame = struct {
         errdefer allocator.free(bytes);
         try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &size));
         return bytes;
+    }
+    /// Owns the selected source before return; no remote maps/lease survive admission.
+    pub fn encodeImageAsync(self: RemoteFrame, id: u32, opts: c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file) Error!ImageEncodeJob {
+        var out: ?*c.zc_image_job = null;
+        try check(api.zc_remote_frame_encode_async(self.handle orelse return error.StaleFrame, id, &opts, profile, metadata, limits, file, &out));
+        return .{ .handle = out.? };
     }
     pub fn saveImage(self: RemoteFrame, id: u32, path: [:0]const u8, opts: c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) Error!void {
         try check(api.zc_remote_frame_save_image_metadata(self.handle orelse return error.StaleFrame, id, path.ptr, &opts, profile, metadata));
@@ -1868,4 +1908,53 @@ test "request configuration owns pointer-free negotiated records across export r
     try t.expectError(error.StaleFrame, frame.configurationCatalog());
     try t.expectError(error.StaleFrame, loan.configurationCatalog(t.allocator));
     try t.expectError(error.StaleFrame, receipt.frame.configurationCatalog(t.allocator));
+}
+
+test "public Zig async remote image owns copied source beyond maps frame export and camera close" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 18;
+    cfg.height = 10;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var opts = defaultImageOptions();
+    opts.format = c.ZC_IMAGE_PNG;
+    const expected = try frame.encodeImage(t.allocator, opts);
+    defer t.allocator.free(expected);
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    try ends[0].send(loan, 1);
+    var receipt = try ends[1].receive();
+    defer receipt.frame.deinit() catch {};
+    var worker = try receipt.frame.encodeImageAsync(c.ZC_MAIN, opts, null, null, null, null);
+    defer worker.deinit() catch {};
+    try receipt.frame.deinit();
+    try ends[1].acknowledge(1);
+    try t.expectEqual(@as(u64, 1), try ends[0].receiveAcknowledgement());
+    try loan.deinit();
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    active = false;
+    var timer = try std.time.Timer.start();
+    while ((try worker.state()).finished == 0) {
+        if (timer.read() > 10 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    try t.expectEqual(c.ZC_OK, (try worker.state()).result);
+    const captured = try worker.take(t.allocator);
+    defer t.allocator.free(captured);
+    try t.expectEqualSlices(u8, expected, captured);
+    try worker.deinit();
+    try t.expectError(error.StaleFrame, worker.state());
 }

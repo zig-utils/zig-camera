@@ -7,6 +7,9 @@ import { decodeCatalog } from './catalog'
 import { readConfigurationCatalog, decodeFrameConfiguration } from './request-configuration'
 import { imageStreamId,prepareImage,imageProfileDescriptor,type ImageStream,type ImageOptions } from './images'
 import { imageExifDescriptor } from './exif'
+import { BunJob, snapshotJobOptions, type JobOptions } from './jobs'
+import { withStagedImageFile } from './staged-image'
+import { prepareImageJobLimits, runImageJob, type ImageJobLimits } from './native-image-job'
 import { adoptCapturedImage, type ImageObjectOptions } from './image-object'
 import { streamNames,decodePackedStreams,type StreamName,type CapturedStreams } from './streams'
 export interface RemoteArray {
@@ -203,6 +206,43 @@ export class RemoteFrame implements Disposable {
       check(n.zc_image_blob_copy(blob,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
       return bytes
     }finally{n.zc_image_blob_close(blob)}
+  }
+  /** Copies bounded input before returning; native conversion/encoding is joined.
+   * The remote frame may close immediately after admission. */
+  encodeImageAsync(options: ImageOptions & ImageJobLimits & JobOptions<Uint8Array> = {}) {
+    const prepared=prepareImage(options), limits=prepareImageJobLimits(options), admitted=snapshotJobOptions(options,30000), deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const profile=imageProfileDescriptor(prepared.profile), exif=imageExifDescriptor(prepared.exif)
+    this.#readable()
+    const job=new BunJob<Uint8Array>(async current=>{
+      const bytes=await runImageJob(out=>n.zc_remote_frame_encode_async(this.#readable(),prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out),current,deadline)
+      current.seal();return bytes!
+    },()=>{},admitted)
+    void job.start();return job
+  }
+  /** Joined native encoding and staged publication, independent of remote lifetime. */
+  saveAsync(path:string,options:ImageObjectOptions & ImageJobLimits & JobOptions<void>={},stream:'main'|'lores'='main') {
+    if(typeof path!=='string')throw new TypeError('image path must be a string')
+    if(stream!=='main'&&stream!=='lores')throw new RangeError('invalid processed image stream')
+    if(!options||typeof options!=='object'||Array.isArray(options))throw new RangeError('invalid image options')
+    const prepared=prepareImage({format:options.format,quality:options.quality,compressLevel:options.compressLevel,pngFilter:options.pngFilter,iccProfile:options.iccProfile,exif:options.exif,stream},path)
+    return this.#savePrepared(prepared,prepareImageJobLimits(options),snapshotJobOptions(options,30000))
+  }
+  saveDngAsync(path:string,options:ImageJobLimits & JobOptions<void>={}) {
+    if(typeof path!=='string')throw new TypeError('image path must be a string')
+    const prepared=prepareImage({format:'dng',stream:'raw'},path)
+    return this.#savePrepared(prepared,prepareImageJobLimits(options),snapshotJobOptions(options,30000))
+  }
+  #savePrepared(prepared:ReturnType<typeof prepareImage>,limits:Uint8Array,admitted:JobOptions<void>) {
+    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    this.#readable()
+    const job=new BunJob<void>(async current=>{
+      current.check()
+      await withStagedImageFile(prepared.path,current,async file=>{
+        await runImageJob(out=>n.zc_remote_frame_encode_async(this.#readable(),prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),file!.handle!,out),current,deadline,file!.handle!)
+        current.check();await file!.publish(current,deadline);current.seal()
+      })
+    },()=>{},admitted)
+    void job.start();return job
   }
   /** Synchronous atomic save; JPEG defaults and explicit Exif/ICC come from this
    * request. The third stream argument keeps the 0.90 processed-save API. */

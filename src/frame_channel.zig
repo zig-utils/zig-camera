@@ -620,3 +620,32 @@ pub export fn zc_remote_frame_save_image_metadata(p: *const c.zc_remote_frame, s
 pub export fn zc_remote_frame_configuration_copy(p: *const c.zc_remote_frame, data: ?[*]u8, capacity: u64, length: *u64) c_int {
     return @import("frame_configuration.zig").copy(owner(p).catalog, data, capacity, length);
 }
+
+pub export fn zc_remote_frame_encode_async(p: *const c.zc_remote_frame, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+    out.* = null;
+    const core = @import("core.zig");
+    var rc = core.imageStreamStatus(stream, opts);
+    if (rc != c.ZC_OK) return rc;
+    rc = core.zc_check_image_metadata(opts, profile, metadata);
+    if (rc != c.ZC_OK) return rc;
+    var frame = std.mem.zeroes(c.zc_frame);
+    const owned = owner(p);
+    frame.exposure_us = owned.info.metadata.exposure_us;
+    frame.red_gain = owned.info.metadata.red_gain;
+    frame.blue_gain = owned.info.metadata.blue_gain;
+    var color = std.mem.zeroes(c.zc_color_space);
+    if (opts.format == c.ZC_IMAGE_DNG) {
+        rc = dngFrame(p, &frame);
+    } else {
+        rc = zc_remote_frame_stream(p, stream, &frame.main);
+        if (rc == c.ZC_OK) for (owned.info.streams[0..owned.info.stream_count], 0..) |description, i| {
+            if (description.stream == stream) {
+                color = owned.info.colors[i];
+                break;
+            }
+        };
+        @import("still.zig").checkProfileSource(profile, color) catch |err| return @import("still.zig").status(err);
+    }
+    if (rc != c.ZC_OK) return rc;
+    return @import("image_job.zig").submit(frame, color, owned.raw_metadata, owned.info.metadata, owned.catalog, opts, profile, metadata, limits, file, out);
+}

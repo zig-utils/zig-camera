@@ -1615,3 +1615,29 @@ existing owned full metadata and its bounded accounting; no second fd, cache,
 process initialization dependency or channel packet version is introduced. Home
 OS's current capture/configuration stub cannot supply an owned request snapshot;
 see the separate OS audit. No Python or FFmpeg is added or executed.
+
+## Asynchronous remote stills (0.93)
+
+Fetched Home main at e260034eebf954ad99415ea04bdb117d560bae15 and inspected Home
+video admission/preparation, image raster/Exif codecs, streaming PNG/APNG and
+memory allocators. New shared budget_allocator at e499d6e91b89296bb0a47e763452240467817c56
+adds allocation-free live/peak/denial accounting, atomic failed growth and explicit
+same-parent result ownership transfer. Zlib now routes native workspace through
+the supplied allocator, including partial initialization failure cleanup. Five
+budget and four zlib tests pass pinned/development Zig in both modes; the budget
+helper cross-links actual Linux ARM/x86 ELF tests on both compiler lines.
+
+The first full camera test exposed an APNG scratch test that deliberately excluded
+native workspace under the old allocator contract. Home follow-up
+0349186f0cc38bdf6be2a714f04ae0a6ae543b2a replaces that assumption with exact total
+allocation equality for height 1 versus 20000, including all native workspace and
+complete frees. APNG/raster dependents pass both compilers/modes. All three modules
+are copied verbatim. Upstream exact-head Actions are unavailable; consumer budget
+and independent APNG platform matrices provide separate hosted evidence.
+
+Camera reuses Home admission, preparation gates, format conversion, calibrated
+DNG and request Exif/ICC encoders. A joined worker owns copied physical pixels and
+metadata; existing staged-file ownership controls publication. No frame/map/fd
+is borrowed by the worker, and no manager callback performs this work. No second
+codec or Python/FFmpeg tooling is added. Process termination/publication and full
+file-like semantics remain explicit open work, distinct from cooperative cleanup.

@@ -623,6 +623,25 @@ int zc_save_stream_image_metadata(zc_camera *,uint64_t token,uint32_t stream,con
  * No durability/fsync guarantee. Crash cleanup of orphan temporaries is external. */
 typedef struct zc_image_file zc_image_file;
 typedef struct { uint32_t struct_size,phase,preparing,released,finished,committed; int32_t result,cleanup_code; } zc_image_file_state;
+/* Bounded owned still encoding. Copies selected physical pixels, ICC/Exif and
+ * needed metadata at admission; no remote owner/lease/fd survives that call.
+ * Codec conversion/encoding and optional file staging run on a joined worker.
+ * Limits are per-job: input includes copied metadata, working includes ALL
+ * allocator-routed codec allocations and the encoded result, output caps bytes.
+ * Four live jobs share a 512 MiB input+working reservation, held until close.
+ * Cancel is cooperative at codec boundaries; close BUSY means join by polling.
+ * File publication remains explicit through image_file_finish AFTER completion;
+ * retain that file owner until the job closes. Null limits uses defaults. */
+typedef struct zc_image_job zc_image_job;
+typedef struct {uint32_t struct_size,reserved;uint64_t max_input_bytes,max_output_bytes,max_working_bytes;} zc_image_job_limits;
+typedef struct {uint32_t struct_size,phase,finished;int32_t result;uint64_t input_bytes,output_bytes,working_peak,budget_denials;} zc_image_job_state;
+void zc_default_image_job_limits(zc_image_job_limits *);
+int zc_remote_frame_encode_async(const zc_remote_frame *,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_image_job_limits *,zc_image_file *,zc_image_job **out);
+int zc_image_job_state_get(zc_image_job *,zc_image_job_state *);
+int zc_image_job_cancel(zc_image_job *);
+int zc_image_job_take_blob(zc_image_job *,zc_image_blob **out);
+int zc_image_job_close(zc_image_job *);
+
 /* Factory admission is globally bounded to 32 retained handles, including ready
  * and finished handles. BUSY preserves a null output; close releases the slot
  * after joining. This also bounds threads for rejected async file submissions. */

@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.93 adds [asynchronous remote still encoding and saves](docs/remote-async.md)
+through bounded native Home codec workers. Jobs own copied pixels/Exif/ICC before
+source closure; joined cancellation and staged publication preserve destinations.
+Shared Home allocator budgets also cover native zlib workspace.
+
 Version 0.92 adds [request-owned configuration](docs/request-configuration.md)
 for source frames, retained exports and remote/process frames. Snapshots include
 requested and negotiated geometry, formats, color, sensor settings and orientation;

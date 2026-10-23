@@ -1,6 +1,6 @@
 {
   "name": "@zig-utils/camera",
-  "version": "0.92.0",
+  "version": "0.93.0",
   "type": "module",
   "private": true,
   "exports": "./ts/index.ts",

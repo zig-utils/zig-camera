@@ -655,3 +655,10 @@ Home exact typed scalar reads (0.91):
 - src/home/catalog_projection.zig is verbatim Home video/core catalog projection at
   e260034eebf954ad99415ea04bdb117d560bae15. Camera owns the request schema,
   source-session lifetime and process admission; no Home OS source is copied.
+
+- src/home/budget_allocator.zig and zlib_stream.zig are verbatim from Home
+  e499d6e91b89296bb0a47e763452240467817c56. Native zlib workspace now uses the
+  caller allocator; the existing Bun ABI attribution in zlib_stream remains.
+- src/home/apng_encoder.zig is updated verbatim from Home
+  0349186f0cc38bdf6be2a714f04ae0a6ae543b2a, counting native workspace in the
+  height-independent allocation test. Camera owns native job/lease/file policy.

@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+_Static_assert(sizeof(zc_image_job_limits)==32,"image job limits ABI");
+_Static_assert(sizeof(zc_image_job_state)==48,"image job state ABI");
+_Static_assert(offsetof(zc_image_job_state,working_peak)==32,"image job working budget ABI");
 _Static_assert(sizeof(zc_apng_raster)==48,"APNG raster ABI");
 _Static_assert(offsetof(zc_apng_raster,data)==40,"APNG pointer ABI");
 _Static_assert(sizeof(zc_apng_frame)==72,"APNG frame ABI");

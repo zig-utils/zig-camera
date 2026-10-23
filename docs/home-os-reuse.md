@@ -540,3 +540,12 @@ hosted process configuration snapshot to import. Home stdlib therefore gains the
 bounded exact catalog projection used here. Native camera session negotiation,
 lease ownership and source-request provenance stay in zig-camera. No OS source
 is changed or executed, and no stub success is counted as hardware acceptance.
+
+The 0.93 asynchronous-still audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and inspects camera.home,
+media/video_decoder.home, fs/journal.home and ADR-MC3. The capture/codec stubs and
+kernel journal ownership do not supply a hosted copied-image worker or joined
+user-file publication primitive. Shared allocation budgets and zlib workspace
+ownership therefore improve Home stdlib; existing camera staged files retain
+hosted identity/publication/cleanup policy. No OS source is copied, changed or
+executed, and no kernel result is treated as camera or performance evidence.

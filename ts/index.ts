@@ -202,6 +202,7 @@ import {
 } from './control-values'
 export type { NativeControl, NativeControlSnapshot } from './control-values'
 import { decodeFrameConfiguration } from './request-configuration'
+export type { ImageJobLimits } from './native-image-job'
 export type { FrameConfiguration } from './request-configuration'
 import { readCatalog, cameraDescriptors } from './catalog'
 export type {

@@ -31,6 +31,11 @@ export const run:ProcessModule['run']=async (frame,data:any,context)=>{
     frame.close=()=>{}
     return {priorClosed,jpeg:frame.encodeImage()}
   }
+  if(data?.action==='async-image'){
+    const bytes=await frame.encodeImageAsync({format:'png',exif:true,stream:'lores'})
+    await frame.saveAsync(data.path,{format:'jpeg',exif:{artist:'Async child'}},'lores')
+    return {pid:process.pid,bytes,config:frame.configuration()}
+  }
   if(data?.action==='exif'){
     frame.save(data.path,{format:'png',exif:true},'lores')
     return {pid:process.pid,jpeg:frame.encodeImage()}

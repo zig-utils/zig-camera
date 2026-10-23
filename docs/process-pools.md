@@ -185,3 +185,11 @@ across retained exports and actual child processes, including reused workers
 after mode switches. Startup context remains independently owned and unchanged.
 Full per-request property catalogs, remaining remote conveniences and the broader
 parity families remain open.
+
+Version 0.93 adds [asynchronous remote still jobs](remote-async.md): copied input,
+bounded native Home encoding with Exif/ICC, byte results and staged processed/DNG
+saves. Await those jobs inside a handler before returning. Cooperative job
+cancellation joins native encoding and disposal; supervisor termination remains
+an external boundary and cannot undo published files or guarantee removal of a
+named temporary owned by a killed process. Parent-controlled publication/cleanup
+and file-like destinations remain open.
