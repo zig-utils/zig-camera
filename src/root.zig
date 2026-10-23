@@ -555,6 +555,81 @@ pub const FrameExport = struct {
         return data;
     }
 };
+/// Local fd transport. No implicit camera retirement or child supervision.
+/// Move-only owners; join remote views before ACK or sender export deinit.
+pub const FrameChannel = struct {
+    fd: i32 = -1,
+    const api = @import("frame_channel.zig");
+    pub fn pair() Error![2]FrameChannel {
+        var fds: [2]i32 = undefined;
+        try check(api.zc_frame_channel_pair(&fds));
+        return .{ .{ .fd = fds[0] }, .{ .fd = fds[1] } };
+    }
+    pub fn fromFd(borrowed: i32) Error!FrameChannel {
+        var fd: i32 = -1;
+        try check(api.zc_frame_channel_duplicate(borrowed, &fd));
+        return .{ .fd = fd };
+    }
+    pub fn deinit(self: *FrameChannel) Error!void {
+        const owned = self.fd;
+        self.fd = -1;
+        try check(api.zc_frame_channel_close(owned));
+    }
+    pub fn send(self: FrameChannel, loan: FrameExport, cookie: u64) Error!void {
+        try check(api.zc_frame_channel_send(self.fd, loan.handle orelse return error.StaleFrame, cookie));
+    }
+    pub const Receipt = struct { frame: RemoteFrame, cookie: u64 };
+    pub fn receive(self: FrameChannel) Error!Receipt {
+        var receipt: Receipt = .{ .frame = .{ .handle = null }, .cookie = 0 };
+        try check(api.zc_frame_channel_receive(self.fd, &receipt.frame.handle, &receipt.cookie));
+        return receipt;
+    }
+    pub fn acknowledge(self: FrameChannel, cookie: u64) Error!void {
+        try check(api.zc_frame_channel_ack(self.fd, cookie));
+    }
+    pub fn receiveAcknowledgement(self: FrameChannel) Error!u64 {
+        var cookie: u64 = 0;
+        try check(api.zc_frame_channel_receive_ack(self.fd, &cookie));
+        return cookie;
+    }
+};
+pub const RemoteFrame = struct {
+    handle: ?*c.zc_remote_frame,
+    const api = @import("frame_channel.zig");
+    pub fn deinit(self: *RemoteFrame) Error!void {
+        const owned = self.handle orelse return;
+        self.handle = null;
+        try check(api.zc_remote_frame_close(owned));
+    }
+    pub fn info(self: RemoteFrame) Error!c.zc_export_info {
+        var out: c.zc_export_info = undefined;
+        try check(api.zc_remote_frame_info(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn stream(self: RemoteFrame, id: u32) Error!c.zc_stream {
+        var out: c.zc_stream = undefined;
+        try check(api.zc_remote_frame_stream(self.handle orelse return error.StaleFrame, id, &out));
+        return out;
+    }
+    pub fn metadataCatalog(self: RemoteFrame, allocator: std.mem.Allocator) ![]u8 {
+        const owned = self.handle orelse return error.StaleFrame;
+        var size: u64 = 0;
+        try check(api.zc_remote_frame_catalog_copy(owned, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(api.zc_remote_frame_catalog_copy(owned, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn copyRgb(self: RemoteFrame, allocator: std.mem.Allocator, id: u32, bits: u32) ![]u8 {
+        const owned = self.handle orelse return error.StaleFrame;
+        var size: u64 = 0;
+        try check(api.zc_remote_frame_copy_rgb(owned, id, bits, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(api.zc_remote_frame_copy_rgb(owned, id, bits, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+};
 /// Linear reference: copying the descriptor does not create another lease.
 /// retain creates a distinct reference; mappings expire only on final release.
 /// Views expire on release. DMA-BUF fds are borrowed and must never be closed.
@@ -1421,4 +1496,53 @@ test "public Zig frame export pins the source while catalog copies own their byt
     active = false;
     const reader = try @import("home/typed_catalog.zig").Reader.init(catalog);
     try t.expectEqual(@as(u32, 4), reader.catalog_kind);
+}
+
+test "public Zig remote frame owns local maps and copies until joined ACK retirement" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 4;
+    cfg.height = 2;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    var peer = try FrameChannel.fromFd(ends[1].fd);
+    defer peer.deinit() catch {};
+    try t.expectError(error.Timeout, ends[1].receive());
+    try ends[0].send(loan, 9007199254740993);
+    var receipt = try peer.receive();
+    defer receipt.frame.deinit() catch {};
+    try t.expectEqual(@as(u64, 9007199254740993), receipt.cookie);
+    const info = try receipt.frame.info();
+    try t.expectEqual(frame.value.sequence, info.metadata.sequence);
+    const stream = try receipt.frame.stream(c.ZC_MAIN);
+    try t.expectEqual(@as(u32, 4), stream.width);
+    try t.expect(stream.planes[0].fd != (try loan.info()).planes[0].fd);
+    const copied_pixels = try receipt.frame.copyRgb(t.allocator, c.ZC_MAIN, 8);
+    defer t.allocator.free(copied_pixels);
+    const catalog = try receipt.frame.metadataCatalog(t.allocator);
+    defer t.allocator.free(catalog);
+    try frame.release();
+    try camera.stop();
+    try t.expectError(error.Busy, camera.deinit());
+    try receipt.frame.deinit();
+    try t.expectError(error.StaleFrame, receipt.frame.stream(c.ZC_MAIN));
+    try ends[1].acknowledge(receipt.cookie);
+    try t.expectEqual(receipt.cookie, try ends[0].receiveAcknowledgement());
+    try loan.deinit();
+    try camera.deinit();
+    active = false;
+    try t.expectEqual(@as(usize, 24), copied_pixels.len);
+    try t.expectEqual(@as(u32, 4), (try @import("home/typed_catalog.zig").Reader.init(catalog)).catalog_kind);
 }

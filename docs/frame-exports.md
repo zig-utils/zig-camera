@@ -77,7 +77,8 @@ validation passes 410 native tests and 1,185 Bun media tests, C ABI and exec tes
 typecheck/fmt. The ordinary local runner still fails SDK/libSystem linkage before
 compilation; direct builds pass. Platform/real-backend CI remains a release gate.
 
-This is a low-level export API. Production descriptor transport, supervised
-process jobs/pools, ACK routing, timeout/exit cleanup, remote scoped mappings and
-full RemoteRequest equivalents remain required work. No Pi DMA mapping,
+Version 0.88 adds the [local descriptor channel and remote owners](frame-channels.md),
+including a lazily shared metadata file charged before allocation. This remains
+a low-level export API. Supervised process jobs/pools, automatic ACK routing,
+timeout/exit cleanup and full RemoteRequest equivalents remain required. No Pi DMA mapping,
 physical throughput or Picamera2 performance result is claimed by these fixtures.

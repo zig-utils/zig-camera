@@ -14,10 +14,12 @@ const Export = struct {
     map: *c.zc_frame_map,
     catalog: *c.zc_catalog,
     ticket: Admission.Ticket,
+    payload_cost: usize,
     info: c.zc_export_info,
     sources: [c.ZC_MAX_EXPORT_PLANES]c.zc_plane,
     descriptors: [c.ZC_MAX_EXPORT_PLANES]shared.Fd = @splat(.{}),
     staging: [c.ZC_MAX_EXPORT_PLANES]?shared.Region = @splat(null),
+    shared_catalog: ?shared.Region = null,
 };
 fn owner(p: *const c.zc_frame_export) *Export {
     return @ptrCast(@alignCast(@constCast(p)));
@@ -61,6 +63,9 @@ fn cleanup(self: *Export, writeback: bool) c_int {
             result = c.ZC_IO;
         };
     }
+    if (self.shared_catalog) |*region| region.close() catch {
+        result = c.ZC_IO;
+    };
     catalogs.zc_catalog_close(self.catalog);
     const retired = core.zc_frame_map_close(self.map);
     if (retired != c.ZC_OK) result = retired;
@@ -128,7 +133,7 @@ pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u3
     };
     mutex.unlock();
     const self = A.create(Export) catch return c.ZC_NOMEM;
-    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .info = info, .sources = sources };
+    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .payload_cost = cost, .info = info, .sources = sources };
     handed = true;
     var complete = false;
     defer if (!complete) {
@@ -163,6 +168,38 @@ pub export fn zc_frame_export_catalog_copy(p: *const c.zc_frame_export, data: ?[
 }
 pub export fn zc_frame_export_close(p: ?*c.zc_frame_export) c_int {
     return if (p) |value| cleanup(owner(value), true) else c.ZC_OK;
+}
+/// Internal transport cache. Source owner/calls remain caller-serialized. One
+/// bounded shared catalog per export; retries/queued sends only duplicate its fd.
+pub fn sharedCatalog(p: *const c.zc_frame_export, fd: *c_int, size: *u64) c_int {
+    const self = owner(p);
+    const rc = catalogs.zc_catalog_copy(self.catalog, null, 0, size);
+    if (rc != c.ZC_OK) return rc;
+    if (self.shared_catalog == null) {
+        mutex.lock();
+        admission.resize(self.ticket, self.payload_cost + @as(usize, @intCast(size.*))) catch {
+            mutex.unlock();
+            return c.ZC_BUSY;
+        };
+        mutex.unlock();
+        var complete = false;
+        defer if (!complete) {
+            mutex.lock();
+            admission.resize(self.ticket, self.payload_cost) catch unreachable;
+            mutex.unlock();
+        };
+        var region = shared.Region.create(@intCast(size.*), catalogs.limit) catch return c.ZC_IO;
+        defer if (!complete) region.close() catch {};
+        const copied = catalogs.zc_catalog_copy(self.catalog, region.mapping.bytes.ptr, size.*, size);
+        if (copied != c.ZC_OK) return copied;
+        self.shared_catalog = region;
+        complete = true;
+    }
+    const region = &self.shared_catalog.?;
+    const extent = shared.extent(region.fd.value) catch return c.ZC_IO;
+    if (extent < size.*) return c.ZC_IO;
+    fd.* = region.fd.value;
+    return c.ZC_OK;
 }
 
 test "export info remains pointer free and ABI-stable" {

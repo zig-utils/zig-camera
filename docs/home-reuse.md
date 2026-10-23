@@ -1491,3 +1491,36 @@ The standard local runner still fails SDK/libSystem linkage before compilation;
 direct builds pass. Home's exact-head hosted run is unavailable and not described
 as green. Consumer platform and real Linux backend/no-camera checks remain gates.
 Fixtures are software evidence, not physical Pi DMA or throughput acceptance.
+
+The 0.88 local-process transport audit starts at Home
+2c6513a47c80b24ea8b90491543b5338c753a277 and rechecks runtime/jsc/ipc.zig,
+POSIX owners, typed_catalog, owned_admission, frame_access and stream conversion
+helpers. Runtime first-byte/ACK policy remains useful, but atomic Unix datagrams
+avoid partial-stream rights cursors without importing JSC state. Home contribution
+f3070f293988bb3d0ef930d6837829a7e53b4518 adds a VM-independent bounded descriptor
+channel: 4096-byte/16-fd records, explicit WouldBlock, owned receive/take/close,
+SIGPIPE suppression and cleanup on excess/truncated records. Darwin rights
+overflow testing exposed eight inaccessible installed fds with a small ancillary
+buffer; the helper receives the verified kernel maximum first, then rejects and
+closes excess rights. Target ABI details and pinned kernel-source inspection are
+documented in Home's io/docs/descriptor-channel.md; no kernel code is copied.
+
+The helper is reused verbatim in camera. Existing Home POSIX mapping, typed
+catalog validation, reservation resizing and native-precision/YUV conversion are
+reused for remote imports and independent image objects. Sender shared metadata
+is cached once per export and charged before allocation; queued sends/retries
+only duplicate it. Receiver admission and every partial import cleanup are
+explicit. C/Zig/Bun add local channel/ACK primitives and remote owners, not a
+process supervisor or pool. Bun readonly access makes explicit owned copies;
+opt-in write scopes detach ordinary aliases. No Python or FFmpeg is added.
+
+All five shared-channel/imported POSIX tests pass on pinned/development Zig in
+Debug/ReleaseSafe; both compiler lines cross-link Linux ARM64/x86-64. Camera
+passes 416 target-qualified ReleaseSafe native tests, all 1,207 Bun media tests
+with independent decoders/SDL, old C ABI/export checks and independent C wire/
+CMSG exec checks in both directions. Malformed packets, late mapping failures,
+capacity restoration, cached metadata, queue pressure, all 14 layouts and joined
+ACK/abrupt child exit are covered. Typecheck/fmt pass; the normal local runner
+still fails SDK/libSystem linkage before project compilation. Consumer platform
+and real-backend/no-camera CI remain gates. Physical Pi DMA, process supervision,
+full remote conveniences/pools and the broader parity families remain open.

@@ -46,9 +46,60 @@ export class FrameExport implements Disposable {
   }
   /** All fd numbers are borrowed from this export, not independent owners. */
   info() {
-    const bytes = storage(736),
-      d = view(bytes)
+    const bytes = storage(736)
     check(n.zc_frame_export_info(this.open(), ptr(bytes)))
+    return decodeFrameExportInfo(bytes)
+  }
+  /** Low-level send. Hold this owner until all remote views retire and ACK/exit is verified. */
+  trySend(channelFd: number, cookie: bigint) {
+    if (!Number.isInteger(channelFd) || channelFd < 0 || channelFd > 0x7fffffff || typeof cookie !== 'bigint' || cookie <= 0n || cookie > 0xffffffffffffffffn) throw new RangeError('invalid channel or cookie')
+    const rc = n.zc_frame_channel_send(channelFd, this.open(), cookie)
+    if (rc === -3) return false
+    check(rc)
+    return true
+  }
+  metadataCatalog() {
+    const owner = this.open(),
+      size = new BigUint64Array(1)
+    check(n.zc_frame_export_catalog_copy(owner, null, 0n, ptr(size)))
+    const bytes = storage(Number(size[0]))
+    check(
+      n.zc_frame_export_catalog_copy(
+        owner,
+        ptr(bytes),
+        BigInt(bytes.byteLength),
+        ptr(size),
+      ),
+    )
+    return decodeCatalog(bytes)
+  }
+  /** Consumes even when DMA/requeue cleanup reports an error. */
+  close() {
+    const owned = this.owned
+    this.owned = undefined
+    if (owned) check(n.zc_frame_export_close(owned))
+  }
+  [Symbol.dispose]() {
+    this.close()
+  }
+}
+/** @internal Frame holds a readable source reference for this entire call. */
+export function exportNativeFrame(
+  camera: Pointer,
+  token: bigint,
+  streams: number,
+  writable: boolean,
+) {
+  return FrameExport[admission](camera, token, streams, writable)
+}
+export interface FrameExportOptions {
+  streams?: readonly ('main' | 'raw' | 'lores')[]
+  writable?: boolean
+}
+
+/** @internal Shared pointer-free descriptor decoder. */
+export function decodeFrameExportInfo(bytes: Uint8Array) {
+  const d = view(bytes)
     const streamCount = d.getUint32(4, true),
       planeCount = d.getUint32(8, true),
       flags = d.getUint32(12, true)
@@ -92,42 +143,4 @@ export class FrameExport implements Disposable {
         crop: Object.freeze({ ...metadata.crop }),
       }),
     })
-  }
-  metadataCatalog() {
-    const owner = this.open(),
-      size = new BigUint64Array(1)
-    check(n.zc_frame_export_catalog_copy(owner, null, 0n, ptr(size)))
-    const bytes = storage(Number(size[0]))
-    check(
-      n.zc_frame_export_catalog_copy(
-        owner,
-        ptr(bytes),
-        BigInt(bytes.byteLength),
-        ptr(size),
-      ),
-    )
-    return decodeCatalog(bytes)
-  }
-  /** Consumes even when DMA/requeue cleanup reports an error. */
-  close() {
-    const owned = this.owned
-    this.owned = undefined
-    if (owned) check(n.zc_frame_export_close(owned))
-  }
-  [Symbol.dispose]() {
-    this.close()
-  }
-}
-/** @internal Frame holds a readable source reference for this entire call. */
-export function exportNativeFrame(
-  camera: Pointer,
-  token: bigint,
-  streams: number,
-  writable: boolean,
-) {
-  return FrameExport[admission](camera, token, streams, writable)
-}
-export interface FrameExportOptions {
-  streams?: readonly ('main' | 'raw' | 'lores')[]
-  writable?: boolean
 }

@@ -12,6 +12,7 @@ comptime {
     _ = @import("tuning_session.zig");
     _ = @import("hotplug.zig");
     _ = @import("recovery.zig");
+    _ = @import("frame_channel.zig");
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };

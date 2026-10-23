@@ -24,6 +24,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/descriptor_channel.zig is verbatim Home hosted local fd transport at
+  f3070f293988bb3d0ef930d6837829a7e53b4518. Verified ABI/behavior references in
+  Home's packages/io/docs/descriptor-channel.md are not copied kernel source.
 - src/home/posix_shared_memory.zig and owned_admission.zig are verbatim Home
   hosted POSIX owners and resizable reservation registry at
   2c6513a47c80b24ea8b90491543b5338c753a277.

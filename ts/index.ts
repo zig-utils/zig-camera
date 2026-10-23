@@ -132,6 +132,7 @@ import { withStagedImageFile } from './staged-image'
 import { copyNativeImage, resizeImageSnapshot } from './image-capture'
 import { exportNativeFrame, type FrameExportOptions } from './frame-export'
 export { FrameExport, type FrameExportOptions } from './frame-export'
+export { FrameChannel, RemoteFrame } from './frame-channel'
 import { CapturedImage, adoptImageSnapshot, snapshotCaptureImageOptions, type CaptureImageOptions } from './image-object'
 export { CapturedImage, type ImageResample, type ImageResizeOptions, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
 import {

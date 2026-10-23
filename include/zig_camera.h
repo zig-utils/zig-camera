@@ -423,6 +423,32 @@ int zc_frame_export_info(const zc_frame_export *,zc_export_info *out);
 int zc_frame_export_catalog_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
 int zc_frame_export_close(zc_frame_export *);
 
+/* Local Linux/Darwin 64-bit little-endian descriptor channel, no process
+ * supervision. Pair/duplicate return owned CLOEXEC descriptors; close once.
+ * All I/O is nonblocking: TIMEOUT means empty/full queue, no partial send.
+ * Hold the sending export until remote maps are closed and ACK or peer exit
+ * verified. ACK cookies must be unique among live sends. Sending does not
+ * transfer/retire the export owner. Calls on each owner must be serialized. */
+typedef struct zc_remote_frame zc_remote_frame;
+int zc_frame_channel_pair(int32_t out[2]);
+int zc_frame_channel_duplicate(int32_t borrowed,int32_t *out);
+int zc_frame_channel_close(int32_t owned);
+int zc_frame_channel_send(int32_t channel,const zc_frame_export *,uint64_t cookie);
+int zc_frame_channel_receive(int32_t channel,zc_remote_frame **out,uint64_t *cookie);
+/* Send ACK only AFTER closing the remote frame and its borrowed views.
+ * These primitives do not associate acknowledgements with sender owners. */
+int zc_frame_channel_ack(int32_t channel,uint64_t cookie);
+int zc_frame_channel_receive_ack(int32_t channel,uint64_t *cookie);
+int zc_remote_frame_info(const zc_remote_frame *,zc_export_info *out);
+int zc_remote_frame_catalog_copy(const zc_remote_frame *,uint8_t *,uint64_t capacity,uint64_t *length);
+/* Borrowed mapped planes; const/read-only unless export is WRITABLE. Mapping
+ * does not extend sender camera ownership. Close views before remote close. */
+int zc_remote_frame_stream(const zc_remote_frame *,uint32_t stream,zc_stream *out);
+/* Independent tight RGB8/RGB16 copies through Home conversions. Query with
+ * data=NULL,capacity=0; raw is unsupported. No borrowed pixels escape. */
+int zc_remote_frame_copy_rgb(const zc_remote_frame *,uint32_t stream,uint32_t bits,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_remote_frame_close(zc_remote_frame *);
+
 uint32_t zc_abi_version(void);
 void zc_default_config(zc_config *config);
 /* Camera lifecycle calls must be serialized by the caller. acquire/release/stats

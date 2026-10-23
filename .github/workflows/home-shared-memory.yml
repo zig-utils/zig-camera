@@ -2,9 +2,9 @@ name: Home shared memory
 on:
   push:
     branches: [main]
-    paths: ['src/home/posix_shared_memory.zig', 'src/home/owned_admission.zig', '.github/workflows/home-shared-memory.yml']
+    paths: ['src/home/descriptor_channel.zig', 'src/home/posix_shared_memory.zig', 'src/home/owned_admission.zig', '.github/workflows/home-shared-memory.yml']
   pull_request:
-    paths: ['src/home/posix_shared_memory.zig', 'src/home/owned_admission.zig', '.github/workflows/home-shared-memory.yml']
+    paths: ['src/home/descriptor_channel.zig', 'src/home/posix_shared_memory.zig', 'src/home/owned_admission.zig', '.github/workflows/home-shared-memory.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,5 +27,6 @@ jobs:
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" -lc src/home/posix_shared_memory.zig
+            zig test -O "$mode" -lc src/home/descriptor_channel.zig
             zig test -O "$mode" src/home/owned_admission.zig
           done

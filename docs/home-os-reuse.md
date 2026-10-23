@@ -487,3 +487,14 @@ old-data copy remains a placeholder. No hosted descriptor export/peer lifecycle
 implementation is available to copy there. Shared POSIX helpers and admission
 resizing improve Home, while libcamera maps/leases stay in camera. No OS code is
 copied, modified or executed, and no hardware IPC/DMA performance is inferred.
+
+The 0.88 local-process transport audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3 and kernel/src/ipc/
+shm_posix.home, shm.home and msgqueue.home. Repository searches find no hosted
+SCM_RIGHTS/sendmsg/recvmsg transport. The kernel named-object reference counts,
+small inline messages and placeholder ftruncate data copy cannot implement
+Linux/Darwin descriptor passing or retain a libcamera request. The generic
+hosted channel improves Home's IO package and is reused verbatim; camera owns
+device exports, checked imports and eventual process supervision. No OS source
+is copied, changed or executed. Kernel/hosted ownership remains separate, and
+no physical Pi DMA, IPC throughput or codec acceleration is claimed.

@@ -71,6 +71,8 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/frame_export.c -Lzig-out/lib -lzigcamera -o zig-out/frame-export-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/frame-export-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/frame_channel.c -Lzig-out/lib -lzigcamera -o zig-out/frame-channel-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/frame-channel-test
           bun test tests/ts
           bun tests/ts/check-alignment-cli.ts zig-out/bin/zig-camera
           bun tests/ts/check-quality-cli.ts zig-out/bin/zig-camera
