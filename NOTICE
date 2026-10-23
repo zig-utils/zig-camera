@@ -684,3 +684,16 @@ Home exact orthogonal pixels (0.99):
 - tests/pixel_orientation_fixture.zig and pixel_orientation_reference.c are
   verbatim Home packages/image/tests fixtures at that same revision.
   https://github.com/home-lang/home/commit/3d06866b74de1516625f070e96b7a4dc3bcdb01e
+
+Home bounded PNG/APNG decoding (0.100):
+- src/home/png_decoder.zig is adapted from Home
+  packages/image/src/png_decoder.zig at
+  e3aa7a790af9d84affc290558f50ab745db401ff; only flattened format import
+  paths differ. src/home/zlib_stream.zig is copied verbatim from that revision.
+- tests/png_decode_fixture.zig and png_decode_libpng.c are verbatim Home
+  packages/image/tests fixtures. Existing Home MIT attribution above applies.
+  https://github.com/home-lang/home/commit/e3aa7a790af9d84affc290558f50ab745db401ff
+  PNG core follow-up 1c3781d90110ea13a13e220fdbd786135b023f69 bounds cancellation within wide rows;
+  the camera copy includes it with the same import-only adaptation.
+  Final PNG metadata validation 207d20242d3dbaec74b9888f70b9f516521f55de enforces the RGB cICP
+  matrix and PNG Exif header structure; the camera copy includes this follow-up.

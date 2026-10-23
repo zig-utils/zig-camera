@@ -7,11 +7,9 @@ const pixel = @import("home/pixel_view.zig");
 const files = @import("image_file.zig");
 const Gate = @import("home/preparation_gate.zig").Gate;
 const Budget = @import("home/budget_allocator.zig").Budget;
-const Admission = @import("home/owned_admission.zig").Registry(4);
+const Admission = @import("image_admission.zig");
 const A = std.heap.c_allocator;
 const cap = 256 * 1024 * 1024;
-var registry: Admission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 4 };
-var registry_mutex: std.Thread.Mutex = .{};
 const Job = struct {
     mutex: std.Thread.Mutex = .{},
     gate: Gate = .{},
@@ -90,9 +88,7 @@ fn job(p: *c.zc_image_job) *Job {
     return @ptrCast(@alignCast(p));
 }
 fn release(ticket: Admission.Ticket) void {
-    registry_mutex.lock();
-    defer registry_mutex.unlock();
-    registry.release(ticket) catch unreachable;
+    Admission.release(ticket);
 }
 pub export fn zc_default_image_job_limits(out: *c.zc_image_job_limits) void {
     out.* = .{ .struct_size = @sizeOf(c.zc_image_job_limits), .reserved = 0, .max_input_bytes = 64 * 1024 * 1024, .max_output_bytes = 64 * 1024 * 1024, .max_working_bytes = 128 * 1024 * 1024 };
@@ -141,12 +137,9 @@ fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, 
     inline for (.{ profile_bytes, exif_bytes, catalog_bytes, model orelse &.{} }) |bytes| size = std.math.add(usize, size, bytes.len) catch return c.ZC_INVALID;
     if (size > limits.max_input_bytes) return c.ZC_INVALID;
     const charge = size + @as(usize, @intCast(limits.max_working_bytes)) + @sizeOf(Job) + @sizeOf(still.Blob);
-    registry_mutex.lock();
-    const ticket = registry.reserve(charge) catch |err| {
-        registry_mutex.unlock();
+    const ticket = Admission.reserve(charge) catch |err| {
         return if (err == error.BufferFull) c.ZC_BUSY else c.ZC_INVALID;
     };
-    registry_mutex.unlock();
     var success = false;
     defer if (!success) release(ticket);
     const self = A.create(Job) catch return c.ZC_NOMEM;

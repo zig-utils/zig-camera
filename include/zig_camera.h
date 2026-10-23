@@ -685,6 +685,33 @@ typedef struct {
  * Source/target overlap rejects, except identical no-op copies. Native endian
  * is explicit; 8->16 replicates bytes and 16->8 selects high bytes. */
 typedef zc_apng_raster zc_raster;
+/* Strict PNG/APNG loading. All pixel words are little endian and straight alpha.
+ * Default image slot is 0; animation rectangles are slots 1..frame_count.
+ * Scalar metadata flags: ICC=1, Exif=2, sRGB=4, gamma=8, cHRM=16, cICP=32.
+ * No gamma conversion, animation compositing or Exif orientation is applied.
+ * Owners/jobs share the image encoder's four-owner, 512 MiB admission ceiling.
+ * An async result retains its reservation after take and job close until its
+ * own close. Cancellation never publishes a partial result; join before close.
+ * Owner operations require caller serialization. Metadata copies: ICC=1,
+ * Exif=2, RGBA palette=3. A null destination queries required bytes. */
+typedef struct zc_png_image zc_png_image;
+typedef struct zc_png_job zc_png_job;
+typedef struct {uint32_t struct_size,max_frames,max_chunks,reserved;uint64_t max_input_bytes,max_output_bytes,max_working_bytes,max_metadata_bytes;} zc_png_limits;
+typedef struct {uint32_t struct_size,frame_count,default_is_frame,plays,source_depth,source_color,interlaced,palette_count;uint32_t metadata_flags,srgb,gamma,chromaticities[8],cicp[4],reserved;} zc_png_info;
+typedef struct {uint32_t struct_size,width,height,format,bits,x,y,delay_num,delay_den,dispose,blend,reserved;uint64_t stride,length;} zc_png_frame_info;
+void zc_default_png_limits(zc_png_limits *);
+int zc_png_decode(const uint8_t *,uint64_t,const zc_png_limits *,zc_png_image **out);
+int zc_png_decode_async(const uint8_t *,uint64_t,const zc_png_limits *,zc_png_job **out);
+int zc_png_info_get(zc_png_image *,zc_png_info *);
+int zc_png_frame_get(zc_png_image *,uint32_t slot,zc_png_frame_info *);
+int zc_png_frame_copy(zc_png_image *,uint32_t slot,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_png_metadata_copy(zc_png_image *,uint32_t kind,uint8_t *,uint64_t capacity,uint64_t *length);
+void zc_png_close(zc_png_image *);
+int zc_png_job_state_get(zc_png_job *,zc_image_job_state *);
+int zc_png_job_cancel(zc_png_job *);
+int zc_png_job_take_image(zc_png_job *,zc_png_image **out);
+int zc_png_job_close(zc_png_job *);
+
 int zc_raster_convert(const zc_raster *,uint32_t format,uint32_t bits,uint32_t big_endian,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_crop(const zc_raster *,uint32_t x,uint32_t y,uint32_t width,uint32_t height,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_pixel16(const zc_raster *,uint32_t x,uint32_t y,uint16_t rgba[4]);

@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.100 adds [bounded PNG/APNG loading](docs/png-decoding.md): sync and
+joined async owned images, exact 16-bit reconstruction, Adam7, raw animation
+rectangles and copied metadata. Home gains the shared decoder and a corrected
+public Image adapter; native decoding shares still-encoder ownership limits.
+
 Version 0.99 adds [exact owned-image transforms](docs/image-transforms.md):
 rotate, flip, transpose and composed operations retain RGB16 low words, alpha
 and provenance through source closure and async encoding. Shared Home image

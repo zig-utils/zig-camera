@@ -96,3 +96,6 @@ Version 0.86 adds [temporary-mode image jobs](mode-images.md).
 Further image transforms, palette/
 float/gamut conversion, general external image decoding and complete animation/
 image-object semantics remain work. The full Picamera2 parity goal remains open.
+
+Version 0.100 adds [owned PNG/APNG loading](png-decoding.md) through bounded
+synchronous and joined native decode jobs, with explicit metadata/frame owners.

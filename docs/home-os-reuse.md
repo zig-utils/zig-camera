@@ -605,3 +605,13 @@ The shared exact-pixel and public Image fixes therefore live in Home stdlib;
 zig-camera owns its borrowed C boundary, bounded owned results and Bun lifecycle.
 No OS source is copied, changed or executed, and no kernel declaration supplies
 Pi 5 physical capture, image quality or performance acceptance.
+
+The 0.100 PNG-loading audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and inspects camera_capture, media
+video/audio decoder entry points and ADR-MC3. The ADR explicitly records that no
+image decoder exists there and assigns hosted shared media work to Home stdlib.
+The kernel capture stub and display paths do not supply a bounded PNG/APNG
+loader or hosted worker owner. The exact PNG/streaming-inflate improvement lives
+in Home; camera supplies bounded native/Bun ownership and file integration.
+Home OS stays in its existing language and no OS source is copied, changed or
+executed. Its declarations do not establish physical Pi quality or throughput.

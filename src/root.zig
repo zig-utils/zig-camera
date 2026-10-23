@@ -90,6 +90,11 @@ pub const GifEncoder = @import("home/gif_encoder.zig");
 pub const ImagePixels = @import("home/pixel_view.zig");
 pub const ImageResample = @import("home/pixel_resample.zig");
 pub const ImageOrthogonal = @import("home/oriented_pixels.zig");
+pub const PngDecoder = @import("home/png_decoder.zig");
+pub const png_image = @import("png_image.zig");
+comptime {
+    _ = png_image;
+}
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;

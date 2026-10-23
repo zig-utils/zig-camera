@@ -1758,3 +1758,36 @@ as the portable copy across all three OS/CPU targets. Camera retains ABI limits,
 Bun option snapshots, source provenance, and image ownership. Existing preview
 and still transforms share one Bun normalization helper and native geometry;
 no new codec, Python, FFmpeg or Home OS code is introduced.
+
+## Bounded exact PNG/APNG loading (0.100)
+
+Fetched Home main at 3d06866b74de1516625f070e96b7a4dc3bcdb01e and audited
+formats/png.zig, caller-owned zlib_stream, pixel views and ICC/Exif layout helpers.
+An isolated RGB16 encode/decode probe reproduced 1234/5678/9abc becoming rgb8,
+then 1212/5656/9a9a. The old decoder also inflated into an unbounded full raster
+and lacked complete CRC/stream/APNG validation. Improvement
+e3aa7a790af9d84affc290558f50ab745db401ff adds the portable bounded PNG/APNG
+core, streaming inflate, strict container planning and an adopting Image adapter.
+All legal sample formats, Adam7, exact word transparency and raw animation
+controls are retained; metadata ownership is explicit. The legacy Image adapter
+still has millisecond delays, no excluded-poster flag and no ICC/Exif fields;
+full metadata/poster re-encoding uses the core Result and AnimationEncoder.
+
+The portable core and independent libpng writer/reference pass 36 shared tests
+and 936 reference cases per mode on local pinned/development Zig, Debug and
+ReleaseSafe. Explicitly discovered upstream Image PNG/APNG tests also pass both
+modes. Home exact-head Actions currently returns no runs; camera's consumer
+workflow therefore checks the exact upstream source separately. Camera adapts
+only flattened import paths, copies zlib/fixtures verbatim, and retains C limits,
+shared hosted admission, stable budget owners and Bun file/job lifetimes. No
+new codec, Python, FFmpeg or Home OS code is introduced.
+
+Follow-up 1c3781d90110ea13a13e220fdbd786135b023f69 adds cancellation inside wide-row filtering and
+sample expansion. Direct row-boundary regression, all 35 shared tests and the
+independent corpus pass both compilers/modes; the camera copy and upstream
+consumer checkout include this revision.
+
+Final metadata follow-up 207d20242d3dbaec74b9888f70b9f516521f55de rejects non-RGB cICP matrices,
+invalid range flags and JPEG-wrapped Exif, with preallocation regression checks.
+All 36 core tests, 936 independent cases per mode, and upstream adapter tests
+pass locally in both build modes; portable coverage uses both compilers.

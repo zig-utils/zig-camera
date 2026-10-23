@@ -53,6 +53,8 @@ import {
 export type { ImageTransformOptions } from './image-transform'
 type Metadata = ReturnType<typeof decodeMetadata>
 const captureAdmission = Symbol('capture image admission')
+/** @internal Native PNG copies only; never a borrowed application raster. */
+export const pngImageAdmission = Symbol('PNG image admission')
 export type ImageSourceMetadata = Readonly<Omit<Metadata, 'crop'>> & {
   readonly crop: Readonly<Metadata['crop']>
 }
@@ -215,6 +217,10 @@ export class CapturedImage implements Disposable {
     readonly sourceMetadata?: ImageSourceMetadata,
   ) {
     this.pixels = bytes
+  }
+  /** @internal Adopt a fresh native copy with source interpretation left unknown. */
+  static [pngImageAdmission](bytes: Uint8Array, width: number, height: number, format: RasterFormat, bits: 8 | 16) {
+    return new CapturedImage(bytes, Object.freeze({width,height,format,bits,endian:'little' as const,stride:width*[1,3,4][kinds[format]]!*(bits/8)}))
   }
   static fromRaster(source: ImageRaster) {
     if (!source || typeof source !== 'object')

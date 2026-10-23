@@ -1,3 +1,4 @@
+export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 import {
   prepareApng,
   runApng,
