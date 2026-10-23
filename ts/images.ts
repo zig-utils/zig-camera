@@ -33,6 +33,14 @@ export function processedImageStream(stream: 'main' | 'lores' = 'main') {
     throw new CameraError(-8, 'raw RGB conversion')
   return stream
 }
+/** @internal Synchronous borrowed descriptor; returns independent compact pixels. */
+export function resizeNativeRaster(source: Uint8Array, width: number, height: number, filter: number) {
+  const size = new BigUint64Array(1)
+  check(n.zc_raster_resize(ptr(source),width,height,filter,null,0n,ptr(size)))
+  const bytes = storage(Number(size[0]))
+  check(n.zc_raster_resize(ptr(source),width,height,filter,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
+  return bytes
+}
 export function readStreamColorSpace(camera: Pointer, stream: ImageStream) {
   const data = storage(24)
   check(n.zc_get_stream_color_space(camera, imageStreamId(stream), ptr(data)))

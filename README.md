@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.86 adds [temporary-mode owned image jobs](docs/mode-images.md),
+with native-precision target pixels/metadata, optional worker resizing and
+publication after camera/preview restoration.
+
 Version 0.85 adds [owned image resizing](docs/image-resizing.md) and optional
 capture-time dimensions, reusing Home’s checked native-precision, alpha-aware
 resampler with bounded tables and row caching. Home’s public Image resizing

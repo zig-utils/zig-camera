@@ -4,6 +4,12 @@ import {
   type StreamName,
 } from './streams'
 import type { PreparedExif } from './exif'
+import {
+  copyNativeImage,
+  resizeImageSnapshot,
+  type ImageSnapshot,
+} from './image-capture'
+import type { ImageCaptureSettings } from './image-settings'
 import { decodeMetadata } from './metadata'
 import { decodeCatalog } from './catalog'
 import {
@@ -63,6 +69,8 @@ export interface ModeRequest {
       | 'file'
       | 'encoded'
       | 'request-stop'
+      | 'image'
+    imageSettings?: ImageCaptureSettings
     streams?: StreamName[]
     imageOptions?: Uint8Array
     imageProfile?: ImageProfile
@@ -99,6 +107,7 @@ export interface ModeResponse {
   requestFrame?: Uint8Array
   requestCleanupCode?: number
   bundle?: CapturedStreams
+  image?: ImageSnapshot
   stream?: { width: number; height: number; format: string }
   /** Main-thread-only enrichment; never transported by the worker. */
   callbackError?: unknown
@@ -466,6 +475,12 @@ self.onmessage = ({ data: request }) => {
         const capture = request.capture
         if (capture.kind === 'request-stop') {
           // Transfer the existing acquisition only after the post hook retires.
+        } else if (capture.kind === 'image') {
+          result.image = copyNativeImage(
+            result.handle,
+            token,
+            capture.imageSettings!,
+          )
         } else if (capture.kind === 'streams') {
           result.bundle = copyNativeStreams(
             result.handle,
@@ -620,17 +635,40 @@ self.onmessage = ({ data: request }) => {
       result.restoreCode = status(code)
     }
   }
+  // Pixel postprocessing runs after target release and camera restoration.
+  // Check both before and after synchronous work; cancellation never abandons
+  // the worker or its restored camera owner.
+  if (result.image) {
+    try {
+      if (result.code || result.restoreCode || result.requestCleanupCode)
+        throw result.code || result.restoreCode || result.requestCleanupCode
+      if (cancelled()) throw -5
+      result.image = resizeImageSnapshot(
+        result.image,
+        request.capture!.imageSettings!,
+      )
+      if (cancelled()) throw -5
+    } catch (error) {
+      result.code ||= status(error)
+      result.image = undefined
+    }
+  }
   Atomics.store(new Int32Array(request.cancel), 1, 5)
   // Paired stream views share one owned buffer. Move it once rather than
   // cloning every pixel during worker publication; no DMA backing escapes.
   const transfers = new Set<ArrayBuffer>()
+  if (result.image?.data.buffer instanceof ArrayBuffer)
+    transfers.add(result.image.data.buffer)
   if (result.bundle)
     for (const stream of Object.values(result.bundle.streams)) {
       if (stream && stream.data.buffer instanceof ArrayBuffer)
         transfers.add(stream.data.buffer)
     }
   observeLoss()
-  if (!result.deviceLoss && (result.code === -11 || result.restoreCode === -11))
+  if (
+    !result.deviceLoss &&
+    (result.code === -11 || result.restoreCode === -11)
+  )
     result.deviceLoss = {
       connected: false,
       running: false,

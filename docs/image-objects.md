@@ -92,6 +92,7 @@ word, alpha sample and byte order. C/Zig tests check bounds, overlap, no-prefix
 copies, blob ownership and request/camera retirement. These tests are software
 evidence, not physical sensor quality, format acceptance or camera performance.
 
-Further image transforms, temporary-mode image conveniences, palette/
+Version 0.86 adds [temporary-mode image jobs](mode-images.md).
+Further image transforms, palette/
 float/gamut conversion, general external image decoding and complete animation/
 image-object semantics remain work. The full Picamera2 parity goal remains open.

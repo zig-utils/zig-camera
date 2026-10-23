@@ -1443,3 +1443,23 @@ The previous 0.84 release passed all 12 exact-head consumer workflows, including
 all three main platform jobs, 1,083 Bun tests, 30 HEVC diagnostic repetitions and
 Linux libcamera loading with zero cameras. No physical acceptance/performance
 result follows from these software checks.
+
+The 0.86 temporary-mode image audit inspects unchanged clean Home main at
+d2123edf5e6d17352a234b9986ac430d93a83b7c: checked pixel_view/pixel_resample,
+plane_pack, lease_pool, frame_access and frame_fanout. Existing checked copies,
+word precision, bounded resizing and native generation/access ownership are
+reused. The required new logic is hosted libcamera mode/request ownership and
+Bun worker publication, so no unrelated Home algorithm or queue is introduced.
+Ordinary and mode captures share one native snapshot helper; independent pixels
+move through the existing worker transfer set after joined request release and
+mode restoration. Home resizing runs on owned pixels after target retirement.
+The main owner restores preview before adopting/sealing the image. No Python or
+FFmpeg is added, and Home source is not changed in this chunk.
+
+Validation passes 66 new mode-image tests, the complete 1,167-test Bun media suite
+with independent readback/SDL, 403 target-qualified native tests, C ABI execution,
+typecheck and pinned fmt. The normal local runner still fails SDK/libSystem
+linkage before compilation; direct native tests pass. Consumer Linux ARM/x86
+real-backend load/no-camera checks remain a publication gate. Target provenance,
+precision and restored-state software checks do not prove physical Pi mode
+latency, sensor acceptance or throughput.

@@ -470,3 +470,11 @@ integer image resampler. The math library's Lanczos approximation concerns gamma
 not image filtering. Per ADR-MC3, the reusable algorithm improves Home stdlib and
 is reused by camera; kernel/device ownership stays separate. No OS source is
 copied, changed or executed, and no hardware support/performance is inferred.
+
+The 0.86 temporary-mode image audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rechecks camera_capture and ADR-MC3.
+The nominal kernel capture routine supplies no hosted libcamera reconfiguration,
+request metadata owner or Bun worker-transfer path. Shared checked pixels and
+resampling stay in Home stdlib; this chunk reuses them and existing camera
+leases/mode jobs. No OS source is copied, modified or executed. Hardware mode
+switching/optics/performance require separate Pi acceptance evidence.

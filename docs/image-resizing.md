@@ -67,3 +67,7 @@ preserve original output and Image owners. Bun checks all processed main/lores
 capture formats, partial dimensions, source retirement/GC, getters/closure,
 limits and focus-locked async capture. Software checks do not establish physical
 camera quality, Pi throughput or Picamera2 speedups.
+
+Version 0.86 adds [temporary-mode image jobs](mode-images.md), whose optional
+resizing runs on the existing worker after request retirement and mode
+restoration. Ordinary image methods retain their synchronous owner semantics.

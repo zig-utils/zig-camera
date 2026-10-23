@@ -10,7 +10,7 @@ import {
 } from './ffi'
 import {
   prepareImage,
-  processedImageStream,
+  resizeNativeRaster,
   imageProfileDescriptor,
   type ImageOptions,
   type StreamColorSpace,
@@ -33,51 +33,17 @@ export interface ImageRaster {
   colorSpace?: StreamColorSpace
 }
 export type ImageObjectOptions = Omit<ImageOptions, 'stream'>
-export type ImageResample =
-  'nearest' | 'bilinear' | 'bicubic' | 'lanczos2' | 'lanczos3'
-export interface ImageResizeOptions {
-  /** Home Mitchell-Netravali bicubic by default; no gamma/gamut conversion. */
-  resample?: ImageResample
-}
-export interface CaptureImageOptions extends ImageResizeOptions {
-  stream?: 'main' | 'lores'
-  bits?: 8 | 16
-  /** Omitted dimensions retain that source dimension. Configuring a stream at
-   * the required size avoids this explicit owned copy and software resampling. */
-  width?: number
-  height?: number
-}
-const algorithms = [
-  'nearest',
-  'bilinear',
-  'bicubic',
-  'lanczos2',
-  'lanczos3',
-] as const
-function algorithm(value: unknown): ImageResample {
-  if (!algorithms.includes(value as ImageResample))
-    throw new RangeError('invalid image resampler')
-  return value as ImageResample
-}
-/** @internal Snapshot user properties before accessing a request/native view. */
-export function snapshotCaptureImageOptions(options: CaptureImageOptions) {
-  const stream = options.stream ?? 'main',
-    bits = options.bits,
-    width = options.width,
-    height = options.height,
-    filter = options.resample ?? 'bicubic'
-  processedImageStream(stream)
-  if (bits !== undefined) depth(bits)
-  if (width !== undefined) integer(width, 1, 0x7fffffff)
-  if (height !== undefined) integer(height, 1, 0x7fffffff)
-  return Object.freeze({
-    stream,
-    bits,
-    width,
-    height,
-    resample: algorithm(filter),
-  })
-}
+export {
+  snapshotCaptureImageOptions,
+  type ImageResample,
+  type ImageResizeOptions,
+  type CaptureImageOptions,
+} from './image-settings'
+import {
+  imageResampleCode,
+  type ImageResizeOptions,
+} from './image-settings'
+import type { ImageSnapshot } from './image-capture'
 type Metadata = ReturnType<typeof decodeMetadata>
 const captureAdmission = Symbol('capture image admission')
 export type ImageSourceMetadata = Readonly<Omit<Metadata, 'crop'>> & {
@@ -379,33 +345,9 @@ export class CapturedImage implements Disposable {
   resize(width: number, height: number, options: ImageResizeOptions = {}) {
     integer(width, 1, 0x7fffffff)
     integer(height, 1, 0x7fffffff)
-    const filter = algorithm(options.resample ?? 'bicubic'),
-      source = this.descriptor(),
-      size = new BigUint64Array(1),
-      code = algorithms.indexOf(filter)
-    check(
-      n.zc_raster_resize(
-        ptr(source.data),
-        width,
-        height,
-        code,
-        null,
-        0n,
-        ptr(size),
-      ),
-    )
-    const bytes = storage(Number(size[0]))
-    check(
-      n.zc_raster_resize(
-        ptr(source.data),
-        width,
-        height,
-        code,
-        ptr(bytes),
-        BigInt(bytes.byteLength),
-        ptr(size),
-      ),
-    )
+    const code = imageResampleCode(options.resample ?? 'bicubic'),
+      source = this.descriptor()
+    const bytes = resizeNativeRaster(source.data, width, height, code)
     return new CapturedImage(
       bytes,
       Object.freeze({
@@ -614,5 +556,17 @@ export function adoptCapturedImage(
     bits,
     metadata,
     space,
+  )
+}
+
+/** @internal The native copy or worker transfer owns all pixels independently. */
+export function adoptImageSnapshot(image: ImageSnapshot) {
+  return adoptCapturedImage(
+    image.data,
+    image.width,
+    image.height,
+    image.bits,
+    image.metadata,
+    image.colorSpace,
   )
 }

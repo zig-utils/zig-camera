@@ -129,7 +129,8 @@ import {
 } from './streams'
 export type { StreamName, PackedStream, CapturedStreams } from './streams'
 import { withStagedImageFile } from './staged-image'
-import { CapturedImage, adoptCapturedImage, snapshotCaptureImageOptions, type CaptureImageOptions } from './image-object'
+import { copyNativeImage, resizeImageSnapshot } from './image-capture'
+import { CapturedImage, adoptImageSnapshot, snapshotCaptureImageOptions, type CaptureImageOptions } from './image-object'
 export { CapturedImage, type ImageResample, type ImageResizeOptions, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
 import {
   readColorNegotiation,
@@ -833,30 +834,10 @@ export class Frame {
     return data
   }
   makeImage(options: CaptureImageOptions = {}) {
-    const selected = snapshotCaptureImageOptions(options),
-      { stream, bits: requested } = selected
+    const selected = snapshotCaptureImageOptions(options)
     this.open()
-    const descriptor = storage(208)
-    check(n.zc_get_stream(this.camera.handle, this.token, imageStreamId(stream), ptr(descriptor)))
-    const d = view(descriptor), width = d.getUint32(0, true), height = d.getUint32(4, true),
-      wide = text(descriptor, 16, 32).endsWith('161616'), bits = requested ?? (wide ? 16 : 8)
-    if (bits === 16 && !wide) throw new CameraError(-8, 'native image precision')
-    if (width * height * 3 * (bits / 8) > 256 * 1024 * 1024)
-      throw new RangeError('image pixels exceed 256 MiB')
-    const targetWidth = selected.width ?? width, targetHeight = selected.height ?? height
-    if (targetWidth * targetHeight * 3 * (bits / 8) > 256 * 1024 * 1024)
-      throw new RangeError('resized image pixels exceed 256 MiB')
-    const metadata = this.metadata(), color = this.colorSpace(stream)
-    const pixels = storage(width * height * 3 * (bits / 8))
-    const copy = bits === 8 ? n.zc_copy_stream_rgb : n.zc_copy_stream_rgb16
-    check(copy(this.camera.handle, this.token, imageStreamId(stream), ptr(pixels), BigInt(pixels.byteLength)))
-    const image = adoptCapturedImage(pixels, width, height, bits, metadata, color)
-    if (targetWidth === width && targetHeight === height) return image
-    try {
-      return image.resize(targetWidth, targetHeight, { resample: selected.resample })
-    } finally {
-      image.close()
-    }
+    return adoptImageSnapshot(resizeImageSnapshot(
+      copyNativeImage(this.camera.handle, this.token, selected), selected))
   }
   /** Owned RGB16 words. Requires a 16-bit RGB source; no precision is invented. */
   copyRGB16(stream: 'main' | 'lores' = 'main'): Uint16Array {
@@ -4861,6 +4842,13 @@ export class Camera {
       jobOptions,
     ) as BunJob<Uint8Array>
   }
+  switchModeAndCaptureImage(
+    options: CameraOptions,
+    jobOptions: ModeJobOptions<CapturedImage> & CaptureImageOptions = {},
+  ) {
+    const imageSettings = snapshotCaptureImageOptions(jobOptions)
+    return this.submitMode(options, { kind: 'image', imageSettings }, jobOptions) as BunJob<CapturedImage>
+  }
   switchModeAndCaptureMetadata(
     options: CameraOptions,
     jobOptions: ModeJobOptions<ReturnType<Frame['metadata']>> = {},
@@ -5190,6 +5178,11 @@ export class Camera {
                 current.seal()
                 retainedRequest = undefined // the published Frame now owns release
               } else if (resumePreview) preview()
+              // Synchronous preview work may outlast the timer callback.
+              // Fail inside this scope so permanent modes roll back as well.
+              if (Date.now() >= deadline && !current.cancelRequested)
+                current.cancel(new CameraError(-3, 'mode deadline'))
+              current.check()
             } catch (error) {
               failure = error
               if (retainedRequest) {
@@ -5215,6 +5208,7 @@ export class Camera {
               }
               if (response?.target && this.handle) {
                 try {
+                  this.stopPreviewOwned()
                   const restored = await this.runOwnedMode({
                     handle: this.handle,
                     ...old,
@@ -5274,7 +5268,17 @@ export class Camera {
             if (failure !== undefined) throw failure
             if (!capture) value = this.info()
             if (file) await file.publish(current, deadline)
-            current.seal()
+            current.check()
+            if (capture?.kind === 'image') {
+              if (!response?.image) throw new CameraError(-6, 'missing owned image')
+              value = adoptImageSnapshot(response.image)
+            }
+            try {
+              current.seal()
+            } catch (error) {
+              if (value instanceof CapturedImage) value.close()
+              throw error
+            }
             return value as T
           },
         ),
