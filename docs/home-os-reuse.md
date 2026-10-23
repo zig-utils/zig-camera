@@ -478,3 +478,12 @@ request metadata owner or Bun worker-transfer path. Shared checked pixels and
 resampling stay in Home stdlib; this chunk reuses them and existing camera
 leases/mode jobs. No OS source is copied, modified or executed. Hardware mode
 switching/optics/performance require separate Pi acceptance evidence.
+
+The 0.87 descriptor-ownership audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ipc/shm_posix.home,
+ipc/shm.home, camera_capture and ADR-MC3. Kernel named-object tables, permissions
+and counts are distinct from hosted SCM_RIGHTS/DMA request ownership; ftruncate's
+old-data copy remains a placeholder. No hosted descriptor export/peer lifecycle
+implementation is available to copy there. Shared POSIX helpers and admission
+resizing improve Home, while libcamera maps/leases stay in camera. No OS code is
+copied, modified or executed, and no hardware IPC/DMA performance is inferred.

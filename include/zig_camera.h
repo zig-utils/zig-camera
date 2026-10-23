@@ -244,6 +244,8 @@ int zc_copy_stream_rgb(zc_camera *,uint64_t token,uint32_t stream,uint8_t *out,u
 typedef struct zc_frame_map zc_frame_map;
 int zc_frame_map_open(zc_camera *,uint64_t token,uint32_t stream,uint32_t write,zc_frame_map **out);
 int zc_frame_map_stream(const zc_frame_map *,zc_stream *out);
+/* Other streams under the same scoped access gate. No additional lease/writer. */
+int zc_frame_map_get_stream(const zc_frame_map *,uint32_t stream,zc_stream *out);
 int zc_frame_map_close(zc_frame_map *);
 /* Tight owned copies preserve byte layout (RGB/BGR/RGBX/BGRX); YUV420/YVU420/NV12/NV21 preserve plane order; Bayer => unchanged
  * unpacked samples, CSI-2 packed rows or PiSP COMP1 blocks, with row padding removed.
@@ -392,6 +394,34 @@ int zc_camera_controls(zc_camera *, zc_catalog **out);
 int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);
 int zc_catalog_copy(const zc_catalog *, uint8_t *data, uint64_t capacity, uint64_t *length);
 void zc_catalog_close(zc_catalog *);
+/* Low-level process handoff owner. Hold until every consumer has unmapped and
+ * acknowledged completion or its process has verifiably exited. Duplication of
+ * an fd does not extend the camera lease. This API does not supervise children.
+ * Caller serializes get/copy/close; close consumes even on DMA/requeue errors.
+ * Real DMA descriptors are duplicated (no pixel copy). fd-less sources stage
+ * bytes_used into zero-initialized anonymous shared memory; writable staging
+ * copies used bytes back before retiring the exclusive native map.
+ * Export info contains no pointers. fd fields are borrowed from this owner:
+ * never close them or access buffers after export close. CLOEXEC on every fd.
+ * At most 32 exports and 512 MiB declared plane bytes+catalog are admitted. */
+#define ZC_MAX_EXPORT_PLANES 12
+enum { ZC_EXPORT_WRITABLE=1, ZC_EXPORT_STAGED=2 };
+typedef struct zc_frame_export zc_frame_export;
+typedef struct { uint32_t stream,width,height,stride,plane_count,first_plane; char format[32]; } zc_export_stream;
+typedef struct { int32_t fd; uint32_t flags; uint64_t offset,length,bytes_used; } zc_export_plane;
+typedef struct {
+    uint32_t struct_size,stream_count,plane_count,flags;
+    zc_metadata metadata;
+    zc_color_space colors[3];
+    zc_export_stream streams[3];
+    zc_export_plane planes[ZC_MAX_EXPORT_PLANES];
+} zc_export_info;
+/* streams is a nonempty mask of (1u<<ZC_MAIN/RAW/LORES); flags only WRITABLE.
+ * Each export's declared planes are capped at 256 MiB, metadata at 4 MiB. */
+int zc_frame_export_open(zc_camera *,uint64_t token,uint32_t streams,uint32_t flags,zc_frame_export **out);
+int zc_frame_export_info(const zc_frame_export *,zc_export_info *out);
+int zc_frame_export_catalog_copy(const zc_frame_export *,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_frame_export_close(zc_frame_export *);
 
 uint32_t zc_abi_version(void);
 void zc_default_config(zc_config *config);

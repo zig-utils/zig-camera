@@ -530,6 +530,31 @@ pub const FrameMapping = struct {
         return @constCast(try self.plane(index));
     }
 };
+/// Hold until every remote consumer has unmapped and acknowledged, or exited.
+/// Descriptor numbers are borrowed until deinit; fd duplication is not a lease.
+pub const FrameExport = struct {
+    handle: ?*c.zc_frame_export,
+    pub fn deinit(self: *FrameExport) Error!void {
+        const owned = self.handle orelse return;
+        self.handle = null;
+        try check(@import("frame_export.zig").zc_frame_export_close(owned));
+    }
+    pub fn info(self: FrameExport) Error!c.zc_export_info {
+        var out: c.zc_export_info = undefined;
+        try check(@import("frame_export.zig").zc_frame_export_info(self.handle orelse return error.StaleFrame, &out));
+        return out;
+    }
+    pub fn metadataCatalog(self: FrameExport, allocator: std.mem.Allocator) ![]u8 {
+        const owned = self.handle orelse return error.StaleFrame;
+        const api = @import("frame_export.zig");
+        var size: u64 = 0;
+        try check(api.zc_frame_export_catalog_copy(owned, null, 0, &size));
+        const data = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(data);
+        try check(api.zc_frame_export_catalog_copy(owned, data.ptr, data.len, &size));
+        return data;
+    }
+};
 /// Linear reference: copying the descriptor does not create another lease.
 /// retain creates a distinct reference; mappings expire only on final release.
 /// Views expire on release. DMA-BUF fds are borrowed and must never be closed.
@@ -568,6 +593,12 @@ pub const Frame = struct {
         var out: ?*c.zc_frame_map = null;
         try check(core.zc_frame_map_open(self.camera.handle, self.value.token, id, @intFromBool(write), &out));
         return .{ .handle = out.?, .write = write };
+    }
+    pub fn exportFrame(self: *const Frame, streams: u32, writable: bool) Error!FrameExport {
+        if (self.value.token == 0) return error.StaleFrame;
+        var out: ?*c.zc_frame_export = null;
+        try check(@import("frame_export.zig").zc_frame_export_open(self.camera.handle, self.value.token, streams, @intFromBool(writable), &out));
+        return .{ .handle = out.? };
     }
     pub fn stream(self: *const Frame, id: u32) Error!c.zc_stream {
         if (self.value.token == 0) return error.StaleFrame;
@@ -1358,4 +1389,36 @@ test "Zig owned image copies survive request and camera closure with no retained
     try std.testing.expectEqual(@as(usize, 9), thumbnail.view.data.len);
     try std.testing.expectEqual(@as(u16, 65535), thumbnail.view.sample16(2, 0)[3]);
     try std.testing.expectError(error.StaleFrame, frame.makeImage(std.testing.allocator, c.ZC_MAIN, null));
+}
+test "public Zig frame export pins the source while catalog copies own their bytes" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 2;
+    cfg.height = 2;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    const info = try loan.info();
+    try t.expectEqual(@as(u32, 1), info.stream_count);
+    try t.expectEqual(frame.value.sequence, info.metadata.sequence);
+    const catalog = try loan.metadataCatalog(t.allocator);
+    defer t.allocator.free(catalog);
+    try frame.release();
+    try camera.stop();
+    try t.expectError(error.Busy, camera.deinit());
+    try loan.deinit();
+    try t.expectError(error.StaleFrame, loan.info());
+    try camera.deinit();
+    active = false;
+    const reader = try @import("home/typed_catalog.zig").Reader.init(catalog);
+    try t.expectEqual(@as(u32, 4), reader.catalog_kind);
 }

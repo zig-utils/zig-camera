@@ -24,6 +24,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/posix_shared_memory.zig and owned_admission.zig are verbatim Home
+  hosted POSIX owners and resizable reservation registry at
+  2c6513a47c80b24ea8b90491543b5338c753a277.
 - src/home/pixel_resample.zig and tests/resample_fixture.zig/resample_reference.c
   are verbatim Home checked native-precision resampling and independent reference
   fixtures at d2123edf5e6d17352a234b9986ac430d93a83b7c.

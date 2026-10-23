@@ -130,6 +130,8 @@ import {
 export type { StreamName, PackedStream, CapturedStreams } from './streams'
 import { withStagedImageFile } from './staged-image'
 import { copyNativeImage, resizeImageSnapshot } from './image-capture'
+import { exportNativeFrame, type FrameExportOptions } from './frame-export'
+export { FrameExport, type FrameExportOptions } from './frame-export'
 import { CapturedImage, adoptImageSnapshot, snapshotCaptureImageOptions, type CaptureImageOptions } from './image-object'
 export { CapturedImage, type ImageResample, type ImageResizeOptions, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
 import {
@@ -898,6 +900,14 @@ export class Frame {
       'retain request',
     )
     return new Frame(this.camera, data)
+  }
+  exportFrame(options: FrameExportOptions = {}) {
+    const streams = options.streams, writable = options.writable ?? false
+    if (typeof writable !== 'boolean') throw new TypeError('invalid export access')
+    const names = streamNames(streams ?? ['main'])
+    this.open()
+    const mask = names.reduce((mask,name) => mask | (1 << ({main:0,raw:1,lores:2}[name])), 0)
+    return exportNativeFrame(this.camera.handle,this.token,mask,writable)
   }
   mapStream(stream: StreamName = 'main') {
     this.open()

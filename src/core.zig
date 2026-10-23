@@ -876,6 +876,126 @@ pub export fn zc_frame_map_stream(p: *const c.zc_frame_map, out: *c.zc_stream) c
     out.* = map.stream;
     return c.ZC_OK;
 }
+pub export fn zc_frame_map_get_stream(p: *const c.zc_frame_map, stream: u32, out: *c.zc_stream) c_int {
+    const map: *const FrameMap = @ptrCast(@alignCast(p));
+    const self = map.owner;
+    self.operation.lock();
+    defer self.operation.unlock();
+    return streamLocked(self, map.index, stream, out);
+}
+test "direct descriptor exports share backing offsets and retain one complete writable frame gate" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const shared = @import("home/posix_shared_memory.zig");
+    const exports = @import("frame_export.zig");
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 2;
+    cfg.height = 2;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    }
+    try t.expectEqual(c.ZC_OK, zc_enable_writable(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var backing = try shared.Region.create(128, 256);
+    defer backing.close() catch unreachable;
+    @memset(backing.mapping.bytes, 73);
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    defer {
+        _ = zc_release(camera.?, frame.token);
+    }
+    const state = session(camera.?);
+    const index = state.leaseIndex(frame.token).?;
+    state.slots[index].frame.main.stride = 6;
+    const plane = &state.slots[index].frame.main.planes[0];
+    plane.fd = backing.fd.value;
+    plane.offset = 83;
+    plane.data = backing.mapping.bytes[83..].ptr;
+    plane.length = 12;
+    plane.bytes_used = 12;
+    var loan: ?*c.zc_frame_export = null;
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_open(camera.?, frame.token, 1, c.ZC_EXPORT_WRITABLE, &loan));
+    defer if (loan) |live| {
+        _ = exports.zc_frame_export_close(live);
+    };
+    var info: c.zc_export_info = undefined;
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_info(loan.?, &info));
+    try t.expectEqual(@as(u32, 1), info.plane_count);
+    try t.expectEqual(@as(u64, 83), info.planes[0].offset);
+    try t.expectEqual(@as(u32, c.ZC_EXPORT_WRITABLE), info.flags);
+    try t.expect(info.planes[0].fd != backing.fd.value);
+    var duplicate = try shared.Mapping.init(info.planes[0].fd, .{ .offset = 83, .length = 12, .used = 12 }, true, 256);
+    defer duplicate.close() catch unreachable;
+    duplicate.bytes[0] = 97;
+    try t.expectEqual(@as(u8, 97), backing.mapping.bytes[83]);
+    try t.expectEqual(c.ZC_BUSY, zc_frame_readable(camera.?, frame.token));
+    var retained: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_BUSY, zc_retain(camera.?, frame.token, &retained));
+    try duplicate.close(); // consumer retired before the native lease owner
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_close(loan));
+    loan = null;
+    try t.expectEqual(c.ZC_OK, zc_frame_readable(camera.?, frame.token));
+    var rgb: [12]u8 = undefined;
+    try t.expectEqual(c.ZC_OK, zc_copy_frame_rgb(camera.?, frame.token, &rgb, rgb.len));
+    try t.expectEqual(@as(u8, 97), rgb[0]); // libcamera BGR888 stores RGB bytes
+    try t.expect(shared.c.fcntl(info.planes[0].fd, shared.c.F.GETFD) < 0);
+}
+test "late descriptor export failure releases earlier duplicates admission and frame references" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const shared = @import("home/posix_shared_memory.zig");
+    const exports = @import("frame_export.zig");
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 2;
+    cfg.height = 2;
+    cfg.raw = 1;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    }
+    var region = try shared.Region.create(256, 256);
+    defer region.close() catch unreachable;
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    defer {
+        _ = zc_release(camera.?, frame.token);
+    }
+    const state = session(camera.?);
+    const index = state.leaseIndex(frame.token).?;
+    state.slots[index].frame.main.planes[0].fd = region.fd.value;
+    state.slots[index].frame.raw.planes[0].fd = 999999;
+    const Descriptors = struct {
+        fn count() usize {
+            var found: usize = 0;
+            for (0..1024) |fd| if (shared.c.fcntl(@as(c_int, @intCast(fd)), shared.c.F.GETFD) >= 0) {
+                found += 1;
+            };
+            return found;
+        }
+    };
+    const before = Descriptors.count();
+    for (0..64) |_| {
+        var loan: ?*c.zc_frame_export = null;
+        try t.expectEqual(c.ZC_IO, exports.zc_frame_export_open(camera.?, frame.token, 3, 0, &loan));
+        try t.expectEqual(null, loan);
+        var count: u32 = 0;
+        try t.expectEqual(c.ZC_OK, zc_frame_references(camera.?, frame.token, &count));
+        try t.expectEqual(@as(u32, 1), count);
+    }
+    try t.expectEqual(before, Descriptors.count());
+    state.slots[index].frame.raw.planes[0].fd = -1;
+    var loan: ?*c.zc_frame_export = null;
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_open(camera.?, frame.token, 3, 0, &loan));
+    try t.expectEqual(c.ZC_OK, exports.zc_frame_export_close(loan));
+}
 pub export fn zc_frame_map_close(p: ?*c.zc_frame_map) c_int {
     const map: *FrameMap = @ptrCast(@alignCast(p orelse return c.ZC_OK));
     const self = map.owner;
@@ -1458,6 +1578,7 @@ comptime {
     _ = image_file;
     _ = @import("apng_job.zig");
     _ = @import("raster_api.zig");
+    _ = @import("frame_export.zig");
 }
 pub export fn zc_image_file_prepare(output: *c.zc_image_file, p: *c.zc_camera, token: u64, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile) c_int {
     return zc_image_file_prepare_metadata(output, p, token, stream, opts, profile, null);

@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.87 adds [retained descriptor exports](docs/frame-exports.md) through
+C/Zig/Bun, with one native frame gate, owned fd duplicates, explicit staging and
+metadata snapshots. This establishes ownership for later supervised process jobs.
+
 Version 0.86 adds [temporary-mode owned image jobs](docs/mode-images.md),
 with native-precision target pixels/metadata, optional worker resizing and
 publication after camera/preview restoration.

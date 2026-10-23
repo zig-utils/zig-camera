@@ -1463,3 +1463,31 @@ linkage before compilation; direct native tests pass. Consumer Linux ARM/x86
 real-backend load/no-camera checks remain a publication gate. Target provenance,
 precision and restored-state software checks do not prove physical Pi mode
 latency, sensor acceptance or throughput.
+
+The 0.87 process-ownership audit starts at Home
+d2123edf5e6d17352a234b9986ac430d93a83b7c and inspects lease_pool, frame_access,
+owned_admission, plane_pack and runtime SCM_RIGHTS/send queues and memfd allocation.
+The runtime's first-byte fd transfer, ACK ownership and orphan-fd cleanup are
+useful policy, but its JSC-specific implementation is not copied wholesale.
+Home contribution 2c6513a47c80b24ea8b90491543b5338c753a277 adds hosted POSIX
+fd/region/mapping owners and transactional reservation resizing. It uses target
+standard-library ABI definitions, checked extents/offsets, atomic CLOEXEC
+and immediately unlinked private staging, with no @cImport dependency. Generic
+lease/access/ownership admission remains reused rather than a new camera pool.
+
+Both changed modules are copied verbatim into camera. One retained native map
+exports all selected streams under one access gate, duplicated real descriptors,
+explicit synthetic staging/writeback and owned scalar/full typed metadata.
+C/Zig/Bun expose the low-level owner; no opaque parent pointer crosses processes.
+The independent C fixture uses actual exec/SCM_RIGHTS and joins consumers before
+retirement. This is not a production process supervisor or RemoteRequest/Pool
+parity claim; those layers remain required work. No Python or FFmpeg is added.
+
+Four local compiler/build combinations pass two POSIX and four reservation tests;
+both compiler lines also cross-build Linux x86_64/aarch64. Camera passes 410
+ReleaseSafe native tests, 1,185 Bun tests with independent media readback/SDL,
+C ABI and independent exec/read/write/truncation tests, typecheck and pinned fmt.
+The standard local runner still fails SDK/libSystem linkage before compilation;
+direct builds pass. Home's exact-head hosted run is unavailable and not described
+as green. Consumer platform and real Linux backend/no-camera checks remain gates.
+Fixtures are software evidence, not physical Pi DMA or throughput acceptance.
