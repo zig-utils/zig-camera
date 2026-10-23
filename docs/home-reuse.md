@@ -1735,3 +1735,26 @@ reused; no new codec dependency, Python or FFmpeg is introduced.
 The string implementation originated at 8890ca0a81f453e687bd09f5e2f5cfa4330725bd;
 271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1 also keeps findScalar primitive-only
 at compile time when sharing its selection implementation with findString.
+
+## Exact owned-image transforms (0.99)
+
+Inspected clean Home main at 271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1, including
+image/ops/orientation.zig, ops/transform.zig, formats/pixel_view.zig and Image
+palette/frame/clone/conversion ownership. A standalone RGB16 rotation reproduced
+1234/5678/9abc becoming 1212/5656/9a9a through eight-bit Color accessors.
+Improvement 3d06866b74de1516625f070e96b7a4dc3bcdb01e adds oriented_pixels.zig,
+reuses existing coordinate geometry, fixes public orthogonal Image precision,
+deep-copies palettes/frames, transforms animation rectangles, and preflights
+in-place frame geometry. Nine portable tests plus five explicitly discovered
+Image tests, a public API regression and independent 480-case C references pass
+local Debug/ReleaseSafe checks; both compilers cover the portable helper.
+
+Home's full Image module already requires development Zig (@fromBackingInt and
+@backingInt in format modules); the new raster/geometry helper remains portable
+to pinned 0.15.2. The camera adapts only its two import paths and copies both C
+fixture files verbatim. Home Actions currently returns no exact-head runs, so
+camera's consumer pixel matrix checks the pinned upstream Image source as well
+as the portable copy across all three OS/CPU targets. Camera retains ABI limits,
+Bun option snapshots, source provenance, and image ownership. Existing preview
+and still transforms share one Bun normalization helper and native geometry;
+no new codec, Python, FFmpeg or Home OS code is introduced.

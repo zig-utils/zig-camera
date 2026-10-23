@@ -46,6 +46,11 @@ import {
   type ImageResizeOptions,
 } from './image-settings'
 import type { ImageSnapshot } from './image-capture'
+import {
+  prepareImageTransform,
+  type ImageTransformOptions,
+} from './image-transform'
+export type { ImageTransformOptions } from './image-transform'
 type Metadata = ReturnType<typeof decodeMetadata>
 const captureAdmission = Symbol('capture image admission')
 export type ImageSourceMetadata = Readonly<Omit<Metadata, 'crop'>> & {
@@ -343,6 +348,42 @@ export class CapturedImage implements Disposable {
   }
   clone() {
     return this.convert()
+  }
+  /** Independent exact pixels; clockwise rotation, output flips, then transpose. */
+  transform(options: ImageTransformOptions = {}) {
+    const prepared = prepareImageTransform(options),
+      source = this.descriptor(),
+      size = new BigUint64Array(1)
+    check(n.zc_raster_transform(ptr(source.data), prepared.orientation, null, 0n, ptr(size)))
+    const bytes = storage(Number(size[0]))
+    check(n.zc_raster_transform(
+      ptr(source.data), prepared.orientation, ptr(bytes), BigInt(bytes.byteLength), ptr(size),
+    ))
+    const swapped = prepared.orientation >= 5,
+      width = swapped ? this.height : this.width,
+      height = swapped ? this.width : this.height
+    return new CapturedImage(
+      bytes,
+      Object.freeze({
+        ...this.info, width, height,
+        stride: width * [1, 3, 4][kinds[this.format]]! * (this.bits / 8),
+      }),
+      this.sourceColor,
+      this.sourceMetadata,
+    )
+  }
+  rotate(rotation: 0 | 90 | 180 | 270) {
+    if (![0, 90, 180, 270].includes(rotation))
+      throw new RangeError('invalid image rotation')
+    return this.transform({ rotation })
+  }
+  flip(axis: 'horizontal' | 'vertical' | 'both' = 'horizontal') {
+    if (!['horizontal', 'vertical', 'both'].includes(axis))
+      throw new RangeError('invalid image flip axis')
+    return this.transform({ hflip: axis !== 'vertical', vflip: axis !== 'horizontal' })
+  }
+  transpose() {
+    return this.transform({ transpose: true })
   }
   resize(width: number, height: number, options: ImageResizeOptions = {}) {
     integer(width, 1, 0x7fffffff)

@@ -675,3 +675,12 @@ Home counted typed strings (0.98):
   values and provenance/role/flag lookup through the existing selection scan.
   Home MIT attribution above applies.
   https://github.com/home-lang/home/commit/271a5c11406c6d65c30ba0eeffbcbbe48cfbcfc1
+
+Home exact orthogonal pixels (0.99):
+- src/home/oriented_pixels.zig is adapted from Home
+  packages/image/src/oriented_pixels.zig at
+  3d06866b74de1516625f070e96b7a4dc3bcdb01e; only the flattened pixel_view.zig
+  and orientation.zig import paths differ. Existing Home MIT attribution applies.
+- tests/pixel_orientation_fixture.zig and pixel_orientation_reference.c are
+  verbatim Home packages/image/tests fixtures at that same revision.
+  https://github.com/home-lang/home/commit/3d06866b74de1516625f070e96b7a4dc3bcdb01e

@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.99 adds [exact owned-image transforms](docs/image-transforms.md):
+rotate, flip, transpose and composed operations retain RGB16 low words, alpha
+and provenance through source closure and async encoding. Shared Home image
+operations also preserve palettes and animation frame ownership.
+
 Version 0.98 preserves [full source model metadata](docs/source-model.md) in Exif
 and DNG across local and remote copied jobs. Home supplies strict borrowed string
 lookup; bounded DNG directories retain long ASCII names and charge async inputs.

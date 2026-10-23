@@ -2,9 +2,9 @@ name: Home image pixels
 on:
   push:
     branches: [main]
-    paths: ['src/home/pixel_view.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/oriented_pixels.zig', 'src/home/orientation.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
   pull_request:
-    paths: ['src/home/pixel_view.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/oriented_pixels.zig', 'src/home/orientation.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,4 +30,33 @@ jobs:
             zig build-obj -O "$mode" -fcompiler-rt -lc --dep pixel -Mroot=tests/pixel_fixture.zig -Mpixel=src/home/pixel_view.zig -femit-bin=/tmp/home-pixels.o
             cc -std=c11 -O2 -Wall -Wextra -Werror tests/pixel_reference.c /tmp/home-pixels.o -o /tmp/home-pixels
             /tmp/home-pixels
+            zig test -O "$mode" -lc src/home/oriented_pixels.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep oriented -Mroot=tests/pixel_orientation_fixture.zig -Moriented=src/home/oriented_pixels.zig -femit-bin=/tmp/home-orientation.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror tests/pixel_orientation_reference.c /tmp/home-orientation.o -o /tmp/home-orientation
+            /tmp/home-orientation
+          done
+      - name: Check out exact upstream Image implementation for public API tests
+        if: matrix.zig == 'master'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 3d06866b74de1516625f070e96b7a4dc3bcdb01e
+          path: .home-orthogonal-upstream
+          sparse-checkout: packages/image
+          persist-credentials: false
+      - name: Upstream Image precision palette and animation ownership
+        if: matrix.zig == 'master'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install zlib
+            prefix=$(brew --prefix zlib)
+          else
+            sudo apt-get update && sudo apt-get install -y zlib1g-dev
+            prefix=/usr
+          fi
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" .home-orthogonal-upstream/packages/image/src/orthogonal_test.zig --test-filter orthogonal
+            zig test -O "$mode" -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" --dep image -Mroot=.home-orthogonal-upstream/packages/image/tests/pixel_orthogonal_api.zig -Mimage=.home-orthogonal-upstream/packages/image/src/image.zig
           done

@@ -185,3 +185,11 @@ async model ownership. See source-model.md. Localized model/DNG metadata, comple
 image transforms/decoding, remaining allocator/GPU/recovery/output/device families
 and all matched physical/performance acceptance remain open. This is not full
 Picamera2 parity.
+
+Version 0.99 adds exact native-precision owned-image rotations/flips/transpose
+through Home's checked copies and shared native geometry, with C/Zig/Bun entry
+points and retained color/request provenance. Home Image operations now preserve
+native words, indexed palettes and transformed animation rectangles/owners.
+See image-transforms.md. General-angle/affine transforms, compositing, decoding,
+remaining allocator/GPU/recovery/output/device families and physical/performance
+acceptance remain open. This is not full Picamera2 parity.

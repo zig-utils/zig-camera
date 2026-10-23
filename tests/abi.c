@@ -406,7 +406,36 @@ static void apng_jobs(void) {
     free(encoded);zc_image_blob_close(blob);
     assert(zc_apng_job_close(NULL)==ZC_OK);
 }
+static void raster_transforms(void){
+    const unsigned w=5,h=3;
+    unsigned cases=0;
+    for(unsigned format=0;format<3;format++)for(unsigned bits=8;bits<=16;bits+=8)for(unsigned big=0;big<2;big++){
+        const unsigned channels=format==0?1:format==1?3:4,bpp=channels*(bits/8),row=w*bpp,stride=row+3;
+        uint8_t input[256],output[256];memset(input,0xa5,sizeof(input));
+        for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++)for(unsigned byte=0;byte<bpp;byte++)input[1+y*stride+x*bpp+byte]=(uint8_t)(x*37+y*53+byte*29);
+        zc_raster source={.struct_size=sizeof(zc_raster),.width=w,.height=h,.format=format,.bits=bits,.big_endian=big,.stride=stride,.length=(h-1)*stride+row,.data=input+1};
+        for(unsigned orientation=1;orientation<=8;orientation++){
+            uint64_t size=999;memset(output,0xbb,sizeof(output));
+            assert(zc_raster_transform(&source,orientation,NULL,0,&size)==ZC_OK&&size==(uint64_t)w*h*bpp);
+            assert(zc_raster_transform(&source,orientation,output+1,size-1,&size)==ZC_INVALID);
+            for(unsigned i=0;i<sizeof(output);i++)assert(output[i]==0xbb);
+            assert(zc_raster_transform(&source,orientation,input+1,sizeof(input)-1,&size)==ZC_INVALID);
+            assert(zc_raster_transform(&source,orientation,output+1,sizeof(output)-1,&size)==ZC_OK);
+            const unsigned ow=orientation>=5?h:w;
+            for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++){
+                unsigned dx=x,dy=y;
+                switch(orientation){case 2:dx=w-1-x;break;case 3:dx=w-1-x;dy=h-1-y;break;case 4:dy=h-1-y;break;case 5:dx=y;dy=x;break;case 6:dx=y;dy=w-1-x;break;case 7:dx=h-1-y;dy=w-1-x;break;case 8:dx=h-1-y;dy=x;break;}
+                assert(!memcmp(input+1+y*stride+x*bpp,output+1+((size_t)dy*ow+dx)*bpp,bpp));
+            }
+            assert(input[0]==0xa5&&output[0]==0xbb&&output[1+size]==0xbb);cases++;
+        }
+        uint64_t size=999;assert(zc_raster_transform(&source,0,NULL,0,&size)==ZC_INVALID&&size==0);
+        assert(zc_raster_transform(&source,9,NULL,0,&size)==ZC_INVALID&&size==0);
+    }
+    assert(cases==96);
+}
 int main(void) {
+    raster_transforms();
     {
         uint8_t pixels[12]={0x34,0x12,1,0x80,0xdc,0xfe,0,1,2,3,4,5},out[32];memset(out,0xa7,sizeof(out));
         zc_raster raster={sizeof(raster),2,1,ZC_APNG_RGB,16,0,12,12,pixels};uint64_t size=0;

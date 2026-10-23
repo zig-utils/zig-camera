@@ -696,6 +696,12 @@ enum { ZC_RESAMPLE_NEAREST=0, ZC_RESAMPLE_BILINEAR=1, ZC_RESAMPLE_BICUBIC=2, ZC_
  * No transfer/gamut conversion; synchronous borrowed pointers, no retained input.
  * Failures never write output prefixes. Same-size copies preserve all bits. */
 int zc_raster_resize(const zc_raster *,uint32_t width,uint32_t height,uint32_t algorithm,uint8_t *data,uint64_t capacity,uint64_t *length);
+/* Exact orthogonal pixel copy using orientation 1..8 (zc_orientation_from_transform).
+ * Orientations 5..8 exchange width/height. Preserves format, depth, endian and
+ * alpha. Tight result <=256 MiB, borrowed source only, rejects all overlap and
+ * short/invalid spans before any prefix write. Query with NULL/0; length is zero
+ * on invalid input, required byte count on a valid query or short destination. */
+int zc_raster_transform(const zc_raster *,uint32_t orientation,uint8_t *data,uint64_t capacity,uint64_t *length);
 /* Raw pixels have no request-derived Exif. Pass raw/typed Exif without CAPTURE;
  * JPEG defaults are chosen by the binding. RGB ICC requires non-gray pixels;
  * built-in sRGB additionally requires the supplied matching color description. */

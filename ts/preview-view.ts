@@ -1,11 +1,10 @@
 import type { PreviewStream } from './preview-stream'
 import { native as n, storage, view, ptr, check } from './ffi'
-export interface PreviewTransform {
-  rotation?: 0 | 90 | 180 | 270
-  hflip?: boolean
-  vflip?: boolean
-  transpose?: boolean
-}
+import {
+  prepareImageTransform,
+  type ImageTransformOptions,
+} from './image-transform'
+export type PreviewTransform = ImageTransformOptions
 export interface PreviewRectangle {
   x: number
   y: number
@@ -46,37 +45,7 @@ function object(value: unknown, label: string) {
     throw new TypeError(`invalid preview ${label}`)
 }
 function transform(value: PreviewTransform | undefined) {
-  if (value === undefined) return { orientation: 1, snapshot: undefined }
-  object(value, 'transform')
-  const rotation = value.rotation ?? 0,
-    hflip = value.hflip ?? false,
-    vflip = value.vflip ?? false,
-    transpose = value.transpose ?? false,
-    strict = (value as PreviewTransform & { strict?: unknown }).strict
-  if (strict !== undefined || ![0, 90, 180, 270].includes(rotation))
-    throw new RangeError('invalid preview transform')
-  for (const flag of [hflip, vflip, transpose])
-    if (typeof flag !== 'boolean')
-      throw new RangeError('invalid preview transform flag')
-  const out = new Uint32Array(1)
-  check(
-    n.zc_orientation_from_transform(
-      rotation,
-      hflip ? 1 : 0,
-      vflip ? 1 : 0,
-      transpose ? 1 : 0,
-      ptr(out),
-    ),
-  )
-  return {
-    orientation: out[0],
-    snapshot: Object.freeze({
-      rotation,
-      hflip,
-      vflip,
-      transpose,
-    }) as PreviewTransform,
-  }
+  return prepareImageTransform(value, 'preview')
 }
 function position(value: number | undefined) {
   const result = value ?? 0

@@ -596,3 +596,12 @@ ADR-MC3 assigns shared hosted codecs/containers to Home stdlib, so the strict
 string reader is improved there; camera owns its libcamera model policy and async
 lifetimes. No OS code is copied, changed or executed, and the OS stub is not
 physical camera or Pi 5 acceptance evidence.
+
+The 0.99 exact-transform audit fetches clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rereads CLAUDE.md, camera.home and
+ADR-MC3. The capture stub and kernel/device display paths do not provide hosted
+owned gray/RGB/RGBA word transforms or Image palette/animation ownership.
+The shared exact-pixel and public Image fixes therefore live in Home stdlib;
+zig-camera owns its borrowed C boundary, bounded owned results and Bun lifecycle.
+No OS source is copied, changed or executed, and no kernel declaration supplies
+Pi 5 physical capture, image quality or performance acceptance.

@@ -135,7 +135,7 @@ export { FrameExport, type FrameExportOptions } from './frame-export'
 export { FrameChannel, RemoteFrame, type RemoteArray } from './frame-channel'
 export { ProcessPool, ProcessRemoteError, ProcessWorkerError, type ProcessPoolOptions, type ProcessSubmitOptions, type ProcessWorkerContext, type ProcessModule, type ProcessCameraSnapshot, type ProcessValue } from './processes'
 import { CapturedImage, adoptImageSnapshot, snapshotCaptureImageOptions, type CaptureImageOptions } from './image-object'
-export { CapturedImage, type ImageResample, type ImageResizeOptions, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
+export { CapturedImage, type ImageTransformOptions, type ImageResample, type ImageResizeOptions, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
 import {
   readColorNegotiation,
   encodeColorSpace,

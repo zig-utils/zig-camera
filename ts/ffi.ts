@@ -15,6 +15,7 @@ export const native = dlopen(library, {
   zc_raster_convert: { args: [p,u,u,u,p,n,p], returns: i },
   zc_raster_crop: { args: [p,u,u,u,u,p,n,p], returns: i },
   zc_raster_resize: { args: [p,u,u,u,p,n,p], returns: i },
+  zc_raster_transform: { args: [p,u,p,n,p], returns: i },
   zc_raster_pixel16: { args: [p,u,u,p], returns: i },
   zc_raster_encode: { args: [p,p,p,p,p,p], returns: i },
   zc_raster_save: { args: [p,p,p,p,p,p], returns: i },

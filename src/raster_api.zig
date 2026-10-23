@@ -58,6 +58,19 @@ pub export fn zc_raster_resize(source: ?*const c.zc_raster, width: u32, height: 
     resample.into(A, view, data[0..size], width, height, row, filter, .{}) catch |err| return still.status(err);
     return c.ZC_OK;
 }
+pub export fn zc_raster_transform(source: ?*const c.zc_raster, orientation: u32, output: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = 0;
+    const oriented = @import("home/oriented_pixels.zig");
+    const transform = oriented.Transform.fromOrientation(orientation) catch return c.ZC_INVALID;
+    const view = read(source) catch |err| return still.status(err);
+    const planned = oriented.info(view, transform) catch |err| return still.status(err);
+    if (planned.size > maximum) return c.ZC_INVALID;
+    length.* = planned.size;
+    const data = output orelse return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < planned.size) return c.ZC_INVALID;
+    oriented.into(view, transform, data[0..planned.size], planned.row_bytes) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
 fn validated(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space) !pixel.View {
     const view = try read(source);
     if (options.format == c.ZC_IMAGE_PPM or options.format == c.ZC_IMAGE_BMP) {
@@ -153,4 +166,35 @@ test "raster resizing queries geometry and working limits before touching output
     try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 3000000, 1, 1, null, 0, &size));
     for (out) |v| try t.expectEqual(@as(u8, 73), v);
     for (input) |v| try t.expectEqual(@as(u8, 99), v);
+}
+
+test "orthogonal raster ABI validates full spans caps and overlap before writing prefixes" {
+    const t = std.testing;
+    var data: [40]u8 = @splat(33);
+    var source = c.zc_raster{ .struct_size = @sizeOf(c.zc_raster), .width = 3, .height = 2, .format = 1, .bits = 16, .big_endian = 1, .stride = 19, .length = 37, .data = &data };
+    var output: [40]u8 = @splat(73);
+    var size: u64 = 999;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 0, &output, output.len, &size));
+    try t.expectEqual(@as(u64, 0), size);
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 9, &output, output.len, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(null, 1, &output, output.len, &size));
+    for (1..9) |orientation| {
+        try t.expectEqual(c.ZC_OK, zc_raster_transform(&source, @intCast(orientation), null, 0, &size));
+        try t.expectEqual(@as(u64, 36), size);
+        try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, @intCast(orientation), &output, 35, &size));
+        try t.expectEqual(@as(u64, 36), size);
+        try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, @intCast(orientation), &data, data.len, &size));
+    }
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 1, null, 1, &size));
+    source.length = 36;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 1, &output, output.len, &size));
+    try t.expectEqual(@as(u64, 0), size);
+    source.length = 37;
+    source.height = 0x10000000;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 1, &output, output.len, &size));
+    source.height = 2;
+    source.big_endian = 2;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_transform(&source, 1, &output, output.len, &size));
+    try t.expect(std.mem.allEqual(u8, &output, 73));
+    try t.expect(std.mem.allEqual(u8, &data, 33));
 }
