@@ -1675,3 +1675,19 @@ reservation through partial writes, flush and cancellation, avoiding a parallel
 unbounded queue after native encoding. Existing bounded staged saves retain their
 immutable snapshot while waiting for worker capacity. No Home code change is
 needed for this capability; no codec is forked and no speedup is inferred.
+
+## Restored camera capture output (0.96)
+
+Fetched clean Home main at 0349186f0cc38bdf6be2a714f04ae0a6ae543b2a and reviewed
+async/src/preparation_gate.zig, video/core/owned_admission.zig, dispatch_pool.zig
+and image/formats/pixel_view.zig. Existing preparation/cancellation states and
+joined reservation retirement already cover native copied-image workers. No new
+generic owner, serializer, codec or Home API is needed. Camera reuses those
+verbatim shared modules and the 0.95 native encoder/allocator budget unchanged.
+
+The camera-specific mode/request handshake now lets the parent admit a copied
+target image and retain its native Home reservation through callbacks, restoration
+and output writes. A Bun barrier connects existing camera/CAF/preview transactions
+to that native consumer. Mode workers own no new image-job handles. Still hooks
+reuse the recording output's async reentrancy scope. This keeps camera source
+ownership and lifecycle policy hosted rather than moving it into media codecs.

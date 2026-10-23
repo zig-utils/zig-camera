@@ -120,8 +120,8 @@ libcamera build/load and no-camera discovery remain CI checks, not sensor tests.
 
 The Picamera2 reference is source-reviewed at
 5e2a35d3bb230825c98c56d98e01b41ddeb43e86 (`request.py` save/save_dng/helpers);
-no reference Python is run. Capture convenience jobs that accept sinks directly,
-temporary-mode sink workflows, additional file-like adapters, incremental codec
+no reference Python is run. Camera/focus/temporary-mode sink jobs are added in
+0.96 (`capture-outputs.md`). Additional file-like adapters and series, incremental codec
 streaming, complete tag/thumbnail/advanced DNG semantics, allocator/GPU/device
 integrations and physical acceptance remain open in `parity-plan.md`. This scoped
 software capability does not establish full parity or physical Pi performance.

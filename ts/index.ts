@@ -205,6 +205,7 @@ import { decodeFrameConfiguration } from './request-configuration'
 export type { ImageJobLimits } from './native-image-job'
 import {prepareImageJobLimits,runImageJob,type ImageJobLimits} from './native-image-job'
 import {prepareImageOutput,writeImageOutput,type ImageOutput} from './image-output'
+import {withImageOutputCapture} from './capture-output'
 import {imageProfileDescriptor} from './images'
 import {imageExifDescriptor} from './exif'
 export type {ImageOutput} from './image-output'
@@ -348,6 +349,7 @@ const rgbMainFrame = Symbol('rgbMainFrame')
 const legacyRgbInput = Symbol('legacyRgbInput')
 const savePreparedImage = Symbol('savePreparedImage')
 const encodePreparedImage = Symbol('encodePreparedImage')
+const runPreparedImageJob = Symbol('runPreparedImageJob')
 export interface CaptureOptions<T = unknown> extends JobOptions<T> {
   /** true captures the clock at admission; bigint supplies an exact clock-domain threshold. */
   flush?: boolean | bigint
@@ -981,23 +983,28 @@ export class Frame {
   /** Copies the selected request before returning, then joins native encoding. */
   encodeImageAsync(options:ImageOptions & ImageJobLimits & JobOptions<Uint8Array>={}) {
     const prepared=prepareImage(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
-    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const deadline=Date.now()+(admitted.timeoutMs??Infinity)
     this.open()
     const job=new BunJob<Uint8Array>(async current=>{
-      const bytes=await runImageJob(out=>{this.open();return n.zc_encode_stream_image_async(this.camera.handle,this.token,prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out)},current,deadline)
+      const bytes=await this[runPreparedImageJob](prepared,limits,current,deadline)
       current.seal();return bytes!
     },()=>{},admitted)
     void job.start();return job
   }
   saveToAsync(output:ImageOutput,options:ImageOptions & ImageJobLimits & JobOptions<void>={}) {
     const destination=prepareImageOutput(output),prepared=prepareImage(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000)
-    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const deadline=Date.now()+(admitted.timeoutMs??Infinity)
     this.open()
     const job=new BunJob<void>(async current=>{
-      await runImageJob(out=>{this.open();return n.zc_encode_stream_image_async(this.camera.handle,this.token,prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out)},current,deadline,undefined,false,bytes=>writeImageOutput(bytes,destination,current,deadline))
+      await this[runPreparedImageJob](prepared,limits,current,deadline,bytes=>writeImageOutput(bytes,destination,current,deadline))
       current.seal()
     },()=>{},admitted)
     void job.start();return job
+  }
+  [runPreparedImageJob]<T>(prepared:PreparedImage,limits:Uint8Array,current:BunJob<T>,deadline:number,consume?:(bytes:Uint8Array)=>Promise<void>){
+    const profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif)
+    this.open()
+    return runImageJob(out=>{this.open();return n.zc_encode_stream_image_async(this.camera.handle,this.token,prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(limits),null,out)},current,deadline,undefined,false,consume)
   }
   [savePreparedImage](prepared: PreparedImage) {
     this.open()
@@ -1981,9 +1988,9 @@ export class Camera {
       throw error
     }
   }
-  private async runOwnedMode(request: ModeRequest): Promise<ModeResponse> {
+  private async runOwnedMode(request: ModeRequest,onCapture?:(frame:Frame)=>void): Promise<ModeResponse> {
     const callbacks = this.requestCallbacks
-    if (!callbacks.pre && !callbacks.post) {
+    if (!callbacks.pre && !callbacks.post && !onCapture) {
       const response = await runModeWorker(request)
       if (response.deviceLoss)
         this.observedDeviceLoss ??= Object.freeze({ ...response.deviceLoss })
@@ -1994,6 +2001,7 @@ export class Camera {
       requestHooks: {
         pre: !!callbacks.pre,
         post: !!callbacks.post,
+        capture: !!onCapture,
         control: new SharedArrayBuffer(16),
       },
     }
@@ -2002,6 +2010,7 @@ export class Camera {
         { handle: hook.handle, assertOpen: guardOutputHook },
         hook.frame,
       )
+      if(hook.phase==='capture'){onCapture?.(frame);return}
       this.invokeHook(
         hook.phase,
         callbacks[hook.phase],
@@ -3383,6 +3392,43 @@ export class Camera {
     options: CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions = {},
   ) {
     return this.submitImageFile(path, options, false)
+  }
+  captureToAsync(output:ImageOutput,options:CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits={}){
+    return this.submitImageOutput(output,options,false)
+  }
+  captureTo(output:ImageOutput,options:CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits={}){
+    return this.captureToAsync(output,options).wait()
+  }
+  captureFocusLockedToAsync(output:ImageOutput,options:FocusLockedOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits={}){
+    return this.submitImageOutput(output,options,true)
+  }
+  captureFocusLockedTo(output:ImageOutput,options:FocusLockedOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits={}){
+    return this.captureFocusLockedToAsync(output,options).wait()
+  }
+  private submitImageOutput(output:ImageOutput,options:CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits,locked:boolean){
+    guardRequestCallback();this.assertOpen()
+    const destination=prepareImageOutput(output),prepared=prepareImage(options),limits=prepareImageJobLimits(options)
+    const focus=locked?focusCaptureSelection(options):undefined,selection=focus?.selection??captureSelection(options)
+    this.assertOpen()
+    if(this.hasPendingModes()||this.focusCaptureActive||(locked&&(this.focusJobs||this.requests.length)))throw new CameraError(-4,'camera jobs active')
+    if(this.imageFileJobs.size>=32||this.requests.length>=32)throw new CameraError(-4,'capture queue')
+    const deadline=Date.now()+(selection.options.timeoutMs??Infinity)
+    const job=new BunJob<ReturnType<Frame['metadata']>>(current=>withImageOutputCapture<Frame,ReturnType<Frame['metadata']>>(
+      destination,current,deadline,
+      (frame,consume)=>frame[runPreparedImageJob](prepared,limits,current,deadline,consume),
+      async stage=>{
+        current.check()
+        const operation=(frame:Frame)=>{const metadata=frame.metadata();stage!.capture(frame);return metadata}
+        const selected={filter:selection.filter,options:{signal:current.signal}}
+        const capture=focus
+          ?this.submitFocusLocked(operation,selected.options,undefined,false,{...focus,selection:selected})
+          :this.submitCapture(operation,selected.options,undefined,false,undefined,false,selected)
+        let metadata:ReturnType<Frame['metadata']>
+        try{metadata=await capture.wait()}finally{await capture.cleanupDone}
+        current.check();await stage!.publish();current.seal();return metadata
+      },
+    ),()=>this.imageFileJobs.delete(job),selection.options)
+    this.imageFileJobs.add(job);void job.start();return job
   }
   private submitImageFile(
     path: string,
@@ -4995,6 +5041,18 @@ export class Camera {
       jobOptions,
     ) as BunJob<Uint8Array>
   }
+  switchModeAndCaptureTo(
+    options:CameraOptions,
+    output:ImageOutput,
+    jobOptions:ModeJobOptions<ReturnType<Frame['metadata']>> & ImageOptions & ImageJobLimits={},
+  ){
+    guardRequestCallback();this.assertOpen()
+    const destination=prepareImageOutput(output),prepared=prepareImage(jobOptions),limits=prepareImageJobLimits(jobOptions)
+    return this.submitMode(
+      prepared.format===6?{...options,raw:true,unpackedRaw:options.unpackedRaw??options.rawFormat===undefined}:options,
+      {kind:'output'},jobOptions,undefined,true,{destination,prepared,limits},
+    ) as BunJob<ReturnType<Frame['metadata']>>
+  }
   private validateModeTuning(target: CameraOptions) {
     if (
       target.tuning !== undefined &&
@@ -5048,6 +5106,7 @@ export class Camera {
     jobOptions: ModeJobOptions<T>,
     owner?: object,
     resumePreview = true,
+    imageOutput?:{destination:ReturnType<typeof prepareImageOutput>;prepared:PreparedImage;limits:Uint8Array},
   ) {
     guardRequestCallback()
     guardOutputHook()
@@ -5073,8 +5132,10 @@ export class Camera {
     const deadline = Date.now() + (effective.timeoutMs ?? 5000)
     this.checkModeAdmission(owner)
     const job = new BunJob<T>(
-      (current) =>
-        withStagedImageFile(
+      (current) =>withImageOutputCapture<Frame,T>(
+        imageOutput?.destination,current,deadline,
+        (frame,consume)=>frame[runPreparedImageJob](imageOutput!.prepared,imageOutput!.limits,current,deadline,consume),
+        stage=>withStagedImageFile(
           capture?.kind === 'file' ? capture.path : undefined,
           current,
           async (file) => {
@@ -5138,7 +5199,7 @@ export class Camera {
                   : capture,
                 dropFrames,
                 autofocus,
-              })
+              },stage?.capture)
               this.handle = response.handle
               this.started = response.started
               if (response.requestFrame)
@@ -5209,7 +5270,7 @@ export class Camera {
                     throw new CameraError(-6, 'invalid stopped request handoff')
                   value = retainedRequest
                 }
-                if (capture.kind === 'metadata' || capture.kind === 'file')
+                if (capture.kind === 'metadata' || capture.kind === 'file' || capture.kind === 'output')
                   value = decodeMetadata(response.value!)
                 if (capture.kind === 'streams') {
                   if (!response.bundle)
@@ -5314,6 +5375,7 @@ export class Camera {
             if (failure !== undefined) throw failure
             if (!capture) value = this.info()
             if (file) await file.publish(current, deadline)
+            if (stage) await stage.publish()
             current.check()
             if (capture?.kind === 'image') {
               if (!response?.image) throw new CameraError(-6, 'missing owned image')
@@ -5327,7 +5389,7 @@ export class Camera {
             }
             return value as T
           },
-        ),
+        )),
       () => this.modeJobs.delete(job),
       effective,
     )

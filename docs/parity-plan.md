@@ -161,3 +161,11 @@ output I/O; see image-outputs.md. Existing staged image bursts preserve their
 32-file bound with cancellable codec-capacity waits. Capture/mode sink convenience
 jobs, incremental streaming, full metadata/property/allocator/recovery behavior,
 optional integrations and physical acceptance remain open. This is not parity.
+
+Version 0.96 adds ordinary, CAF-locked and temporary-mode camera output jobs,
+with parent-owned native image preparation, source retirement and selected
+callbacks/CAF/camera/preview restoration before bounded sink delivery; see
+capture-outputs.md. Still hooks share asynchronous lifecycle reentrancy guards.
+Burst/series sink conveniences, further properties/allocator/recovery behavior,
+incremental encoding, complete metadata/device integrations and all physical
+acceptance remain open. This does not complete full Picamera2 parity.

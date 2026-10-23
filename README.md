@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.96 adds [camera capture outputs](docs/capture-outputs.md), including
+focus-locked and temporary-mode jobs. Native input is copied before source
+release; selected request callbacks, CAF/camera/preview restoration and bounded
+sink delivery join before completion. Sink hooks share the reentrancy guard.
+
 Version 0.95 adds [file-like still outputs](docs/image-outputs.md) for local frames,
 remote frames and owned image objects. Bounded partial writes, joined cancellation
 and flushes reuse Home codec/admission ownership; local and raster encoding also

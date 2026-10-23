@@ -1,5 +1,6 @@
 import { CameraError } from './ffi'
 import type { BunJob } from './jobs'
+import {invokeOutputHook} from './outputs'
 
 /** Caller-owned sequential destination. Never closed by image jobs. */
 export interface ImageOutput {
@@ -43,7 +44,7 @@ export async function writeImageOutput<T>(
     while (offset < bytes.byteLength) {
       checkpoint()
       const size = Math.min(64 * 1024, bytes.byteLength - offset)
-      const accepted = await output.write(bytes.slice(offset, offset + size))
+      const accepted = await invokeOutputHook(()=>output.write(bytes.slice(offset, offset + size)))
       // Keep sink failures observable if cancellation arrived during this call.
       const count = accepted === undefined ? size : accepted
       if (typeof count !== 'number' || !Number.isSafeInteger(count) || count <= 0 || count > size)
@@ -57,7 +58,7 @@ export async function writeImageOutput<T>(
       }
     }
     checkpoint()
-    if (output.flush) { await output.flush(); checkpoint() }
+    if (output.flush) { await invokeOutputHook(()=>output.flush!()); checkpoint() }
   } finally {
     active.delete(output.owner)
   }

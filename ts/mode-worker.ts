@@ -70,6 +70,7 @@ export interface ModeRequest {
       | 'encoded'
       | 'request-stop'
       | 'image'
+      | 'output'
     imageSettings?: ImageCaptureSettings
     streams?: StreamName[]
     imageOptions?: Uint8Array
@@ -83,12 +84,12 @@ export interface ModeRequest {
   }
   autofocus?: boolean
   dropFrames: number
-  requestHooks?: { pre: boolean; post: boolean; control: SharedArrayBuffer }
+  requestHooks?: { pre: boolean; post: boolean; capture?: boolean; control: SharedArrayBuffer }
 }
 export interface ModeRequestHook {
   kind: 'request-hook'
   ticket: number
-  phase: 'pre' | 'post'
+  phase: 'pre' | 'post' | 'capture'
   handle: Pointer
   frame: Uint8Array
 }
@@ -284,7 +285,7 @@ self.onmessage = ({ data: request }) => {
   }
   let focusRevision: bigint | undefined
   let hookTicket = 0
-  const hook = (phase: 'pre' | 'post', frame: Uint8Array) => {
+  const hook = (phase: 'pre' | 'post' | 'capture', frame: Uint8Array) => {
     if (!request.requestHooks?.[phase]) return
     if (cancelled()) throw -5
     if (hookTicket === 0x7fffffff) throw -2
@@ -510,7 +511,8 @@ self.onmessage = ({ data: request }) => {
               BigInt(result.value.length),
             ),
           )
-        } else if (capture.kind === 'metadata') {
+        } else if (capture.kind === 'metadata' || capture.kind === 'output') {
+          if(capture.kind==='output')hook('capture',frame)
           result.value = storage(96)
           check(
             n.zc_get_frame_metadata(result.handle, token, ptr(result.value)),

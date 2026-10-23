@@ -119,9 +119,11 @@ export function guardOutputHook() {
 function failure(error: unknown) {
   return error === undefined ? new Error('output hook threw undefined') : error
 }
-async function call<T>(operation: () => T | Promise<T>): Promise<T> {
+async function call<T>(operation: () => T | PromiseLike<T>): Promise<T> {
   return hooks.run(true, operation)
 }
+/** @internal Share the camera/recorder reentrancy guard with still sink hooks. */
+export {call as invokeOutputHook}
 async function completeWrite(
   write: (
     data: Uint8Array,

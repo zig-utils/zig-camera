@@ -569,3 +569,12 @@ the checked image algorithms in Home stdlib, which camera reuses unchanged.
 Camera owns native copied-input jobs, caller-owned output methods and joined I/O;
 no OS source is copied, changed or run, and no kernel write success is treated as
 sensor, storage durability or codec-performance acceptance evidence.
+
+The 0.96 restored-output audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads CLAUDE.md, ADR-MC3 and
+drivers/camera.home. The explicit capture stub and global resolution configuration
+do not implement a hosted request handoff, CAF acknowledgement, libcamera mode
+restoration or joined sink promise. The documented stdlib boundary therefore
+continues to apply: Home supplies codecs/admission/preparation primitives and
+camera owns its hosted transactions. No OS source is copied, changed or executed;
+kernel stubs and architecture policy do not supply physical acceptance evidence.
