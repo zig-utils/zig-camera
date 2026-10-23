@@ -24,6 +24,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/pixel_resample.zig and tests/resample_fixture.zig/resample_reference.c
+  are verbatim Home checked native-precision resampling and independent reference
+  fixtures at d2123edf5e6d17352a234b9986ac430d93a83b7c.
 - src/home/pixel_view.zig and raster_encoder.zig reuse Home's shared checked
   integer raster view and consumer aliases at
   ec74cce5a9c51b33a4e3b88a476c80a56eaf2ce5. tests/pixel_fixture.zig and

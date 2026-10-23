@@ -532,6 +532,14 @@ typedef zc_apng_raster zc_raster;
 int zc_raster_convert(const zc_raster *,uint32_t format,uint32_t bits,uint32_t big_endian,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_crop(const zc_raster *,uint32_t x,uint32_t y,uint32_t width,uint32_t height,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_pixel16(const zc_raster *,uint32_t x,uint32_t y,uint16_t rgba[4]);
+enum { ZC_RESAMPLE_NEAREST=0, ZC_RESAMPLE_BILINEAR=1, ZC_RESAMPLE_BICUBIC=2, ZC_RESAMPLE_LANCZOS2=3, ZC_RESAMPLE_LANCZOS3=4 };
+/* Compact same-format/depth/endian resize; NULL/0 queries size and heap limits.
+ * Pixel-center sampling, normalized widened reduction kernels, premultiplied
+ * filtering of straight RGBA. BICUBIC uses Home Mitchell-Netravali B=C=1/3.
+ * Working heap is capped at 64 MiB in addition to the 256 MiB output bound.
+ * No transfer/gamut conversion; synchronous borrowed pointers, no retained input.
+ * Failures never write output prefixes. Same-size copies preserve all bits. */
+int zc_raster_resize(const zc_raster *,uint32_t width,uint32_t height,uint32_t algorithm,uint8_t *data,uint64_t capacity,uint64_t *length);
 /* Raw pixels have no request-derived Exif. Pass raw/typed Exif without CAPTURE;
  * JPEG defaults are chosen by the binding. RGB ICC requires non-gray pixels;
  * built-in sRGB additionally requires the supplied matching color description. */

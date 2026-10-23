@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("abi.zig").c;
 const pixel = @import("home/pixel_view.zig");
+const resample = @import("home/pixel_resample.zig");
 const still = @import("still.zig");
 const files = @import("image_file.zig");
 const exif = @import("exif.zig");
@@ -42,6 +43,19 @@ pub export fn zc_raster_pixel16(source: ?*const c.zc_raster, x: u32, y: u32, out
     const view = read(source) catch |err| return still.status(err);
     if (x >= view.width or y >= view.height) return c.ZC_INVALID;
     output.* = view.sample16(x, y);
+    return c.ZC_OK;
+}
+pub export fn zc_raster_resize(source: ?*const c.zc_raster, width: u32, height: u32, algorithm: u32, output: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = 0;
+    if (algorithm > @intFromEnum(resample.Algorithm.lanczos3)) return c.ZC_INVALID;
+    const filter: resample.Algorithm = @enumFromInt(algorithm);
+    const view = read(source) catch |err| return still.status(err);
+    const size = resample.checkedSize(view, width, height, filter, .{}) catch |err| return still.status(err);
+    length.* = size;
+    const data = output orelse return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < size) return c.ZC_INVALID;
+    const row = pixel.packedRow(width, view.format, view.bits) catch unreachable;
+    resample.into(A, view, data[0..size], width, height, row, filter, .{}) catch |err| return still.status(err);
     return c.ZC_OK;
 }
 fn encoded(source: ?*const c.zc_raster, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, color: ?*const c.zc_color_space) ![]u8 {
@@ -114,4 +128,20 @@ test "raster ABI validates descriptors bounds caps and overlap before prefix wri
     try t.expectEqual(c.ZC_INVALID, zc_raster_convert(&raster, 1, 8, 0, &out, out.len, &size));
     for (data) |value| try t.expectEqual(@as(u8, 73), value);
     for (out) |value| try t.expectEqual(@as(u8, 91), value);
+}
+test "raster resizing queries geometry and working limits before touching outputs" {
+    const t = std.testing;
+    var input: [12]u8 = @splat(99);
+    const source = c.zc_raster{ .struct_size = @sizeOf(c.zc_raster), .width = 2, .height = 2, .format = 0, .bits = 8, .big_endian = 0, .stride = 2, .length = input.len, .data = &input };
+    var out: [12]u8 = @splat(73);
+    var size: u64 = 99;
+    try t.expectEqual(c.ZC_OK, zc_raster_resize(&source, 3, 2, c.ZC_RESAMPLE_BICUBIC, null, 0, &size));
+    try t.expectEqual(@as(u64, 6), size);
+    try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 3, 2, 5, &out, out.len, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 3, 2, 0, &out, 5, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 3, 2, 0, &input, input.len, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 0x7fffffff, 2, 0, null, 0, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_resize(&source, 3000000, 1, 1, null, 0, &size));
+    for (out) |v| try t.expectEqual(@as(u8, 73), v);
+    for (input) |v| try t.expectEqual(@as(u8, 99), v);
 }

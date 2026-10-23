@@ -88,6 +88,7 @@ pub const ApngEncoder = @import("home/apng_encoder.zig");
 /// explicit high-byte reduction and thresholded one-bit unassociated alpha.
 pub const GifEncoder = @import("home/gif_encoder.zig");
 pub const ImagePixels = @import("home/pixel_view.zig");
+pub const ImageResample = @import("home/pixel_resample.zig");
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;
@@ -1352,5 +1353,9 @@ test "Zig owned image copies survive request and camera closure with no retained
     active = false;
     try std.testing.expectEqual(before, image.view.sample16(1, 1));
     try std.testing.expectEqual(@as(usize, 12), image.view.data.len);
+    var thumbnail = try ImageResample.resize(std.testing.allocator, image.view, 3, 1, .lanczos3, .{});
+    defer thumbnail.deinit();
+    try std.testing.expectEqual(@as(usize, 9), thumbnail.view.data.len);
+    try std.testing.expectEqual(@as(u16, 65535), thumbnail.view.sample16(2, 0)[3]);
     try std.testing.expectError(error.StaleFrame, frame.makeImage(std.testing.allocator, c.ZC_MAIN, null));
 }

@@ -414,6 +414,12 @@ int main(void) {
         assert(zc_raster_pixel16(&raster,2,0,rgba)==ZC_INVALID && rgba[0]==0x1234);
         assert(zc_raster_crop(&raster,1,0,1,1,out,sizeof(out),&size)==ZC_OK && size==6 && !memcmp(out,pixels+6,6));
         assert(zc_raster_crop(&raster,1,0,2,1,out,sizeof(out),&size)==ZC_INVALID);
+        assert(zc_raster_resize(&raster,1,1,ZC_RESAMPLE_BILINEAR,NULL,0,&size)==ZC_OK && size==6);
+        memset(out,0xa7,sizeof(out));
+        assert(zc_raster_resize(&raster,1,1,ZC_RESAMPLE_BILINEAR,out,5,&size)==ZC_INVALID && out[0]==0xa7);
+        assert(zc_raster_resize(&raster,1,1,5,out,sizeof(out),&size)==ZC_INVALID && out[0]==0xa7);
+        assert(zc_raster_resize(&raster,1,1,ZC_RESAMPLE_NEAREST,out,sizeof(out),&size)==ZC_OK && size==6 && !memcmp(out,pixels+6,6));
+        assert(zc_raster_resize(&raster,1,1,ZC_RESAMPLE_NEAREST,pixels,sizeof(pixels),&size)==ZC_INVALID);
         zc_image_options options;zc_default_image_options(&options);options.format=ZC_IMAGE_PNG;
         zc_image_blob *blob=NULL;assert(zc_raster_encode(&raster,&options,NULL,NULL,NULL,&blob)==ZC_OK && blob);
         memset(pixels,0,sizeof(pixels));assert(zc_image_blob_copy(blob,NULL,0,&size)==ZC_OK && size>8);

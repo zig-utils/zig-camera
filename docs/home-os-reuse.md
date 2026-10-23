@@ -460,3 +460,13 @@ checked hosted gray/RGB/RGBA16 owner/converter. The reusable pixel primitive and
 Image ownership fixes improve Home stdlib per ADR-MC3; libcamera leases, borrowed
 FFI input and staged native I/O remain hosted camera ownership. No OS code is
 copied, changed or executed, and no physical acceptance/performance follows.
+
+The 0.85 resize audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and inspects ADR-MC3, camera,
+framebuffer, VideoCore7 and media decoder sources, plus repository-wide
+resample/resize/bilinear/bicubic/Lanczos searches. Framebuffer pixel/scroll/format
+operations and the nominal camera capture do not implement a checked hosted
+integer image resampler. The math library's Lanczos approximation concerns gamma,
+not image filtering. Per ADR-MC3, the reusable algorithm improves Home stdlib and
+is reused by camera; kernel/device ownership stays separate. No OS source is
+copied, changed or executed, and no hardware support/performance is inferred.

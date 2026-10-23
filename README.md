@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.85 adds [owned image resizing](docs/image-resizing.md) and optional
+capture-time dimensions, reusing Home’s checked native-precision, alpha-aware
+resampler with bounded tables and row caching. Home’s public Image resizing
+also gains checked indexed input and transactional word-precision operations.
+
 Version 0.84 adds [owned image objects](docs/image-objects.md) across capture,
 focus-locked capture and scoped callbacks, with independent RGB8/RGB16 pixels,
 checked Home clone/crop/conversion, encoding and joined staged saves after camera

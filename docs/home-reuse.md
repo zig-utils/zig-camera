@@ -1410,3 +1410,36 @@ writes; source images survive camera release, closure, GC and joined saves.
 The ordinary local build runner still fails macOS SDK/libSystem linkage before
 project compilation; direct native/library builds pass. Platform CI and real
 Linux backend compile/load/no-camera smoke remain publication gates.
+
+The 0.85 resizing audit starts at Home
+ec74cce5a9c51b33a4e3b88a476c80a56eaf2ce5 and reads image/ops/resize.zig,
+image SIMD/mutating resize, video scale/ML kernels and indexed adapters. Existing
+bicubic/Lanczos formulas are reusable, but the Image path reduces words through
+8-bit getPixel, uses fixed downscale windows and filters straight RGBA channels
+independently. Mutating resize silently skips non-RGBA8 inputs; animation frames
+are dropped. Home contribution d2123edf5e6d17352a234b9986ac430d93a83b7c extracts
+checked separable native-precision resizing with widened/normalized windows,
+premultiplied filtering, bounded tables/row cache, transactional public methods,
+checked indexed expansion/fit arithmetic and explicit animation rejection.
+The original Mitchell-Netravali and Lanczos kernels are reused with explicit
+pixel-center and reduction semantics; Pillow-identical samples are not claimed.
+
+The module and C fixture/reference are reused verbatim here. C adds a synchronous
+borrowed raster resize/size query; Zig exposes ImageResample. Bun adds owned-image
+resize and capture-time dimensions across main/lores, scoped and CAF jobs. The
+existing native ownership, job selection/discard and encoding/file primitives
+remain in use. No Python, FFmpeg or new device owner is added. Full decoding,
+compositing/fit/color semantics and remaining parity families are still open.
+
+Local validation passes 403 target-qualified ReleaseSafe native tests, all 1,101
+Bun tests with independent image/GIF/APNG/ICC/Exif/AVC/HEVC/AAC readback and SDL,
+C ABI execution, typecheck and pinned fmt. Four portable builds each pass six
+helper tests and 660 independent long-double C-reference fixtures; Home's Image
+API passes 167 tests. The normal local runner still fails SDK/libSystem linkage
+before project compilation; direct native/library builds pass. Home's exact-head
+hosted run is unavailable and is not described as green. Consumer platform CI
+and Linux real-backend compile/load/no-camera checks remain publication gates.
+The previous 0.84 release passed all 12 exact-head consumer workflows, including
+all three main platform jobs, 1,083 Bun tests, 30 HEVC diagnostic repetitions and
+Linux libcamera loading with zero cameras. No physical acceptance/performance
+result follows from these software checks.

@@ -1,4 +1,8 @@
-# Feature coverage in 0.71
+# Feature coverage in 0.71 (historical snapshot)
+
+For current release evidence and outstanding work, use the maintained
+[capability worklist](parity-plan.md). This older table predates the image,
+metadata and codec additions in later releases.
 
 zig-camera targets Picamera2's capabilities through Zig, the additive C ABI and
 TypeScript/Bun. The Python facade and its scripts have been removed. Its API

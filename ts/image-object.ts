@@ -10,6 +10,7 @@ import {
 } from './ffi'
 import {
   prepareImage,
+  processedImageStream,
   imageProfileDescriptor,
   type ImageOptions,
   type StreamColorSpace,
@@ -32,9 +33,50 @@ export interface ImageRaster {
   colorSpace?: StreamColorSpace
 }
 export type ImageObjectOptions = Omit<ImageOptions, 'stream'>
-export interface CaptureImageOptions {
+export type ImageResample =
+  'nearest' | 'bilinear' | 'bicubic' | 'lanczos2' | 'lanczos3'
+export interface ImageResizeOptions {
+  /** Home Mitchell-Netravali bicubic by default; no gamma/gamut conversion. */
+  resample?: ImageResample
+}
+export interface CaptureImageOptions extends ImageResizeOptions {
   stream?: 'main' | 'lores'
   bits?: 8 | 16
+  /** Omitted dimensions retain that source dimension. Configuring a stream at
+   * the required size avoids this explicit owned copy and software resampling. */
+  width?: number
+  height?: number
+}
+const algorithms = [
+  'nearest',
+  'bilinear',
+  'bicubic',
+  'lanczos2',
+  'lanczos3',
+] as const
+function algorithm(value: unknown): ImageResample {
+  if (!algorithms.includes(value as ImageResample))
+    throw new RangeError('invalid image resampler')
+  return value as ImageResample
+}
+/** @internal Snapshot user properties before accessing a request/native view. */
+export function snapshotCaptureImageOptions(options: CaptureImageOptions) {
+  const stream = options.stream ?? 'main',
+    bits = options.bits,
+    width = options.width,
+    height = options.height,
+    filter = options.resample ?? 'bicubic'
+  processedImageStream(stream)
+  if (bits !== undefined) depth(bits)
+  if (width !== undefined) integer(width, 1, 0x7fffffff)
+  if (height !== undefined) integer(height, 1, 0x7fffffff)
+  return Object.freeze({
+    stream,
+    bits,
+    width,
+    height,
+    resample: algorithm(filter),
+  })
 }
 type Metadata = ReturnType<typeof decodeMetadata>
 const captureAdmission = Symbol('capture image admission')
@@ -333,6 +375,48 @@ export class CapturedImage implements Disposable {
   }
   clone() {
     return this.convert()
+  }
+  resize(width: number, height: number, options: ImageResizeOptions = {}) {
+    integer(width, 1, 0x7fffffff)
+    integer(height, 1, 0x7fffffff)
+    const filter = algorithm(options.resample ?? 'bicubic'),
+      source = this.descriptor(),
+      size = new BigUint64Array(1),
+      code = algorithms.indexOf(filter)
+    check(
+      n.zc_raster_resize(
+        ptr(source.data),
+        width,
+        height,
+        code,
+        null,
+        0n,
+        ptr(size),
+      ),
+    )
+    const bytes = storage(Number(size[0]))
+    check(
+      n.zc_raster_resize(
+        ptr(source.data),
+        width,
+        height,
+        code,
+        ptr(bytes),
+        BigInt(bytes.byteLength),
+        ptr(size),
+      ),
+    )
+    return new CapturedImage(
+      bytes,
+      Object.freeze({
+        ...this.info,
+        width,
+        height,
+        stride: width * [1, 3, 4][kinds[this.format]]! * (this.bits / 8),
+      }),
+      this.sourceColor,
+      this.sourceMetadata,
+    )
   }
   convert(
     options: {

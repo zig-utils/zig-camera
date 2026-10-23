@@ -42,8 +42,8 @@ before native access, and intrinsic typed-array properties detect detached or
 misrepresented buffers. Conversion uses Home's new checked integer view:
 8-to-16 byte replication, 16-to-8 high-byte reduction, native-precision integer
 luma and explicit alpha dropping, without gamma/gamut conversion/compositing.
-Identical formats copy active rows. There is no resampling or hidden quality
-reduction. Converted/cropped/source pixels and encoded output are limited to
+Identical formats copy active rows. Conversion has no hidden quality reduction. Version 0.85 adds explicit
+[resizing](image-resizing.md) and optional capture-time dimensions. Converted/cropped/source pixels and encoded output are limited to
 256 MiB by the raster API; allocator scratch is additional.
 
 JPEG/PNG/BMP/TIFF/PPM/GIF reuse Home encoders. PNG/TIFF/PPM retain appropriate
@@ -92,6 +92,6 @@ word, alpha sample and byte order. C/Zig tests check bounds, overlap, no-prefix
 copies, blob ownership and request/camera retirement. These tests are software
 evidence, not physical sensor quality, format acceptance or camera performance.
 
-Further image transforms/resizing, temporary-mode image conveniences, palette/
+Further image transforms, temporary-mode image conveniences, palette/
 float/gamut conversion, general external image decoding and complete animation/
 image-object semantics remain work. The full Picamera2 parity goal remains open.
