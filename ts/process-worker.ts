@@ -1,8 +1,11 @@
 /** Internal Bun process entry point. Never imported by the public facade. */
 import { closeSync } from 'node:fs'
-import { FrameChannel, type RemoteFrame } from './frame-channel'
+import { FrameChannel, RemoteFrame } from './frame-channel'
 import { encodeProcessValue, decodeProcessValue, processErrorSummary } from './process-values'
 import type { ProcessWorkerContext, ProcessModule } from './processes'
+// Capture before importing application code. Handler overrides must not replace
+// the native close that proves map retirement before the ACK.
+const closeRemote = RemoteFrame.prototype.close
 const [moduleUrl, workerText, generationText, limitText] = process.argv.slice(2)
 const worker=Number(workerText), generation=BigInt(generationText!), resultLimit=Number(limitText)
 if(!Number.isInteger(worker) || worker<0 || worker>7 || generation<=0n || !Number.isInteger(resultLimit) || resultLimit<64 || resultLimit>256*1024*1024 || !moduleUrl?.startsWith('file:'))throw new Error('invalid process bootstrap')
@@ -65,12 +68,12 @@ async function receive(message:any){
       ok=false
       payload=encodeProcessValue(processErrorSummary(error),64*1024)
     }
-    remote.close();remote=undefined
+    closeRemote.call(remote);remote=undefined
     send({kind:'result',cookie:message.cookie,ok,payload})
     while(!channel.tryAcknowledge(message.cookie))await Bun.sleep(2)
   }finally{
     // Cleanup failure is fatal: no success ACK; the host must join our exit.
-    remote?.close()
+    if(remote)closeRemote.call(remote)
     busy=false
   }
 }

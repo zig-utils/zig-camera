@@ -21,6 +21,20 @@ export const run:ProcessModule['run']=async (frame,data:any,context)=>{
   if(data?.action==='oversize')return new Uint8Array(2*1024*1024)
   if(data?.action==='unsupported')return ()=>{}
   if(data?.action==='echo')return data.value
+  if(data?.action==='override-close'){
+    let priorClosed=true
+    if((state as any).retained){
+      priorClosed=false
+      try{(state as any).retained.makeBuffer()}catch(error){if((error as any).code===-5)priorClosed=true;else throw error}
+    }
+    ;(state as any).retained=frame
+    frame.close=()=>{}
+    return {priorClosed,jpeg:frame.encodeImage()}
+  }
+  if(data?.action==='exif'){
+    frame.save(data.path,{format:'png',exif:true},'lores')
+    return {pid:process.pid,jpeg:frame.encodeImage()}
+  }
   if(data?.action==='media'){
     if(data.path)frame.saveDng(data.path)
     return {pid:process.pid,bundle:frame.copyStreams(['lores','raw','main']),array:frame.makeArray('main'),buffer:frame.makeBuffer('raw'),words:frame.copyRaw16(),dng:frame.encodeDng(),calibration:frame.rawMetadata()}

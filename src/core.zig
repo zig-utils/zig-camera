@@ -1641,7 +1641,7 @@ pub export fn zc_default_image_options(out: *c.zc_image_options) void {
 pub export fn zc_encode_image(p: *c.zc_camera, token: u64, opts: *const c.zc_image_options, out: *?*c.zc_image_blob) c_int {
     return zc_encode_stream_image(p, token, if (opts.format == c.ZC_IMAGE_DNG) c.ZC_RAW else c.ZC_MAIN, opts, out);
 }
-fn imageStreamStatus(stream: u32, opts: *const c.zc_image_options) c_int {
+pub fn imageStreamStatus(stream: u32, opts: *const c.zc_image_options) c_int {
     if (stream > c.ZC_LORES or !still.valid(opts)) return c.ZC_INVALID;
     if ((opts.format == c.ZC_IMAGE_DNG) != (stream == c.ZC_RAW)) return c.ZC_UNSUPPORTED;
     return c.ZC_OK;

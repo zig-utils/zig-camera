@@ -4,7 +4,8 @@ import {
 } from './ffi'
 import { decodeFrameExportInfo, decodeRawMetadata } from './frame-export'
 import { decodeCatalog } from './catalog'
-import { imageStreamId, type ImageStream } from './images'
+import { imageStreamId,prepareImage,imageProfileDescriptor,type ImageStream,type ImageOptions } from './images'
+import { imageExifDescriptor } from './exif'
 import { adoptCapturedImage, type ImageObjectOptions } from './image-object'
 import { streamNames,decodePackedStreams,type StreamName,type CapturedStreams } from './streams'
 export interface RemoteArray {
@@ -184,11 +185,29 @@ export class RemoteFrame implements Disposable {
     const encoded=cstring(path)
     check(n.zc_remote_frame_save_dng(this.#readable(),ptr(encoded)))
   }
-  /** Owned processed image save. Request-derived Exif is not synthesized here;
-   * supply explicit metadata or encode from the source request. */
+  /** Owned encoded image, with request-derived JPEG Exif by default. */
+  encodeImage(options:ImageOptions={}) {
+    const prepared=prepareImage(options),profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif),out=outPointer()
+    check(n.zc_remote_frame_encode_image_metadata(this.#readable(),prepared.stream,ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null,ptr(out)))
+    const blob=handle(out)
+    try {
+      const size=new BigUint64Array(1)
+      check(n.zc_image_blob_copy(blob,null,0n,ptr(size)))
+      const bytes=storage(Number(size[0]))
+      check(n.zc_image_blob_copy(blob,ptr(bytes),BigInt(bytes.byteLength),ptr(size)))
+      return bytes
+    }finally{n.zc_image_blob_close(blob)}
+  }
+  /** Synchronous atomic save; JPEG defaults and explicit Exif/ICC come from this
+   * request. The third stream argument keeps the 0.90 processed-save API. */
   save(path:string,options:ImageObjectOptions={},stream:'main'|'lores'='main') {
-    using image=this.makeImage(stream)
-    image.save(path,options)
+    if(typeof path!=='string')throw new TypeError('image path must be a string')
+    if(stream!=='main'&&stream!=='lores')throw new RangeError('invalid processed image stream')
+    if(!options||typeof options!=='object'||Array.isArray(options))throw new RangeError('invalid image options')
+    // Read each documented option once. Avoid spreading unrelated getters, and
+    // recheck owner/read access after all metadata validation/getters.
+    const prepared=prepareImage({format:options.format,quality:options.quality,compressLevel:options.compressLevel,pngFilter:options.pngFilter,iccProfile:options.iccProfile,exif:options.exif,stream},path),profile=imageProfileDescriptor(prepared.profile),exif=imageExifDescriptor(prepared.exif)
+    check(n.zc_remote_frame_save_image_metadata(this.#readable(),prepared.stream,ptr(prepared.path!),ptr(prepared.options),profile?ptr(profile):null,exif?ptr(exif):null))
   }
   #stream(stream: ImageStream) {
     const id = imageStreamId(stream), bytes = storage(208)

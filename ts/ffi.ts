@@ -126,6 +126,8 @@ export const native = dlopen(library, {
   zc_remote_frame_copy_streams: { args:[p,p,u,p,u,p,n,p], returns:i },
   zc_remote_frame_copy_raw16: { args:[p,p,n,p], returns:i },
   zc_remote_frame_copy_buffer: { args:[p,u,p,n,p], returns:i },
+  zc_remote_frame_encode_image_metadata: { args:[p,u,p,p,p,p], returns:i },
+  zc_remote_frame_save_image_metadata: { args:[p,u,p,p,p,p], returns:i },
   zc_remote_frame_encode_dng: { args:[p,p], returns:i },
   zc_remote_frame_save_dng: { args:[p,p], returns:i },
   zc_remote_frame_close: { args: [p], returns: i },

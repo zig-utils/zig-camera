@@ -668,6 +668,20 @@ pub const RemoteFrame = struct {
     pub fn saveDng(self: RemoteFrame, path: [:0]const u8) Error!void {
         try check(api.zc_remote_frame_save_dng(self.handle orelse return error.StaleFrame, path.ptr));
     }
+    pub fn encodeImage(self: RemoteFrame, allocator: std.mem.Allocator, id: u32, opts: c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) Error![]u8 {
+        var blob: ?*c.zc_image_blob = null;
+        try check(api.zc_remote_frame_encode_image_metadata(self.handle orelse return error.StaleFrame, id, &opts, profile, metadata, &blob));
+        defer core.zc_image_blob_close(blob.?);
+        var size: u64 = 0;
+        try check(core.zc_image_blob_copy(blob.?, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(core.zc_image_blob_copy(blob.?, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn saveImage(self: RemoteFrame, id: u32, path: [:0]const u8, opts: c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) Error!void {
+        try check(api.zc_remote_frame_save_image_metadata(self.handle orelse return error.StaleFrame, id, path.ptr, &opts, profile, metadata));
+    }
 };
 /// Native ownership/dispatch for cooperating process supervisors. The host must
 /// verify OS peer exit before workerJoined; stopping/sending a signal is not proof.
@@ -1742,6 +1756,11 @@ test "public remote packed bundles raw samples and calibrated DNG own results af
     defer original.deinit(t.allocator);
     var expected: [17 * 5 * 2]u8 = undefined;
     try frame.copyRaw16(&expected);
+    var image_options: c.zc_image_options = undefined;
+    core.zc_default_image_options(&image_options);
+    image_options.format = c.ZC_IMAGE_PNG;
+    const expected_png = try frame.encodeImage(t.allocator, image_options);
+    defer t.allocator.free(expected_png);
     var loan = try frame.exportFrame(3, false);
     defer loan.deinit() catch {};
     var ends = try FrameChannel.pair();
@@ -1756,6 +1775,9 @@ test "public remote packed bundles raw samples and calibrated DNG own results af
     var words: [17 * 5 * 2]u8 = undefined;
     try receipt.frame.copyRaw16(&words);
     try t.expectEqualSlices(u8, &expected, &words);
+    const remote_png = try receipt.frame.encodeImage(t.allocator, c.ZC_MAIN, image_options, null, null);
+    defer t.allocator.free(remote_png);
+    try t.expectEqualSlices(u8, expected_png, remote_png);
     const captured_dng = try receipt.frame.encodeDng(t.allocator);
     defer t.allocator.free(captured_dng);
     try receipt.frame.deinit();

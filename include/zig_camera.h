@@ -588,6 +588,13 @@ int zc_encode_image(zc_camera *,uint64_t token,const zc_image_options *,zc_image
 int zc_encode_stream_image(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,zc_image_blob **out);
 int zc_encode_stream_image_profile(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,zc_image_blob **out);
 int zc_encode_stream_image_metadata(zc_camera *,uint64_t token,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,zc_image_blob **out);
+/* Remote request encoding: same Home options/profile/Exif policy, using owned
+ * request metadata. JPEG capture defaults require an enabled capture descriptor.
+ * Pixel conversion and encoded blobs are each <=256 MiB. Calls are serialized
+ * with remote close/write access. Saves atomically replace a path; child job
+ * cancellation does not undo publication or clean crash-orphan temporaries. */
+int zc_remote_frame_encode_image_metadata(const zc_remote_frame *,uint32_t stream,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,zc_image_blob **out);
+int zc_remote_frame_save_image_metadata(const zc_remote_frame *,uint32_t stream,const char *path,const zc_image_options *,const zc_image_profile *,const zc_image_exif *);
 int zc_image_blob_copy(const zc_image_blob *,uint8_t *data,uint64_t capacity,uint64_t *length);
 void zc_image_blob_close(zc_image_blob *);
 /* Atomic file replacement; explicit format does not depend on path extension.

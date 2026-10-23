@@ -104,11 +104,11 @@ final file unchanged. Bayer requires black levels, CCM and WB; mono requires
 black levels and emits no invented CFA or color matrix. Malformed samples,
 singular/non-finite calibration and unsupported formats reject.
 
-`save(path, options, stream = 'main')` creates an independent processed image and
-uses its existing atomic save/explicit ICC/Exif path. It does not synthesize
-request-derived Exif; use explicit fields or source-request encoding for that.
-General file-like outputs, request-derived remote Exif, compression choices and
-asynchronous remote save/publication jobs remain work.
+Version 0.91 adds [request-derived Exif and ICC encoding/saves](remote-exif.md).
+`encodeImage(options)` returns owned encoded bytes; `save(path, options, stream = 'main')`
+now uses the direct Home request encoding path, with JPEG capture defaults and
+explicit PNG/TIFF opt-in. General file-like outputs, additional compression
+choices and asynchronous remote save/publication jobs remain work.
 
 These remote operations are synchronous on the invoking thread or process.
 A successful save performed inside a child is an external side effect: subsequent

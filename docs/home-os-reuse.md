@@ -521,3 +521,13 @@ applies: reuse Home image sensor_raw and video plane_pack unchanged, while camer
 keeps request calibration, native handles and process/atomic-file ownership.
 No OS code is copied, changed or run; kernel state is not used as DMA, camera
 quality, codec or synchronization evidence.
+
+The 0.91 remote Exif audit again fetches Home OS main and confirms clean
+151269666bc09aa15a271f1c1f4603f681132e65. Searches of kernel media/camera code
+and ADR-MC3 find no hosted Exif/ICC or typed request-metadata reader to reuse;
+the capture stub remains explicit. ADR-MC3 assigns shared media algorithms to
+Home stdlib. Strict scalar catalog reads therefore improve Home video and are
+reused verbatim, alongside existing Home image Exif/ICC/codec implementations.
+Request clock/provenance, camera maps and atomic-file ownership remain hosted.
+No OS code is copied, changed or run, and no kernel stub, register path or
+architectural statement supplies physical sensor or color acceptance evidence.

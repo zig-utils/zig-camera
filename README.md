@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.91 adds [request-derived remote image metadata](docs/remote-exif.md):
+Home image encoding and atomic saves with source dimensions, exposure, gain-based
+ISO, UTC, model and copied ICC/Exif. JPEG defaults now match request capture.
+
 Version 0.90 adds [remote stream arrays and calibrated DNG](docs/remote-media.md):
 compact main/raw/lores bundles, physical buffer copies, native raw16 samples,
 request-time calibration transport, and DNG/processed image saves in workers.

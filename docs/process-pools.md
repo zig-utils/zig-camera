@@ -162,6 +162,17 @@ a publication gate. No physical Pi DMA, camera latency/FPS or speedup is inferre
 Version 0.90 adds [remote arrays and calibrated media](remote-media.md), including
 compact bundles, physical buffers, raw16, DNG bytes and atomic DNG/processed saves.
 Remaining work includes complete per-request configuration/property semantics,
-remote async/metadata/file-like saves, richer cloneable values, automatic
+remote async/file-like saves and remaining metadata semantics, richer cloneable
+values, automatic
 recovery policy and persistent allocator/GPU integration, plus the other parity
 families and hardware acceptance in parity-plan.md. This does not complete the goal.
+
+Version 0.91 adds request-derived Exif/ICC remote encoding and saves using the
+existing full metadata catalog and Home's strict scalar reader; see remote-exif.md.
+The existing source/ACK/exit/result reservations and synchronous child-file side
+effect limitations remain. This does not complete the overall goal.
+
+The 0.91 bootstrap also captures RemoteFrame close before importing the handler.
+Application close-method overrides cannot replace worker-owned map retirement
+before ACK; retained per-job frame objects become closed. Low-level channel users
+still own their explicit close/ACK protocol.

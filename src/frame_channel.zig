@@ -563,3 +563,56 @@ pub export fn zc_remote_frame_copy_buffer(p: *const c.zc_remote_frame, id: u32, 
     }
     return c.ZC_OK;
 }
+
+pub export fn zc_remote_frame_encode_image_metadata(p: *const c.zc_remote_frame, stream: u32, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, out: *?*c.zc_image_blob) c_int {
+    out.* = null;
+    const core = @import("core.zig");
+    var rc = core.imageStreamStatus(stream, opts);
+    if (rc != c.ZC_OK) return rc;
+    rc = core.zc_check_image_metadata(opts, profile, metadata);
+    if (rc != c.ZC_OK) return rc;
+    if (opts.format == c.ZC_IMAGE_DNG) return zc_remote_frame_encode_dng(p, out);
+    var selected: c.zc_stream = undefined;
+    rc = zc_remote_frame_stream(p, stream, &selected);
+    if (rc != c.ZC_OK) return rc;
+    const still = @import("still.zig");
+    const rgb = @import("stream_rgb.zig");
+    const size = rgb.size(selected) catch return c.ZC_INVALID;
+    const wide = @import("processed_format.zig").isWide(std.mem.sliceTo(&selected.format, 0)) and opts.format != c.ZC_IMAGE_JPEG;
+    if (size > maximum / @as(usize, if (wide) 2 else 1)) return c.ZC_INVALID;
+    var color: c.zc_color_space = undefined;
+    for (owner(p).info.streams[0..owner(p).info.stream_count], 0..) |description, i| {
+        if (description.stream == stream) {
+            color = owner(p).info.colors[i];
+            break;
+        }
+    }
+    still.checkProfileSource(profile, color) catch |err| return still.status(err);
+    const generated = @import("remote_exif.zig").generate(A, owner(p).info.metadata, owner(p).raw_metadata, selected, owner(p).catalog, metadata) catch |err| return still.status(err);
+    defer if (generated) |bytes| A.free(bytes);
+    var empty = std.mem.zeroes(c.zc_frame);
+    empty.exposure_us = owner(p).info.metadata.exposure_us;
+    var source = rgb.Selected.image(A, empty, selected, color, opts.format) catch |err| return still.status(err);
+    defer source.deinit(A);
+    const bytes = still.encodeMetadata(A, &source.frame, null, opts, profile, generated orelse @import("exif.zig").bytes(metadata)) catch |err| return still.status(err);
+    var transferred = false;
+    defer if (!transferred) A.free(bytes);
+    if (bytes.len > maximum) return c.ZC_INVALID;
+    const blob = A.create(still.Blob) catch return c.ZC_NOMEM;
+    blob.* = .{ .bytes = bytes };
+    out.* = @ptrCast(blob);
+    transferred = true;
+    return c.ZC_OK;
+}
+pub export fn zc_remote_frame_save_image_metadata(p: *const c.zc_remote_frame, stream: u32, path: [*:0]const u8, opts: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif) c_int {
+    var blob: ?*c.zc_image_blob = null;
+    const rc = zc_remote_frame_encode_image_metadata(p, stream, opts, profile, metadata, &blob);
+    if (rc != c.ZC_OK) return rc;
+    defer @import("core.zig").zc_image_blob_close(blob.?);
+    const encoded: *const @import("still.zig").Blob = @ptrCast(@alignCast(blob.?));
+    var atom = std.fs.cwd().atomicFile(std.mem.span(path), .{ .write_buffer = &.{} }) catch return c.ZC_IO;
+    defer atom.deinit();
+    atom.file_writer.file.writeAll(encoded.bytes) catch return c.ZC_IO;
+    atom.finish() catch return c.ZC_IO;
+    return c.ZC_OK;
+}

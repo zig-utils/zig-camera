@@ -59,6 +59,11 @@ static int native_child(uint64_t expected,int abrupt,int version){
     zc_export_info info;assert(zc_remote_frame_info(frame,&info)==ZC_OK && info.stream_count==3);
     zc_raw_metadata calibration;assert(zc_remote_frame_raw_metadata(frame,&calibration)==ZC_OK);assert(calibration.valid==(version==2?7u:0u));
     zc_image_blob *dng=NULL;assert(zc_remote_frame_encode_dng(frame,&dng)==(version==2?ZC_OK:ZC_UNSUPPORTED));if(dng)zc_image_blob_close(dng);else assert(version==1);
+    zc_image_options opts;zc_default_image_options(&opts);zc_image_exif exif;zc_default_image_exif(&exif);
+    zc_image_blob *image=NULL;assert(zc_remote_frame_encode_image_metadata(frame,ZC_MAIN,&opts,NULL,&exif,&image)==ZC_OK && image);
+    uint64_t encoded_size=0;assert(zc_image_blob_copy(image,NULL,0,&encoded_size)==ZC_OK && encoded_size>3);uint8_t *encoded=malloc((size_t)encoded_size);assert(encoded);
+    assert(zc_image_blob_copy(image,encoded,encoded_size,&encoded_size)==ZC_OK && encoded[0]==255 && encoded[1]==216);free(encoded);zc_image_blob_close(image);
+    opts.quality=0;image=(zc_image_blob *)(uintptr_t)1;assert(zc_remote_frame_encode_image_metadata(frame,ZC_MAIN,&opts,NULL,&exif,&image)==ZC_INVALID && !image);
     uint64_t actual=UINT64_C(1469598103934665603);
     for(uint32_t i=0;i<info.stream_count;i++){
         zc_stream stream;assert(zc_remote_frame_stream(frame,info.streams[i].stream,&stream)==ZC_OK);

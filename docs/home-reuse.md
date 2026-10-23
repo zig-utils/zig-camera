@@ -1575,3 +1575,25 @@ No Home source change is needed for these already tested algorithms. Independent
 libtiff readback covers all 46 remote raw formats, alongside all 14 processed
 main/lores layouts and actual child-process results/saves. This is software
 acceptance, not physical sensor calibration or a throughput claim.
+
+## Remote request Exif (0.91)
+
+Fetched Home main and reused the newly published
+6ebca8044eaa09f0430ec722cad8b1d91b0237b8 typed_catalog module verbatim. It adds
+allocation-free exact scalar decoding and explicit provenance/role/flag lookup,
+rejecting coerced/array/opaque values and supported duplicate identities without
+altering the wire schema. Eight focused tests pass both compiler lines and modes,
+with four actual Linux ARM/x86 test cross-links. The upstream exact-head Actions
+listing is unavailable; the new camera consumer matrix supplies separate evidence.
+Home main had advanced through two unrelated TS checker/docs commits at 64c9cc411;
+no shared media source or helper dependency was changed by those commits, and no
+unrelated compiler tests were executed. Home OS remains separately audited below.
+
+Remote encoding reuses Home typed metadata, Exif defaults/merge, ICC embedding,
+checked stream conversion and existing image codecs; it does not add another
+serializer or infer photo values from initial camera properties. The full catalog
+already contains DigitalGain and FrameWallClock, so no extra packet/version is
+needed. Camera-specific provenance/clock/lease and atomic-file policy stay here.
+429 native and 1,326 Bun tests pass, including independent metadata/container
+readback and actual process results/saves. No Python or FFmpeg is added or run;
+no physical metadata/quality/FPS result is inferred.

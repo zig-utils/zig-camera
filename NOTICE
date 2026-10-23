@@ -642,3 +642,12 @@ Home cooperative PNG/APNG checkpoints (0.82):
   Home MIT attribution above applies. src/apng_job.zig and bounded staged-file
   admission reuse the already attributed Home preparation_gate and
   owned_admission modules; camera/worker/file ownership remains hosted glue.
+
+Home exact typed scalar reads (0.91):
+- src/home/typed_catalog.zig is updated verbatim from
+  packages/video/src/core/typed_catalog.zig at commit
+  6ebca8044eaa09f0430ec722cad8b1d91b0237b8.
+  Adds exact scalar type/order/shape reads and explicit provenance/role/flag
+  lookup with absent and ambiguous values kept distinct. The Home MIT license
+  above applies. Camera Exif policy reuses existing Home image writers.
+  https://github.com/home-lang/home/commit/6ebca8044eaa09f0430ec722cad8b1d91b0237b8
