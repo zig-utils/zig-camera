@@ -1,4 +1,14 @@
-# Temporary-mode file publication
+# Staged still-file publication
+
+Ordinary `captureFileAsync`/`captureFile` and `captureFocusLockedFile` now use the
+same staged native owner. Their previous immediate-save operation could replace
+the destination before post-capture callbacks or CAF restoration failed. Output
+now stays private through callbacks, request release and, when applicable, CAF
+restoration. Accepted cancellation and deadline expiry discard the temporary;
+late cancellation after the native publication claim is rejected. Stop/close
+track and join these file jobs even after their camera request has retired.
+Scheduling fields are snapshotted once, preserving flush/drop/SyncReady selection
+without invoking completion callbacks on the internal capture child.
 
 Version 0.57 stages `switchModeAndCaptureFile` output until the temporary capture
 has completed its request callbacks and the prior camera, controls, focus policy,
@@ -61,7 +71,7 @@ Callers serialize close against every other access. The header is the ABI contra
 
 Native tests cover claimed cross-thread cancellation, copied paths, camera/frame
 teardown before publication, failed preparation/rename and changed temporary
-identities. Bun tests cover all six formats, post-callback cancellation, deadline
+identities. Bun tests cover the supported formats, post-callback cancellation, deadline
 expiry inside callbacks and preview restoration, restoration/worker failures,
 late cancellation versus publication, camera close and completion re-entry.
 Independent decoders check staged RGB/I420 processed images, including the

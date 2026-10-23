@@ -410,6 +410,22 @@ function captureSelection<T>(
   )
   return { options, filter }
 }
+function focusCaptureSelection<T>(options: FocusLockedOptions<T>) {
+  const immediateOption = options.immediate,
+    focusedOption = options.requireFocused
+  for (const value of [immediateOption, focusedOption])
+    if (value !== undefined && typeof value !== 'boolean')
+      throw new RangeError('invalid focus-lock option')
+  const immediate = immediateOption ?? false,
+    requireFocused = focusedOption ?? true,
+    restoreTimeout = options.restoreTimeoutMs ?? 5000
+  if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
+    throw new RangeError('invalid restoration deadline')
+  return {
+    immediate, requireFocused, restoreTimeout,
+    selection: captureSelection(options),
+  }
+}
 export interface ModeJobOptions<T = unknown> extends JobOptions<T> {
   dropFrames?: number
   /** Resolve the existing scan before transferring camera ownership. Default: cancel. */
@@ -1826,6 +1842,7 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
+  private imageFileJobs = new Set<BunJob<ReturnType<Frame['metadata']>>>()
   private requestCallbacks: Readonly<RequestCallbacks> = Object.freeze({})
   private lastRequestCallbackError?: RequestCallbackError
   private failedRequestMappings = new Set<MappedStream>()
@@ -2640,6 +2657,7 @@ export class Camera {
     options: FocusLockedOptions<T>,
     discard?: (value: T) => void,
     transfer = false,
+    admitted?: ReturnType<typeof focusCaptureSelection<T>>,
   ): BunJob<T> {
     guardRequestCallback()
     this.assertOpen()
@@ -2647,17 +2665,8 @@ export class Camera {
       throw new CameraError(-4, 'camera jobs active')
     if (typeof operation !== 'function')
       throw new TypeError('invalid focus capture callback')
-    const immediateOption = options.immediate,
-      focusedOption = options.requireFocused
-    for (const value of [immediateOption, focusedOption])
-      if (value !== undefined && typeof value !== 'boolean')
-        throw new RangeError('invalid focus-lock option')
-    const immediate = immediateOption ?? false,
-      requireFocused = focusedOption ?? true
-    const restoreTimeout = options.restoreTimeoutMs ?? 5000
-    if (!Number.isFinite(restoreTimeout) || restoreTimeout < 0)
-      throw new RangeError('invalid restoration deadline')
-    const selection = captureSelection(options)
+    const { immediate, requireFocused, restoreTimeout, selection } =
+      admitted ?? focusCaptureSelection(options)
     this.assertOpen()
     if (this.hasPendingModes() || this.focusJobs || this.requests.length)
       throw new CameraError(-4, 'capture admission changed')
@@ -2842,11 +2851,7 @@ export class Camera {
     options: FocusLockedOptions<ReturnType<Frame['metadata']>> &
       ImageOptions = {},
   ) {
-    const prepared = prepareImage(options, path)
-    return this.captureFocusLockedAsync((frame) => {
-      frame[savePreparedImage](prepared)
-      return frame.metadata()
-    }, options)
+    return this.submitImageFile(path, options, true)
   }
   captureFocusLockedEncodedImage(
     options: FocusLockedOptions<Uint8Array> & ImageOptions = {},
@@ -2927,6 +2932,7 @@ export class Camera {
     transfer = false,
     owner?: object,
     requireSyncReady = false,
+    admitted?: ReturnType<typeof captureSelection<T>>,
   ): BunJob<T> {
     guardRequestCallback()
     this.assertOpen()
@@ -2937,7 +2943,7 @@ export class Camera {
     if (this.requests.length >= 32) throw new CameraError(-4, 'capture queue')
     if (typeof operation !== 'function')
       throw new TypeError('capture operation must be a function')
-    const selection = captureSelection(options, requireSyncReady)
+    const selection = admitted ?? captureSelection(options, requireSyncReady)
     this.assertOpen()
     if (
       this.hasPendingModes(owner) ||
@@ -3307,11 +3313,64 @@ export class Camera {
     path: string,
     options: CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions = {},
   ) {
+    return this.submitImageFile(path, options, false)
+  }
+  private submitImageFile(
+    path: string,
+    options: CaptureOptions<ReturnType<Frame['metadata']>> & ImageOptions,
+    locked: boolean,
+  ) {
+    guardRequestCallback()
+    this.assertOpen()
     const prepared = prepareImage(options, path)
-    return this.captureAsync((frame) => {
-      frame[savePreparedImage](prepared)
-      return frame.metadata()
-    }, options)
+    const focus = locked ? focusCaptureSelection(options) : undefined
+    const selection = focus?.selection ?? captureSelection(options)
+    this.assertOpen()
+    if (this.hasPendingModes() || this.focusCaptureActive)
+      throw new CameraError(-4, 'camera jobs active')
+    if (locked && (this.focusJobs || this.requests.length))
+      throw new CameraError(-4, 'camera jobs active')
+    if (this.imageFileJobs.size >= 32 || this.requests.length >= 32)
+      throw new CameraError(-4, 'capture queue')
+    const deadline = Date.now() + (selection.options.timeoutMs ?? Infinity)
+    const job = new BunJob<ReturnType<Frame['metadata']>>(
+      async (current) => {
+        current.check()
+        return withStagedImageFile(prepared.path, current, async (file) => {
+          current.check()
+          const stage = (frame: Frame) => {
+            stageNativeImage(
+              file!.handle!, this.handle, frame.token, prepared.options,
+              prepared.stream, prepared.profile, prepared.exif,
+            )
+            return frame.metadata()
+          }
+          const selected = {
+            filter: selection.filter,
+            options: { signal: current.signal },
+          }
+          const capture = focus
+            ? this.submitFocusLocked(
+                stage, selected.options, undefined, false,
+                { ...focus, selection: selected },
+              )
+            : this.submitCapture(
+                stage, selected.options, undefined, false,
+                undefined, false, selected,
+              )
+          const metadata = await capture.wait()
+          await capture.cleanupDone
+          await file!.publish(current, deadline)
+          current.seal()
+          return metadata
+        })
+      },
+      () => this.imageFileJobs.delete(job),
+      selection.options,
+    )
+    this.imageFileJobs.add(job)
+    void job.start()
+    return job
   }
   captureFile(
     path: string,
@@ -5189,7 +5248,7 @@ export class Camera {
     return [...this.modeJobs].some((job) => !job.done && job !== owner)
   }
   private async cancelModes() {
-    const jobs = [...this.modeJobs]
+    const jobs = [...this.modeJobs, ...this.imageFileJobs]
     if (this.reconnectJob && !this.reconnectJob.done)
       jobs.push(this.reconnectJob)
     for (const job of jobs) job.cancel(new CameraError(-2, 'camera stopped'))

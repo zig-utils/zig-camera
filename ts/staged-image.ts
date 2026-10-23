@@ -52,7 +52,7 @@ class StagedImageFile {
   }
   async publish<T>(job: BunJob<T>, deadline: number) {
     if (Date.now() >= deadline && !job.cancelRequested)
-      job.cancel(new CameraError(-3, 'mode deadline'))
+      job.cancel(new CameraError(-3, 'image file deadline'))
     job.check()
     check(n.zc_image_file_finish(this.handle!, 1), 'publish image file')
     this.released = true
