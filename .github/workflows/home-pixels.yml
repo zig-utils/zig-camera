@@ -1,0 +1,33 @@
+name: Home image pixels
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/pixel_view.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
+  pull_request:
+    paths: ['src/home/pixel_view.zig', 'src/home/raster_encoder.zig', 'include/zig_camera.h', 'tests/pixel_*', '.github/workflows/home-pixels.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pixels:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Pixel ownership and independent sample reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc src/home/pixel_view.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep pixel -Mroot=tests/pixel_fixture.zig -Mpixel=src/home/pixel_view.zig -femit-bin=/tmp/home-pixels.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror tests/pixel_reference.c /tmp/home-pixels.o -o /tmp/home-pixels
+            /tmp/home-pixels
+          done

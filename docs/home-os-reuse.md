@@ -451,3 +451,12 @@ return status without decoding. Per ADR-MC3, the checked GIF/palette algorithms
 improve Home stdlib and are reused in camera; hosted file jobs/libcamera leases
 remain camera ownership. No OS source is copied, changed or executed, and no
 physical support or throughput result is inferred.
+
+The 0.84 image-object audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3, camera/media,
+framebuffer and VideoCore7 sources. Kernel RGB565, packed framebuffer format
+constants, nominal capture and container image-name copying do not implement a
+checked hosted gray/RGB/RGBA16 owner/converter. The reusable pixel primitive and
+Image ownership fixes improve Home stdlib per ADR-MC3; libcamera leases, borrowed
+FFI input and staged native I/O remain hosted camera ownership. No OS code is
+copied, changed or executed, and no physical acceptance/performance follows.

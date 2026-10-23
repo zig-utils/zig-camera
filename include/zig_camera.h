@@ -523,6 +523,21 @@ typedef struct {
     uint64_t stride,length;
     const uint8_t *data;
 } zc_apng_raster;
+/* General borrowed gray/RGB/RGBA8/16 raster. All calls below consume pointers
+ * synchronously and retain none. Active pixels/output are limited to 256 MiB.
+ * Conversion/crop query with data=NULL,capacity=0; failures never copy prefixes.
+ * Source/target overlap rejects, except identical no-op copies. Native endian
+ * is explicit; 8->16 replicates bytes and 16->8 selects high bytes. */
+typedef zc_apng_raster zc_raster;
+int zc_raster_convert(const zc_raster *,uint32_t format,uint32_t bits,uint32_t big_endian,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_raster_crop(const zc_raster *,uint32_t x,uint32_t y,uint32_t width,uint32_t height,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_raster_pixel16(const zc_raster *,uint32_t x,uint32_t y,uint16_t rgba[4]);
+/* Raw pixels have no request-derived Exif. Pass raw/typed Exif without CAPTURE;
+ * JPEG defaults are chosen by the binding. RGB ICC requires non-gray pixels;
+ * built-in sRGB additionally requires the supplied matching color description. */
+int zc_raster_encode(const zc_raster *,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *,zc_image_blob **out);
+int zc_raster_save(const zc_raster *,const char *path,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *);
+int zc_image_file_prepare_raster(zc_image_file *,const zc_raster *,const zc_image_options *,const zc_image_profile *,const zc_image_exif *,const zc_color_space *);
 typedef struct {
     zc_apng_raster raster;
     uint32_t x,y,delay_num,delay_den,dispose,blend;

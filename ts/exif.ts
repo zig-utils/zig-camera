@@ -283,8 +283,9 @@ function encode(fields: Field[], thumbnail?: Uint8Array) {
 export function prepareExif(
   source: ImageExif | undefined,
   format: number,
+  captureDefault = true,
 ): PreparedExif | undefined {
-  const input = source === undefined ? format === 1 : source
+  const input = source === undefined ? captureDefault && format === 1 : source
   if (input === false) return { captureMetadata: false }
   if (input === true) return { captureMetadata: true }
   if (input instanceof Uint8Array)
@@ -319,7 +320,7 @@ export function prepareExif(
     thumbnail: input.thumbnail,
     tags: input.tags,
   }
-  const captureMetadata = options.captureMetadata ?? true
+  const captureMetadata = options.captureMetadata ?? captureDefault
   if (typeof captureMetadata !== 'boolean')
     throw new TypeError('Exif captureMetadata must be boolean')
   const fields: Field[] = []

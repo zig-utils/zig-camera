@@ -65,6 +65,7 @@ _Static_assert(sizeof(zc_buffer_stats)==64,"buffer stats ABI");
 _Static_assert(sizeof(zc_pipeline_options)==44,"pipeline options ABI");
 _Static_assert(sizeof(zc_orientation_info)==16,"orientation ABI");
 _Static_assert(sizeof(zc_image_options)==20,"image options ABI");
+_Static_assert(sizeof(zc_raster)==48 && offsetof(zc_raster,data)==40,"raster view ABI");
 _Static_assert(sizeof(zc_image_profile)==24,"image profile ABI");
 _Static_assert(sizeof(zc_image_exif)==24,"image Exif ABI");
 _Static_assert(sizeof(zc_exif_field)==32,"typed Exif field ABI");
@@ -403,6 +404,24 @@ static void apng_jobs(void) {
     assert(zc_apng_job_close(NULL)==ZC_OK);
 }
 int main(void) {
+    {
+        uint8_t pixels[12]={0x34,0x12,1,0x80,0xdc,0xfe,0,1,2,3,4,5},out[32];memset(out,0xa7,sizeof(out));
+        zc_raster raster={sizeof(raster),2,1,ZC_APNG_RGB,16,0,12,12,pixels};uint64_t size=0;
+        assert(zc_raster_convert(&raster,ZC_APNG_RGBA,16,1,NULL,0,&size)==ZC_OK && size==16);
+        assert(zc_raster_convert(&raster,ZC_APNG_RGBA,16,1,out,15,&size)==ZC_INVALID && out[0]==0xa7);
+        assert(zc_raster_convert(&raster,ZC_APNG_RGBA,16,1,out,sizeof(out),&size)==ZC_OK && out[0]==0x12 && out[1]==0x34 && out[6]==255 && out[7]==255 && out[16]==0xa7);
+        uint16_t rgba[4]={0};assert(zc_raster_pixel16(&raster,0,0,rgba)==ZC_OK && rgba[0]==0x1234 && rgba[1]==0x8001 && rgba[2]==0xfedc && rgba[3]==65535);
+        assert(zc_raster_pixel16(&raster,2,0,rgba)==ZC_INVALID && rgba[0]==0x1234);
+        assert(zc_raster_crop(&raster,1,0,1,1,out,sizeof(out),&size)==ZC_OK && size==6 && !memcmp(out,pixels+6,6));
+        assert(zc_raster_crop(&raster,1,0,2,1,out,sizeof(out),&size)==ZC_INVALID);
+        zc_image_options options;zc_default_image_options(&options);options.format=ZC_IMAGE_PNG;
+        zc_image_blob *blob=NULL;assert(zc_raster_encode(&raster,&options,NULL,NULL,NULL,&blob)==ZC_OK && blob);
+        memset(pixels,0,sizeof(pixels));assert(zc_image_blob_copy(blob,NULL,0,&size)==ZC_OK && size>8);
+        uint8_t encoded[4096];assert(zc_image_blob_copy(blob,encoded,sizeof(encoded),&size)==ZC_OK && !memcmp(encoded,"\x89PNG\r\n\x1a\n",8));zc_image_blob_close(blob);
+        zc_image_exif metadata;zc_default_image_exif(&metadata);assert(zc_raster_encode(&raster,&options,NULL,&metadata,NULL,&blob)==ZC_UNSUPPORTED && !blob);
+        assert(zc_raster_convert(NULL,ZC_APNG_RGB,8,0,out,sizeof(out),&size)==ZC_INVALID && !size);
+    }
+
     apng_jobs();
     raw16_inputs();
     rgb16_inputs();

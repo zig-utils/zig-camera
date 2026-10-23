@@ -51,6 +51,8 @@ jobs:
           echo "ZC_EXIF_READER=$PWD/zig-out/read-image-exif" >> "$GITHUB_ENV"
           cc -std=c11 -Wall -Wextra -Werror tests/decode_apng.c $(pkg-config --cflags --libs libpng zlib) -o zig-out/decode-apng
           echo "ZC_APNG_DECODER=$PWD/zig-out/decode-apng" >> "$GITHUB_ENV"
+          cc -std=c11 -Wall -Wextra -Werror tests/decode_pixels.c $(pkg-config --cflags --libs libpng) -o zig-out/decode-pixels
+          echo "ZC_PIXEL_DECODER=$PWD/zig-out/decode-pixels" >> "$GITHUB_ENV"
           cc -std=c11 -Wall -Wextra -Werror tests/decode_gif.c -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o zig-out/decode-gif
           echo "ZC_GIF_DECODER=$PWD/zig-out/decode-gif" >> "$GITHUB_ENV"
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"

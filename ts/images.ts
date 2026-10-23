@@ -134,8 +134,9 @@ interface SharedImageMetadata {
 export function prepareImage(
   source: ImageOptions = {},
   path?: string,
+  captureDefault = true,
 ): PreparedImage {
-  return prepareImageSnapshot(snapshotImageOptions(source), path)
+  return prepareImageSnapshot(snapshotImageOptions(source), path, undefined, captureDefault)
 }
 /** One copied metadata snapshot and at most one encoded template per format. */
 export function prepareImageFactory(source: ImageOptions = {}) {
@@ -165,6 +166,7 @@ function prepareImageSnapshot(
   options: ImageOptions,
   path?: string,
   shared?: SharedImageMetadata,
+  captureDefault = true,
 ): PreparedImage {
   const format = selectedFormat(options.format, path),
     quality = options.quality ?? 98,
@@ -214,7 +216,7 @@ function prepareImageSnapshot(
     ? shared.defaultExif
       ? prepareExif(undefined, format)
       : shared.exif
-    : prepareExif(options.exif, format)
+    : prepareExif(options.exif, format, captureDefault)
   const exifDescriptor = imageExifDescriptor(exif)
   const descriptor = imageProfileDescriptor(ownedProfile)
   check(
@@ -233,7 +235,7 @@ function prepareImageSnapshot(
     exif,
   }
 }
-function imageProfileDescriptor(profile?: ImageProfile) {
+export function imageProfileDescriptor(profile?: ImageProfile) {
   if (profile === undefined) return undefined
   const data = storage(24),
     d = view(data)

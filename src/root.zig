@@ -87,6 +87,7 @@ pub const ApngEncoder = @import("home/apng_encoder.zig");
 /// Home still GIF89a over borrowed gray/RGB/RGBA8/16 rows; checked palette,
 /// explicit high-byte reduction and thresholded one-bit unassociated alpha.
 pub const GifEncoder = @import("home/gif_encoder.zig");
+pub const ImagePixels = @import("home/pixel_view.zig");
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;
@@ -578,6 +579,24 @@ pub const Frame = struct {
         var out: ?*c.zc_catalog = null;
         try check(core.zc_frame_metadata_catalog(self.camera.handle, self.value.token, &out));
         return .{ .handle = out.? };
+    }
+    /// One independent compact RGB8/RGB16 copy. null preserves native precision;
+    /// sixteen bits requires a word source. No camera/lease pointer is retained.
+    pub fn makeImage(self: *const Frame, allocator: std.mem.Allocator, id: u32, bits: ?u8) !ImagePixels.Owned {
+        if (self.value.token == 0) return error.StaleFrame;
+        if (id == c.ZC_RAW) return error.Unsupported;
+        const selected = try self.stream(id);
+        const wide = processed_format.isWide(std.mem.sliceTo(&selected.format, 0));
+        const precision: u8 = bits orelse if (wide) 16 else 8;
+        if (precision != 8 and precision != 16) return error.Invalid;
+        if (precision == 16 and !wide) return error.Unsupported;
+        const row = try ImagePixels.packedRow(selected.width, .rgb, precision);
+        const size = try std.math.mul(usize, row, selected.height);
+        if (size > 256 * 1024 * 1024) return error.Invalid;
+        const data = try allocator.alloc(u8, size);
+        errdefer allocator.free(data);
+        try check(if (precision == 16) core.zc_copy_stream_rgb16(self.camera.handle, self.value.token, id, data.ptr, data.len) else core.zc_copy_stream_rgb(self.camera.handle, self.value.token, id, data.ptr, data.len));
+        return .{ .allocator = allocator, .view = .{ .data = data, .width = selected.width, .height = selected.height, .stride = row, .format = .rgb, .bits = precision, .endian = .little } };
     }
     pub fn metadata(self: *const Frame) Error!c.zc_metadata {
         if (self.value.token == 0) return error.StaleFrame;
@@ -1306,4 +1325,32 @@ test "public Zig watch spans closed camera gaps and retains explicit terminal ow
     try std.testing.expectError(error.Cancelled, watch.wait(0));
     try watch.close();
     try std.testing.expectError(error.Stopped, watch.wait(0));
+}
+
+test "Zig owned image copies survive request and camera closure with no retained leases" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg = defaultConfig();
+    cfg.width = 2;
+    cfg.height = 2;
+    const camera = try Camera.init(cfg);
+    var active = true;
+    defer if (active) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var image = try frame.makeImage(std.testing.allocator, c.ZC_MAIN, null);
+    defer image.deinit();
+    try std.testing.expectError(error.Unsupported, frame.makeImage(std.testing.allocator, c.ZC_RAW, null));
+    try std.testing.expectError(error.Unsupported, frame.makeImage(std.testing.allocator, c.ZC_MAIN, 16));
+    const before = image.view.sample16(1, 1);
+    try frame.release();
+    try camera.stop();
+    try camera.deinit();
+    active = false;
+    try std.testing.expectEqual(before, image.view.sample16(1, 1));
+    try std.testing.expectEqual(@as(usize, 12), image.view.data.len);
+    try std.testing.expectError(error.StaleFrame, frame.makeImage(std.testing.allocator, c.ZC_MAIN, null));
 }

@@ -62,16 +62,34 @@ pub fn encode(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metada
     return encodeMetadata(allocator, frame, raw_metadata, options, null, null);
 }
 pub fn encodeMetadata(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_metadata: ?*const c.zc_raw_metadata, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
+    return encodeSource(allocator, .{ .frame = .{ .frame = frame, .raw = raw_metadata } }, options, profile, exif);
+}
+pub fn encodeRasterMetadata(allocator: std.mem.Allocator, view: raster.View, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
+    _ = try view.validate();
+    if (options.format == c.ZC_IMAGE_DNG or (view.format == .gray and profile != null)) return error.UnsupportedFormat;
+    return encodeSource(allocator, .{ .view = view }, options, profile, exif);
+}
+const Source = union(enum) {
+    frame: struct { frame: *const c.zc_frame, raw: ?*const c.zc_raw_metadata },
+    view: raster.View,
+    fn encode(source: Source, allocator: std.mem.Allocator, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
+        return switch (source) {
+            .frame => |value| encodePixels(allocator, value.frame, value.raw, options, metadata),
+            .view => |value| encodeView(allocator, value, options, metadata),
+        };
+    }
+};
+fn encodeSource(allocator: std.mem.Allocator, source: Source, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, exif: ?[]const u8) ![]u8 {
     try checkProfile(options, profile);
     if (exif != null and options.format != c.ZC_IMAGE_JPEG and options.format != c.ZC_IMAGE_PNG and options.format != c.ZC_IMAGE_TIFF) return error.UnsupportedFormat;
     const generated = if (profile != null and profile.?.flags == c.ZC_IMAGE_PROFILE_SRGB) try @import("home/metadata/icc.zig").createSRGBProfile(allocator) else null;
     defer if (generated) |data| allocator.free(data);
     const metadata: @import("home/jpeg_metadata.zig").Metadata = .{ .icc = generated orelse if (profile) |p| p.data[0..@intCast(p.length)] else null, .exif = exif };
-    if (options.format == c.ZC_IMAGE_JPEG) return encodePixels(allocator, frame, raw_metadata, options, metadata);
-    if (metadata.icc == null and metadata.exif == null) return encodePixels(allocator, frame, raw_metadata, options, .{});
+    if (options.format == c.ZC_IMAGE_JPEG) return source.encode(allocator, options, metadata);
+    if (metadata.icc == null and metadata.exif == null) return source.encode(allocator, options, .{});
     const format: @import("home/metadata_embed.zig").Format = if (options.format == c.ZC_IMAGE_PNG) .png else .tiff;
     _ = try @import("home/metadata_embed.zig").check(format, metadata);
-    const base = try encodePixels(allocator, frame, raw_metadata, options, .{});
+    const base = try source.encode(allocator, options, .{});
     defer allocator.free(base);
     return @import("home/metadata_embed.zig").embedMetadata(allocator, format, base, metadata);
 }
@@ -90,18 +108,34 @@ fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_meta
     const plane = stream.planes[0];
     if (plane.bytes_used > plane.length or plane.bytes_used > std.math.maxInt(usize)) return error.BufferTooSmall;
     const view = raster.View{ .data = plane.data[0..@intCast(plane.bytes_used)], .width = stream.width, .height = stream.height, .stride = stream.stride, .bits = if (wide) 16 else 8 };
+    return encodeView(allocator, view, options, metadata);
+}
+fn encodeView(allocator: std.mem.Allocator, view: raster.View, options: *const c.zc_image_options, metadata: @import("home/jpeg_metadata.zig").Metadata) ![]u8 {
     const row_bytes = try view.validate();
+    const wide = view.bits == 16;
     return switch (options.format) {
         c.ZC_IMAGE_PNG => raster.png(allocator, view, .{ .compression = options.png_compression, .filter = @enumFromInt(options.png_filter) }),
         c.ZC_IMAGE_BMP => raster.bmp(allocator, view),
         c.ZC_IMAGE_TIFF => raster.tiff(allocator, view),
         c.ZC_IMAGE_GIF => @import("home/gif_encoder.zig").encode(allocator, view, .{}),
         c.ZC_IMAGE_JPEG => block: {
+            if (view.format == .rgba) return error.UnsupportedFormat;
+            if (wide) {
+                var reduced = try @import("home/pixel_view.zig").Owned.copy(allocator, view, view.format, 8, .little);
+                defer reduced.deinit();
+                break :block try encodeView(allocator, reduced.view, options, metadata);
+            }
             var encoder = @import("home/jpeg_encoder.zig").Encoder.init(allocator);
             defer encoder.deinit();
-            break :block encoder.encodeOwned(view.data, view.width, view.height, view.stride, 3, @intCast(options.quality), metadata);
+            break :block encoder.encodeOwned(view.data, view.width, view.height, view.stride, @intCast(view.format.channels()), @intCast(options.quality), metadata);
         },
         c.ZC_IMAGE_PPM => block: {
+            if (view.format == .rgba) return error.UnsupportedFormat;
+            if (view.format == .gray) {
+                var rgb = try @import("home/pixel_view.zig").Owned.copy(allocator, view, .rgb, view.bits, .little);
+                defer rgb.deinit();
+                break :block try encodeView(allocator, rgb.view, options, metadata);
+            }
             var buffer = Buffer{ .allocator = allocator };
             errdefer buffer.bytes.deinit(allocator);
             var text: [64]u8 = undefined;
@@ -115,8 +149,7 @@ fn encodePixels(allocator: std.mem.Allocator, frame: *const c.zc_frame, raw_meta
                     const start = buffer.bytes.items.len;
                     buffer.bytes.items.len += row_bytes;
                     for (0..row_bytes / 2) |i| {
-                        buffer.bytes.items[start + i * 2] = row[i * 2 + 1];
-                        buffer.bytes.items[start + i * 2 + 1] = row[i * 2];
+                        std.mem.writeInt(u16, buffer.bytes.items[start + i * 2 ..][0..2], std.mem.readInt(u16, row[i * 2 ..][0..2], view.endian), .big);
                     }
                 }
             }

@@ -2,9 +2,9 @@ name: Home APNG conformance
 on:
   push:
     branches: [main]
-    paths: ['src/home/apng_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/apng*', '.github/workflows/home-apng.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/apng_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/apng*', '.github/workflows/home-apng.yml']
   pull_request:
-    paths: ['src/home/apng_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/apng*', '.github/workflows/home-apng.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/apng_encoder.zig', 'src/home/raster_encoder.zig', 'src/home/zlib_stream.zig', 'tests/apng*', '.github/workflows/home-apng.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -6,6 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.84 adds [owned image objects](docs/image-objects.md) across capture,
+focus-locked capture and scoped callbacks, with independent RGB8/RGB16 pixels,
+checked Home clone/crop/conversion, encoding and joined staged saves after camera
+release. Home's Image API also receives transactional word conversion and deep
+animation-frame cloning fixes.
+
 Version 0.83 adds [GIF still capture](docs/gif.md) through C/Zig/Bun/CLI, reusing
 Home's bounded palette and dictionary LZW with independent giflib readback.
 Ordinary and focus-locked file captures now keep output private through request

@@ -24,6 +24,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/pixel_view.zig and raster_encoder.zig reuse Home's shared checked
+  integer raster view and consumer aliases at
+  ec74cce5a9c51b33a4e3b88a476c80a56eaf2ce5. tests/pixel_fixture.zig and
+  pixel_reference.c reuse that revision's independent sample-reference fixtures.
 - src/home/gif_encoder.zig, gif_lzw.zig and palette_quantizer.zig are verbatim
   Home Image checked GIF/weighted palette/dictionary modules at
   c206b47164384ae99c3abb842ed2816afa34df0b. Tests/gif_raster_fixture.zig and

@@ -27,6 +27,7 @@ export interface RequestFrame extends Pick<
   | 'saveDNG'
   | 'saveFile'
   | 'encodeImage'
+  | 'makeImage'
   | 'colorSpace'
 > {
   controls(): ReturnType<typeof readCatalog>
@@ -127,6 +128,9 @@ class ScopedRequest implements RequestFrame {
   }
   encodeImage(options: ImageOptions = {}) {
     return this.current().encodeImage(options)
+  }
+  makeImage(options: Parameters<Frame['makeImage']>[0] = {}) {
+    return this.current().makeImage(options)
   }
   controls() {
     this.current()

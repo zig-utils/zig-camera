@@ -2,9 +2,9 @@ name: Home GIF conformance
 on:
   push:
     branches: [main]
-    paths: ['src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
   pull_request:
-    paths: ['src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
+    paths: ['src/home/pixel_view.zig', 'src/home/gif_encoder.zig', 'src/home/gif_lzw.zig', 'src/home/palette_quantizer.zig', 'src/home/raster_encoder.zig', 'tests/gif_raster_fixture.zig', 'tests/decode_gif.c', '.github/workflows/home-gif.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -12,6 +12,12 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_raster_convert: { args: [p,u,u,u,p,n,p], returns: i },
+  zc_raster_crop: { args: [p,u,u,u,u,p,n,p], returns: i },
+  zc_raster_pixel16: { args: [p,u,u,p], returns: i },
+  zc_raster_encode: { args: [p,p,p,p,p,p], returns: i },
+  zc_raster_save: { args: [p,p,p,p,p,p], returns: i },
+  zc_image_file_prepare_raster: { args: [p,p,p,p,p,p], returns: i },
   zc_recovery_retry_init: { args: [u, n, n, p], returns: i },
   zc_recovery_retry_poll: { args: [p, n, u], returns: i },
   zc_recovery_retry_observe: { args: [p, n, u], returns: i },

@@ -1375,3 +1375,38 @@ The callback/publication fix is also checked against the previous 0.82 library,
 including CAF restoration failure and cancellation. The normal local runner
 still fails macOS SDK/libSystem linkage before project compilation; direct
 native/library builds pass. Linux real-backend/platform CI remains a release gate.
+
+The 0.84 owned-image audit starts at Home
+c206b47164384ae99c3abb842ed2816afa34df0b and inspects Image.clone/toFormat,
+getPixel/setPixel, existing RGB16/RGBA views and the shared raster encoders.
+clone drops frames/loop count; toFormat leaves unsupported target allocations
+uninitialized and getPixel yields black for word sources. Home contribution
+ec74cce5a9c51b33a4e3b88a476c80a56eaf2ce5 extracts the existing raster view into
+a std-only checked pixel module, adds exact integer conversion/cropped ownership,
+fixes deep clones and publishes main/frame conversions transactionally. Indexed
+source expansion is reused; unsupported indexed targets reject explicitly.
+
+The portable module and raster consumer aliases are copied verbatim here, along
+with independent reference fixtures. Each local pinned/development Zig Debug/
+ReleaseSafe build passes three view/owner tests and 576 independent C fixtures.
+APNG's 216-fixture and GIF's 252-fixture matrices also pass in all four builds with
+the extracted view; complete Home Image API passes 159 development-Zig tests.
+Home hosted Actions has no exact-head run and is not described as green.
+
+C borrowed raster operations and Zig/Bun owned capture objects reuse those checked
+algorithms and existing Home encoding/metadata paths. Frame copies retain no
+lease; standalone saves reuse the 32-owner staged native file factory, snapshot
+pixels through admission, and join publication/disposal. No additional native
+pixel pool or queue/state algorithm is added. Raw image objects use explicit Exif
+rather than inventing capture metadata. No Python or FFmpeg is added. General
+resampling/decoding, more formats/conversions, image semantics and physical
+acceptance remain open.
+
+Final local camera validation passes 399 target-qualified ReleaseSafe native
+tests, all 1,083 Bun tests with image/GIF/APNG/ICC/Exif/AVC/HEVC/AAC readback and
+SDL enabled, C ABI execution, typecheck/fmt, and the independent word/alpha PNG
+reader. Raw source fields and converted/cropped/blob outputs are checked before
+writes; source images survive camera release, closure, GC and joined saves.
+The ordinary local build runner still fails macOS SDK/libSystem linkage before
+project compilation; direct native/library builds pass. Platform CI and real
+Linux backend compile/load/no-camera smoke remain publication gates.

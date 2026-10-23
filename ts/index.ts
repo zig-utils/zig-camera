@@ -129,6 +129,8 @@ import {
 } from './streams'
 export type { StreamName, PackedStream, CapturedStreams } from './streams'
 import { withStagedImageFile } from './staged-image'
+import { CapturedImage, adoptCapturedImage, type CaptureImageOptions } from './image-object'
+export { CapturedImage, type CaptureImageOptions, type ImageRaster, type ImageObjectOptions, type RasterFormat, type RasterEndian, type ImageSourceMetadata } from './image-object'
 import {
   readColorNegotiation,
   encodeColorSpace,
@@ -829,6 +831,25 @@ export class Frame {
       ),
     )
     return data
+  }
+  makeImage(options: CaptureImageOptions = {}) {
+    const stream = processedImageStream(options.stream ?? 'main'),
+      requested = options.bits
+    if (requested !== undefined && requested !== 8 && requested !== 16)
+      throw new RangeError('invalid image bit depth')
+    this.open()
+    const descriptor = storage(208)
+    check(n.zc_get_stream(this.camera.handle, this.token, imageStreamId(stream), ptr(descriptor)))
+    const d = view(descriptor), width = d.getUint32(0, true), height = d.getUint32(4, true),
+      wide = text(descriptor, 16, 32).endsWith('161616'), bits = requested ?? (wide ? 16 : 8)
+    if (bits === 16 && !wide) throw new CameraError(-8, 'native image precision')
+    if (width * height * 3 * (bits / 8) > 256 * 1024 * 1024)
+      throw new RangeError('image pixels exceed 256 MiB')
+    const metadata = this.metadata(), color = this.colorSpace(stream)
+    const pixels = storage(width * height * 3 * (bits / 8))
+    const copy = bits === 8 ? n.zc_copy_stream_rgb : n.zc_copy_stream_rgb16
+    check(copy(this.camera.handle, this.token, imageStreamId(stream), ptr(pixels), BigInt(pixels.byteLength)))
+    return adoptCapturedImage(pixels, width, height, bits, metadata, color)
   }
   /** Owned RGB16 words. Requires a 16-bit RGB source; no precision is invented. */
   copyRGB16(stream: 'main' | 'lores' = 'main'): Uint16Array {
@@ -3308,6 +3329,22 @@ export class Camera {
     options: CaptureOptions<ReturnType<Frame['metadata']>> = {},
   ) {
     return this.captureAsync((frame) => frame.metadata(), options)
+  }
+  captureImageAsync(options: CaptureOptions<CapturedImage> & CaptureImageOptions = {}) {
+    const stream = processedImageStream(options.stream ?? 'main'), bits = options.bits
+    if (bits !== undefined && bits !== 8 && bits !== 16) throw new RangeError('invalid image bit depth')
+    return this.submitCapture(frame => frame.makeImage({ stream, bits }), options, image => image.close())
+  }
+  captureImage(options: CaptureOptions<CapturedImage> & CaptureImageOptions = {}) {
+    return this.captureImageAsync(options).wait()
+  }
+  captureFocusLockedImageAsync(options: FocusLockedOptions<CapturedImage> & CaptureImageOptions = {}) {
+    const stream = processedImageStream(options.stream ?? 'main'), bits = options.bits
+    if (bits !== undefined && bits !== 8 && bits !== 16) throw new RangeError('invalid image bit depth')
+    return this.submitFocusLocked(frame => frame.makeImage({ stream, bits }), options, image => image.close())
+  }
+  captureFocusLockedImage(options: FocusLockedOptions<CapturedImage> & CaptureImageOptions = {}) {
+    return this.captureFocusLockedImageAsync(options).wait()
   }
   captureFileAsync(
     path: string,
