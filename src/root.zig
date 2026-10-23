@@ -630,6 +630,86 @@ pub const RemoteFrame = struct {
         return bytes;
     }
 };
+/// Native ownership/dispatch for cooperating process supervisors. The host must
+/// verify OS peer exit before workerJoined; stopping/sending a signal is not proof.
+pub const ProcessSession = struct {
+    handle: ?*c.zc_process_session,
+    const api = @import("process_session.zig");
+    pub const Ticket = struct { cookie: u64, worker: u32, generation: u64 };
+    pub fn init(workers: u32, items: u32, bytes: u64) Error!ProcessSession {
+        var out: ?*c.zc_process_session = null;
+        try check(api.zc_process_open(workers, items, bytes, &out));
+        return .{ .handle = out };
+    }
+    fn open(self: ProcessSession) Error!*c.zc_process_session {
+        return self.handle orelse error.StaleFrame;
+    }
+    /// BUSY retains this owner until tasks/callbacks and peers have joined.
+    pub fn deinit(self: *ProcessSession) Error!void {
+        const p = self.handle orelse return;
+        try check(api.zc_process_close(p));
+        self.handle = null;
+    }
+    pub fn submitMove(self: ProcessSession, loan: *FrameExport, args: []const u8) Error!Ticket {
+        return self.submitMoveReserved(loan, args, 0);
+    }
+    pub fn submitMoveReserved(self: ProcessSession, loan: *FrameExport, args: []const u8, result_capacity: u64) Error!Ticket {
+        var ticket: Ticket = undefined;
+        try check(api.zc_process_submit(try self.open(), loan.handle orelse return error.StaleFrame, args.ptr, args.len, result_capacity, &ticket.cookie, &ticket.worker, &ticket.generation));
+        loan.handle = null;
+        return ticket;
+    }
+    pub fn next(self: ProcessSession, worker: u32, generation: u64) Error!?u64 {
+        var cookie: u64 = 0;
+        const rc = api.zc_process_next(try self.open(), worker, generation, &cookie);
+        if (rc == c.ZC_TIMEOUT) return null;
+        try check(rc);
+        return cookie;
+    }
+    pub fn send(self: ProcessSession, cookie: u64, channel: FrameChannel) Error!void {
+        try check(api.zc_process_send(try self.open(), cookie, channel.fd));
+    }
+    pub fn payload(self: ProcessSession, allocator: std.mem.Allocator, cookie: u64) ![]u8 {
+        var size: u64 = 0;
+        try check(api.zc_process_payload_copy(try self.open(), cookie, null, 0, &size));
+        const bytes = try allocator.alloc(u8, @intCast(size));
+        errdefer allocator.free(bytes);
+        try check(api.zc_process_payload_copy(try self.open(), cookie, bytes.ptr, bytes.len, &size));
+        return bytes;
+    }
+    pub fn receiveAcknowledgement(self: ProcessSession, worker: u32, generation: u64, channel: FrameChannel) Error!u64 {
+        var cookie: u64 = 0;
+        try check(api.zc_process_receive_ack(try self.open(), worker, generation, channel.fd, &cookie));
+        return cookie;
+    }
+    pub fn stopWorker(self: ProcessSession, worker: u32, generation: u64) Error!void {
+        try check(api.zc_process_stop_worker(try self.open(), worker, generation));
+    }
+    pub fn workerJoined(self: ProcessSession, worker: u32, generation: u64) Error!void {
+        try check(api.zc_process_worker_joined(try self.open(), worker, generation));
+    }
+    pub fn restartWorker(self: ProcessSession, worker: u32, generation: u64) Error!u64 {
+        var next_generation: u64 = 0;
+        try check(api.zc_process_restart_worker(try self.open(), worker, generation, &next_generation));
+        return next_generation;
+    }
+    pub fn retire(self: ProcessSession, cookie: u64) Error!void {
+        try check(api.zc_process_retire(try self.open(), cookie));
+    }
+    pub fn release(self: ProcessSession, cookie: u64) Error!void {
+        try check(api.zc_process_release(try self.open(), cookie));
+    }
+    pub fn pendingThrough(self: ProcessSession, target: u64) Error!bool {
+        var pending: u32 = 0;
+        try check(api.zc_process_pending_through(try self.open(), target, &pending));
+        return pending != 0;
+    }
+    pub fn state(self: ProcessSession) Error!c.zc_process_state {
+        var out: c.zc_process_state = undefined;
+        try check(api.zc_process_get_state(try self.open(), &out));
+        return out;
+    }
+};
 /// Linear reference: copying the descriptor does not create another lease.
 /// retain creates a distinct reference; mappings expire only on final release.
 /// Views expire on release. DMA-BUF fds are borrowed and must never be closed.
@@ -1545,4 +1625,59 @@ test "public Zig remote frame owns local maps and copies until joined ACK retire
     active = false;
     try t.expectEqual(@as(usize, 24), copied_pixels.len);
     try t.expectEqual(@as(u32, 4), (try @import("home/typed_catalog.zig").Reader.init(catalog)).catalog_kind);
+}
+test "public Zig process ownership moves on success and keeps cleanup prefixes until release" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var cfg = defaultConfig();
+    cfg.width = 2;
+    cfg.height = 2;
+    const camera = try Camera.init(cfg);
+    var active_camera = true;
+    defer if (active_camera) {
+        camera.stop() catch {};
+        camera.deinit() catch {};
+    };
+    try camera.start();
+    var frame = try camera.acquire(0);
+    defer frame.release() catch {};
+    var loan = try frame.exportFrame(1, false);
+    defer loan.deinit() catch {};
+    var session = try ProcessSession.init(1, 1, 8);
+    defer session.deinit() catch {};
+    try t.expectError(error.Invalid, session.submitMove(&loan, "123456789"));
+    _ = try loan.info();
+    const ticket = try session.submitMove(&loan, "data");
+    try t.expect(loan.handle == null);
+    const payload_bytes = try session.payload(t.allocator, ticket.cookie);
+    defer t.allocator.free(payload_bytes);
+    try t.expectEqualStrings("data", payload_bytes);
+    var ends = try FrameChannel.pair();
+    defer for (&ends) |*end| end.deinit() catch {};
+    try session.send(ticket.cookie, ends[0]);
+    try session.stopWorker(0, 1);
+    try t.expectError(error.Busy, session.retire(ticket.cookie));
+    var receipt = try ends[1].receive();
+    defer receipt.frame.deinit() catch {};
+    try frame.release();
+    try camera.stop();
+    try t.expectError(error.Busy, camera.deinit());
+    try receipt.frame.deinit();
+    try t.expectError(error.Busy, session.retire(ticket.cookie));
+    try ends[1].acknowledge(ticket.cookie);
+    try t.expectEqual(ticket.cookie, try session.receiveAcknowledgement(0, 1, ends[0]));
+    try session.retire(ticket.cookie);
+    try camera.deinit();
+    active_camera = false;
+    try t.expect(try session.pendingThrough(ticket.cookie));
+    try t.expectEqual(@as(u32, 1), (try session.state()).retired);
+    try t.expectError(error.Busy, session.deinit());
+    try session.release(ticket.cookie);
+    try t.expect(!try session.pendingThrough(ticket.cookie));
+    // This fixture's local peer is fully unmapped/closed, with no child process.
+    for (&ends) |*end| try end.deinit();
+    try session.workerJoined(0, 1);
+    try t.expectEqual(@as(u64, 2), try session.restartWorker(0, 1));
+    try session.workerJoined(0, 2); // no replacement OS peer was started
+    try session.deinit();
 }

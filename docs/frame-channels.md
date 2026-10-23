@@ -4,8 +4,8 @@ Version 0.88 adds `FrameChannel` and `RemoteFrame` in Zig/Bun and additive C
 `zc_frame_channel_*` / `zc_remote_frame_*` APIs. These transfer actual fd rights
 through Home's bounded Unix datagram channel. The receiver owns local fd
 duplicates and checked maps; the sender continues to own the retained camera
-export. This is a transport/remote-owner layer, with process supervision and
-request pools still required for full Picamera2 remote processing parity.
+export. This is a transport/remote-owner layer. Use [ProcessPool](process-pools.md)
+for supervised jobs; the channel itself does not supervise peers.
 
 ```ts
 import { FrameChannel } from '@zig-utils/camera'
@@ -113,8 +113,9 @@ retirement. The normal local build runner still fails macOS SDK/libSystem
 linkage before project compilation; direct builds pass. Consumer platform CI
 and real Linux backend load/no-camera checks remain publication gates.
 
-Full Process/Pool jobs, automatic result/ACK routing, bounded per-worker pending
-work, timeout/cancellation/worker-failure joining, arbitrary per-request data,
-configuration/property snapshots, remaining remote convenience semantics and
-persistent allocator/GPU integration remain required work. No physical Pi DMA
+Version 0.89 adds [supervised ProcessPool jobs](process-pools.md), native pending
+ownership, automatic result/ACK routing, joined cancellation/failure and initial
+context/property snapshots. Complete remote convenience/configuration semantics,
+richer values, automatic recovery and persistent allocator/GPU integration remain
+required work. No physical Pi DMA
 acceptance, zero-copy throughput or Picamera2 speedup is inferred from fixtures.

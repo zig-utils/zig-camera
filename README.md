@@ -6,10 +6,14 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.89 adds [supervised process jobs and pools](docs/process-pools.md)
+with native export/argument/result admission, matched ACK/result routing,
+joined active cancellation, isolated worker failures, restart generations and
+callback-aware drain/close. Workers reuse the shared Home image path.
+
 Version 0.88 adds [local descriptor channels and remote owners](docs/frame-channels.md)
 through Zig/C/Bun, with atomic bounded fd transfers, cached shared metadata,
 checked receiver mappings, explicit ACKs and owned Home image conversions.
-Process supervision and pools remain required parity work.
 
 Version 0.87 adds [retained descriptor exports](docs/frame-exports.md) through
 C/Zig/Bun, with one native frame gate, owned fd duplicates, explicit staging and

@@ -1524,3 +1524,38 @@ ACK/abrupt child exit are covered. Typecheck/fmt pass; the normal local runner
 still fails SDK/libSystem linkage before project compilation. Consumer platform
 and real-backend/no-camera CI remain gates. Physical Pi DMA, process supervision,
 full remote conveniences/pools and the broader parity families remain open.
+
+The 0.89 supervised-process audit starts at Home
+f3070f293988bb3d0ef930d6837829a7e53b4518 and inspects owned_admission,
+completion_gate, owned_fifo, frame_fanout, runtime IPC, async execution and network
+pooling. Thread work-stealing and host connection pooling do not retain remote
+camera mappings. Home contribution 4fdf531deac44b87f435f9b44cc576b10d64f35b adds
+allocation-free bounded least-pending dispatch with rotating ties, one sent task
+per worker, exact ACK/generation validation, stop-vs-join distinction and retired
+reservations held through completion cleanup. It composes the existing registry
+rather than adding another byte/count algorithm, and is reused verbatim here.
+The contribution was rebased onto six concurrent Home TS-checker changes at
+2d58f3f7c8f0ad26919472dc1dd09c14685e9783; none touched the reused media/helpers.
+
+Native camera sessions own moved exports and copied arguments, with declared
+result ceilings reserved before dispatch. Caller/child ownership and actual
+process verification stay in camera glue. Bun adds actual exec workers, bounded
+cloned values, automatic matched ACK/results, source retirement before publication,
+queued/active cancellation, worker isolation/restart and native-prefix drains
+including callbacks. Existing Home descriptor, typed metadata, image and native
+precision paths remain in use. No Python or FFmpeg is added.
+
+Seven portable tests pass pinned/development Zig in Debug/ReleaseSafe; both
+compiler lines cross-link Linux ARM64/x86-64. Camera passes 420 target-qualified
+native tests, independent C ABI/export/channel/process exec checks, all 1,240 Bun
+media tests with independent readback/SDL and 30 worker-failure diagnostic repeats.
+The first full run exposed raw socket I/O error delivery before the peer-exit
+callback; supervisor errors now preserve that cause under ProcessWorkerError,
+with the verified exit code. No rejection threshold or ownership rule was relaxed.
+Explicit release gates replace short timing assumptions in new lifecycle tests.
+Main/lores pixels/metadata across 14 layouts, CPU-bound cancellation, SIGKILL/ACK
+proofs, callback admission, multi-MiB results and graceful-close failures are
+covered. The normal local runner still fails SDK/libSystem linkage before project
+compilation; direct tests pass. Consumer CI/real-backend gates and physical Pi
+acceptance remain distinct. Complete remote conveniences/configuration,
+automatic recovery and the broader parity families remain open.

@@ -24,6 +24,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/dispatch_pool.zig is verbatim Home video bounded least-pending/joined
+  dispatch policy at 4fdf531deac44b87f435f9b44cc576b10d64f35b, reusing the
+  already attributed owned_admission module. Native/Bun process ownership and
+  supervision are camera glue; no Home OS kernel implementation is copied.
 - src/home/descriptor_channel.zig is verbatim Home hosted local fd transport at
   f3070f293988bb3d0ef930d6837829a7e53b4518. Verified ABI/behavior references in
   Home's packages/io/docs/descriptor-channel.md are not copied kernel source.

@@ -498,3 +498,15 @@ hosted channel improves Home's IO package and is reused verbatim; camera owns
 device exports, checked imports and eventual process supervision. No OS source
 is copied, changed or executed. Kernel/hosted ownership remains separate, and
 no physical Pi DMA, IPC throughput or codec acceleration is claimed.
+
+The 0.89 supervised-process audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and reads ADR-MC3, kernel IPC,
+core/process.home, arch/x86_64/usermode.home and init/init.home. The kernel's
+sys_kill marks zombie state; sys_waitpid polls that table and currently writes
+CPU time as status. The usermode fork path eagerly copies and runs a child when
+the parent waits, explicitly documenting that it does not provide concurrent
+parent/child progress. Init's shutdown path still notes missing timed wait.
+These are kernel-specific lifecycle references, not hosted Linux/Darwin join
+proof or a libcamera lease owner. The shared bounded dispatch policy improves
+Home video; Bun/OS process exit verification and camera ownership stay hosted.
+No OS code is copied, changed or executed, and no hardware throughput is inferred.

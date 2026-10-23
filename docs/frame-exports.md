@@ -79,6 +79,7 @@ compilation; direct builds pass. Platform/real-backend CI remains a release gate
 
 Version 0.88 adds the [local descriptor channel and remote owners](frame-channels.md),
 including a lazily shared metadata file charged before allocation. This remains
-a low-level export API. Supervised process jobs/pools, automatic ACK routing,
-timeout/exit cleanup and full RemoteRequest equivalents remain required. No Pi DMA mapping,
+a low-level export API. Version 0.89 adds [supervised jobs/pools](process-pools.md)
+and joined ACK/exit cleanup. Complete RemoteRequest and allocator equivalents
+remain required. No Pi DMA mapping,
 physical throughput or Picamera2 performance result is claimed by these fixtures.

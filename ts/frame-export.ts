@@ -14,6 +14,7 @@ import { decodeMetadata } from './metadata'
 import { decodeCatalog } from './catalog'
 import { decodeStreamColorSpace } from './images'
 const admission = Symbol('frame export admission')
+const processAdmission = Symbol('native process ownership transfer')
 /** Low-level retained export. Caller must join remote consumers before close;
  * this object does not supervise child processes or infer their completion. */
 export class FrameExport implements Disposable {
@@ -40,6 +41,13 @@ export class FrameExport implements Disposable {
   private open() {
     if (!this.owned) throw new CameraError(-5, 'closed frame export')
     return this.owned
+  }
+  /** @internal Native session consumes only on success. */
+  [processAdmission](session: Pointer, args: Uint8Array, resultCapacity: number) {
+    const cookie = new BigUint64Array(1), worker = new Uint32Array(1), generation = new BigUint64Array(1)
+    check(n.zc_process_submit(session,this.open(),ptr(args),BigInt(args.byteLength),BigInt(resultCapacity),ptr(cookie),ptr(worker),ptr(generation)))
+    this.owned = undefined
+    return {cookie:cookie[0],worker:worker[0],generation:generation[0]}
   }
   get closed() {
     return !this.owned
@@ -95,6 +103,10 @@ export function exportNativeFrame(
 export interface FrameExportOptions {
   streams?: readonly ('main' | 'raw' | 'lores')[]
   writable?: boolean
+}
+/** @internal Keeps native ownership in the process session, never a JS queue. */
+export function transferExportToProcess(loan: FrameExport, session: Pointer, args: Uint8Array, resultCapacity: number) {
+  return loan[processAdmission](session,args,resultCapacity)
 }
 
 /** @internal Shared pointer-free descriptor decoder. */

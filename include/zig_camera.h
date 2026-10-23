@@ -449,6 +449,38 @@ int zc_remote_frame_stream(const zc_remote_frame *,uint32_t stream,zc_stream *ou
 int zc_remote_frame_copy_rgb(const zc_remote_frame *,uint32_t stream,uint32_t bits,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_remote_frame_close(zc_remote_frame *);
 
+/* Supervised processing ownership. Up to 8 sessions, 8 workers/session and 32
+ * tasks/session; args <=16 MiB, reserved results <=256 MiB and aggregate <=512 MiB. Native owns
+ * exports and argument bytes after successful submit; failure consumes neither.
+ * Workers have monotonic generations. ACK is read from the selected channel.
+ * stop_worker quarantines only; it never permits retiring sent tasks. The host
+ * MUST await verified child exit before worker_joined. No OS process is spawned
+ * or joined by these C primitives. Each session's calls must be serialized. */
+typedef struct zc_process_session zc_process_session;
+typedef struct {uint32_t struct_size,workers,pending,queued,active,retired,live_workers,reserved;uint64_t bytes,issued,released;} zc_process_state;
+typedef struct {uint32_t pending,accepting,joined,reserved;uint64_t generation,active;} zc_process_worker_state;
+int zc_process_open(uint32_t workers,uint32_t items,uint64_t bytes,zc_process_session **out);
+/* BUSY retains session until all tasks released and all peers verified joined. */
+int zc_process_close(zc_process_session *);
+/* Non-reserving preflight; submit revalidates atomically after source export. */
+int zc_process_can_submit(zc_process_session *,uint64_t args_bytes,uint64_t reserved_result_bytes);
+int zc_process_submit(zc_process_session *,zc_frame_export *owned,const uint8_t *args,uint64_t length,uint64_t reserved_result_bytes,uint64_t *cookie,uint32_t *worker,uint64_t *generation);
+int zc_process_next(zc_process_session *,uint32_t worker,uint64_t generation,uint64_t *cookie);
+int zc_process_send(zc_process_session *,uint64_t cookie,int32_t channel);
+int zc_process_payload_copy(zc_process_session *,uint64_t cookie,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_process_receive_ack(zc_process_session *,uint32_t worker,uint64_t generation,int32_t channel,uint64_t *cookie);
+int zc_process_stop_worker(zc_process_session *,uint32_t worker,uint64_t generation);
+int zc_process_worker_joined(zc_process_session *,uint32_t worker,uint64_t generation);
+int zc_process_restart_worker(zc_process_session *,uint32_t worker,uint64_t generation,uint64_t *next_generation);
+/* Retire closes the export/args but retains admission for completion callbacks.
+ * Sent tasks return BUSY until ACK or verified join. A permitted retire consumes
+ * resources even on I/O error. Release requires retired; frees the task slot. */
+int zc_process_retire(zc_process_session *,uint64_t cookie);
+int zc_process_release(zc_process_session *,uint64_t cookie);
+int zc_process_get_state(zc_process_session *,zc_process_state *out);
+int zc_process_get_worker_state(zc_process_session *,uint32_t worker,zc_process_worker_state *out);
+int zc_process_pending_through(zc_process_session *,uint64_t target,uint32_t *pending);
+
 uint32_t zc_abi_version(void);
 void zc_default_config(zc_config *config);
 /* Camera lifecycle calls must be serialized by the caller. acquire/release/stats
