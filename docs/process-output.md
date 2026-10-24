@@ -42,8 +42,9 @@ relative cwd/host paths resolve at construction. The environment has bounded
 entry/byte counts. Raw `ProcessOutput` is video-only and starts on a keyframe;
 attach `PtsOutput`/`PtsStream` for source-clock sidecars. Container streams carry
 the Home muxer's timestamps without a second encoder or guessed frame clock.
-Use the existing seekable outputs for AAC MP4 requiring patches; this sink does
-not supply random-access file patching.
+For AAC MP4 over this sink, use `MuxedOutput(sink, 'fmp4')`; see
+[forward MP4](forward-mp4.md) for startup bounds and receiver requirements. The
+existing `mp4` mode requires a seekable sink for its final metadata patches.
 
 The installed `zig-camera-output-host` is a separate single-threaded Zig POSIX
 executable, built on pinned Zig 0.15.2. `ProcessSink` discovers it beside the

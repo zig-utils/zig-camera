@@ -55,7 +55,7 @@ export type Track = {
   keys: boolean[]
   samples: Buffer[]
 }
-export function mp4(path: string): Map<number, Track> {
+export function mp4(path: string, options: { forwardOnly?: boolean } = {}): Map<number, Track> {
   const data = readFileSync(path),
     top = boxes(data)
   assert.equal(top[0].kind, 'ftyp')
@@ -131,6 +131,11 @@ export function mp4(path: string): Map<number, Track> {
       assert.equal(data.readBigInt64BE(edit.start + 16), -1n)
       track.presentedUs = data.readBigUInt64BE(edit.start + 28)
       track.delay = Number(data.readBigInt64BE(edit.start + 36))
+      if (options.forwardOnly) {
+        assert.equal(track.presentedUs, 0n, 'forward edit spans all fragments')
+        assert.equal(track.duration, 0n, 'initial track duration is unknown')
+        assert.equal(track.mediaDuration, 0n, 'initial media duration is unknown')
+      }
       const roll = child(data, stbl, 'sgpd')
       assert.equal(
         data.toString('ascii', roll.start + 4, roll.start + 8),
@@ -191,6 +196,12 @@ export function mp4(path: string): Map<number, Track> {
         track.times.map((_, i) => BigInt(i) * 1024n),
       )
       assert(track.durations.slice(0, -1).every((x) => x === 1024))
+      if (options.forwardOnly) {
+        track.mediaDuration = BigInt(track.durations.reduce((a, b) => a + b, 0))
+        assert(track.mediaDuration >= BigInt(track.delay!))
+        track.presentedUs = (track.mediaDuration - BigInt(track.delay!)) * 1_000_000n / BigInt(track.rate)
+        track.duration = track.startUs! + track.presentedUs
+      }
       assert.equal(
         track.mediaDuration,
         BigInt(track.durations.reduce((a, b) => a + b, 0)),

@@ -350,3 +350,9 @@ bounded TCP/UDP with joined cancellation and partial-write/deadline handling.
 Bun/Zig consumer argv with bounded diagnostics, producer backpressure, joined
 process-group cancellation and parent-exit handling. `ProcessOutput` sends raw
 video; `MuxedOutput(new ProcessSink(...), 'mkv')` carries timestamped Home A/V.
+
+[Forward-only AAC MP4](docs/forward-mp4.md) adds `MuxedOutput(sink, 'fmp4')`
+for sockets, supervised processes and custom sinks without seeking. Home retains
+late audio placement, encoder delay and final padding with bounded startup
+storage. Async splits, snapshots and restarted recording sessions retain the
+existing output lifecycle; this does not complete full Picamera2 parity.

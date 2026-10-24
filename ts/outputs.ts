@@ -33,7 +33,7 @@ export interface OutputStreams {
   audio?: { sampleRate: number; channels: number; encoding?: 'aac' }
 }
 export interface CustomOutput {
-  format?: 'packets' | 'packets-aac' | 'mp4' | 'mkv'
+  format?: 'packets' | 'packets-aac' | 'mp4' | 'fmp4' | 'mkv'
   start?: () => void | Promise<void>
   streams?: (streams: OutputStreams) => void | Promise<void>
   commit?: () => void | Promise<void>
@@ -176,7 +176,7 @@ export class OutputBridge {
   ) {
     const format = output.format ?? 'packets'
     this.packetAac = format === 'packets-aac'
-    if (!['packets', 'packets-aac', 'mp4', 'mkv'].includes(format))
+    if (!['packets', 'packets-aac', 'mp4', 'fmp4', 'mkv'].includes(format))
       throw new RangeError('invalid output format')
     if ((format === 'packets' || format === 'packets-aac') && typeof output.outputframe !== 'function')
       throw new TypeError('packet output requires outputframe')
@@ -225,7 +225,7 @@ export class OutputBridge {
     check(
       n.zc_output_mailbox_callbacks(
         this.handle,
-        { packets: 0, mp4: 1, mkv: 2, 'packets-aac': 3 }[format],
+        { packets: 0, mp4: 1, mkv: 2, 'packets-aac': 3, fmp4: 4 }[format],
         ptr(this.callbacks),
       ),
     )
@@ -691,7 +691,7 @@ export class MuxedOutput implements CustomOutput {
   readonly sink: ByteSink & Partial<CustomOutput>
   constructor(
     target: string | ByteSink,
-    readonly format: 'mp4' | 'mkv' = 'mp4',
+    readonly format: 'mp4' | 'fmp4' | 'mkv' = 'mp4',
     options: { exclusive?: boolean } = {},
   ) {
     this.sink =
@@ -900,7 +900,7 @@ export class PtsStream {
 }
 /** Adds a shared source-clock PTS observer without changing segment-local PTS. */
 export class PtsOutput implements CustomOutput {
-  readonly format: 'packets' | 'packets-aac' | 'mp4' | 'mkv'
+  readonly format: 'packets' | 'packets-aac' | 'mp4' | 'fmp4' | 'mkv'
   private scope?: OutputScope
   private lease?: PtsLease
   constructor(

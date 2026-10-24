@@ -1,0 +1,39 @@
+name: Home forward MP4
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/mp4_stream.zig', 'src/video.zig', 'src/output_mailbox.zig', 'include/zig_camera.h', 'ts/outputs.ts', 'tests/ts/fmp4-output.test.ts', 'tests/ts/media.ts', '.github/workflows/home-mp4-forward.yml']
+  pull_request:
+    paths: ['src/home/mp4_stream.zig', 'src/video.zig', 'src/output_mailbox.zig', 'include/zig_camera.h', 'ts/outputs.ts', 'tests/ts/fmp4-output.test.ts', 'tests/ts/media.ts', '.github/workflows/home-mp4-forward.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 19b67a8a7df2a5bc4ea2dddbe0a8ef9a3e761519
+          path: .home-mp4-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact upstream forward MP4 and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/mp4_stream.zig .home-mp4-upstream/packages/video/src/containers/mp4_stream.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/mp4_stream.zig
+            zig test -O "$mode" --dep video -Mroot=.home-mp4-upstream/packages/video/tests/mp4_forward.zig -Mvideo=.home-mp4-upstream/packages/video/src/video.zig
+          done

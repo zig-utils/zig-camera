@@ -140,6 +140,7 @@ const Output = struct {
     video_codec: u32 = 0,
     writer: ?mkv.Writer = null,
     mp4_writer: ?mp4.Writer = null,
+    mp4_staging: []u8 = &.{},
     av_writer: ?av.Writer = null,
     aac_encoder: ?aac.Encoder = null,
     audio_first_ns: ?u64 = null,
@@ -246,7 +247,11 @@ const Output = struct {
         self.video_codec = cfg.codec;
         if (aac_enabled and self.aac_encoder != null) {
             const encoder = &self.aac_encoder.?;
-            self.mp4_writer = try mp4.Writer.initAvWithColor(.{ .context = self, .write = sink, .patch = patch }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, .{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = encoder.config.bitrate, .delay = encoder.info.delay, .config = encoder.info.config[0..2].* }, try recording_color.container(color));
+            const audio_cfg: mp4.AudioConfig = .{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = encoder.config.bitrate, .delay = encoder.info.delay, .config = encoder.info.config[0..2].* };
+            if (self.callbacks != null and self.callbacks.?.format == c.ZC_OUTPUT_FMP4) {
+                self.mp4_staging = try A.alloc(u8, 16 * 1024 * 1024);
+                self.mp4_writer = try mp4.Writer.initAvForwardWithColor(.{ .context = self, .write = sink }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, audio_cfg, self.mp4_staging, try recording_color.container(color));
+            } else self.mp4_writer = try mp4.Writer.initAvWithColor(.{ .context = self, .write = sink, .patch = patch }, cfg.width, cfg.height, if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, audio_cfg, try recording_color.container(color));
         } else if (recording.sample_rate != 0) {
             var private: [8192]u8 = undefined;
             const bytes = if (cfg.codec == c.ZC_MJPEG) &.{} else try mp4.codecPrivate(if (cfg.codec == c.ZC_H264) .h264 else .hevc, headers, &private);
@@ -269,7 +274,7 @@ const Output = struct {
                 _ = try packet_output.parameterSets(headers, codec, self.callback_parameters);
             }
         } else {
-            if (aac_enabled and cb.format == c.ZC_OUTPUT_MP4 and recording.sample_rate != 0) self.aac_encoder = try aac.Encoder.init(.{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = if (bitrate != 0) bitrate else 64000 * recording.channels });
+            if (aac_enabled and mp4Callbacks(cb.format) and recording.sample_rate != 0) self.aac_encoder = try aac.Encoder.init(.{ .sample_rate = recording.sample_rate, .channels = recording.channels, .bitrate = if (bitrate != 0) bitrate else 64000 * recording.channels });
             try self.initWriters(cfg, headers, recording, color);
         }
         return self;
@@ -302,6 +307,7 @@ const Output = struct {
             if (self.aac_encoder) |*encoder| encoder.deinit();
         }
         self.pending.deinit(A);
+        A.free(self.mp4_staging);
         A.destroy(self);
     }
     fn checkIdentity(self: *const Output, id: Identity) !void {
@@ -367,6 +373,13 @@ const Output = struct {
                 const first = self.audio_first_ns orelse timestamp;
                 const expected = try pcm.at(first, self.audio_frames, encoder.config.sample_rate);
                 if ((if (timestamp > expected) timestamp - expected else expected - timestamp) > 2) return error.InvalidTimestamp;
+                if (self.audio_first_ns == null) if (self.mp4_writer) |*writer| {
+                    if (writer.forward_only) {
+                        if (writer.audio_start_us) |bound| {
+                            if (bound != first / 1000) return error.InvalidTimestamp;
+                        } else try writer.startAudio(first / 1000);
+                    }
+                };
                 self.audio_first_ns = first;
                 const stride: usize = encoder.config.channels * 2;
                 var offset: usize = 0;
@@ -410,6 +423,9 @@ const Output = struct {
         }
         if (aac_enabled) {
             if (self.aac_encoder) |*encoder| {
+                if (self.mp4_writer) |*writer| {
+                    if (writer.forward_only and writer.audio_start_us == null) try writer.startAudio(0);
+                }
                 while (try encoder.flush()) |audio_packet| try self.encodedAudio(audio_packet);
                 if (self.mp4_writer) |*writer| try writer.finish((self.audio_first_ns orelse 0) / 1000, self.audio_frames);
             }
@@ -782,6 +798,17 @@ const Recorder = struct {
     fn replay(self: *Recorder, out: *Output) !void {
         const ring = if (self.ring) |*ring| ring else return error.Unsupported;
         const start = try self.replayStart();
+        // Frozen history already knows its first PCM window. Bind the forward
+        // header before video replay so a long snapshot does not unnecessarily
+        // consume the finite staging used for live, not-yet-arrived audio.
+        if (out.mp4_writer) |*writer| if (writer.forward_only and writer.audio_start_us == null) {
+            if (self.audio) |*audio| {
+                const minimum = try std.math.add(u64, self.first_ns, ring.entry(start).?.timestamp);
+                const end = try std.math.add(u64, self.first_ns, try self.packetEnd());
+                var cursor: pcm.Cursor = .{};
+                if (try audio.window(minimum, end, &cursor)) |chunk| try writer.startAudio((chunk.timestamp - minimum) / 1000);
+            }
+        };
         var largest: usize = 0;
         for (0..ring.count) |i| largest = @max(largest, ring.entry(i).?.length);
         const scratch = try A.alloc(u8, largest);
@@ -1513,11 +1540,11 @@ fn checkCallbacks(self: *Recorder, cb: *const c.zc_output_callbacks, splitting: 
     return checkSessionCallbacks(self, self, cb, splitting);
 }
 fn checkSessionCallbacks(self: *Recorder, session: *Recorder, cb: *const c.zc_output_callbacks, splitting: bool) !void {
-    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_AAC_PACKETS or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return error.Invalid;
+    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.reserved != 0 or cb.format > c.ZC_OUTPUT_FMP4 or cb.file_fd < -1 or cb.pts_fd < -1 or cb.secondary_pts_fd < -1) return error.Invalid;
     if ((packetCallbacks(cb.format) and cb.packet == null) or (!packetCallbacks(cb.format) and cb.write == null)) return error.Invalid;
     if (cb.format == c.ZC_OUTPUT_MP4 and session.audio != null and cb.patch == null) return error.Invalid;
     if (cb.format == c.ZC_OUTPUT_AAC_PACKETS and session.audio != null and !aac_enabled) return error.Unsupported;
-    if (!packetCallbacks(cb.format)) validate(if (cb.format == c.ZC_OUTPUT_MP4) "stream.mp4" else "stream.mkv", &session.config, session.audio != null) catch |err| return err;
+    if (!packetCallbacks(cb.format)) validate(if (mp4Callbacks(cb.format)) "stream.mp4" else "stream.mkv", &session.config, session.audio != null) catch |err| return err;
     var identities: [3]?Identity = .{ null, null, null };
     for ([_]i32{ cb.file_fd, cb.pts_fd, cb.secondary_pts_fd }, 0..) |fd, i| {
         if (fd < 0) continue;
@@ -3007,7 +3034,7 @@ pub fn restartBind(job: *@import("producer.zig").Job, cb: *const c.zc_output_cal
     job.owner.mutex.lock();
     defer job.owner.mutex.unlock();
     if (job.operation != .restart or job.restart_kind != 2 or job.restart_stage.load(.acquire) != 1 or job.restart_callbacks != null or job.cancel_requested.load(.acquire)) return c.ZC_STATE;
-    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.format > c.ZC_OUTPUT_AAC_PACKETS or (packetCallbacks(cb.format) and cb.packet == null) or (!packetCallbacks(cb.format) and cb.write == null)) return c.ZC_INVALID;
+    if (cb.struct_size != @sizeOf(c.zc_output_callbacks) or cb.format > c.ZC_OUTPUT_FMP4 or (packetCallbacks(cb.format) and cb.packet == null) or (!packetCallbacks(cb.format) and cb.write == null)) return c.ZC_INVALID;
     if (cb.format == c.ZC_OUTPUT_MP4 and cb.patch == null) {
         const candidate: *Recorder = @ptrCast(@alignCast(job.restart_candidate orelse return c.ZC_STATE));
         if (candidate.recording.sample_rate != 0) return c.ZC_UNSUPPORTED;
@@ -3076,6 +3103,9 @@ pub fn sessionConfig(p: *c.zc_recorder, cfg: *c.zc_video_config, opts: *c.zc_rec
 
 fn packetCallbacks(format: u32) bool {
     return format == c.ZC_OUTPUT_PACKETS or format == c.ZC_OUTPUT_AAC_PACKETS;
+}
+fn mp4Callbacks(format: u32) bool {
+    return format == c.ZC_OUTPUT_MP4 or format == c.ZC_OUTPUT_FMP4;
 }
 
 test "AAC packet callbacks retain signed priming and exact frame timestamps through codec flush" {

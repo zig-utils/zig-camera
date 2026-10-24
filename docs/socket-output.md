@@ -105,3 +105,8 @@ Version 0.104 shares the transport lifecycle and its 16 active/preparing slots
 with ProcessSink. Raw video gating is shared as well; duplicate starts cannot
 reset an active output's codec/keyframe state. Socket factory contracts and
 TCP/UDP framing remain unchanged.
+
+For forward-only AVC/HEVC/AAC MP4 over TCP, use `MuxedOutput(sink, 'fmp4')`.
+See [forward MP4](forward-mp4.md) for startup bounds, edit-list requirements and
+validation. This general fragmented mode does not claim browser or player
+interoperability.

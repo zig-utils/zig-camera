@@ -1905,3 +1905,14 @@ OS source is introduced. Source argv/env snapshots, stdout/stderr drains, child
 exit and all borrowed bytes remain joined through cancellation. Full parity,
 escaped/hard-killed-supervisor policies and all hardware/performance acceptance
 remain open; see process-output.md.
+
+The 0.105 audit reuses Home's existing fragmented `mp4_stream.Writer`, rather than
+adding another muxer. Shared forward-only constructors, a caller-owned finite
+startup arena, real first-PCM clock binding, zero-duration media edits, final
+sample trim and bounded prefix writes land upstream at
+19b67a8a7df2a5bc4ea2dddbe0a8ef9a3e761519. The camera module is copied verbatim; native
+output owns its 16 MiB arena and existing mailbox/producer lifecycle. Pure
+writer/public-export tests run in Debug/ReleaseSafe on Zig 0.15.2 and development
+Zig, with exact-upstream CI checks. Home OS is inspected at the unchanged revision
+in home-os-reuse.md; its AAC scaffolding has no hosted fragmented MP4 writer to
+reuse. No external media program, Python or OS source is introduced.

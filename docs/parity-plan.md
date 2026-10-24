@@ -216,3 +216,11 @@ async splits. See process-output.md. Additional media containers/protocols,
 escaped or hard-killed-supervisor process-tree policy, remaining output semantics
 and every other required family and physical acceptance remain open. This does
 not complete Picamera2 parity.
+
+Version 0.105 adds forward-only AVC/HEVC/AAC fragmented MP4 byte outputs with
+bounded deferred initialization, real first-PCM clock binding, final tail trim,
+64 KiB prefix writes, async splits/restart, circular snapshots and isolation.
+See forward-mp4.md. This general ISO BMFF mode does not claim CMAF/MSE or player
+interoperability. Broader containers/protocols, remaining output and device
+families, physical synchronization and matched performance remain open. The
+full Picamera2 parity goal is still active.

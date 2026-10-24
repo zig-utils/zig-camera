@@ -1008,11 +1008,16 @@ int zc_video_set_delay(zc_recorder *,uint64_t delay_ns);
  * PACKETS delivers Annex B AVC/HEVC (fresh headers on first key), JPEG or S16LE.
  * Mux modes use Home containers and deliver video metadata (data=NULL) to packet.
  * AAC_PACKETS delivers Annex B video and raw AAC-LC AUs (-Daac=true).
+ * FMP4 uses forward-only Home AVC/HEVC + optional AAC fragments; no patch.
+ * AAC waits in a fixed 16 MiB arena for the first PCM clock (or final flush).
+ * Overflow fails the output. Unknown header durations remain zero; readers
+ * must honor both audio edits and the final trimmed sample duration.
  * AAC priming retains negative relative presentation time.
  * Timestamps are rebased ns; key=1, audio=2, AnnexB=4 flags. Flag 8 means
  * timestamp_ns is a signed int64 two-s-complement presentation value.
  * Mailbox flag 16 similarly marks a negative signed source-clock offset. */
-enum { ZC_OUTPUT_PACKETS=0,ZC_OUTPUT_MP4=1,ZC_OUTPUT_MKV=2,ZC_OUTPUT_AAC_PACKETS=3,ZC_PCM_S16LE=4,ZC_AAC_LC=5 };
+enum { ZC_OUTPUT_PACKETS=0,ZC_OUTPUT_MP4=1,ZC_OUTPUT_MKV=2,ZC_OUTPUT_AAC_PACKETS=3,ZC_OUTPUT_FMP4=4 };
+enum { ZC_PCM_S16LE=4,ZC_AAC_LC=5 };
 typedef struct {const uint8_t *data;uint64_t length,timestamp_ns;uint32_t codec,flags;} zc_output_packet;
 typedef int (*zc_output_packet_fn)(void *,const zc_output_packet *);
 typedef int (*zc_output_write_fn)(void *,const uint8_t *,uint64_t);

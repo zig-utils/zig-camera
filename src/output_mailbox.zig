@@ -83,7 +83,7 @@ pub export fn zc_output_mailbox_open(bytes: u64, operations: u32, out: *?*c.zc_o
     return c.ZC_OK;
 }
 pub export fn zc_output_mailbox_callbacks(p: *c.zc_output_mailbox, format: u32, out: *c.zc_output_callbacks) c_int {
-    if (format > c.ZC_OUTPUT_AAC_PACKETS) return c.ZC_INVALID;
+    if (format > c.ZC_OUTPUT_FMP4) return c.ZC_INVALID;
     out.* = .{ .struct_size = @sizeOf(c.zc_output_callbacks), .format = format, .context = box(p), .packet = Mailbox.packet, .write = Mailbox.write, .patch = Mailbox.patch, .file_fd = -1, .pts_fd = -1, .secondary_pts_fd = -1, .reserved = 0 };
     return c.ZC_OK;
 }

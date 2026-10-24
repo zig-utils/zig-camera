@@ -664,3 +664,13 @@ are implemented in Home video stdlib, while camera retains native queue ownershi
 and Bun transport hooks. No OS source is copied, changed or executed. Kernel
 process declarations do not supply Pi capture, microphone sync or process-output
 performance acceptance evidence.
+
+The 0.105 forward-MP4 audit fetches clean Home OS origin/main and confirms the
+unchanged 151269666bc09aa15a271f1c1f4603f681132e65 revision. It rechecks
+ADR-MC3 and searches kernel/src/media and kernel/src/container for MP4 muxing,
+AAC priming, edit lists and fragmented output. The OS audio module supplies ADTS
+header parsing/scaffolding; no hosted fragmented muxer or output-clock owner is
+available there. Per ADR-MC3, forward-only AAC timing and bounded prefix release
+therefore improve Home video's existing MP4 writer. No OS code is copied, changed
+or executed. General container/loopback tests do not establish Pi sensor or
+microphone synchronization, player interoperability or camera performance.

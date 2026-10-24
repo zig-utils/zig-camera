@@ -716,3 +716,8 @@ home-lang/home packages/video/src/core at revision
 6b9c9000460501866cecaa809b5f65bba2254987. process_output_host.zig is copied from
 packages/video/src/io with only its process_output_wire import flattened. All
 are under the MIT license above.
+
+src/home/mp4_stream.zig is copied verbatim from home-lang/home
+packages/video/src/containers/mp4_stream.zig at revision
+19b67a8a7df2a5bc4ea2dddbe0a8ef9a3e761519, including bounded forward-only AAC
+fragmented MP4, under the MIT license above.
