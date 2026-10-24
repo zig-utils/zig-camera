@@ -2139,3 +2139,14 @@ deadline was corrected with a timer-starvation regression test.
 
 This is software codec/ownership evidence. It provides no physical camera
 quality/performance result or claim of complete JPEG/Picamera2 conformance.
+
+JPEG follow-up pins Home 7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b: single-component scans validate
+their actual one-block MCU rather than rejecting legal large frame sampling
+factors. The reference corpus now covers 1,212 cases. An equivalent green
+conversion expression with positive coefficient products resolves a sample
+discrepancy observed on pinned x86 debug code generation; an exhaustive chroma
+check uses an exact dyadic floating reference and the independent corpus keeps
+its original tolerance. Source comparisons and both x86 code generators are
+checked in Camera CI. Home repository Actions are disabled (dispatch returned
+HTTP 422); its settings are unchanged and the pinned-source Camera matrix
+provides the cross-platform verification.

@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: caec6bb024b856916b31f00fde5b082781ccead8
+          ref: 7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b
           path: .home-jpeg-upstream
           sparse-checkout: packages/image
           persist-credentials: false
@@ -57,6 +57,9 @@ jobs:
               exit 1
             fi
             zig test -O "$mode" .home-jpeg-upstream/packages/image/src/jpeg_decoder.zig
+            if [ "$RUNNER_ARCH" = X64 ] && [ "$RUNNER_OS" = Linux ] && [ "$mode" = Debug ] && zig version | head -1 | grep -qx 0.15.2; then
+              zig test -fllvm -O "$mode" src/home/jpeg_decoder.zig
+            fi
             if [ '${{ matrix.zig }}' = master ]; then
               zig test -O "$mode" -lc -lz -L"$zlib/lib" -rpath "$zlib/lib" .home-jpeg-upstream/packages/image/src/jpeg_encoder_tests.zig --test-filter JPEG
             fi

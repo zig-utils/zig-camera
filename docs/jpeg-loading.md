@@ -53,7 +53,7 @@ Shared/detached encoded buffers reject. Cancellation joins native checkpoints;
 no partial image publishes. Worker close joins before callbacks/cleanup complete.
 Default job timeout is 30000 ms, including reads/admission/decoding.
 
-Independent libjpeg generates and decodes 1,102 cases: grayscale, RGB, YCbCr,
+Independent libjpeg generates and decodes 1,212 cases: grayscale, RGB, YCbCr,
 CMYK/YCCK, odd dimensions, multiple sampling layouts, separate sequential scans,
 custom progressive bands/refinements, coarse quantization, restarts, split ICC,
 Exif and truncated input. Maximum observed sample difference against JDCT_FLOAT

@@ -761,3 +761,7 @@ packages/image/src/jpeg_decoder.zig -> src/home/jpeg_decoder.zig;
 packages/image/tests/jpeg_decode_{fixture.zig,libjpeg.c} -> tests/.
 The existing jpeg_dct.zig is reused verbatim. All are under the MIT license above.
 Libjpeg is an independent test producer/decoder, not a runtime decode dependency.
+
+The JPEG decoder/reference fixtures additionally include single-component MCU
+geometry and portable green-conversion fixes from Home 7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b,
+under the same MIT license.
