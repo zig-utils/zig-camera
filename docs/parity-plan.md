@@ -1,5 +1,12 @@
 # Picamera2 capability parity worklist
 
+The allocation follow-up adds Home's bounded persistent capture ownership policy
+as `CaptureAllocationPolicy` in Zig, with exact owned layout keys, retained byte
+reservations and retryable retirement; see capture-allocation-policy.md. This is
+foundation work. DMA heap allocation/import, persistent Camera attachment and
+Bun/mode-worker allocator lifecycle remain open; the allocator parity row below
+is not completed by a policy helper.
+
 Version 0.114 adds bounded owned JPEG loading through shared Home scan and
 restart reconstruction, component sampling, progressive refinement and source
 metadata, with native workers and shared JPEG/PNG file budgets. See jpeg-loading.md.

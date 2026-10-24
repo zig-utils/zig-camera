@@ -105,6 +105,24 @@ pub const ApngCompositor = @import("home/apng_compositor.zig");
 pub const KmsDiscovery = @import("home/kms_discovery.zig");
 pub const KmsDiscoveryHost = @import("home/kms_discovery_host.zig");
 pub const KmsScanout = @import("home/kms_scanout.zig");
+/// Home ownership policy only; device allocation and camera attachment remain
+/// separate integration work. There is no persistent Camera allocator API yet.
+pub const CaptureAllocationPolicy = @import("home/capture_allocation.zig");
+test "public persistent allocation policy retains idle backing and retires exact generations" {
+    const policy = CaptureAllocationPolicy;
+    const layout = try policy.Layout.init("synthetic", &.{try policy.Stream.init(8, 4, 32, 128, 2, "BGR888", 0)});
+    var cache = try policy.Cache(2).init(1024, 2);
+    const first = try cache.checkout(&layout);
+    try cache.publish(first.claim);
+    try cache.release(first.claim);
+    const reused = try cache.checkout(&layout);
+    try std.testing.expect(!reused.fresh);
+    try std.testing.expectEqual(first.slot, reused.slot);
+    try std.testing.expect(first.claim.token != reused.claim.token);
+    try cache.release(reused.claim);
+    try cache.finishRetirement(try cache.retireIdle(reused.slot));
+    try std.testing.expect(cache.empty());
+}
 pub const drm_preview = @import("drm_preview.zig");
 comptime {
     _ = drm_preview;

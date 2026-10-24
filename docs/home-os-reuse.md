@@ -5,6 +5,17 @@ Audit target: `~/Code/Home/os`, home-lang/home-os commit
 Source inspection only; no kernel or device execution was performed. Include this
 repository alongside Home compiler packages in subsequent media/hardware audits.
 
+The persistent-allocation follow-up re-fetches this revision and re-reads
+camera.home, drivers/dma.home and ADR-MC3. The camera owns one fixed RGB allocation
+and capture remains an explicit stub; the DMA driver programs legacy ISA 8237
+channels with 16 MB/64 KB restrictions. Neither supplies Linux DMA heap allocation,
+libcamera FrameBuffer import, persistent userspace maps or retained cleanup.
+Their kernel pointer ownership must not be used as a hosted DMA-BUF contract.
+The new bounded allocation-cache ownership policy therefore improves Home video's
+shared package and composes its existing leases/admission. Device allocation and
+Camera/Bun integration remain open. No OS code was copied, modified, translated
+or executed; no hardware or speedup acceptance is inferred from this audit.
+
 | Source | Observed implementation | Reuse decision |
 | --- | --- | --- |
 | docs/adr/ADR-MC3-media-stdlib.md | Accepted architecture places codec/container/image implementation in Home stdlib; OS consumes bindings and keeps OS source in Home | Improve shared Home packages, keep Zig helpers out of the OS tree |

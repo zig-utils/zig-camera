@@ -765,3 +765,9 @@ Libjpeg is an independent test producer/decoder, not a runtime decode dependency
 The JPEG decoder/reference fixtures additionally include single-component MCU
 geometry and portable green-conversion fixes from Home 7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b,
 under the same MIT license.
+
+src/home/capture_allocation.zig is copied verbatim from home-lang/home
+packages/video/src/core/capture_allocation.zig at
+ac27dba288a22785aa062a197b81129cb01b6ef8, under the MIT license above. It reuses
+the existing verbatim lease_pool and owned_admission modules. This is portable
+ownership policy, not a Home OS kernel or Linux DMA heap allocator.

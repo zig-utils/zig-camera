@@ -1,5 +1,44 @@
 # Home reuse audit
 
+## Persistent capture allocation ownership foundation
+
+Inspected Home ac27dba288a22785aa062a197b81129cb01b6ef8 (based on clean fetched
+7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b) and Home OS
+151269666bc09aa15a271f1c1f4603f681132e65. Home's `video/perf/cache.zig` uses
+estimated frame sizes, raw frame pointers and immediate LRU destruction. It
+cannot own live libcamera buffers or retain budgets through failed physical
+cleanup. `keyed_state` stages desired controls rather than resource ownership.
+The reusable pieces are `lease_pool` and `owned_admission`; the new shared
+`core/capture_allocation.zig` composes them instead of adding another token or
+budget implementation. Camera vendors it verbatim and exposes its policy through
+the Zig root. The pinned comparison workflow checks all three shared sources.
+
+Exact keys copy full camera identities and all actual stream descriptors,
+including physical backing bytes/page rounding, frame size, dimensions, stride,
+format, modifier and count. Preparing, borrowed, idle and retiring entries stay
+charged until successful complete physical destruction. No live borrower can be
+evicted; partially destroyed allocations cannot return to reuse. Cleanup uses
+existing allocation generations, so checkout sequence exhaustion cannot prevent
+retirement. Tests own actual byte allocations, inject every allocation failure,
+check 1,000 allocation-free reuse cycles, and retry partial physical cleanup.
+
+This does not yet change camera allocation: the real backend still uses the SDK
+allocator and modes still allocate on reopen. The remaining host must provide
+DMA heap FDs/imports, mappings/coherency, retryable physical cleanup, synthetic
+backing, public allocator handles and joined Bun/mode-worker pins. No physical
+DMA, camera throughput, Picamera2 speedup or allocator parity is claimed here.
+Home OS's camera/DMA implementations are audited in home-os-reuse.md.
+
+Local validation passes all 19 standalone ownership tests plus the Home root
+export smoke on Zig 0.15.2 and 0.18.0-dev.470+6817928c3 in Debug, ReleaseSafe and
+ReleaseFast. Camera's direct native ReleaseSafe suite passes all 585 tests;
+type checking and Zig formatting pass. The standard macOS build runner still
+fails linking system symbols before project compilation; the direct suite uses
+the working aarch64-macos.15.0 target. The new six-job pinned/master Linux
+x86/ARM/macOS workflow verifies exact donor sources and all three optimization
+modes. Normal camera CI continues to build/load real Linux backends on both
+architectures and test the C/Bun surfaces; this policy adds no C/Bun ABI.
+
 zig-camera uses Home's bounded native primitives and media writers directly.
 Verbatim modules retain MIT attribution in NOTICE. They compile with the camera's
 pinned Zig 0.15.2; new helpers are also tested with Home's development compiler.
