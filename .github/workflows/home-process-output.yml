@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 6b9c9000460501866cecaa809b5f65bba2254987
+          ref: 5fe691d067a7aa33d60ad6fc276e2ba2aed0c121
           path: .home-process-upstream
           sparse-checkout: packages/video
           persist-credentials: false
@@ -55,4 +55,5 @@ jobs:
           zig test -lc -Iinclude -O Debug src/process_output.zig
           zig test -lc -Iinclude -O ReleaseSafe src/process_output.zig
           zig build-exe -lc -O ReleaseSafe src/process_output_host_main.zig -femit-bin=process-output-host
-          bun .home-process-upstream/packages/video/tests/process_output_host.ts "$PWD/process-output-host"
+          zig build-exe -lc -O ReleaseSafe .home-process-upstream/packages/video/tests/process_output_consumer.zig -femit-bin=process-group-consumer
+          bun .home-process-upstream/packages/video/tests/process_output_host.ts "$PWD/process-output-host" "$PWD/process-group-consumer"
