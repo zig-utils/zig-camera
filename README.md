@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.115.1 fixes [shared-mapping cleanup](docs/shared-cleanup.md): failed
+unmaps retain their original bounded ownership and budget, with explicit retry
+and telemetry in Zig/C/Bun after export/remote handles are consumed.
+
 Version 0.115 adds [persistent capture allocators](docs/capture-allocator.md) in
 Zig/C/Bun: bounded DMA heap or explicit synthetic backing, exact negotiated-layout
 reuse, retained request/map/export ownership, worker pins, recorder/group mode

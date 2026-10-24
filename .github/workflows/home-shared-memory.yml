@@ -21,12 +21,21 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: a26569ce2ab717fa05446c7b1c1c9875771e0b84
+          path: .home-shared-upstream
+          sparse-checkout: packages/io
+          persist-credentials: false
       - name: Descriptor mapping and admission ownership
         shell: bash
         run: |
           set -euo pipefail
-          for mode in Debug ReleaseSafe; do
+          cmp .home-shared-upstream/packages/io/src/posix_shared_memory.zig src/home/posix_shared_memory.zig
+          for mode in Debug ReleaseSafe ReleaseFast; do
             zig test -O "$mode" -lc src/home/posix_shared_memory.zig
+            zig test -O "$mode" -lc .home-shared-upstream/packages/io/src/posix_shared_memory.zig
             zig test -O "$mode" -lc src/home/descriptor_channel.zig
             zig test -O "$mode" src/home/owned_admission.zig
           done

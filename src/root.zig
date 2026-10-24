@@ -2,11 +2,22 @@ pub const rtp = @import("rtp.zig");
 pub const socket_output = @import("socket_output.zig");
 pub const process_output = @import("process_output.zig");
 pub const ByteTail = process_output.Tail;
+pub const SharedCleanupState = c.zc_shared_cleanup_state;
+pub fn sharedCleanupState() SharedCleanupState {
+    var state: SharedCleanupState = undefined;
+    _ = @import("shared_cleanup.zig").zc_shared_cleanup_state_get(&state);
+    return state;
+}
+/// Retry one bounded pass of consumed shared-map owners; never retry their close.
+pub fn drainSharedMappings() Error!void {
+    try check(@import("shared_cleanup.zig").zc_shared_cleanup_drain());
+}
 pub const SocketWriteCursor = socket_output.Home.Cursor;
 comptime {
     _ = rtp;
     _ = socket_output;
     _ = process_output;
+    _ = @import("shared_cleanup.zig");
 }
 pub const processed_format = @import("processed_format.zig");
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;

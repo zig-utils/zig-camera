@@ -13,17 +13,23 @@ pub const TestHooks = if (@import("builtin").is_test) struct {
 } else struct {};
 var admission: Admission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 32 };
 var mutex: std.Thread.Mutex = .{};
+// Occupies the original admission slot until all physical mappings retire.
+// Caller-facing handles remain consumed, including on failed cleanup.
+var deferred: [32]?*Export = @splat(null);
+var draining: [32]bool = @splat(false);
 const Export = struct {
     map: *c.zc_frame_map,
     catalog: *c.zc_catalog,
     ticket: Admission.Ticket,
     payload_cost: usize,
+    retained_cost: usize,
     info: c.zc_export_info,
     raw_metadata: c.zc_raw_metadata,
     sources: [c.ZC_MAX_EXPORT_PLANES]c.zc_plane,
     descriptors: [c.ZC_MAX_EXPORT_PLANES]shared.Fd = @splat(.{}),
     staging: [c.ZC_MAX_EXPORT_PLANES]?shared.Region = @splat(null),
     shared_catalog: ?shared.Region = null,
+    catalog_ready: bool = false,
 };
 fn owner(p: *const c.zc_frame_export) *Export {
     return @ptrCast(@alignCast(@constCast(p)));
@@ -32,6 +38,63 @@ fn release(ticket: Admission.Ticket) void {
     mutex.lock();
     defer mutex.unlock();
     admission.release(ticket) catch unreachable;
+}
+fn physicalCleanup(self: *Export) c_int {
+    var result: c_int = c.ZC_OK;
+    for (&self.staging) |*stage| if (stage.*) |*region| region.close() catch {
+        result = c.ZC_IO;
+    };
+    for (&self.descriptors) |*fd| fd.close() catch {
+        result = c.ZC_IO;
+    };
+    if (self.shared_catalog) |*region| region.close() catch {
+        result = c.ZC_IO;
+    };
+    return result;
+}
+fn mapped(self: *const Export) bool {
+    for (self.staging) |stage| if (stage) |region| {
+        if (region.mapping.base != null) return true;
+    };
+    if (self.shared_catalog) |region| if (region.mapping.base != null) return true;
+    return false;
+}
+pub const CleanupState = struct { owners: u32 = 0, busy: u32 = 0, bytes: u64 = 0 };
+pub fn cleanupState() CleanupState {
+    mutex.lock();
+    defer mutex.unlock();
+    var state: CleanupState = .{};
+    for (deferred, 0..) |entry, i| if (entry) |self| {
+        state.owners += 1;
+        state.busy += @intFromBool(draining[i]);
+        state.bytes += self.retained_cost;
+    };
+    return state;
+}
+/// One bounded pass; concurrent callers cannot operate on the same owner.
+pub fn drainCleanup() c_int {
+    var result: c_int = c.ZC_OK;
+    for (0..deferred.len) |i| {
+        mutex.lock();
+        if (deferred[i] == null or draining[i]) {
+            mutex.unlock();
+            continue;
+        }
+        const self = deferred[i].?;
+        draining[i] = true;
+        mutex.unlock();
+        if (physicalCleanup(self) != c.ZC_OK) result = c.ZC_IO;
+        const pending = mapped(self);
+        mutex.lock();
+        draining[i] = false;
+        if (!pending) {
+            deferred[i] = null;
+            admission.release(self.ticket) catch unreachable;
+        }
+        mutex.unlock();
+        if (!pending) A.destroy(self);
+    }
+    return result;
 }
 fn cleanup(self: *Export, writeback: bool) c_int {
     var result: c_int = c.ZC_OK;
@@ -59,22 +122,21 @@ fn cleanup(self: *Export, writeback: bool) c_int {
                 const used: usize = @intCast(source.bytes_used);
                 @memcpy(@constCast(source.data[0..used]), region.mapping.bytes[0..used]);
             }
-            region.close() catch {
-                result = c.ZC_IO;
-            };
         }
-        self.descriptors[i].close() catch {
-            result = c.ZC_IO;
-        };
     }
-    if (self.shared_catalog) |*region| region.close() catch {
-        result = c.ZC_IO;
-    };
+    if (physicalCleanup(self) != c.ZC_OK) result = c.ZC_IO;
     catalogs.zc_catalog_close(self.catalog);
     const retired = core.zc_frame_map_close(self.map);
     if (retired != c.ZC_OK) result = retired;
-    release(self.ticket);
-    A.destroy(self);
+    if (mapped(self)) {
+        mutex.lock();
+        std.debug.assert(deferred[self.ticket.slot] == null);
+        deferred[self.ticket.slot] = self;
+        mutex.unlock();
+    } else {
+        release(self.ticket);
+        A.destroy(self);
+    }
     return result;
 }
 pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export) c_int {
@@ -150,7 +212,7 @@ fn openExport(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output
     };
     mutex.unlock();
     const self = A.create(Export) catch return c.ZC_NOMEM;
-    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .payload_cost = cost, .info = info, .raw_metadata = raw_metadata, .sources = sources };
+    self.* = .{ .map = map.?, .catalog = catalog.?, .ticket = ticket, .payload_cost = cost, .retained_cost = cost, .info = info, .raw_metadata = raw_metadata, .sources = sources };
     handed = true;
     var complete = false;
     defer if (!complete) {
@@ -204,18 +266,21 @@ pub fn sharedCatalog(p: *const c.zc_frame_export, fd: *c_int, size: *u64) c_int 
             return c.ZC_BUSY;
         };
         mutex.unlock();
-        var complete = false;
-        defer if (!complete) {
+        // Publish ownership before copying: an error must leave any failed
+        // unmap reachable through this export and charged to its reservation.
+        self.shared_catalog = shared.Region.create(@intCast(size.*), catalogs.limit) catch {
             mutex.lock();
             admission.resize(self.ticket, self.payload_cost) catch unreachable;
             mutex.unlock();
+            return c.ZC_IO;
         };
-        var region = shared.Region.create(@intCast(size.*), catalogs.limit) catch return c.ZC_IO;
-        defer if (!complete) region.close() catch {};
+        self.retained_cost = self.payload_cost + @as(usize, @intCast(size.*));
+    }
+    if (!self.catalog_ready) {
+        const region = &self.shared_catalog.?;
         const copied = catalogs.zc_catalog_copy(self.catalog, region.mapping.bytes.ptr, size.*, size);
         if (copied != c.ZC_OK) return copied;
-        self.shared_catalog = region;
-        complete = true;
+        self.catalog_ready = true;
     }
     const region = &self.shared_catalog.?;
     const extent = shared.extent(region.fd.value) catch return c.ZC_IO;

@@ -539,6 +539,20 @@ int zc_remote_frame_copy_raw16(const zc_remote_frame *,uint8_t *data,uint64_t ca
 int zc_remote_frame_encode_dng(const zc_remote_frame *,zc_image_blob **out);
 int zc_remote_frame_save_dng(const zc_remote_frame *,const char *path);
 int zc_remote_frame_close(zc_remote_frame *);
+/* Failed shared-memory unmaps retain their original bounded admission and
+ * physical mapping after the public export/remote handle is consumed. Do not
+ * retry close or access those handles. This process-wide cleanup API reports
+ * deferred owners only; live handles are excluded. Each drain attempts at most
+ * 32 export and 32 remote owners once, without writeback or camera lease work.
+ * Concurrent drains claim distinct owners. IO reports an attempted failure;
+ * BUSY means owners remain (including another drain), otherwise OK. A later
+ * close can add work after this call; this is not a camera/session fence. */
+typedef struct {
+    uint32_t struct_size,exports,remote_frames,busy;
+    uint64_t retained_bytes;
+} zc_shared_cleanup_state;
+int zc_shared_cleanup_state_get(zc_shared_cleanup_state *out);
+int zc_shared_cleanup_drain(void);
 
 /* Supervised processing ownership. Up to 8 sessions, 8 workers/session and 32
  * tasks/session; args <=16 MiB, reserved results <=256 MiB and aggregate <=512 MiB. Native owns

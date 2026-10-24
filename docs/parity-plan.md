@@ -1,5 +1,10 @@
 # Picamera2 capability parity worklist
 
+Version 0.115.1 fixes retained cleanup of failed shared-memory unmaps in Home
+and camera export/remote owners, with bounded explicit retry and telemetry in
+Zig/C/Bun. See shared-cleanup.md. This is an ownership prerequisite for custom
+allocation; imported custom buffers and allocator factories remain open.
+
 Version 0.115 adds bounded persistent DMA heap/synthetic capture allocation in
 Zig/C/Bun with actual-layout reuse, retained request/map/export owners, worker
 pins, mode/recorder/group rollback and independent overlapping reconnect loans;

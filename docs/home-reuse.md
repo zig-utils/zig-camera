@@ -1,5 +1,30 @@
 # Home reuse audit
 
+## 0.115.1 shared mapping retirement
+
+Inspected Home 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395 and re-fetched
+Home OS 151269666bc09aa15a271f1c1f4603f681132e65. Reused Home IO's
+posix_shared_memory and descriptor_channel, and video's owned_admission.
+Mapping.close previously cleared its mapping before checking munmap; Home fix
+[a26569ce2ab717fa05446c7b1c1c9875771e0b84](https://github.com/home-lang/home/commit/a26569ce2ab717fa05446c7b1c1c9875771e0b84)
+now retains the exact address, size and view on failure, clears them only after
+success and remains idempotent. Camera includes that source verbatim; the shared
+memory CI matrix checks its exact donor pin on three hosts and both Zig versions.
+
+Camera export/remote cleanup must also retain the owning object and original
+admission ticket after failed unmap. It keeps bounded deferred slots, consumes
+the public handle once, retires source writeback/catalog/lease once, and retries
+only physical cleanup. Incoming temporary metadata maps now belong to the remote
+owner before validation/copy can fail. FD close consumes its number even on error;
+drains never close a recycled number. Partial preparations and concurrent drains
+are checked by an independent syscall/interposition peer, alongside native/C/Bun
+tests. Pure Home tests cover both compiler versions in all three safety modes.
+
+Home drivers/kernel DMA helpers, performance cache and Home OS kernel memory
+facilities do not supply a portable retained hosted descriptor owner. No kernel
+code was copied, modified or executed; physical DMA and performance acceptance
+remain separate from the mapping ownership tests.
+
 ## 0.115 owned persistent capture backing
 
 Re-fetched Home ac27dba288a22785aa062a197b81129cb01b6ef8 and Home OS

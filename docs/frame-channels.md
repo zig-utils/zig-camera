@@ -122,3 +122,9 @@ context/property snapshots. Complete remote convenience/configuration semantics,
 richer values, automatic recovery and persistent allocator/GPU integration remain
 required work. No physical Pi DMA
 acceptance, zero-copy throughput or Picamera2 speedup is inferred from fixtures.
+
+## Cleanup retry
+
+Remote close still consumes its handle on errors. Failed pixel or metadata
+unmaps retain bounded native owners for [shared cleanup](shared-cleanup.md).
+Retire views and finish cleanup before acknowledging an unmapped remote consumer.

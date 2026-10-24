@@ -16,13 +16,17 @@ const maximum = 256 * 1024 * 1024;
 const Admission = @import("home/owned_admission.zig").Registry(32);
 var admission: Admission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 32 };
 var mutex: std.Thread.Mutex = .{};
+var deferred: [32]?*Remote = @splat(null);
+var draining: [32]bool = @splat(false);
 const Remote = struct {
     ticket: Admission.Ticket,
+    retained_cost: usize,
     info: c.zc_export_info,
     raw_metadata: c.zc_raw_metadata,
     catalog: []u8,
     fds: [c.ZC_MAX_EXPORT_PLANES]shared.Fd = @splat(.{}),
     maps: [c.ZC_MAX_EXPORT_PLANES]?shared.Mapping = @splat(null),
+    metadata_map: ?shared.Mapping = null,
 };
 fn owner(p: *const c.zc_remote_frame) *Remote {
     return @ptrCast(@alignCast(@constCast(p)));
@@ -41,7 +45,7 @@ fn release(ticket: Admission.Ticket) void {
     defer mutex.unlock();
     admission.release(ticket) catch unreachable;
 }
-fn cleanup(self: *Remote) c_int {
+fn physicalCleanup(self: *Remote) c_int {
     var result: c_int = c.ZC_OK;
     for (&self.maps) |*mapping| if (mapping.*) |*m| m.close() catch {
         result = c.ZC_IO;
@@ -49,9 +53,68 @@ fn cleanup(self: *Remote) c_int {
     for (&self.fds) |*fd| fd.close() catch {
         result = c.ZC_IO;
     };
-    A.free(self.catalog);
-    release(self.ticket);
-    A.destroy(self);
+    if (self.metadata_map) |*m| m.close() catch {
+        result = c.ZC_IO;
+    };
+    return result;
+}
+fn mapped(self: *const Remote) bool {
+    for (self.maps) |entry| if (entry) |m| {
+        if (m.base != null) return true;
+    };
+    if (self.metadata_map) |m| if (m.base != null) return true;
+    return false;
+}
+pub fn cleanupState() exports.CleanupState {
+    mutex.lock();
+    defer mutex.unlock();
+    var state: exports.CleanupState = .{};
+    for (deferred, 0..) |entry, i| if (entry) |self| {
+        state.owners += 1;
+        state.busy += @intFromBool(draining[i]);
+        state.bytes += self.retained_cost;
+    };
+    return state;
+}
+pub fn drainCleanup() c_int {
+    var result: c_int = c.ZC_OK;
+    for (0..deferred.len) |i| {
+        mutex.lock();
+        if (deferred[i] == null or draining[i]) {
+            mutex.unlock();
+            continue;
+        }
+        const self = deferred[i].?;
+        draining[i] = true;
+        mutex.unlock();
+        if (physicalCleanup(self) != c.ZC_OK) result = c.ZC_IO;
+        const pending = mapped(self);
+        mutex.lock();
+        draining[i] = false;
+        if (!pending) {
+            deferred[i] = null;
+            admission.release(self.ticket) catch unreachable;
+        }
+        mutex.unlock();
+        if (!pending) {
+            A.free(self.catalog);
+            A.destroy(self);
+        }
+    }
+    return result;
+}
+fn cleanup(self: *Remote) c_int {
+    const result = physicalCleanup(self);
+    if (mapped(self)) {
+        mutex.lock();
+        std.debug.assert(deferred[self.ticket.slot] == null);
+        deferred[self.ticket.slot] = self;
+        mutex.unlock();
+    } else {
+        A.free(self.catalog);
+        release(self.ticket);
+        A.destroy(self);
+    }
     return result;
 }
 fn put(comptime T: type, bytes: []u8, offset: usize, value: T) void {
@@ -193,7 +256,7 @@ pub export fn zc_frame_channel_receive(fd: i32, out: *?*c.zc_remote_frame, cooki
         A.destroy(self);
         return c.ZC_NOMEM;
     };
-    self.* = .{ .ticket = ticket, .info = info, .raw_metadata = raw_metadata, .catalog = catalog };
+    self.* = .{ .ticket = ticket, .retained_cost = bytes, .info = info, .raw_metadata = raw_metadata, .catalog = catalog };
     handed = true;
     var complete = false;
     defer if (!complete) {
@@ -203,9 +266,9 @@ pub export fn zc_frame_channel_receive(fd: i32, out: *?*c.zc_remote_frame, cooki
     for (0..info.plane_count) |i| self.fds[i] = record.take(i) catch unreachable;
     var metadata = record.take(info.plane_count) catch unreachable;
     defer metadata.close() catch {};
-    var mapping = shared.Mapping.init(metadata.value, .{ .offset = 0, .length = size, .used = size }, false, catalogs.limit) catch |err| return status(err);
-    defer mapping.close() catch {};
-    @memcpy(catalog, mapping.bytes);
+    self.metadata_map = shared.Mapping.init(metadata.value, .{ .offset = 0, .length = size, .used = size }, false, catalogs.limit) catch |err| return status(err);
+    @memcpy(catalog, self.metadata_map.?.bytes);
+    self.metadata_map.?.close() catch return c.ZC_IO;
     const reader = catalogs.wire.Reader.init(catalog) catch return c.ZC_INVALID;
     if (reader.catalog_kind != c.ZC_CATALOG_METADATA) return c.ZC_INVALID;
     for (info.planes[0..info.plane_count], 0..) |plane, i| {

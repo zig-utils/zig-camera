@@ -83,3 +83,9 @@ a low-level export API. Version 0.89 adds [supervised jobs/pools](process-pools.
 and joined ACK/exit cleanup. Complete RemoteRequest and allocator equivalents
 remain required. No Pi DMA mapping,
 physical throughput or Picamera2 performance result is claimed by these fixtures.
+
+## Cleanup retry
+
+Close still consumes the export on errors. Failed shared unmaps retain their
+bounded native owner and budget for [shared cleanup](shared-cleanup.md); inspect
+and retry that cleanup API instead of closing the consumed export again.

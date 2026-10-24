@@ -31,6 +31,22 @@ shared-stdlib boundary. No OS code is copied, modified, translated or run. The
 independent Linux memfd peer and system SDK tests validate hosted ownership and
 cleanup; they do not establish physical Pi DMA, coherence or FPS.
 
+## 0.115.1 shared mapping retirement
+
+Re-fetched the audited 151269666bc09aa15a271f1c1f4603f681132e65 revision and
+inspected kernel/src/core/vfs_buffer_cache.home, kernel/src/mm/user_alloc.home,
+kernel/src/drivers/framebuffer_double.home and ADR-MC3. The page cache uses
+256 fixed 4 KiB file blocks, inode/block identities and refcount/LRU state.
+User allocation tracks kernel brk/mmap regions; framebuffer storage tracks
+drawing/ready/displayed buffers. These are kernel memory owners, with no hosted
+FD/unmap failure protocol or shared-libcamera mapping retirement to import.
+
+The reusable implementation stays in Home IO: fix Mapping.close to retain a
+failed mapping, then compose its owners with Home video's bounded admission in
+camera. Deferred slots preserve budget until physical cleanup succeeds, without
+repeating camera writeback or closing recycled FDs. This follows the ADR's
+shared-package boundary. No OS code was modified, copied, translated or run.
+
 | Source | Observed implementation | Reuse decision |
 | --- | --- | --- |
 | docs/adr/ADR-MC3-media-stdlib.md | Accepted architecture places codec/container/image implementation in Home stdlib; OS consumes bindings and keeps OS source in Home | Improve shared Home packages, keep Zig helpers out of the OS tree |

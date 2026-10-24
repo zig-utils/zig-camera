@@ -13,6 +13,8 @@ const library =
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const libraryPath = resolve(library)
 export const native = dlopen(library, {
+  zc_shared_cleanup_state_get:{args:[p],returns:i},
+  zc_shared_cleanup_drain:{args:[],returns:i},
   zc_default_capture_allocator_config:{args:[p],returns:v},
   zc_capture_allocator_open:{args:[p,p,u,p],returns:i},
   zc_capture_allocator_state_get:{args:[p,p],returns:i},

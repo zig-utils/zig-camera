@@ -83,6 +83,21 @@ jobs:
         run: zig build test -Dlibcamera=false -Djpeg=false
       - name: Build synthetic CLI and shared library
         run: zig build -Dlibcamera=false -Djpeg=false -Doptimize=ReleaseSafe
+      - name: Verify retained shared-map cleanup with independent syscall faults
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -dynamiclib tests/shared_unmap_preload.c -Wl,-install_name,@rpath/libshared-unmap-peer.dylib -o zig-out/lib/libshared-unmap-peer.dylib
+          else
+            cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -fPIC -shared tests/shared_unmap_preload.c -o zig-out/lib/libshared-unmap-peer.so
+          fi
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iinclude tests/shared_cleanup.c -Lzig-out/lib -lzigcamera -lshared-unmap-peer -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/shared-cleanup-test
+          if [ "$RUNNER_OS" = macOS ]; then
+            env DYLD_INSERT_LIBRARIES="$PWD/zig-out/lib/libshared-unmap-peer.dylib" zig-out/shared-cleanup-test
+          else
+            env LD_PRELOAD="$PWD/zig-out/lib/libshared-unmap-peer.so" zig-out/shared-cleanup-test
+          fi
       - name: Verify C ABI, Bun lifecycle, native automation and CLI
         run: |
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
