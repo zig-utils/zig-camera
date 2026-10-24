@@ -16,13 +16,13 @@ export function preparePreviewConfiguration(
       typeof options === 'string' ? 'sdl' : (options.backend ?? 'sdl'),
     title =
       typeof options === 'string' ? options : (options.title ?? 'zig-camera')
-  if (backend !== 'sdl' && backend !== 'headless' && backend !== 'drm')
+  if (backend !== 'sdl' && backend !== 'headless' && backend !== 'drm' && backend !== 'drm-async')
     throw new RangeError('invalid preview backend')
   if (typeof title !== 'string') throw new TypeError('invalid preview title')
   cstring(title)
   const requestedDrm=typeof options==='string'?undefined:options.drm
-  if(backend!=='drm'&&requestedDrm!==undefined)throw new RangeError('DRM settings require DRM preview backend')
-  const drm=backend==='drm'?snapshotDrmPreview(requestedDrm):undefined
+  if(backend!=='drm'&&backend!=='drm-async'&&requestedDrm!==undefined)throw new RangeError('DRM settings require DRM preview backend')
+  const drm=backend==='drm'||backend==='drm-async'?snapshotDrmPreview(requestedDrm):undefined
   const stream = snapshotPreviewStream(
       typeof options === 'string' ? undefined : options.stream,
     ),

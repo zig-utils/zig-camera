@@ -15,12 +15,10 @@ await preview.backgroundAsync()
 ```
 
 This is an independent preview consumer, with a native serial worker per preview.
-The existing `Camera.startPreview` path remains supported with its existing
-camera-owned pump and synchronous native display calls. Automatic attachment of
-this worker to that pump and its mode/lifecycle transactions remains open. Close
-or background an independent preview before reconfiguring its source camera; it
-owns external camera leases, so mode admission correctly rejects while displayed
-sources remain. Construct a new preview when source dimensions/format change.
+Camera can also own this worker through the explicit `drm-async` backend; see
+[camera-drm-worker.md](camera-drm-worker.md). The independent class remains
+application-owned: close or background it before reconfiguring its source camera.
+Its current scanout exports still block camera reconfiguration.
 
 All existing DRM plane, format, color and device requirements in drm-preview.md
 apply. Device discovery/open and source-export admission remain synchronous.

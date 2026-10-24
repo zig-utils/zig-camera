@@ -760,3 +760,14 @@ the device boundary but supplies no tested Linux event-loop executor.
 The bounded native worker therefore lands in Home stdlib video, preserving the
 ADR-MC3/MC5 split. No OS kernel code is copied, modified or executed; OS source
 remains Home. This audit is not physical display or performance evidence.
+
+## 0.111 Camera worker lifecycle audit
+
+Re-fetched clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and re-read
+ADR-MC3/MC5, framebuffer_double.home::page_flip and ipc/msgqueue.home. Kernel
+queue messages and framebuffer bookkeeping do not provide hosted Linux joined
+callback execution or camera-export retirement. Their ownership boundary stays
+separate. Camera reuses the existing Home stdlib executor/KMS implementation
+and adds its application lifecycle coordination in Bun. No OS source is copied,
+modified, translated or executed. No unverified Pi register path is claimed as
+working camera/display hardware.

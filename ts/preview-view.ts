@@ -31,7 +31,7 @@ export interface PreparedPreviewView {
   readonly customized: boolean
 }
 export interface PreviewConfiguration {
-  readonly backend: 'sdl' | 'headless' | 'drm'
+  readonly backend: 'sdl' | 'headless' | 'drm' | 'drm-async'
   readonly drm?:PreparedDrmPreview
   readonly title: string
   readonly stream?: PreviewStream

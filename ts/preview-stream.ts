@@ -49,7 +49,7 @@ export function readPreviewInput(
     height = view(main).getUint32(12, true),
     format = text(main, 24, 32)
   if (stream === null)
-    return { info: Object.freeze({ stream, width, height }), id: 0 }
+    return { info: Object.freeze({ stream, width, height,...(direct?{format:processedFormatName(processedFormatCode(format))}:{}) }), id: 0 }
   const id = stream === 'main' ? 0 : 2
   if (stream === 'lores') {
     const pipeline = storage(224),

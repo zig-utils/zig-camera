@@ -14,6 +14,7 @@ export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplay
 import {openDrmPreview,readDrmPreviewState,type DrmPreviewOptions,type DrmPreviewState} from './drm-preview'
 export type {DrmPreviewOptions,DrmPreviewState} from './drm-preview'
 export {DrmPreview,DrmPreviewCleanupError,type DrmPreviewSessionOptions} from './drm-preview-async'
+import {DrmPreview,DrmPreviewCleanupError} from './drm-preview-async'
 import {submitDrmPreviewFrame} from './drm-preview-frame'
 import {
   prepareApng,
@@ -709,15 +710,17 @@ export interface CameraTransform {
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 export interface PreviewOptions extends PreviewViewOptions {
   stream?: PreviewStream
-  backend?: 'sdl' | 'headless' | 'drm'
+  backend?: 'sdl' | 'headless' | 'drm' | 'drm-async'
   drm?:DrmPreviewOptions
   title?: string
 }
 export interface PreviewInfo extends PreviewViewOptions {
   stream?: PreviewStream
-  backend: 'sdl' | 'headless' | 'drm'
+  backend: 'sdl' | 'headless' | 'drm' | 'drm-async'
   drm?:DrmPreviewOptions
   drmState?:DrmPreviewState
+  drmQueue?:DrmPreview['queueState']
+  workerFrames?:Readonly<{offered:bigint;completed:bigint;skipped:bigint}>
   title: string
   suspended: boolean
 }
@@ -1251,6 +1254,7 @@ export class Camera {
       this.assertOpen()
       if (
         this.hasPendingModes(owner) ||
+        this.pendingPreviewJobs() ||
         (this.reconnectJob && !this.reconnectJob.done) ||
         (this.captureFilesJob && !this.captureFilesJob.done)
       )
@@ -1301,7 +1305,7 @@ export class Camera {
           try {
             current.check()
             this.assertOpen()
-            this.stopPreviewOwned()
+            await this.stopPreviewOwnedAsync()
             watch = new CameraWatch({ simulate: target.simulate ?? false })
             while (true) {
               current.check()
@@ -1548,6 +1552,7 @@ export class Camera {
         throw new CameraError(-2, 'recovery requires a disconnected camera')
       if (
         this.hasPendingModes() ||
+        this.pendingPreviewJobs() ||
         (this.reconnectJob && !this.reconnectJob.done) ||
         (this.captureFilesJob && !this.captureFilesJob.done)
       )
@@ -1899,8 +1904,18 @@ export class Camera {
     return this.lastPreviewError
   }
   private previewHandle = 0 as Pointer
+  private previewWorker?:DrmPreview
+  private previewFrameJob?:BunJob<void>
+  private previewStopJob?:Promise<void>
+  private readonly preparedWorkerCleanup=new Set<DrmPreview>()
+  private readonly previewJobs=new Set<BunJob<unknown>>()
+  private previewTail:Promise<unknown>=Promise.resolve()
+  private previewPauses=0
+  private previewOffered=0n
+  private previewCompleted=0n
+  private previewSkipped=0n
   private readonly preparedPreviewCleanup=new Set<Pointer>()
-  get previewCleanupPending(){return this.preparedPreviewCleanup.size+(this.previewHandle&&this.previewSuspended?1:0)}
+  get previewCleanupPending(){return this.preparedPreviewCleanup.size+this.preparedWorkerCleanup.size+((this.previewHandle||this.previewWorker)&&this.previewSuspended?1:0)}
   private previewConfiguration?: PreviewConfiguration
   private previewInput?: PreparedPreviewInput
   private previewSuspended = false
@@ -1915,12 +1930,15 @@ export class Camera {
         title: this.previewConfiguration.title,
         ...(this.previewConfiguration.drm?{drm:{...this.previewConfiguration.drm}}:{}),
         ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle)}:{}),
+        ...(this.previewWorker&&!this.previewWorker.closed?{drmState:this.previewWorker.state,drmQueue:this.previewWorker.queueState}:{}),
+        ...(this.previewConfiguration.backend==='drm-async'?{workerFrames:Object.freeze({offered:this.previewOffered,completed:this.previewCompleted,skipped:this.previewSkipped})}:{}),
         ...(this.previewConfiguration.stream !== undefined
           ? { stream: this.previewConfiguration.stream }
           : {}),
         ...copyPreviewViewOptions(this.previewConfiguration.view),
         suspended:
           this.previewSuspended ||
+          this.previewPauses!==0 ||
           this.modeActive ||
           !!this.coordinatedRecorder ||
           !!this.coordinatedGroup,
@@ -2995,6 +3013,7 @@ export class Camera {
       try{check(n.zc_preview_show_background(this.previewHandle),'mode preview retirement')}
       catch(error){this.previewSuspended=true;this.lastPreviewError=error;throw error}
     }
+    if(this.previewWorker)return // Async admission retires our export before its strong check.
     const stats = storage(40)
     check(n.zc_get_stats(this.handle, ptr(stats)))
     if (view(stats).getUint32(36, true))
@@ -3271,7 +3290,7 @@ export class Camera {
         state.stage = 'stopping'
         const cleanup: unknown[] = []
         try {
-          this.clearPreviewOwned()
+          await this.clearPreviewOwnedAsync()
         } catch (error) {
           cleanup.push(error)
         }
@@ -3807,7 +3826,7 @@ export class Camera {
     this.ensureConnected()
     const configuration = preparePreviewConfiguration(options)
     this.assertOpen()
-    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
+    if (this.hasPendingModes()||this.pendingPreviewJobs()) throw new CameraError(-4, 'preview/mode jobs pending')
     if (this.previewConfiguration)
       throw new CameraError(-4, 'preview already active')
     this.openPreviewOwned(configuration)
@@ -3815,7 +3834,8 @@ export class Camera {
       this.start()
       this.ensurePump()
     } catch (error) {
-      this.stopPreview()
+      if(this.previewWorker)this.failPreview(error)
+      else this.stopPreview()
       throw error
     }
   }
@@ -3823,6 +3843,7 @@ export class Camera {
   setPreviewView(options: PreviewViewOptions = {}) {
     guardRequestCallback()
     this.assertOpen()
+    if(this.previewConfiguration?.backend==='drm-async')throw new CameraError(-4,'use asynchronous preview transition')
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
     const owner = this.previewConfiguration!,
@@ -3847,6 +3868,7 @@ export class Camera {
   setPreviewStream(stream: PreviewStream, options?: PreviewViewOptions) {
     guardRequestCallback()
     this.assertOpen()
+    if(this.previewConfiguration?.backend==='drm-async')throw new CameraError(-4,'use asynchronous preview transition')
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
     const owner = this.previewConfiguration!,
@@ -3907,7 +3929,7 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
-    if(this.previewConfiguration!.backend==='drm'&&overlay!==null)throw new CameraError(-8,'DRM overlay planes are not implemented')
+    if((this.previewConfiguration!.backend==='drm'||this.previewConfiguration!.backend==='drm-async')&&overlay!==null)throw new CameraError(-8,'DRM overlay planes are not implemented')
     let candidate = 0 as Pointer
     if (overlay !== null) {
       const data = overlay.data,
@@ -3940,7 +3962,7 @@ export class Camera {
       )
       candidate = handle(out)
     }
-    if (this.previewConfiguration!.backend === 'headless') return
+    if (this.previewConfiguration!.backend === 'headless'||this.previewConfiguration!.backend==='drm-async') return
     try {
       check(n.zc_preview_set_overlay(this.previewHandle, candidate))
     } catch (error) {
@@ -3950,13 +3972,150 @@ export class Camera {
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = candidate
   }
+  private pendingPreviewJobs(){return [...this.previewJobs].some(job=>!job.done)}
+  private submitPreview<T>(operation:(current:BunJob<T>)=>Promise<T>,source:JobOptions<T>={}):BunJob<T>{
+    guardRequestCallback();guardOutputHook();this.assertOpen()
+    if(this.hasPendingModes()||this.modeActive||this.coordinatedRecorder||this.coordinatedGroup||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
+    const options=snapshotJobOptions(source)
+    this.assertOpen()
+    if(this.hasPendingModes()||this.modeActive||this.coordinatedRecorder||this.coordinatedGroup||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
+    if([...this.previewJobs].filter(job=>!job.done).length>=32)throw new CameraError(-4,'preview queue full')
+    const job=new BunJob<T>(async current=>{current.check();this.assertOpen();return operation(current)},()=>this.previewJobs.delete(job as BunJob<unknown>),options)
+    this.previewJobs.add(job as BunJob<unknown>);this.previewPauses++
+    void job.operationDone.then(()=>{this.previewPauses--;if(this.handle&&!this.closing&&!this.stopJob&&this.previewActive)this.ensurePump()})
+    this.previewTail=this.previewTail.then(()=>job.start()).catch(()=>{})
+    return job
+  }
+  /** Serialized copied view update. Active native flips remain uninterruptible. */
+  setPreviewViewAsync(options:PreviewViewOptions={},jobOptions:JobOptions<void>={}):BunJob<void>{
+    const prepared=preparePreviewView(options)
+    return this.submitPreview(async current=>{
+      const owner=this.previewConfiguration
+      if(!owner||this.previewSuspended)throw new CameraError(-2,'preview not active')
+      validatePreviewView(prepared,this.previewInput!.info.width,this.previewInput!.info.height)
+      if(this.previewWorker){
+        const child=this.previewWorker.setViewAsync(copyPreviewViewOptions(prepared))
+        current.setCancellationGuard(reason=>child.cancel(reason))
+        try{await child}finally{current.setCancellationGuard(()=>false)}
+        this.previewConfiguration=Object.freeze({...owner,view:prepared})
+      }else{
+        current.check();current.setCancellationGuard(()=>false)
+        this.setPreviewView(copyPreviewViewOptions(prepared))
+      }
+    },jobOptions)
+  }
+  /** Changes source only after the old plane has retired all camera exports. */
+  setPreviewStreamAsync(stream:PreviewStream,options?:PreviewViewOptions,jobOptions:JobOptions<void>={}):BunJob<void>{
+    const selected=snapshotPreviewStream(stream),view=options===undefined?undefined:preparePreviewView(options)
+    if(selected===undefined)throw new RangeError('explicit preview stream required')
+    return this.submitPreview(async current=>{
+      const owner=this.previewConfiguration
+      if(!owner||this.previewSuspended)throw new CameraError(-2,'preview not active')
+      if(owner.backend!=='drm-async'){
+        current.check();current.setCancellationGuard(()=>false)
+        this.setPreviewStream(selected,view&&copyPreviewViewOptions(view));return
+      }
+      const next=Object.freeze({...owner,stream:selected,view:view??owner.view})
+      const input=readPreviewInput(this.handle,selected,true)
+      validatePreviewView(next.view,input.info.width,input.info.height)
+      current.check();current.setCancellationGuard(()=>false)
+      await this.stopPreviewOwnedAsync()
+      try{this.openPreviewOwned(next)}catch(error){
+        try{await this.retryPreparedWorkerPreviews();this.openPreviewOwned(owner)}catch(rollback){
+          this.lastPreviewError=new AggregateError([error,rollback],'asynchronous DRM stream change and restoration failed')
+          throw this.lastPreviewError
+        }
+        throw error
+      }
+    },jobOptions)
+  }
+  /** Prefix fence, including callback cleanup; current scanout remains retained. */
+  drainPreviewAsync(options:JobOptions<void>={}):BunJob<void>{
+    return this.submitPreview(async current=>{
+      if(!this.previewConfiguration)throw new CameraError(-2,'preview not active')
+      if(this.previewWorker){
+        const child=this.previewWorker.drainAsync()
+        current.setCancellationGuard(reason=>child.cancel(reason))
+        try{await child}finally{current.setCancellationGuard(()=>false)}
+      }
+    },options)
+  }
+  /** Stops admission and joins the display worker before releasing its owner. */
+  stopPreviewAsync(options:JobOptions<void>={}):BunJob<void>{
+    return this.submitPreview(async current=>{
+      current.check();current.setCancellationGuard(()=>false)
+      await this.clearPreviewOwnedAsync()
+    },options)
+  }
+  private async cancelPreviewJobs(){
+    const jobs=[...this.previewJobs]
+    for(const job of jobs)job.cancel(new CameraError(-2,'camera stopped'))
+    await Promise.all(jobs.map(job=>job.operationDone))
+  }
+  private stopPreviewOwnedAsync():Promise<void>{
+    if(this.previewStopJob)return this.previewStopJob
+    if(this.previewConfiguration)this.previewSuspended=true
+    const worker=this.previewWorker
+    if(!worker){this.stopPreviewOwned();return Promise.resolve()}
+    this.previewStopJob=Promise.resolve().then(async()=>{
+      await worker.close()
+      if(this.previewWorker===worker){this.previewWorker=undefined;this.previewFrameJob=undefined}
+    }).finally(()=>{this.previewStopJob=undefined})
+    return this.previewStopJob
+  }
+  private async retryPreparedWorkerPreviews(){
+    let failure:unknown
+    for(const worker of this.preparedWorkerCleanup)try{
+      await worker.close();this.preparedWorkerCleanup.delete(worker)
+    }catch(error){failure??=error}
+    if(failure!==undefined)throw failure
+  }
+  private async clearPreviewOwnedAsync(){
+    await this.stopPreviewOwnedAsync()
+    await this.retryPreparedWorkerPreviews()
+    this.clearPreviewOwned()
+  }
+  private failPreview(error:unknown){
+    this.lastPreviewError=error;this.previewSuspended=true
+    void this.stopPreviewOwnedAsync().catch(cleanup=>{
+      this.lastPreviewError=new AggregateError([error,cleanup],'preview display and cleanup failed')
+    })
+  }
+  private async withPreviewRetired<T>(current:Pick<BunJob<unknown>,"check">,operation:()=>Promise<T>,resumeOnSuccess=true):Promise<T>{
+    const owner=this.previewConfiguration
+    if(owner?.backend!=='drm-async')return operation()
+    this.previewPauses++
+    let failed=false,failure:unknown
+    try{
+      await this.stopPreviewOwnedAsync();current.check()
+      return await operation()
+    }catch(error){failed=true;failure=error;throw error}
+    finally{
+      try{
+        if((failed||resumeOnSuccess)&&!this.previewWorker&&!this.previewHandle&&this.previewConfiguration===owner&&this.handle&&!this.closing&&!this.stopJob&&!this.lastDeviceError){
+          this.openPreviewOwned(owner);this.ensurePump()
+        }
+      }catch(error){throw failed?new AggregateError([failure,error],'mode and preview restoration failed'):error}
+      finally{this.previewPauses--}
+    }
+  }
   private makePreview(configuration: PreviewConfiguration) {
     this.retryPreparedPreviews()
-    const input = readPreviewInput(this.handle, configuration.stream,configuration.backend==='drm'),
+    if(this.preparedWorkerCleanup.size)throw new CameraError(-4,"prepared DRM cleanup requires stopPreviewAsync")
+    const input = readPreviewInput(this.handle, configuration.stream,(configuration.backend==='drm'||configuration.backend==='drm-async')),
       { width, height } = input.info
     validatePreviewView(configuration.view, width, height)
     if (configuration.backend === 'headless')
-      return { handle: 0 as Pointer, input }
+      return { handle: 0 as Pointer, input,worker:undefined as DrmPreview|undefined }
+    if(configuration.backend==='drm-async'){
+      try{
+        const worker=new DrmPreview({width,height,format:input.info.format,...configuration.drm!,operations:1,view:copyPreviewViewOptions(configuration.view)})
+        return {handle:0 as Pointer,input,worker}
+      }catch(error){
+        if(error instanceof DrmPreviewCleanupError)this.preparedWorkerCleanup.add(error.cleanup)
+        throw error
+      }
+    }
     const name = cstring(configuration.title),
       out = outPointer()
     const open =
@@ -3978,11 +4137,12 @@ export class Camera {
       this.retirePreparedPreview(candidate)
       throw error
     }
-    return { handle: candidate, input }
+    return { handle: candidate, input,worker:undefined as DrmPreview|undefined }
   }
   private openPreviewOwned(configuration: PreviewConfiguration) {
     const prepared = this.makePreview(configuration)
     this.previewHandle = prepared.handle
+    this.previewWorker=prepared.worker
     this.previewInput = prepared.input
     this.previewConfiguration = configuration
     this.previewSuspended = false
@@ -3991,7 +4151,8 @@ export class Camera {
   stopPreview() {
     guardRequestCallback()
     guardOutputHook()
-    if (this.modeActive) throw new CameraError(-4, 'mode change active')
+    if (this.modeActive||this.pendingPreviewJobs()) throw new CameraError(-4, 'preview/mode change active')
+    if(this.previewConfiguration?.backend==='drm-async'||this.previewWorker||this.preparedWorkerCleanup.size)throw new CameraError(-4,'use stopPreviewAsync')
     this.clearPreviewOwned()
   }
   private clearPreviewOwned() {
@@ -4004,6 +4165,7 @@ export class Camera {
     this.previewSuspended = false
   }
   private stopPreviewOwned() {
+    if(this.previewWorker)throw new CameraError(-4,'asynchronous preview retirement required')
     if (this.previewConfiguration) this.previewSuspended = true
     if (this.previewHandle) {
       check(n.zc_preview_close(this.previewHandle))
@@ -4131,6 +4293,7 @@ export class Camera {
     const autofocus = jobOptions.autofocus ?? false
     if (
       this.hasPendingModes() ||
+      this.pendingPreviewJobs() ||
       this.requests.length ||
       this.focusCaptureActive ||
       this.failedRecordings.size
@@ -4223,7 +4386,7 @@ export class Camera {
         this.ensurePump()
     }
     const job = new BunJob<Recording>(
-      async (current) => {
+      async (current) => this.withPreviewRetired(current,async()=>{
         claimed = true
         current.check()
         this.checkModeLeases()
@@ -4305,7 +4468,7 @@ export class Camera {
             : reservation!.flush()
           await flush
           current.check()
-          this.stopPreviewOwned()
+          await this.stopPreviewOwnedAsync()
           response = await this.runOwnedMode({
             handle: this.handle,
             ...encoded,
@@ -4386,7 +4549,7 @@ export class Camera {
           }
           if (!published && response?.target && this.handle) {
             try {
-              this.stopPreviewOwned()
+              await this.stopPreviewOwnedAsync()
               const restored = await this.runOwnedMode({
                 handle: this.handle,
                 ...old,
@@ -4460,7 +4623,7 @@ export class Camera {
           this.modeActive = false
           release()
         }
-      },
+      }),
       () => {
         this.modeJobs.delete(job)
         if (!claimed) release()
@@ -4629,6 +4792,7 @@ export class Camera {
     this.assertOpen()
     if (
       this.hasPendingModes() ||
+      this.pendingPreviewJobs() ||
       this.requests.length ||
       this.focusCaptureActive ||
       this.failedRecordings.size ||
@@ -4678,7 +4842,7 @@ export class Camera {
         this.ensurePump()
     }
     const job = new BunJob<readonly Recording[]>(
-      async (current) => {
+      async (current) => this.withPreviewRetired(current,async()=>{
         claimed = true
         let response: ModeResponse | undefined, group: RestartGroup | undefined
         const children: BunJob<void>[] = []
@@ -4753,7 +4917,7 @@ export class Camera {
           const flushFailure = flushed.find((r) => r.status === 'rejected')
           if (flushFailure?.status === 'rejected') throw flushFailure.reason
           current.check()
-          this.stopPreviewOwned()
+          await this.stopPreviewOwnedAsync()
           response = await this.runOwnedMode({
             handle: this.handle,
             ...encoded,
@@ -4881,7 +5045,7 @@ export class Camera {
           }
           if (!group?.published && response?.target && this.handle) {
             try {
-              this.stopPreviewOwned()
+              await this.stopPreviewOwnedAsync()
               const restored = await this.runOwnedMode({
                 handle: this.handle,
                 ...old,
@@ -4958,7 +5122,7 @@ export class Camera {
           this.modeActive = false
           release()
         }
-      },
+      }),
       () => {
         this.modeJobs.delete(job)
         if (!claimed) release()
@@ -5156,6 +5320,7 @@ export class Camera {
   }
   private checkModeAdmission(owner?: object) {
     this.ensureConnected()
+    if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
     if (
       this.pngCaptureJob &&
       !this.pngCaptureJob.done &&
@@ -5220,7 +5385,7 @@ export class Camera {
         stage=>withStagedImageFile(
           capture?.kind === 'file' ? capture.path : undefined,
           current,
-          async (file) => {
+          async (file) => this.withPreviewRetired(current,async()=>{
             current.check()
             this.assertOpen()
             this.checkModeLeases()
@@ -5259,7 +5424,7 @@ export class Camera {
               this.openPreviewOwned(previewConfig)
             }
             try {
-              this.stopPreviewOwned()
+              await this.stopPreviewOwnedAsync()
               response = await this.runOwnedMode({
                 handle: this.handle,
                 ...encoded,
@@ -5362,7 +5527,7 @@ export class Camera {
                   value = { ...response.stream!, data: response.value! }
               }
               if (capture?.kind === 'request-stop') {
-                this.clearPreviewOwned()
+                await this.clearPreviewOwnedAsync()
                 current.seal()
                 retainedRequest = undefined // the published Frame now owns release
               } else if (resumePreview) preview()
@@ -5396,7 +5561,7 @@ export class Camera {
               }
               if (response?.target && this.handle) {
                 try {
-                  this.stopPreviewOwned()
+                  await this.stopPreviewOwnedAsync()
                   const restored = await this.runOwnedMode({
                     handle: this.handle,
                     ...old,
@@ -5469,7 +5634,7 @@ export class Camera {
               throw error
             }
             return value as T
-          },
+          },resumePreview),
         )),
       () => this.modeJobs.delete(job),
       effective,
@@ -5851,6 +6016,17 @@ export class Camera {
               else this.failRecording(writing, error)
             }
           }
+          if(this.previewWorker&&!this.previewSuspended&&!this.previewPauses){
+            if(this.previewFrameJob&&!this.previewFrameJob.done)this.previewSkipped++
+            else try{
+              const worker=this.previewWorker,input=this.previewInput!
+              const job=input.info.stream===null?worker.backgroundAsync():worker.showAsync(frame,{stream:input.info.stream})
+              this.previewFrameJob=job;this.previewOffered++
+              void job.wait().then(()=>{this.previewCompleted++},error=>{
+                if(!(job.cancelRequested&&error===job.cancellationReason))this.failPreview(error)
+              })
+            }catch(error){this.failPreview(error)}
+          }
           if (this.previewHandle && !this.previewSuspended) {
             try {
               const input = this.previewInput!
@@ -5894,9 +6070,10 @@ export class Camera {
           for (const job of this.requests) job.reject(error)
           this.requests = []
           this.failRecordings(error)
-          if (error instanceof CameraError && error.code === -11)
+          if(this.previewWorker)this.failPreview(error)
+          else if (error instanceof CameraError && error.code === -11)
             this.stopPreviewOwned()
-          else this.stopPreview()
+          else this.clearPreviewOwned()
         }
       } finally {
         try {
@@ -5908,7 +6085,8 @@ export class Camera {
           this.requests = []
           this.focusJob?.cancel(error)
           this.failRecordings(error)
-          try {
+          if(this.previewWorker)this.failPreview(error)
+          else try {
             this.stopPreviewOwned()
           } catch {}
         }
@@ -5967,6 +6145,7 @@ export class Camera {
     this.requests = []
     this.stopJob = (async () => {
       let failure: unknown
+      await this.cancelPreviewJobs()
       await this.cancelModes()
       const focus = this.focusJob
       if (focus && !focus.done) {
@@ -5980,7 +6159,7 @@ export class Camera {
         failure ??= error
       }
       try {
-        this.stopPreview()
+        await this.clearPreviewOwnedAsync()
       } catch (error) {
         failure = error
       }
@@ -6045,6 +6224,8 @@ export class Camera {
       !this.fanout &&
       !this.previewConfiguration &&
       !this.previewHandle &&
+      !this.previewWorker &&
+      this.preparedWorkerCleanup.size===0 &&
       this.preparedPreviewCleanup.size===0 &&
       !this.overlayHandle &&
       !this.tuningSession &&
@@ -6094,6 +6275,8 @@ export class Camera {
           this.handle ||
           this.fanout ||
           this.previewHandle ||
+          this.previewWorker ||
+          this.preparedWorkerCleanup.size ||
           this.preparedPreviewCleanup.size ||
           this.tuningSession ||
           this.sensorLayout ||

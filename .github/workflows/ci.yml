@@ -92,6 +92,7 @@ jobs:
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-kms.ts
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-preview.ts
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-async.ts
+            env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-camera-drm.ts
           fi
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test

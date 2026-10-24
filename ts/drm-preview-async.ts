@@ -12,6 +12,7 @@ export interface DrmPreviewSessionOptions extends DrmPreviewOptions {
   format?:ProcessedFormat
   /** Native operation capacity, including the executing operation; default 4. */
   operations?:number
+  view?:PreviewViewOptions
 }
 export class DrmPreviewCleanupError extends AggregateError {
   constructor(errors:unknown[],readonly cleanup:DrmPreview){super(errors,'DRM preparation cleanup failed; retain cleanup for close retry')}
@@ -20,8 +21,8 @@ function dimension(value:unknown,max:number){
   if(typeof value!=='number'||!Number.isInteger(value)||value<1||value>max)throw new RangeError('invalid DRM session dimension/capacity')
   return value
 }
-/** Independent native preview consumer. Close/background it before reconfiguring
- * its source camera. Camera.startPreview keeps its existing ownership/lifecycle. */
+/** Native preview consumer. Independent instances require explicit source
+ * retirement; Camera can own one through its drm-async backend. */
 export class DrmPreview implements AsyncDisposable {
   private handle=0 as Pointer
   private enabled=false
@@ -34,11 +35,17 @@ export class DrmPreview implements AsyncDisposable {
   readonly format:ProcessedFormat
   lastError:unknown
   constructor(options:DrmPreviewSessionOptions){
-    const drm=snapshotDrmPreview(options),width=options.width,height=options.height,format=options.format??'BGR888',capacity=options.operations??4
+    const drm=snapshotDrmPreview(options),width=options.width,height=options.height,format=options.format??'BGR888',capacity=options.operations??4,offeredView=options.view
     this.width=dimension(width,16384);this.height=dimension(height,16384);this.format=format
     processedFormatCode(format);dimension(capacity,8)
+    const initialView=offeredView===undefined?undefined:preparePreviewView(offeredView)
+    if(initialView)validatePreviewView(initialView,this.width,this.height)
     this.handle=openDrmPreview(this.width,this.height,format,drm)
-    try{check(n.zc_drm_preview_enable_async(this.handle,capacity),'DRM worker creation');this.enabled=true}
+    try{
+      // No source exists yet, so initial view admission cannot wait for a flip.
+      if(initialView)check(n.zc_preview_set_view(this.handle,ptr(initialView.data)),'initial DRM view')
+      check(n.zc_drm_preview_enable_async(this.handle,capacity),'DRM worker creation');this.enabled=true
+    }
     catch(error){
       const code=n.zc_preview_close(this.handle)
       if(code===0){this.handle=0 as Pointer;throw error}

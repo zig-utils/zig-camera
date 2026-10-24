@@ -6,10 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
-Version 0.110 adds [independent native asynchronous DRM preview](docs/drm-async.md):
-bounded worker jobs for frames, views, detach, drains and joined close, with
-explicit source ownership and retryable cleanup. The Camera-owned preview pump
-still awaits automatic worker attachment.
+Version 0.111 adds [Camera-owned native asynchronous DRM preview](docs/camera-drm-worker.md):
+explicit worker attachment, bounded display admission, async view/stream/drain/stop
+jobs and joined mode, recorder and recovery transitions. Physical Pi display
+and matched Picamera2 performance acceptance remain open.
 
 Version 0.109 adds [direct Linux DRM preview](docs/drm-preview.md) through shared
 Home atomic scanout helpers, retained DMABUF inputs and event-proven retirement,

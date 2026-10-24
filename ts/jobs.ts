@@ -35,7 +35,7 @@ export class BunJob<T> implements PromiseLike<T> {
   private claimed = false
   private settled = false
   private requested = false
-  private cancellationGuard?: () => boolean
+  private cancellationGuard?: (reason:unknown) => boolean
   private reason: unknown = new JobCancelledError()
   private cancelDeadline?: () => void
   private abort?: () => void
@@ -113,12 +113,12 @@ export class BunJob<T> implements PromiseLike<T> {
       throw new Error('job publication rejected')
   }
   /** @internal Linearize active cancellation with the native operation. */
-  setCancellationGuard(guard?: () => boolean) {
+  setCancellationGuard(guard?: (reason:unknown) => boolean) {
     this.cancellationGuard = guard
   }
   cancel(reason: unknown = new JobCancelledError()) {
     if (this.settled || this.requested || this.phase >= 3) return false
-    if (this.cancellationGuard && !this.cancellationGuard()) return false
+    if (this.cancellationGuard && !this.cancellationGuard(reason)) return false
     if (n.zc_preparation_step(ptr(this.gate), 4) !== 1) return false
     this.requested = true
     this.reason = reason

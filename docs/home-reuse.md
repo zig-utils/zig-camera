@@ -2058,3 +2058,15 @@ self-join/wait rejection. It reuses the existing ownership registry. Camera
 vendors the implementation with only its owned_admission import flattened.
 The DRM owner keeps GPU/source retirement independent from worker completion;
 a finished callback does not release current scanout. See drm-async.md.
+
+## 0.111 Camera-owned DRM attachment
+
+Re-fetched clean Home 10203a0bd0beb877fa64d2eff6e7155fbab7b663 and inspected
+video's serial_worker, owned_admission and KMS ownership/host helpers. The
+existing native executor already supplies active-inclusive capacity, cleanup
+prefixes and joined close. Camera now attaches that executor through its
+existing DrmPreview owner; no second thread pool or duplicate display renderer
+is added. Camera's Bun FIFO serializes application transitions and pauses only
+display feed. The native source registry remains authoritative for image leases.
+No shared source change is needed for this attachment. Independent Linux peer
+checks extend the integration evidence; physical acceptance remains open.
