@@ -10,13 +10,13 @@ const fixture=process.env.ZC_JPEG_FIXTURE,independent=fixture?test:test.skip
 independent('JPEG owned objects decode independent progressive, sampling and color models before source retirement',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'zc-jpeg-fixture-'))
  try{
-  for(let mode=0;mode<=10;mode++)for(const progressive of [0,1,2])for(const nearest of mode===4||mode===5?[true]:[false,true]){
+  for(let mode=0;mode<=11;mode++)for(const progressive of [0,1,2])for(const nearest of mode===4||mode===5?[true]:[false,true]){
    const jpeg=join(dir,'source.jpg'),raw=join(dir,'reference.raw'),result=Bun.spawnSync([fixture!,jpeg,raw,String(mode),String(progressive),nearest?'1':'0'])
    expect(result.exitCode).toBe(0);const bytes=new Uint8Array(readFileSync(jpeg)),expected=new Uint8Array(readFileSync(raw))
    const job=decodeJpegAsync(bytes,{upsampling:nearest?'nearest':'linear'});bytes.fill(0)
    using decoded=await job;await job.cleanupDone
    expect([decoded.image.width,decoded.image.height,decoded.image.bits]).toEqual([35,23,8]);expect(decoded.progressive).toBe(progressive!==0)
-   expect(decoded.sourceComponents).toBe(mode===6?1:mode>=8?4:3);expect(decoded.sourceColorModel).toBe(mode===6?'gray':mode===7?'rgb':mode===10?'ycck':mode>=8?'cmyk':'ycbcr')
+   expect(decoded.sourceComponents).toBe(mode===6||mode===11?1:mode>=8?4:3);expect(decoded.sourceColorModel).toBe(mode===6||mode===11?'gray':mode===7?'rgb':mode===10?'ycck':mode>=8?'cmyk':'ycbcr')
    expect(decoded.scans).toBeGreaterThan(progressive?1:0);expect(decoded.sampling.length).toBe(decoded.sourceComponents);expect(decoded.workingPeak).toBeGreaterThan(BigInt(expected.length));expect(decoded.workUnits).toBeGreaterThan(0n)
    const pixels=decoded.image.copyPixels();expect(pixels.length).toBe(expected.length);let difference=0;for(let i=0;i<pixels.length;i++)difference=Math.max(difference,Math.abs(pixels[i]!-expected[i]!));expect(difference).toBeLessThanOrEqual(3)
    same(decoded.metadata.icc!,new Uint8Array([9,8,7,6,5,4,3,2,1]));same(decoded.metadata.exif!,new Uint8Array([73,73,42,0,8,0,0,0,0,0]))
