@@ -30,10 +30,10 @@ export interface OutputStreams {
   fps: number
   codec: number
   headers: Uint8Array
-  audio?: { sampleRate: number; channels: number }
+  audio?: { sampleRate: number; channels: number; encoding?: 'aac' }
 }
 export interface CustomOutput {
-  format?: 'packets' | 'mp4' | 'mkv'
+  format?: 'packets' | 'packets-aac' | 'mp4' | 'mkv'
   start?: () => void | Promise<void>
   streams?: (streams: OutputStreams) => void | Promise<void>
   commit?: () => void | Promise<void>
@@ -152,6 +152,7 @@ export class OutputBridge {
   private pumping?: Promise<void>
   private enabled = false
   private freed = false
+  private readonly packetAac: boolean
   private completed = 0n
   private issued = 0n
   private detached = false
@@ -174,11 +175,12 @@ export class OutputBridge {
     readonly scope: OutputScope = { owner: {}, id: Symbol() },
   ) {
     const format = output.format ?? 'packets'
-    if (!['packets', 'mp4', 'mkv'].includes(format))
+    this.packetAac = format === 'packets-aac'
+    if (!['packets', 'packets-aac', 'mp4', 'mkv'].includes(format))
       throw new RangeError('invalid output format')
-    if (format === 'packets' && typeof output.outputframe !== 'function')
+    if ((format === 'packets' || format === 'packets-aac') && typeof output.outputframe !== 'function')
       throw new TypeError('packet output requires outputframe')
-    if (format !== 'packets' && typeof output.write !== 'function')
+    if (format !== 'packets' && format !== 'packets-aac' && typeof output.write !== 'function')
       throw new TypeError('muxed output requires write')
     const resources = [
       output,
@@ -223,7 +225,7 @@ export class OutputBridge {
     check(
       n.zc_output_mailbox_callbacks(
         this.handle,
-        { packets: 0, mp4: 1, mkv: 2 }[format],
+        { packets: 0, mp4: 1, mkv: 2, 'packets-aac': 3 }[format],
         ptr(this.callbacks),
       ),
     )
@@ -242,7 +244,7 @@ export class OutputBridge {
         this.output.streams?.({
           ...streams,
           headers: streams.headers.slice(),
-          audio: streams.audio ? { ...streams.audio } : undefined,
+          audio: streams.audio ? { ...streams.audio, ...(this.packetAac ? { encoding: 'aac' as const } : {}) } : undefined,
         }),
       )
       const fds = await call(() => this.output.descriptors?.() ?? {})
@@ -429,8 +431,8 @@ export class OutputBridge {
               await call(() =>
                 this.output.outputframe!({
                   data,
-                  timestampNs,
-                  sourceTimestampNs: offset,
+                  timestampNs: flags & 8 ? d.getBigInt64(16, true) : timestampNs,
+                  sourceTimestampNs: flags & 16 ? d.getBigInt64(8, true) : offset,
                   codec,
                   keyframe: !!(flags & 1),
                   audio: !!(flags & 2),
@@ -898,7 +900,7 @@ export class PtsStream {
 }
 /** Adds a shared source-clock PTS observer without changing segment-local PTS. */
 export class PtsOutput implements CustomOutput {
-  readonly format: 'packets' | 'mp4' | 'mkv'
+  readonly format: 'packets' | 'packets-aac' | 'mp4' | 'mkv'
   private scope?: OutputScope
   private lease?: PtsLease
   constructor(

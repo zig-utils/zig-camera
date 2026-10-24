@@ -626,3 +626,15 @@ remains a separate Home kernel driver. The portable gate, exact identity matcher
 and observed boolean control operation are therefore added to Home first and
 reused by zig-camera's hosted boundary. No OS source is copied, edited or
 executed; the kernel stub is not evidence of physical Pi HDR support.
+
+The 0.102 RTP audit checks clean unchanged Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, CLAUDE.md, ADR-MC3, camera.home,
+media/video_decoder.home, net/udp.home and net/rtsp.home. UDP has kernel-owned
+socket queues and device/network dependencies; the RTSP module explicitly serves
+AirPlay-shaped control messages and states that negotiated media transports are
+not implemented. Those are not a hosted AVC/HEVC/AAC packetizer or Bun socket
+owner. QoS RTP-port heuristics do not implement RTP framing or clocks. Shared
+framing and parsing improvements therefore live in Home's video stdlib under the
+ADR, with Bun using OS UDP facilities and camera retaining hosted ownership. No
+OS source is copied, edited or executed. No kernel declaration supplies physical
+Pi capture, packet-loss, network throughput or A/V synchronization evidence.

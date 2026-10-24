@@ -1,0 +1,55 @@
+name: Home RTP framing
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/rtp*.zig', 'src/home/nal_convert.zig', 'src/rtp.zig', 'ts/rtp*.ts', 'tests/rtp.c', 'tests/ts/rtp*.ts', '.github/workflows/home-rtp.yml']
+  pull_request:
+    paths: ['src/home/rtp*.zig', 'src/home/nal_convert.zig', 'src/rtp.zig', 'ts/rtp*.ts', 'tests/rtp.c', 'tests/ts/rtp*.ts', '.github/workflows/home-rtp.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rtp:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Exact shared framing and checked clocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc src/home/rtp_packetizer.zig
+          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: dccdadf958d36fb87f02f37709352e1a9759221a
+          path: .home-rtp-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Pinned upstream implementation and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/nal_convert.zig .home-rtp-upstream/packages/video/src/core/nal_convert.zig
+          cmp src/home/rtp_wire.zig .home-rtp-upstream/packages/video/src/streaming/rtp_wire.zig
+          sed 's#../core/nal_convert.zig#nal_convert.zig#' .home-rtp-upstream/packages/video/src/streaming/rtp_packetizer.zig > /tmp/rtp-pinned.zig
+          cmp src/home/rtp_packetizer.zig /tmp/rtp-pinned.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" .home-rtp-upstream/packages/video/src/rtp_test.zig
+            zig test -lc -O "$mode" .home-rtp-upstream/packages/video/src/streaming/rtp.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-rtp-upstream/packages/video/tests/rtp_packetizer.zig -Mvideo=.home-rtp-upstream/packages/video/src/video.zig
+          done
+      - name: Hosted native ownership on camera compiler
+        if: matrix.zig == '0.15.2'
+        run: |
+          zig test -O Debug -lc -Iinclude src/rtp.zig
+          zig test -O ReleaseSafe -lc -Iinclude src/rtp.zig

@@ -1007,8 +1007,12 @@ int zc_video_set_delay(zc_recorder *,uint64_t delay_ns);
  * callbacks. Return ZC_OK only on complete acceptance; errors follow the selected policy.
  * PACKETS delivers Annex B AVC/HEVC (fresh headers on first key), JPEG or S16LE.
  * Mux modes use Home containers and deliver video metadata (data=NULL) to packet.
- * Timestamps are rebased ns; key=1, audio=2, AnnexB=4 flags. */
-enum { ZC_OUTPUT_PACKETS=0,ZC_OUTPUT_MP4=1,ZC_OUTPUT_MKV=2,ZC_PCM_S16LE=4 };
+ * AAC_PACKETS delivers Annex B video and raw AAC-LC AUs (-Daac=true).
+ * AAC priming retains negative relative presentation time.
+ * Timestamps are rebased ns; key=1, audio=2, AnnexB=4 flags. Flag 8 means
+ * timestamp_ns is a signed int64 two-s-complement presentation value.
+ * Mailbox flag 16 similarly marks a negative signed source-clock offset. */
+enum { ZC_OUTPUT_PACKETS=0,ZC_OUTPUT_MP4=1,ZC_OUTPUT_MKV=2,ZC_OUTPUT_AAC_PACKETS=3,ZC_PCM_S16LE=4,ZC_AAC_LC=5 };
 typedef struct {const uint8_t *data;uint64_t length,timestamp_ns;uint32_t codec,flags;} zc_output_packet;
 typedef int (*zc_output_packet_fn)(void *,const zc_output_packet *);
 typedef int (*zc_output_write_fn)(void *,const uint8_t *,uint64_t);
@@ -1375,6 +1379,28 @@ int zc_producer_job_close(zc_producer_job *);
 int zc_producer_job_handoffs(zc_producer_job *,zc_producer_handoff *out,uint32_t capacity,uint32_t *count);
 /* Worker-only finalization; async host backpressure applies to EOF tails. */
 int zc_video_close_outputs_async(zc_recorder *,zc_output_result *,uint32_t capacity,uint32_t *count);
+
+/* Owned RTP access-unit cursors: copied input, 16 owners / 64 MiB combined,
+ * max 16 MiB per AU, 4096 NALs / 65536 packets. MTU includes the RTP header.
+ * Serialise each handle; short buffers and size queries never advance it.
+ * Codec 1 AVC, 2 HEVC, 3 raw AAC; format 0 Annex B, 1 four-byte lengths, 2 raw.
+ * Closing retires copied input before releasing admission; BUSY retains owner. */
+typedef struct zc_rtp_packetizer zc_rtp_packetizer;
+typedef struct {uint32_t struct_size,codec,format,mtu,payload_type,sequence,timestamp,ssrc;} zc_rtp_config;
+typedef struct {uint32_t struct_size,total,emitted,next_sequence,timestamp,next_bytes;} zc_rtp_state;
+typedef struct {uint32_t struct_size,ssrc,rtp_timestamp,packets,octets,bye;uint64_t unix_ns;} zc_rtcp_report;
+typedef struct {uint32_t struct_size,space,tier,profile_id,compatibility,level;uint64_t constraints;} zc_rtp_hevc_profile_info;
+int zc_rtp_hevc_profile(const uint8_t *nal,uint32_t length,zc_rtp_hevc_profile_info *out);
+void zc_default_rtp_config(zc_rtp_config *);
+int zc_rtp_packetizer_open(const zc_rtp_config *,const uint8_t *,uint64_t length,zc_rtp_packetizer **out);
+int zc_rtp_packetizer_next(zc_rtp_packetizer *,uint8_t *out,uint32_t capacity,uint32_t *length);
+int zc_rtp_packetizer_state(zc_rtp_packetizer *,zc_rtp_state *);
+int zc_rtp_packetizer_close(zc_rtp_packetizer *);
+int zc_rtp_timestamp_signed(int64_t ns,uint32_t rate,uint32_t origin,uint32_t *out);
+int zc_rtp_timestamp(uint64_t ns,uint32_t rate,uint32_t origin,uint32_t *out);
+/* unix_ns and RTP timestamp must describe the same instant. Size query is
+ * out=NULL/capacity=0; malformed CNAME or short output writes no prefix. */
+int zc_rtcp_sender_report(const zc_rtcp_report *,const uint8_t *cname,uint32_t cname_length,uint8_t *out,uint32_t capacity,uint32_t *length);
 
 #ifdef __cplusplus
 }

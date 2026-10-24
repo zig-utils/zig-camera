@@ -1824,3 +1824,30 @@ c190bb6bd96ef3f8399af52b9aea6a4b359b609c (with an unrelated existing untracked
 TypeScript benchmark evidence file left untouched). Its video/image/media/kernel
 packages contain no IMX708, wide_dynamic_range or V4L2 sensor-HDR implementation.
 The exact reusable implementation is the published Home revision above.
+
+## Bounded RTP recording output (0.102)
+
+Audited Home main at 4a5d30540bd6b483c634ddd86de4fe27bef32115: streaming/rtp.zig,
+core/nal_convert.zig, the HEVC analysis/conformance readers, network IO, existing
+AAC-LC FDK boundary and codec packet/header ownership. Existing RTP had fixed
+headers, RTSP and SDP scaffolding but no codec packetizer. Its packet parser did
+not exclude extensions/padding, and Annex B parsing repeatedly rescanned a suffix
+when no following start code existed. Improvement f4f5d5e6a6e65fbb5d41e5193ae0e6178a800480
+adds strict linear borrowed NAL iteration, atomic fixed-header preflight,
+extension/padding boundaries, bounded AVC/HEVC/AAC framing, exact clock scaling
+and compound SR/SDES/BYE. Follow-ups bfc566b324e81a8ff196d04f21ba3b0535122614 and
+dccdadf958d36fb87f02f37709352e1a9759221a add signed priming clocks and actual HEVC
+profile-prefix signaling. All 16 explicit RTP/NAL tests, five legacy RTP/RTSP/SDP
+tests and one named public API regression pass pinned/development Zig in Debug
+and ReleaseSafe. Home exact-head Actions returns no runs; the camera consumer
+matrix checks the exact upstream public API separately.
+
+Camera copies nal_convert and rtp_wire verbatim, and adapts only the packetizer's
+flattened NAL import. It reuses Home owned_admission, callback packet/header
+preparation, native AAC encoder info/flush and existing output/mailbox lifecycle.
+The new packet mode preserves actual encoder priming as signed presentation time;
+it does not reinterpret PCM as AAC or add a second codec implementation. Home's
+shared framing owns standards bytes; camera owns ABI snapshots, socket/cursor
+admission and Bun UDP lifecycle. No kernel source or external media framework is
+introduced. Physical network/codec performance and microphone/camera sync remain
+separate acceptance requirements.

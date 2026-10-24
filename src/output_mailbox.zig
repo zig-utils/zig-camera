@@ -83,7 +83,7 @@ pub export fn zc_output_mailbox_open(bytes: u64, operations: u32, out: *?*c.zc_o
     return c.ZC_OK;
 }
 pub export fn zc_output_mailbox_callbacks(p: *c.zc_output_mailbox, format: u32, out: *c.zc_output_callbacks) c_int {
-    if (format > c.ZC_OUTPUT_MKV) return c.ZC_INVALID;
+    if (format > c.ZC_OUTPUT_AAC_PACKETS) return c.ZC_INVALID;
     out.* = .{ .struct_size = @sizeOf(c.zc_output_callbacks), .format = format, .context = box(p), .packet = Mailbox.packet, .write = Mailbox.write, .patch = Mailbox.patch, .file_fd = -1, .pts_fd = -1, .secondary_pts_fd = -1, .reserved = 0 };
     return c.ZC_OK;
 }
@@ -217,8 +217,18 @@ pub fn isMailbox(cb: c.zc_output_callbacks) bool {
 // observer never has to infer an old segment's epoch from mutable output state.
 pub fn sendPacket(cb: c.zc_output_callbacks, packet: c.zc_output_packet, origin: u64) c_int {
     const self: *Mailbox = @ptrCast(@alignCast(cb.context.?));
-    const source = std.math.add(u64, origin, packet.timestamp_ns) catch return c.ZC_INVALID;
-    return self.send(.{ .kind = 0, .codec = packet.codec, .flags = packet.flags, .timestamp = packet.timestamp_ns, .offset = source }, if (packet.length == 0) &.{} else packet.data[0..@intCast(packet.length)]);
+    var flags = packet.flags;
+    const source: u64 = if (packet.flags & 8 != 0) blk: {
+        const relative: i64 = @bitCast(packet.timestamp_ns);
+        const absolute = @as(i128, origin) + relative;
+        if (absolute < std.math.minInt(i64) or absolute > std.math.maxInt(u64)) return c.ZC_INVALID;
+        if (absolute < 0) {
+            flags |= 16;
+            break :blk @bitCast(@as(i64, @intCast(absolute)));
+        }
+        break :blk @intCast(absolute);
+    } else std.math.add(u64, origin, packet.timestamp_ns) catch return c.ZC_INVALID;
+    return self.send(.{ .kind = 0, .codec = packet.codec, .flags = flags, .timestamp = packet.timestamp_ns, .offset = source }, if (packet.length == 0) &.{} else packet.data[0..@intCast(packet.length)]);
 }
 
 test "mailbox owns bytes, sequence-checks acknowledgement and preserves completed prefixes" {

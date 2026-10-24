@@ -1,3 +1,7 @@
+pub const rtp = @import("rtp.zig");
+comptime {
+    _ = rtp;
+}
 pub const processed_format = @import("processed_format.zig");
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;
 pub const Tuning = @import("home/tuning.zig");
@@ -2216,3 +2220,36 @@ test "public sensor HDR owner preserves busy state and runtime HDR controls" {
     sensor = try IMX708.init(c.ZC_SYNTHETIC, 0, null);
     try std.testing.expectEqual(@as(u32, 1), (try sensor.getSensorHdrMode()).enabled);
 }
+
+pub const RtpConfig = c.zc_rtp_config;
+pub const RtpState = c.zc_rtp_state;
+pub fn defaultRtpConfig() RtpConfig {
+    var out: RtpConfig = undefined;
+    rtp.zc_default_rtp_config(&out);
+    return out;
+}
+pub const RtpPacketizer = struct {
+    handle: ?*c.zc_rtp_packetizer,
+    pub fn init(config: RtpConfig, data: []const u8) Error!RtpPacketizer {
+        var out: ?*c.zc_rtp_packetizer = null;
+        try check(rtp.zc_rtp_packetizer_open(&config, data.ptr, data.len, &out));
+        return .{ .handle = out };
+    }
+    pub fn state(self: RtpPacketizer) Error!RtpState {
+        var out: RtpState = undefined;
+        try check(rtp.zc_rtp_packetizer_state(self.handle orelse return error.Stopped, &out));
+        return out;
+    }
+    pub fn next(self: RtpPacketizer, out: []u8) Error!usize {
+        if (out.len > std.math.maxInt(u32)) return error.Invalid;
+        var count: u32 = 0;
+        try check(rtp.zc_rtp_packetizer_next(self.handle orelse return error.Stopped, if (out.len == 0) null else out.ptr, @intCast(out.len), &count));
+        return count;
+    }
+    pub fn close(self: *RtpPacketizer) Error!void {
+        if (self.handle) |p| {
+            try check(rtp.zc_rtp_packetizer_close(p));
+            self.handle = null;
+        }
+    }
+};

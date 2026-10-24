@@ -337,3 +337,7 @@ system libraries retain their own licenses and notices.
 Pre-open IMX708 sensor HDR and independent runtime ISP HDR are available in Zig,
 C, Bun and the CLI. See [sensor HDR ownership and usage](docs/sensor-hdr.md) for
 mode refresh, async layout protection and hardware validation limits.
+
+[Bounded RTP recording output](docs/rtp-output.md) sends AVC/HEVC and AAC-LC over
+Bun UDP with Home framing, signed priming timestamps, shared RTCP clock reports,
+SDP, cancellation, recovery and circular snapshot integration.

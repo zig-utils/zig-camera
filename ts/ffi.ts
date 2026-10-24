@@ -12,6 +12,15 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_rtp_hevc_profile: {args:[p,u,p],returns:i},
+  zc_default_rtp_config: {args:[p],returns:v},
+  zc_rtp_packetizer_open: {args:[p,p,n,p],returns:i},
+  zc_rtp_packetizer_next: {args:[p,p,u,p],returns:i},
+  zc_rtp_packetizer_state: {args:[p,p],returns:i},
+  zc_rtp_packetizer_close: {args:[p],returns:i},
+  zc_rtp_timestamp_signed: {args:[t.i64,u,u,p],returns:i},
+  zc_rtp_timestamp: {args:[n,u,u,p],returns:i},
+  zc_rtcp_sender_report: {args:[p,p,u,p,u,p],returns:i},
   zc_sensor_layout_scope_open: {args:[u,p],returns:i},
   zc_sensor_layout_scope_close: {args:[p],returns:i},
   zc_sensor_layout_users_get: {args:[u,p],returns:i},
