@@ -100,5 +100,5 @@ image-object semantics remain work. The full Picamera2 parity goal remains open.
 Version 0.100 adds [owned PNG/APNG loading](png-decoding.md) through bounded
 synchronous and joined native decode jobs, with explicit metadata/frame owners.
 
-[Owned JPEG loading](jpeg-loading.md) and [PNG/APNG loading](png-loading.md)
+[Owned JPEG loading](jpeg-loading.md) and [PNG/APNG loading](png-decoding.md)
 produce the same independent image objects without camera request provenance.

@@ -37,9 +37,9 @@ metadata copies, plus take-once jobs using the existing 48-byte image job state.
 Zig exposes the same API through `jpeg_image`.
 
 Defaults cap encoded/output bytes at 64 MiB each, working allocations at 128 MiB,
-metadata at 16 MiB, scans at 256, markers at 16384 and work units at 1 Gi.
+metadata at 16 MiB, scans at 256, markers at 16384 and 1,073,741,824 work units.
 Overrides are explicit: encoded/output up to 256 MiB, working up to 448 MiB,
-scans up to 1024, markers up to 65536 and work units up to 16 Gi. All are positive.
+scans up to 1024, markers up to 65536 and work units up to 17,179,869,184. All are positive.
 Gray/RGB output size is checked before coefficient allocation. Workspace accounts
 coefficient arrays, two cached block rows per component, pixels and metadata.
 Coefficients use checked i16 arithmetic; the existing Home inverse DCT is reused.
