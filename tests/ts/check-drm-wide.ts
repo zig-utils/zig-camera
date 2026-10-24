@@ -1,7 +1,7 @@
 // Independent Linux peer: real shared mmap bytes and source/display lifetimes.
 import{strict as assert}from'node:assert'
 import{dlopen,FFIType,ptr}from'bun:ffi'
-import{Camera,DrmPreview,type Frame}from'../../ts'
+import{Camera,DrmPreview,Recorder,type Frame}from'../../ts'
 const path=process.env.ZC_KMS_FIXTURE
 if(process.platform!=='linux'||!path)throw Error('Linux RGB16 DRM peer required')
 const peer=dlopen(path,{
@@ -136,6 +136,8 @@ try{
    assert.equal(camera.previewInfo()?.drmStorage?.copyPolicy,'rgb16-high-byte');assert.equal(camera.stats().leased,0)
    await camera.setPreviewStreamAsync('lores');await camera.captureMetadata();await camera.drainPreviewAsync()
    assert.equal(camera.previewStreamInfo()?.width,4);assert.equal(camera.previewInfo()?.drmStorage?.inputFormat,'BGR161616')
+   await camera.setPreviewStreamAsync(null);await camera.captureMetadata();await camera.drainPreviewAsync()
+   assert.equal(camera.stats().leased,0);assert.equal(camera.previewInfo()?.drmStorage?.buffers,0)
    await camera.setPreviewStreamAsync('main');await camera.captureMetadata();await camera.drainPreviewAsync()
    await camera.switchMode({width:12,height:8,format:'BGR161616'})
    await camera.captureMetadata();await camera.drainPreviewAsync();assert.equal(camera.previewStreamInfo()?.width,12)
@@ -149,5 +151,43 @@ try{
   }finally{peer.symbols.zkms_test_fault(0);await camera.close()}
   retired()
  }
+ peer.symbols.zkms_test_scenario(10)
+ const lostCamera=new Camera({...options,format:'BGR161616'}),lost=new DrmPreview({...settings,format:'BGR161616'})
+ try{
+  for(let seed=0;seed<2;seed++)await (await admitted(lostCamera,lost,'BGR161616',seed)).job
+  peer.symbols.zkms_test_fault(12)
+  await assert.rejects((await admitted(lostCamera,lost,'BGR161616',3)).job.wait(),/(-3)/)
+  assert.equal(lostCamera.stats().leased,0);assert.equal(lost.state.retainedFrames,0)
+  assert.equal(lost.state.uncertain,true);assert.equal(lost.storageState.buffers,2)
+  await assert.rejects(lost.close(),/(-3)/);assert.equal(counts()[6],2);assert.equal(display()[6],2)
+  await lostCamera.close()
+  peer.symbols.zkms_test_fault(0);await lost.close()
+ }finally{peer.symbols.zkms_test_fault(0);await lost.close();await lostCamera.close()}
+ retired()
+ // A separate async producer keeps recording while the copied display is held.
+ peer.symbols.zkms_test_scenario(10)
+ const recordingCamera=new Camera({...options,format:'RGB161616'})
+ const recorder=await Recorder.open({outputframe(){}},{width:8,height:6,codec:'mjpeg',fps:25,asyncWrites:true,producerQueue:{maxBytes:262144,maxOperations:2}})
+ try{
+  recordingCamera.startPreview({backend:'drm-async',drm:settings})
+  let recording=recordingCamera.startRecording(recorder)
+  await until(()=>recording.stats().completed>=3n&&(recordingCamera.previewInfo()?.drmStorage?.copiedFrames??0n)>0n)
+  const before=display()[2]!;peer.symbols.zkms_test_fault(17)
+  await until(()=>display()[2]!>before&&!!recordingCamera.previewInfo()?.drmQueue?.active)
+  const encoded=recording.stats().completed,skips=recordingCamera.previewInfo()!.workerFrames!.skipped
+  await recordingCamera.captureMetadata();await until(()=>recording.stats().completed>encoded+2n)
+  assert.ok(recordingCamera.previewInfo()!.workerFrames!.skipped>skips)
+  const stopping=recordingCamera.stopPreviewAsync();await Bun.sleep(20);assert.equal(stopping.done,false)
+  peer.symbols.zkms_test_fault(0);await stopping
+  const healthy=recording.stats().completed;await until(()=>recording.stats().completed>healthy)
+  recordingCamera.startPreview({backend:'drm-async',drm:settings})
+  recording=await recordingCamera.switchRecordingModeAsync(recorder,{width:12,height:8,format:'RGB161616'},{},{outputframe(){}})
+  await until(()=>recording.stats().completed>=2n)
+  const group=await recordingCamera.switchRecordingsModeAsync({width:10,height:8,format:'BGR161616'},[{recording,output:{outputframe(){}}}])
+  recording=group[0]!;await until(()=>recording.stats().completed>=2n)
+  assert.equal(recordingCamera.previewStreamInfo()?.width,10)
+ }finally{peer.symbols.zkms_test_fault(0);await recordingCamera.close();await recorder.close()}
+ retired()
+ console.log('Converted-output uncertainty retains both GPU buffers without camera leases; async producer progress and joined recorder/group modes passed')
  console.log('CPU scanout driver capabilities, malformed layouts, export/sync/create/framebuffer faults, consumed-FD cleanup, post-card-close coherency retry and Camera source/mode lifetimes passed')
 }finally{peer.close()}
