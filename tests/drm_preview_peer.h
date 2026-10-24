@@ -2,19 +2,10 @@
 #include <poll.h>
 #include <time.h>
 #include <stdio.h>
-static int peer_poll(struct pollfd *fds,nfds_t count,int timeout){
-#ifdef SYS_poll
-    return (int)syscall(SYS_poll,fds,count,timeout);
-#else
-    struct timespec value={.tv_sec=timeout<0?0:timeout/1000,.tv_nsec=timeout<0?0:(timeout%1000)*1000000L};
-    return (int)syscall(SYS_ppoll,fds,count,timeout<0?NULL:&value,NULL,8);
-#endif
-}
 static int preview_fault;
 static uint64_t plane_values[15];
 static uint32_t fbs[8],fb_count,next_fb,imports,gem_closes,commits,test_commits,detaches,event_reads;
-static struct drm_event_vblank event_queue[8];
-static int event_detach[8],event_count,retired_proof,image_ever;
+static int event_writer=-1,retired_proof,image_ever;
 static void peer_bad(const char *operation,int line){
     unexpected++;
     fprintf(stderr,"KMS peer rejected %s at line %d (fb=%llu, resources=%u, fault=%d)\n",operation,line,(unsigned long long)plane_values[0],fb_count,preview_fault);
@@ -23,7 +14,7 @@ static const char *property_names[]={"FB_ID","CRTC_ID","SRC_X","SRC_Y","SRC_W","
 static void preview_reset(void){
     memset(plane_values,0,sizeof(plane_values));plane_values[10]=1;plane_values[12]=1;plane_values[14]=32768;
     memset(fbs,0,sizeof(fbs));fb_count=0;next_fb=600;imports=gem_closes=commits=test_commits=detaches=event_reads=0;
-    event_count=retired_proof=image_ever=preview_fault=0;
+    retired_proof=image_ever=preview_fault=0;
 }
 void zkms_test_fault(int value){preview_fault=value;}
 void zkms_test_preview_counts(uint32_t *out){out[0]=imports;out[1]=gem_closes;out[2]=commits;out[3]=test_commits;out[4]=detaches;out[5]=event_reads;out[6]=fb_count;out[7]=plane_values[0];}
@@ -99,33 +90,12 @@ static int preview_ioctl(unsigned long request,void *arg){
         }else{image_ever=1;retired_proof=0;}
         if(preview_fault==14&&!detach){preview_fault=0;errno=EINTR;return -1;}
         if(preview_fault==12 || (preview_fault==11&&!detach))return 0;
-        if(event_count>=8){peer_bad(__func__,__LINE__);errno=ENOSPC;return -1;}
-        struct drm_event_vblank *event=&event_queue[event_count];memset(event,0,sizeof(*event));
-        event->base.type=DRM_EVENT_FLIP_COMPLETE;event->base.length=sizeof(*event);event->user_data=v->user_data;event->crtc_id=10;event_detach[event_count++]=detach;
+        struct drm_event_vblank event;memset(&event,0,sizeof(event));
+        event.base.type=DRM_EVENT_FLIP_COMPLETE;event.base.length=sizeof(event);event.user_data=v->user_data;event.crtc_id=10;
+        if(syscall(SYS_write,event_writer,&event,sizeof(event))!=(ssize_t)sizeof(event)){peer_bad(__func__,__LINE__);errno=EIO;return -1;}
+        event_reads++; /* Events emitted to the real FD, rather than intercepted reads. */
+        if(detach)retired_proof=1;
         return 0;
     }
     return -2;
-}
-ssize_t read(int fd,void *data,size_t length){
-    const int current=atomic_load(&owned);
-    if(scenario<10 || current<0 || fd!=current)return syscall(SYS_read,fd,data,length);
-    if(!event_count){errno=EAGAIN;return -1;}
-    const unsigned count=length/sizeof(event_queue[0])<(unsigned)event_count?length/sizeof(event_queue[0]):(unsigned)event_count;
-    memcpy(data,event_queue,count*sizeof(event_queue[0]));
-    for(unsigned i=0;i<count;i++){event_reads++;if(event_detach[i])retired_proof=1;}
-    memmove(event_queue,event_queue+count,(event_count-count)*sizeof(event_queue[0]));memmove(event_detach,event_detach+count,(event_count-count)*sizeof(event_detach[0]));event_count-=count;
-    return count*sizeof(event_queue[0]);
-}
-/* glibc declares poll's array write_only even though fd/events are inputs.
- * A distinct C identifier avoids inheriting that annotation in this interposer;
- * the ELF symbol is still exactly poll. Keep GCC's strict warnings enabled. */
-int zkms_poll(struct pollfd *fds,nfds_t count,int timeout) __asm__("poll");
-int zkms_poll(struct pollfd *fds,nfds_t count,int timeout){
-    const int current=atomic_load(&owned);
-    if(scenario>=10 && current>=0 && count==1 && fds[0].fd==current){
-        fds[0].revents=event_count?POLLIN:0;
-        if(event_count)return 1;
-        (void)peer_poll(NULL,0,timeout);return 0;
-    }
-    return peer_poll(fds,count,timeout);
 }

@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -24,17 +25,26 @@ int open(const char *path,int flags,...) {
     if((flags&O_CREAT)||((flags&O_TMPFILE)==O_TMPFILE)){va_list ap;va_start(ap,flags);mode=va_arg(ap,mode_t);va_end(ap);}
     if(strcmp(path,"/dev/zig-camera-kms-fixture"))return (int)syscall(SYS_openat,AT_FDCWD,path,flags,mode);
     if((flags&O_ACCMODE)!=(scenario>=10?O_RDWR:O_RDONLY) || !(flags&O_CLOEXEC) || !(flags&O_NONBLOCK)){flag_errors++;errno=EPERM;return -1;}
-    const int fd=(int)syscall(SYS_openat,AT_FDCWD,"/dev/null",flags,mode);
+    /* Completion events travel through an actual readable FD. Some hosts bind
+     * read/poll themselves, so interposing those functions is not a sound peer. */
+    int pair[2]={-1,-1};
+    if(scenario>=10 && syscall(SYS_socketpair,AF_UNIX,SOCK_SEQPACKET|SOCK_NONBLOCK|SOCK_CLOEXEC,0,pair)<0)return -1;
+    const int fd=scenario>=10?pair[0]:(int)syscall(SYS_openat,AT_FDCWD,"/dev/null",flags,mode);
     if(fd<0)return fd;
     int expected=-1;
-    if(!atomic_compare_exchange_strong(&owned,&expected,fd)){syscall(SYS_close,fd);errno=EBUSY;return -1;}
+    if(!atomic_compare_exchange_strong(&owned,&expected,fd)){syscall(SYS_close,fd);if(pair[1]>=0)syscall(SYS_close,pair[1]);errno=EBUSY;return -1;}
+    if(scenario>=10)event_writer=pair[1];
     opened++;return fd;
 }
 int close(int fd) {
     int expected=fd;
     if(fd>=0 && atomic_compare_exchange_strong(&owned,&expected,-1)){
         closed++;
-        if(scenario>=10 && (plane_values[0] || (image_ever&&!retired_proof)))unexpected++;
+        if(scenario>=10){
+            int pending=0;
+            if(syscall(SYS_ioctl,fd,FIONREAD,&pending)<0 || pending || plane_values[0] || (image_ever&&!retired_proof))peer_bad(__func__,__LINE__);
+            if(event_writer>=0){(void)syscall(SYS_close,event_writer);event_writer=-1;}
+        }
         if(preview_fault==16){preview_fault=0;(void)syscall(SYS_close,fd);errno=EIO;return -1;}
     }
     return (int)syscall(SYS_close,fd);
