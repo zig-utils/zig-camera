@@ -69,3 +69,63 @@ test('BunJob forwards cancellation identity through a child guard and refuses po
   await expect(parent.wait()).rejects.toBe(reason)
   expect(parent.cancel(new Error('late'))).toBe(false)
 })
+test('preview admission rechecks camera stop and queue capacity after signal listener reentry',async()=>{
+  const camera=new Camera(options)
+  let stopped:Promise<void>|undefined
+  try{
+    camera.startPreview({backend:'headless'})
+    const controller=new AbortController(),signal=controller.signal,add=signal.addEventListener.bind(signal)
+    Object.defineProperty(signal,'addEventListener',{value:(...args:Parameters<AbortSignal['addEventListener']>)=>{
+      stopped=camera.stop();return add(...args)
+    }})
+    expect(()=>camera.drainPreviewAsync({signal})).toThrow('unavailable')
+    await stopped
+    expect(camera.previewInfo()).toBeUndefined()
+    camera.startPreview({backend:'headless'})
+    const full=new AbortController().signal,normal=full.addEventListener.bind(full),jobs:BunJob<void>[]=[]
+    Object.defineProperty(full,'addEventListener',{value:(...args:Parameters<AbortSignal['addEventListener']>)=>{
+      for(let i=0;i<32;i++)jobs.push(camera.drainPreviewAsync())
+      return normal(...args)
+    }})
+    expect(()=>camera.stopPreviewAsync({signal:full})).toThrow('queue full')
+    await Promise.all(jobs.map(job=>job.wait()))
+    expect(camera.previewInfo()?.suspended).toBe(false)
+    await camera.stopPreviewAsync();expect(camera.previewCleanupPending).toBe(0)
+  }finally{await stopped;await camera.close()}
+})
+test('synchronous abort during signal registration retires an unpublished preview job',async()=>{
+  const camera=new Camera(options),controller=new AbortController(),signal=controller.signal,reason=new Error('registration abort')
+  try{
+    camera.startPreview({backend:'headless'})
+    const add=signal.addEventListener.bind(signal)
+    Object.defineProperty(signal,'addEventListener',{value:(...args:Parameters<AbortSignal['addEventListener']>)=>{
+      add(...args);controller.abort(reason)
+    }})
+    const job=camera.stopPreviewAsync({signal})
+    await expect(job.wait()).rejects.toBe(reason);await job.cleanupDone
+    expect(camera.previewInfo()?.suspended).toBe(false)
+    await camera.switchMode({width:12,height:8})
+    await camera.stopPreviewAsync()
+  }finally{await camera.close()}
+})
+for(const kind of ['plain','single','group'] as const)test(`${kind} mode admission cannot cross a signal-reentrant preview job`,async()=>{
+  const camera=new Camera(options)
+  const {Recorder}=await import('../../ts')
+  const recorder=kind==='plain'?undefined:await Recorder.open({outputframe(){}},{width:8,height:6,codec:'mjpeg',fps:25})
+  let pending:BunJob<void>|undefined
+  try{
+    camera.startPreview({backend:'headless'})
+    const recording=kind==='group'?camera.startRecording(recorder!):undefined
+    const controller=new AbortController(),signal=controller.signal,add=signal.addEventListener.bind(signal)
+    Object.defineProperty(signal,'addEventListener',{value:(...args:Parameters<AbortSignal['addEventListener']>)=>{
+      pending=camera.drainPreviewAsync();return add(...args)
+    }})
+    const invoke=()=>kind==='plain'?camera.switchMode({width:12,height:8},{signal})
+      :kind==='single'?camera.switchRecordingModeAsync(recorder!,{width:12,height:8},{},{outputframe(){}},{signal})
+      :camera.switchRecordingsModeAsync({width:12,height:8},[{recording:recording!,output:{outputframe(){}}}],{signal})
+    expect(invoke).toThrow('preview jobs pending')
+    await pending
+    expect(camera.info().width).toBe(8);expect(camera.previewInfo()?.suspended).toBe(false)
+    await camera.stopPreviewAsync()
+  }finally{await camera.close();await recorder?.close()}
+})

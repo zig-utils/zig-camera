@@ -3974,17 +3974,25 @@ export class Camera {
   }
   private pendingPreviewJobs(){return [...this.previewJobs].some(job=>!job.done)}
   private submitPreview<T>(operation:(current:BunJob<T>)=>Promise<T>,source:JobOptions<T>={}):BunJob<T>{
-    guardRequestCallback();guardOutputHook();this.assertOpen()
-    if(this.hasPendingModes()||this.modeActive||this.coordinatedRecorder||this.coordinatedGroup||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
+    const admit=()=>{
+      guardRequestCallback();guardOutputHook();this.assertOpen()
+      if(this.hasPendingModes()||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
+      if([...this.previewJobs].filter(job=>!job.done).length>=32)throw new CameraError(-4,'preview queue full')
+    }
+    admit()
     const options=snapshotJobOptions(source)
-    this.assertOpen()
-    if(this.hasPendingModes()||this.modeActive||this.coordinatedRecorder||this.coordinatedGroup||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
-    if([...this.previewJobs].filter(job=>!job.done).length>=32)throw new CameraError(-4,'preview queue full')
-    const job=new BunJob<T>(async current=>{current.check();this.assertOpen();return operation(current)},()=>this.previewJobs.delete(job as BunJob<unknown>),options)
-    this.previewJobs.add(job as BunJob<unknown>);this.previewPauses++
-    void job.operationDone.then(()=>{this.previewPauses--;if(this.handle&&!this.closing&&!this.stopJob&&this.previewActive)this.ensurePump()})
-    this.previewTail=this.previewTail.then(()=>job.start()).catch(()=>{})
-    return job
+    admit()
+    let job:BunJob<T>|undefined
+    job=new BunJob<T>(async current=>{current.check();this.assertOpen();return operation(current)},()=>{if(job)this.previewJobs.delete(job as BunJob<unknown>)},options)
+    // Signal listener registration is application code and can stop the camera,
+    // fill this queue, or reserve a mode. Recheck before publishing any owner.
+    try{admit()}catch(error){job.cancel(error);throw error}
+    if(job.done)return job
+    const accepted=job
+    this.previewJobs.add(accepted as BunJob<unknown>);this.previewPauses++
+    void accepted.operationDone.then(()=>{this.previewPauses--;if(this.handle&&!this.closing&&!this.stopJob&&this.previewActive)this.ensurePump()})
+    this.previewTail=this.previewTail.then(()=>accepted.start()).catch(()=>{})
+    return accepted
   }
   /** Serialized copied view update. Active native flips remain uninterruptible. */
   setPreviewViewAsync(options:PreviewViewOptions={},jobOptions:JobOptions<void>={}):BunJob<void>{
@@ -4630,6 +4638,10 @@ export class Camera {
       },
       effective,
     )
+    try{
+      this.assertOpen()
+      if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
+    }catch(error){job.cancel(error);throw error}
     try {
       reservation = recorder[coordinateRecorder](job, this)
     } catch (error) {
@@ -5129,6 +5141,10 @@ export class Camera {
       },
       effective,
     )
+    try{
+      this.assertOpen()
+      if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
+    }catch(error){job.cancel(error);throw error}
     try {
       for (const plan of plans)
         reservations.push(plan.recorder[coordinateRecorder](job, this))
@@ -5639,6 +5655,7 @@ export class Camera {
       () => this.modeJobs.delete(job),
       effective,
     )
+    try{this.checkModeAdmission(owner)}catch(error){job.cancel(error);throw error}
     this.modeJobs.add(job)
     if (owner && owner === this.captureFilesJob) void job.start()
     else this.modeTail = this.modeTail.then(() => job.start()).catch(() => {})

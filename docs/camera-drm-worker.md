@@ -30,7 +30,9 @@ physical display FPS. Native DRM state remains a last-completed-operation
 snapshot. Frame exports pin source owners before the pump releases its frame.
 
 Camera view, stream, drain and stop jobs have a separate bounded FIFO of 32
-unfinished operations. Options are copied at admission; an omitted stream-change
+unfinished operations. Admission is checked again after application signal-listener
+registration, including stop, queue-fill and mode-reservation reentry. Options are
+copied at admission; an omitted stream-change
 view inherits the view in effect when that operation executes. Pending jobs
 pause display feed while capture/recording continue. Queued jobs are cancellable.
 View/drain cancellation forwards the original reason to the native child; once
@@ -57,7 +59,9 @@ buffers remain. An uncertain scanout retains its source exports until proven
 detachment. `previewError` records display/cleanup failures; `previewCleanupPending`
 includes failed preparation owners and retained display owners. Retry
 `stopPreviewAsync()` or `close()` after resolving the display problem. A failed
-close never makes an uncertain source safe to recycle.
+close never makes an uncertain source safe to recycle. An already pending detach
+with a lost completion proof can still fail after the external fault is resolved;
+join that attempt, then issue a fresh cleanup retry.
 
 Linux CI uses an independent C DRM UAPI peer, actual file descriptors and actual
 poll/read flip packets. It covers all twelve formats, withheld flips, Bun
