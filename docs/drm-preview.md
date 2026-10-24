@@ -45,6 +45,12 @@ themselves are not wall-clock bounded. A dedicated asynchronous display worker
 remains open. Preview failure suspends feed; independent recording can continue
 when sufficient unleased camera buffers remain.
 
+Mode admission detaches the preview's retained source before checking camera
+leases. It still rejects caller-held frames, including a caller retaining the
+same buffer as the preview. The display owner keeps its view and resumes normal
+feed if admission rejects. Awaited autofocus may feed another frame, so mode
+execution repeats the retirement check before changing camera configuration.
+
 Inspect `previewError`, `previewCleanupPending`, and `previewInfo()?.drmState`.
 A failed detach preserves the handle and leases for an explicit `stopPreview()`
 or `close()` retry. After confirmed detach, cleanup IO errors are still reported;

@@ -9,7 +9,7 @@ const lib=dlopen(path,{
   zkms_test_scenario:{args:[FFIType.i32],returns:FFIType.void},zkms_test_fault:{args:[FFIType.i32],returns:FFIType.void},
   zkms_test_counts:{args:[FFIType.ptr],returns:FFIType.void},zkms_test_preview_counts:{args:[FFIType.ptr],returns:FFIType.void},zkms_test_properties:{args:[FFIType.ptr],returns:FFIType.void},
 })
-const settings={backend:'drm' as const,drm:{card:'/dev/zig-camera-kms-fixture',timeoutMs:20},window:{x:5,y:7,width:320,height:240}}
+const settings={backend:'drm' as const,drm:{card:'/dev/zig-camera-kms-fixture',timeoutMs:250},window:{x:5,y:7,width:320,height:240}}
 async function until(fn:()=>boolean){const end=performance.now()+5000;while(!fn()){if(performance.now()>end)throw Error('DRM test timeout');await Bun.sleep(1)}}
 function properties(){const data=new BigUint64Array(15);lib.symbols.zkms_test_properties(ptr(data));return data}
 function diagnose(label:string,camera:Camera,error:unknown){
@@ -36,6 +36,15 @@ try{
       camera.setPreviewStream('lores');await camera.captureMetadata();assert.equal(camera.previewStreamInfo()?.width,4)
       camera.setPreviewStream(null);await camera.captureMetadata();assert.equal(camera.previewInfo()?.drmState?.retainedFrames,0)
       camera.setPreviewStream('main');await camera.captureMetadata()
+      if(format==='BGR888'){
+        const borrowed=await camera.captureRequest()
+        try{
+          await assert.rejects(camera.switchMode({width:12,height:8,format}).wait(),/unleased/)
+          assert.equal(camera.previewStreamInfo()?.width,8)
+          assert.ok(borrowed.metadata()) // Detaching our preview must not consume the caller's lease.
+        }finally{borrowed.release()}
+        await camera.captureMetadata();assert.equal(camera.previewInfo()?.drmState?.retainedFrames,1)
+      }
       await camera.switchMode({width:12,height:8,format,lores:{width:6,height:4,format}})
       await camera.captureMetadata();assert.equal(camera.previewStreamInfo()?.width,12);assert.equal(camera.previewInfo()?.drm?.card,settings.drm.card)
       await camera.switchModeAndCaptureRGB({width:10,height:8,format})

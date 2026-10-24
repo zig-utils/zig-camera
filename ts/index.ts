@@ -2978,6 +2978,14 @@ export class Camera {
     return policy
   }
   private checkModeLeases() {
+    // A displayed DRM frame is our own retained export. Join its detach before
+    // checking for application leases; subtracting a count would miss callers
+    // retaining the same buffer. Keep the display owner so admission rejection
+    // can resume its unchanged view on the next normal pump frame.
+    if(this.previewHandle&&this.previewConfiguration?.backend==='drm'&&!this.previewSuspended){
+      try{check(n.zc_preview_show_background(this.previewHandle),'mode preview retirement')}
+      catch(error){this.previewSuspended=true;this.lastPreviewError=error;throw error}
+    }
     const stats = storage(40)
     check(n.zc_get_stats(this.handle, ptr(stats)))
     if (view(stats).getUint32(36, true))
@@ -5210,10 +5218,9 @@ export class Camera {
             await this.settleFocus(focusPolicy, current)
             current.check()
             this.assertOpen()
-            const stats = storage(40)
-            check(n.zc_get_stats(this.handle, ptr(stats)))
+            // Focus work can pump another preview frame while awaited.
+            this.checkModeLeases()
             if (
-              view(stats).getUint32(36, true) ||
               this.recording ||
               this.requests.length
             )
