@@ -1,6 +1,7 @@
 /* Independent KMS plane/event peer used only by the isolated Linux test. */
 #include <poll.h>
 #include <time.h>
+#include <stdio.h>
 static int peer_poll(struct pollfd *fds,nfds_t count,int timeout){
 #ifdef SYS_poll
     return (int)syscall(SYS_poll,fds,count,timeout);
@@ -14,6 +15,10 @@ static uint64_t plane_values[15];
 static uint32_t fbs[8],fb_count,next_fb,imports,gem_closes,commits,test_commits,detaches,event_reads;
 static struct drm_event_vblank event_queue[8];
 static int event_detach[8],event_count,retired_proof,image_ever;
+static void peer_bad(const char *operation,int line){
+    unexpected++;
+    fprintf(stderr,"KMS peer rejected %s at line %d (fb=%llu, resources=%u, fault=%d)\n",operation,line,(unsigned long long)plane_values[0],fb_count,preview_fault);
+}
 static const char *property_names[]={"FB_ID","CRTC_ID","SRC_X","SRC_Y","SRC_W","SRC_H","CRTC_X","CRTC_Y","CRTC_W","CRTC_H","rotation","COLOR_ENCODING","COLOR_RANGE","type","alpha"};
 static void preview_reset(void){
     memset(plane_values,0,sizeof(plane_values));plane_values[10]=1;plane_values[12]=1;plane_values[14]=32768;
@@ -38,7 +43,7 @@ static int preview_ioctl(unsigned long request,void *arg){
         return ids(v->props_ptr,v->count_props,&v->count_props,values,15);
     }
     if(request==DRM_IOCTL_MODE_GETPROPERTY){
-        struct drm_mode_get_property *v=arg;if(v->prop_id<100 || v->prop_id>=115){unexpected++;errno=EINVAL;return -1;}
+        struct drm_mode_get_property *v=arg;if(v->prop_id<100 || v->prop_id>=115){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         const unsigned i=v->prop_id-100;strncpy(v->name,property_names[i],sizeof(v->name)-1);v->name[sizeof(v->name)-1]=0;
         const uint32_t cap=v->count_enum_blobs,range_cap=v->count_values;v->count_values=0;v->count_enum_blobs=0;
         if(i==13){v->flags=DRM_MODE_PROP_ENUM|DRM_MODE_PROP_IMMUTABLE;return 0;}
@@ -56,45 +61,45 @@ static int preview_ioctl(unsigned long request,void *arg){
         return 0;
     }
     if(request==DRM_IOCTL_PRIME_FD_TO_HANDLE){
-        struct drm_prime_handle *v=arg;if(v->fd<0){unexpected++;errno=EBADF;return -1;}
+        struct drm_prime_handle *v=arg;if(v->fd<0){peer_bad(__func__,__LINE__);errno=EBADF;return -1;}
         imports++;v->handle=500;return 0; /* Deliberately aliases across imports. */
     }
     if(request==DRM_IOCTL_MODE_ADDFB2){
-        struct drm_mode_fb_cmd2 *v=arg;if(!v->width||!v->height||v->handles[0]!=500||fb_count>=8){unexpected++;errno=EINVAL;return -1;}
+        struct drm_mode_fb_cmd2 *v=arg;if(!v->width||!v->height||v->handles[0]!=500||fb_count>=8){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         v->fb_id=++next_fb;fbs[fb_count++]=v->fb_id;return 0;
     }
     if(request==DRM_IOCTL_MODE_RMFB){
         const uint32_t id=*(uint32_t *)arg;
         if(preview_fault==15){preview_fault=0;errno=EIO;return -1;}
-        if(id==plane_values[0]){unexpected++;errno=EBUSY;return -1;}
+        if(id==plane_values[0]){peer_bad(__func__,__LINE__);errno=EBUSY;return -1;}
         for(unsigned i=0;i<fb_count;i++)if(fbs[i]==id){fbs[i]=fbs[--fb_count];return 0;}
-        unexpected++;errno=ENOENT;return -1;
+        peer_bad(__func__,__LINE__);errno=ENOENT;return -1;
     }
     if(request==DRM_IOCTL_GEM_CLOSE){
-        struct drm_gem_close *v=arg;if(v->handle!=500||fb_count){unexpected++;errno=EBUSY;return -1;}
+        struct drm_gem_close *v=arg;if(v->handle!=500||fb_count){peer_bad(__func__,__LINE__);errno=EBUSY;return -1;}
         gem_closes++;return 0;
     }
     if(request==DRM_IOCTL_MODE_ATOMIC){
         struct drm_mode_atomic *v=arg;
-        if(v->count_objs!=1 || *(uint32_t *)(uintptr_t)v->objs_ptr!=40){unexpected++;errno=EINVAL;return -1;}
+        if(v->count_objs!=1 || *(uint32_t *)(uintptr_t)v->objs_ptr!=40){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         uint64_t next[15];memcpy(next,plane_values,sizeof(next));
         const uint32_t count=*(uint32_t *)(uintptr_t)v->count_props_ptr,*properties=(void *)(uintptr_t)v->props_ptr;
         const uint64_t *values=(void *)(uintptr_t)v->prop_values_ptr;
-        if(count>16){unexpected++;errno=EINVAL;return -1;}
-        for(unsigned i=0;i<count;i++){if(properties[i]<100||properties[i]>=115){unexpected++;errno=EINVAL;return -1;}next[properties[i]-100]=values[i];}
+        if(count>16){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
+        for(unsigned i=0;i<count;i++){if(properties[i]<100||properties[i]>=115){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}next[properties[i]-100]=values[i];}
         if(v->flags&DRM_MODE_ATOMIC_TEST_ONLY){
             test_commits++;if(preview_fault==13&&next[0]){preview_fault=0;errno=EINVAL;return -1;}return 0;
         }
-        if(v->flags!=(DRM_MODE_ATOMIC_NONBLOCK|DRM_MODE_PAGE_FLIP_EVENT) || !v->user_data){unexpected++;errno=EINVAL;return -1;}
+        if(v->flags!=(DRM_MODE_ATOMIC_NONBLOCK|DRM_MODE_PAGE_FLIP_EVENT) || !v->user_data){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         commits++;memcpy(plane_values,next,sizeof(next));
         const int detach=next[0]==0;
         if(detach){
             detaches++;uint64_t original[15]={0};original[10]=1;original[12]=1;original[14]=32768;
-            if(memcmp(next,original,sizeof(next))){unexpected++;errno=EINVAL;return -1;}
+            if(memcmp(next,original,sizeof(next))){peer_bad(__func__,__LINE__);for(unsigned i=0;i<15;i++)fprintf(stderr," %u:%llu/%llu",i,(unsigned long long)next[i],(unsigned long long)original[i]);fputc(10,stderr);errno=EINVAL;return -1;}
         }else{image_ever=1;retired_proof=0;}
         if(preview_fault==14&&!detach){preview_fault=0;errno=EINTR;return -1;}
         if(preview_fault==12 || (preview_fault==11&&!detach))return 0;
-        if(event_count>=8){unexpected++;errno=ENOSPC;return -1;}
+        if(event_count>=8){peer_bad(__func__,__LINE__);errno=ENOSPC;return -1;}
         struct drm_event_vblank *event=&event_queue[event_count];memset(event,0,sizeof(*event));
         event->base.type=DRM_EVENT_FLIP_COMPLETE;event->base.length=sizeof(*event);event->user_data=v->user_data;event->crtc_id=10;event_detach[event_count++]=detach;
         return 0;

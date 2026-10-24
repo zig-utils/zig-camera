@@ -12,6 +12,10 @@ const lib=dlopen(path,{
 const settings={backend:'drm' as const,drm:{card:'/dev/zig-camera-kms-fixture',timeoutMs:20},window:{x:5,y:7,width:320,height:240}}
 async function until(fn:()=>boolean){const end=performance.now()+5000;while(!fn()){if(performance.now()>end)throw Error('DRM test timeout');await Bun.sleep(1)}}
 function properties(){const data=new BigUint64Array(15);lib.symbols.zkms_test_properties(ptr(data));return data}
+function diagnose(label:string,camera:Camera,error:unknown){
+  const counts=new Uint32Array(5),preview=new Uint32Array(8);lib.symbols.zkms_test_counts(ptr(counts));lib.symbols.zkms_test_preview_counts(ptr(preview))
+  console.error(label,error,{counts:[...counts],preview:[...preview],properties:[...properties()].map(String),info:camera.previewInfo(),displayError:camera.previewError})
+}
 function retired(){
   const counts=new Uint32Array(5),preview=new Uint32Array(8);lib.symbols.zkms_test_counts(ptr(counts));lib.symbols.zkms_test_preview_counts(ptr(preview))
   assert.equal(counts[0],counts[1]);assert.equal(counts[3],0);assert.equal(counts[4],0);assert.equal(preview[6],0);assert.equal(preview[7],0)
@@ -37,7 +41,8 @@ try{
       await camera.switchModeAndCaptureRGB({width:10,height:8,format})
       assert.equal(camera.previewStreamInfo()?.width,12)
       camera.stopPreview();assert.equal(camera.stats().leased,0);assert.equal(camera.previewCleanupPending,0)
-    }finally{await camera.close()}
+    }catch(error){diagnose(`DRM ${format} operation failed`,camera,error);throw error}
+    finally{try{await camera.close()}catch(error){diagnose(`DRM ${format} close failed`,camera,error);throw error}}
     retired()
   }
   lib.symbols.zkms_test_scenario(10)
