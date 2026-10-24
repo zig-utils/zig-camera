@@ -3843,6 +3843,7 @@ export class Camera {
   setPreviewView(options: PreviewViewOptions = {}) {
     guardRequestCallback()
     this.assertOpen()
+    if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
     if(this.previewConfiguration?.backend==='drm-async')throw new CameraError(-4,'use asynchronous preview transition')
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
@@ -3851,10 +3852,14 @@ export class Camera {
     this.assertOpen()
     if (
       this.hasPendingModes() ||
+      this.pendingPreviewJobs() ||
       !this.previewActive ||
       this.previewConfiguration !== owner
     )
       throw new CameraError(-4, 'preview changed during view validation')
+    this.applyPreviewView(owner,prepared)
+  }
+  private applyPreviewView(owner:PreviewConfiguration,prepared:ReturnType<typeof preparePreviewView>){
     const info = this.previewInput!.info
     validatePreviewView(prepared, info.width, info.height)
     if (owner.backend !== 'headless')
@@ -3868,6 +3873,7 @@ export class Camera {
   setPreviewStream(stream: PreviewStream, options?: PreviewViewOptions) {
     guardRequestCallback()
     this.assertOpen()
+    if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
     if(this.previewConfiguration?.backend==='drm-async')throw new CameraError(-4,'use asynchronous preview transition')
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
@@ -3880,6 +3886,7 @@ export class Camera {
     this.assertOpen()
     if (
       this.hasPendingModes() ||
+      this.pendingPreviewJobs() ||
       !this.previewActive ||
       this.previewConfiguration !== owner
     )
@@ -3889,6 +3896,9 @@ export class Camera {
         stream: selected,
         view: preparedView,
       })
+    this.applyPreviewStream(owner,next)
+  }
+  private applyPreviewStream(owner:PreviewConfiguration,next:PreviewConfiguration){
     if(owner.backend==='drm'){
       this.stopPreviewOwned()
       try{this.openPreviewOwned(next)}catch(error){
@@ -4008,7 +4018,7 @@ export class Camera {
         this.previewConfiguration=Object.freeze({...owner,view:prepared})
       }else{
         current.check();current.setCancellationGuard(()=>false)
-        this.setPreviewView(copyPreviewViewOptions(prepared))
+        this.applyPreviewView(owner,prepared)
       }
     },jobOptions)
   }
@@ -4021,7 +4031,7 @@ export class Camera {
       if(!owner||this.previewSuspended)throw new CameraError(-2,'preview not active')
       if(owner.backend!=='drm-async'){
         current.check();current.setCancellationGuard(()=>false)
-        this.setPreviewStream(selected,view&&copyPreviewViewOptions(view));return
+        this.applyPreviewStream(owner,Object.freeze({...owner,stream:selected,view:view??owner.view}));return
       }
       const next=Object.freeze({...owner,stream:selected,view:view??owner.view})
       const input=readPreviewInput(this.handle,selected,true)

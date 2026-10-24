@@ -41,7 +41,9 @@ become noncancellable after their lifecycle transaction starts. Timeouts therefo
 do not promise an interruptible kernel ioctl. Use `operationDone` to join work;
 completion hooks may call Camera close without joining their own hook promise.
 
-Synchronous view/stream/stop calls reject this worker backend. DRM overlays,
+Synchronous view/stream/stop calls reject this worker backend. Across all
+backends, synchronous view/stream/stop calls also reject pending preview jobs,
+so they cannot overtake queued asynchronous transitions. DRM overlays,
 compositor sharing and desktop integration remain unsupported. Existing DRM
 format, master/unused-plane, linear-layout and cleanup restrictions apply.
 

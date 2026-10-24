@@ -11,6 +11,8 @@ test('Camera preview jobs copy views, serialize source selection and allow compl
     const second=camera.setPreviewStreamAsync('lores')
     expect(()=>camera.switchMode({width:12,height:8})).toThrow('preview jobs')
     expect(()=>camera.stopPreview()).toThrow('change active')
+    expect(()=>camera.setPreviewView({keepAspect:false})).toThrow('preview jobs pending')
+    expect(()=>camera.setPreviewStream(null)).toThrow('preview jobs pending')
     await first;await second
     expect(camera.previewInfo()?.window?.x).toBe(5)
     expect(camera.previewStreamInfo()).toMatchObject({stream:'lores',width:4,height:2})
@@ -128,4 +130,19 @@ for(const kind of ['plain','single','group'] as const)test(`${kind} mode admissi
     expect(camera.info().width).toBe(8);expect(camera.previewInfo()?.suspended).toBe(false)
     await camera.stopPreviewAsync()
   }finally{await camera.close();await recorder?.close()}
+})
+test('synchronous view and stream validation cannot cross a reentrant preview admission',async()=>{
+  const camera=new Camera(options)
+  try{
+    camera.startPreview({backend:'headless'})
+    for(const kind of ['view','stream'] as const){
+      let pending:BunJob<void>|undefined
+      const view={get keepAspect(){pending=camera.drainPreviewAsync();return false}}
+      expect(()=>kind==='view'?camera.setPreviewView(view):camera.setPreviewStream(null,view)).toThrow('preview changed')
+      await pending
+      expect(camera.previewInfo()?.keepAspect).toBeUndefined()
+      expect(camera.previewStreamInfo()?.stream).toBe('main')
+    }
+    await camera.stopPreviewAsync()
+  }finally{await camera.close()}
 })
