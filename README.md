@@ -6,9 +6,13 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.109 adds [direct Linux DRM preview](docs/drm-preview.md) through shared
+Home atomic scanout helpers, retained DMABUF inputs and event-proven retirement,
+with Bun main/lores selection, mode restoration and retryable display cleanup.
+Physical Pi display acceptance, overlays and desktop integration remain open.
+
 Version 0.108 adds [read-only Linux DRM/KMS display discovery](docs/drm-discovery.md)
-through shared Home catalog/query helpers, with connector/mode/format identities,
-explicit per-card failures and owned C/Bun results. DRM rendering remains open.
+with connector/mode/format identities, explicit per-card failures and owned results.
 
 Version 0.107 adds [bounded APNG display compositing](docs/png-compositing.md):
 native RGBA8/16 alpha/disposal handling, owned Bun display frames and joined

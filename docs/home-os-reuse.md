@@ -736,3 +736,14 @@ It queries public Linux UAPI identities and changes only its own temporary
 client-capability visibility, without master acquisition or device modesets.
 No Home OS files are copied, modified or executed. Actual DRM rendering and Pi
 display/stride/modifier/color acceptance still require implementations/evidence.
+
+## 0.109 direct display plane audit
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and ADR-MC5.
+Its HVS plane architecture supports keeping video at native resolution with
+hardware scaling and independent UI ownership, but its unverified Pi register
+paths do not implement hosted Linux PRIME import, atomic KMS or flip-event
+retirement. ADR-MC3/MC5 place hosted algorithms in Home stdlib and device drivers
+in the kernel. The new atomic renderer therefore improves Home video and is
+reused by camera, without copying, modifying or executing OS kernel sources.
+This review supplies architectural guidance, not physical hardware evidence.

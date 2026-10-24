@@ -50,10 +50,12 @@ pub export fn zc_preview_open_background(title: [*:0]const u8, width: u32, heigh
     return zcm_preview_open_background(title, width, height, out);
 }
 pub export fn zc_preview_show(p: *c.zc_preview, f: *const c.zc_frame) c_int {
+    if (@import("drm_preview.zig").owns(p)) return c.ZC_UNSUPPORTED; // use retained show_stream
     if (!options.preview) return c.ZC_UNSUPPORTED;
     return @import("preview_input.zig").zc_preview_show_input(p, f, null);
 }
 pub export fn zc_preview_close(p: *c.zc_preview) c_int {
+    if (@import("drm_preview.zig").owns(p)) return @import("drm_preview.zig").close(p);
     if (!options.preview) return c.ZC_UNSUPPORTED;
     return zcm_preview_close(p);
 }

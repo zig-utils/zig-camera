@@ -809,6 +809,16 @@ const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */
 typedef struct zc_preview zc_preview;
+/* Linux atomic scanout on an unused non-cursor plane of an already active CRTC.
+ * card is NUL-terminated (empty selects discovery); zero connector/plane selects
+ * automatically. Set dimensions/processed format, timeout 1..60000 ms, reserved=0.
+ * Requires DRM master and linear DMABUF import. Never modesets or takes an occupied
+ * plane. All calls are caller-serialized; no native display worker is created. */
+typedef struct {uint32_t struct_size,connector_id,plane_id,format,width,height,timeout_ms,reserved;char card[64];} zc_drm_preview_config;
+typedef struct {uint32_t struct_size,retained_frames,uncertain,poisoned,device_closed;int32_t last_error,last_error_number;uint32_t connector_id,plane_id,crtc_id;} zc_drm_preview_state;
+void zc_default_drm_preview_config(zc_drm_preview_config *);
+int zc_preview_open_drm(const zc_drm_preview_config *,zc_preview **);
+int zc_drm_preview_state_get(zc_preview *,zc_drm_preview_state *);
 /* Read-only Linux KMS discovery. Fixed limits: 64 cards, 256 displays, 64
  * connectors, 32 CRTCs, 128 encoders/planes/modes and 256 union formats. NULL
  * card scans /dev/dri/card0..63; exact paths have 1..63 non-NUL bytes. Missing
@@ -852,16 +862,23 @@ int zc_preview_show(zc_preview *, const zc_frame *);
 /* Main/lores packed RGB/BGR/RGBX/BGRX or YUV from the leased frame. YUV requires a
  * present negotiated matrix/range; conversion writes directly into SDL's locked
  * RGB texture, without a temporary RGB image. RGB ignores optional color data.
- * No plane or frame pointer survives this call. */
+ * No plane or frame pointer survives this call for SDL. Borrowed show/show_input
+ * reject DRM; use show_stream with a live camera token for retained scanout. */
 int zc_preview_check_color(uint32_t input_format,const zc_color_space *);
 /* Explicit borrowed input uses frame.main for either selected stream. */
 int zc_preview_show_input(zc_preview *,const zc_frame *,const zc_color_space *);
 /* Select from a live camera token under a scoped native read, using negotiated
- * color data. No heap/reference-token allocation; final release/writers are BUSY
- * during the call. The camera operation mutex is not held while SDL runs. */
+ * color data. SDL uses a scoped read. DRM retains exported read owners (at most
+ * two, buffer_count >=2), admitting no new input after an uncertain flip. A
+ * matching flip event retires the old owner. Actual fd-backed input is imported
+ * without an application image copy; synthetic fd-less input stages in memfd.
+ * Event waits obey configured timeout; kernel ioctls themselves may block. */
 int zc_preview_show_stream(zc_preview *,zc_camera *,uint64_t token,uint32_t stream);
 /* Draw background/overlay without reading image planes; still polls UI close. */
 int zc_preview_show_background(zc_preview *);
+/* DRM close must confirm detach before releasing sources. Nonzero retains the
+ * handle for retry, including a closed-device acknowledgement owner after a
+ * cleanup IO error; query drm state. Only OK consumes the handle. */
 int zc_preview_close(zc_preview *);
 /* Display-only view. Orientations use zc_orientation_from_transform, not EXIF.
  * flags: keep aspect=1, request window size=2, request window position=4,

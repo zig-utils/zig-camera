@@ -15,13 +15,15 @@
 static _Atomic int owned=-1;
 static int scenario;
 static uint32_t opened,closed,queries,unexpected,flag_errors,resource_calls;
-void zkms_test_scenario(int value) { scenario=value;opened=closed=queries=unexpected=flag_errors=resource_calls=0; }
+static int ids(uint64_t,uint32_t,uint32_t *,const uint32_t *,uint32_t);
+#include "drm_preview_peer.h"
+void zkms_test_scenario(int value) { scenario=value;opened=closed=queries=unexpected=flag_errors=resource_calls=0;preview_reset(); }
 void zkms_test_counts(uint32_t *out) { out[0]=opened;out[1]=closed;out[2]=queries;out[3]=unexpected;out[4]=flag_errors; }
 int open(const char *path,int flags,...) {
     mode_t mode=0;
     if((flags&O_CREAT)||((flags&O_TMPFILE)==O_TMPFILE)){va_list ap;va_start(ap,flags);mode=va_arg(ap,mode_t);va_end(ap);}
     if(strcmp(path,"/dev/zig-camera-kms-fixture"))return (int)syscall(SYS_openat,AT_FDCWD,path,flags,mode);
-    if((flags&O_ACCMODE)!=O_RDONLY || !(flags&O_CLOEXEC) || !(flags&O_NONBLOCK)){flag_errors++;errno=EPERM;return -1;}
+    if((flags&O_ACCMODE)!=(scenario>=10?O_RDWR:O_RDONLY) || !(flags&O_CLOEXEC) || !(flags&O_NONBLOCK)){flag_errors++;errno=EPERM;return -1;}
     const int fd=(int)syscall(SYS_openat,AT_FDCWD,"/dev/null",flags,mode);
     if(fd<0)return fd;
     int expected=-1;
@@ -30,7 +32,11 @@ int open(const char *path,int flags,...) {
 }
 int close(int fd) {
     int expected=fd;
-    if(fd>=0 && atomic_compare_exchange_strong(&owned,&expected,-1))closed++;
+    if(fd>=0 && atomic_compare_exchange_strong(&owned,&expected,-1)){
+        closed++;
+        if(scenario>=10 && (plane_values[0] || (image_ever&&!retired_proof)))unexpected++;
+        if(preview_fault==16){preview_fault=0;(void)syscall(SYS_close,fd);errno=EIO;return -1;}
+    }
     return (int)syscall(SYS_close,fd);
 }
 static int ids(uint64_t pointer,uint32_t capacity,uint32_t *count,const uint32_t *values,uint32_t length){
@@ -43,6 +49,7 @@ int ioctl(int fd,unsigned long request,...) {
     const int current=atomic_load(&owned);
     if(current<0 || fd!=current)return (int)syscall(SYS_ioctl,fd,request,arg);
     queries++;
+    const int preview=preview_ioctl(request,arg);if(preview!=-2)return preview;
     if(request==DRM_IOCTL_SET_CLIENT_CAP){
         struct drm_set_client_cap *v=arg;
         if(v->value!=1 || (v->capability!=DRM_CLIENT_CAP_ATOMIC && v->capability!=DRM_CLIENT_CAP_UNIVERSAL_PLANES)){unexpected++;errno=EPERM;return -1;}

@@ -35,6 +35,7 @@ pub export fn zc_preview_overlay_clone(p: *const c.zc_preview_overlay, out: *?*c
 }
 extern fn zcm_preview_overlay(*c.zc_preview, ?[*]const u8, u32, u32, u32) c_int;
 pub export fn zc_preview_set_overlay(p: *c.zc_preview, overlay: ?*const c.zc_preview_overlay) c_int {
+    if (@import("drm_preview.zig").owns(p)) return if (overlay == null) c.ZC_OK else c.ZC_UNSUPPORTED;
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
     if (overlay) |value| {
         const src = image(value);

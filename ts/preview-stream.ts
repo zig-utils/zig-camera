@@ -40,6 +40,7 @@ export function snapshotPreviewStream(stream: PreviewStream | undefined) {
 export function readPreviewInput(
   camera: Pointer,
   requested: PreviewStream | undefined,
+  direct=false,
 ): PreparedPreviewInput {
   const stream = requested === undefined ? 'main' : requested
   const main = storage(680)
@@ -63,7 +64,7 @@ export function readPreviewInput(
   const formatCode = processedFormatCode(format)
   const color = storage(24)
   check(n.zc_get_stream_color_space(camera, id, ptr(color)))
-  check(n.zc_preview_check_color(formatCode, ptr(color)), 'preview color space')
+  if(!direct)check(n.zc_preview_check_color(formatCode, ptr(color)), 'preview color space')
   return {
     info: Object.freeze({
       stream,

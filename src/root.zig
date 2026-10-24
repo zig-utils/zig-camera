@@ -104,6 +104,11 @@ pub const PngDecoder = @import("home/png_decoder.zig");
 pub const ApngCompositor = @import("home/apng_compositor.zig");
 pub const KmsDiscovery = @import("home/kms_discovery.zig");
 pub const KmsDiscoveryHost = @import("home/kms_discovery_host.zig");
+pub const KmsScanout = @import("home/kms_scanout.zig");
+pub const drm_preview = @import("drm_preview.zig");
+comptime {
+    _ = drm_preview;
+}
 pub const drm_discovery = @import("drm_discovery.zig");
 comptime {
     _ = drm_discovery;

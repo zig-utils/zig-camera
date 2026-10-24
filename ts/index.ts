@@ -11,6 +11,8 @@ import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './png-compositor'
 export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplayFormat,type DrmDiscoveryIssue,type DrmDisplayDiscovery} from './drm-discovery'
+import {openDrmPreview,readDrmPreviewState,type DrmPreviewOptions,type DrmPreviewState} from './drm-preview'
+export type {DrmPreviewOptions,DrmPreviewState} from './drm-preview'
 import {
   prepareApng,
   runApng,
@@ -705,12 +707,15 @@ export interface CameraTransform {
 export type ImageOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 export interface PreviewOptions extends PreviewViewOptions {
   stream?: PreviewStream
-  backend?: 'sdl' | 'headless'
+  backend?: 'sdl' | 'headless' | 'drm'
+  drm?:DrmPreviewOptions
   title?: string
 }
 export interface PreviewInfo extends PreviewViewOptions {
   stream?: PreviewStream
-  backend: 'sdl' | 'headless'
+  backend: 'sdl' | 'headless' | 'drm'
+  drm?:DrmPreviewOptions
+  drmState?:DrmPreviewState
   title: string
   suspended: boolean
 }
@@ -1885,6 +1890,8 @@ export class Camera {
     return this.lastPreviewError
   }
   private previewHandle = 0 as Pointer
+  private readonly preparedPreviewCleanup=new Set<Pointer>()
+  get previewCleanupPending(){return this.preparedPreviewCleanup.size+(this.previewHandle&&this.previewSuspended?1:0)}
   private previewConfiguration?: PreviewConfiguration
   private previewInput?: PreparedPreviewInput
   private previewSuspended = false
@@ -1897,6 +1904,8 @@ export class Camera {
       this.previewConfiguration && {
         backend: this.previewConfiguration.backend,
         title: this.previewConfiguration.title,
+        ...(this.previewConfiguration.drm?{drm:{...this.previewConfiguration.drm}}:{}),
+        ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle)}:{}),
         ...(this.previewConfiguration.stream !== undefined
           ? { stream: this.previewConfiguration.stream }
           : {}),
@@ -3810,14 +3819,14 @@ export class Camera {
       throw new CameraError(-4, 'preview changed during view validation')
     const info = this.previewInput!.info
     validatePreviewView(prepared, info.width, info.height)
-    if (owner.backend === 'sdl')
+    if (owner.backend !== 'headless')
       check(
         n.zc_preview_set_view(this.previewHandle, ptr(prepared.data)),
         'preview view',
       )
     this.previewConfiguration = Object.freeze({ ...owner, view: prepared })
   }
-  /** Prepare a replacement display before retiring the old stream owner. */
+  /** Replace the selected display input with backend-specific lifetime joining. */
   setPreviewStream(stream: PreviewStream, options?: PreviewViewOptions) {
     guardRequestCallback()
     this.assertOpen()
@@ -3840,8 +3849,19 @@ export class Camera {
         ...owner,
         stream: selected,
         view: preparedView,
-      }),
-      candidate = this.makePreview(next)
+      })
+    if(owner.backend==='drm'){
+      this.stopPreviewOwned()
+      try{this.openPreviewOwned(next)}catch(error){
+        try{this.openPreviewOwned(owner)}catch(rollback){
+          this.lastPreviewError=new AggregateError([error,rollback],'DRM preview stream change and restoration failed')
+          throw this.lastPreviewError
+        }
+        throw error
+      }
+      return
+    }
+    const candidate = this.makePreview(next)
     try {
       this.assertOpen()
       if (
@@ -3854,7 +3874,7 @@ export class Camera {
         check(n.zc_preview_close(this.previewHandle), 'old preview close')
     } catch (error) {
       if (candidate.handle)
-        check(n.zc_preview_close(candidate.handle), 'candidate preview close')
+        this.retirePreparedPreview(candidate.handle)
       throw error
     }
     this.previewHandle = candidate.handle
@@ -3870,6 +3890,7 @@ export class Camera {
     this.assertOpen()
     if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
     if (!this.previewActive) throw new CameraError(-2, 'preview not active')
+    if(this.previewConfiguration!.backend==='drm'&&overlay!==null)throw new CameraError(-8,'DRM overlay planes are not implemented')
     let candidate = 0 as Pointer
     if (overlay !== null) {
       const data = overlay.data,
@@ -3913,7 +3934,8 @@ export class Camera {
     this.overlayHandle = candidate
   }
   private makePreview(configuration: PreviewConfiguration) {
-    const input = readPreviewInput(this.handle, configuration.stream),
+    this.retryPreparedPreviews()
+    const input = readPreviewInput(this.handle, configuration.stream,configuration.backend==='drm'),
       { width, height } = input.info
     validatePreviewView(configuration.view, width, height)
     if (configuration.backend === 'headless')
@@ -3924,8 +3946,9 @@ export class Camera {
       input.info.stream === null
         ? n.zc_preview_open_background
         : n.zc_preview_open
-    check(open(ptr(name), width, height, ptr(out)))
-    const candidate = handle(out)
+    const candidate=configuration.backend==='drm'
+      ?openDrmPreview(width,height,input.info.format,configuration.drm!)
+      :(check(open(ptr(name), width, height, ptr(out))),handle(out))
     try {
       if (configuration.view.customized)
         check(
@@ -3935,7 +3958,7 @@ export class Camera {
       if (this.overlayHandle)
         check(n.zc_preview_set_overlay(candidate, this.overlayHandle))
     } catch (error) {
-      check(n.zc_preview_close(candidate))
+      this.retirePreparedPreview(candidate)
       throw error
     }
     return { handle: candidate, input }
@@ -3956,6 +3979,7 @@ export class Camera {
   }
   private clearPreviewOwned() {
     this.stopPreviewOwned()
+    this.retryPreparedPreviews()
     n.zc_preview_overlay_close(this.overlayHandle)
     this.overlayHandle = 0 as Pointer
     this.previewConfiguration = undefined
@@ -3963,11 +3987,23 @@ export class Camera {
     this.previewSuspended = false
   }
   private stopPreviewOwned() {
+    if (this.previewConfiguration) this.previewSuspended = true
     if (this.previewHandle) {
       check(n.zc_preview_close(this.previewHandle))
       this.previewHandle = 0 as Pointer
     }
     if (this.previewConfiguration) this.previewSuspended = true
+  }
+  private retirePreparedPreview(pointer:Pointer){
+    const code=n.zc_preview_close(pointer)
+    if(code!==0)this.preparedPreviewCleanup.add(pointer)
+    else this.preparedPreviewCleanup.delete(pointer)
+    check(code,'prepared preview cleanup')
+  }
+  private retryPreparedPreviews(){
+    let failure:unknown
+    for(const pointer of this.preparedPreviewCleanup)try{this.retirePreparedPreview(pointer)}catch(error){failure??=error}
+    if(failure)throw failure
   }
   startRecording(
     recorder: Recorder,
@@ -5799,7 +5835,7 @@ export class Camera {
               else this.failRecording(writing, error)
             }
           }
-          if (this.previewHandle) {
+          if (this.previewHandle && !this.previewSuspended) {
             try {
               const input = this.previewInput!
               const code =
@@ -5822,7 +5858,8 @@ export class Camera {
                   [error, cleanup],
                   'preview display and cleanup failed',
                 )
-                throw cleanup
+                // Retain the suspended cleanup owner. Independent recording
+                // consumers may continue on the remaining free camera buffers.
               }
             }
           }
@@ -5991,6 +6028,8 @@ export class Camera {
       !this.handle &&
       !this.fanout &&
       !this.previewConfiguration &&
+      !this.previewHandle &&
+      this.preparedPreviewCleanup.size===0 &&
       !this.overlayHandle &&
       !this.tuningSession &&
       !this.sensorLayout &&
@@ -6038,6 +6077,8 @@ export class Camera {
         if (
           this.handle ||
           this.fanout ||
+          this.previewHandle ||
+          this.preparedPreviewCleanup.size ||
           this.tuningSession ||
           this.sensorLayout ||
           this.audioGroups.size

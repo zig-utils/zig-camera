@@ -1,4 +1,4 @@
-name: Home KMS discovery
+name: Home KMS display
 on:
   push:
     branches: [main]
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 89c34efbad589a538b86d6fb07d989be17637393
+          ref: 1ab0d4f307c699a61f4e7061deda2141a4c71822
           path: .home-kms-upstream
           sparse-checkout: packages/video
           persist-credentials: false
@@ -32,13 +32,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in kms_catalog kms_discovery kms_discovery_host kms_discovery_test; do
+          for file in kms_catalog kms_discovery kms_discovery_host kms_discovery_test kms_scanout kms_scanout_host; do
             cmp ".home-kms-upstream/packages/video/src/display/$file.zig" "src/home/$file.zig"
           done
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/kms_scanout.zig
+            zig test -O "$mode" .home-kms-upstream/packages/video/src/display/kms_scanout.zig
             zig test -O "$mode" src/home/kms_discovery_test.zig
             zig test -O "$mode" .home-kms-upstream/packages/video/src/display/kms_discovery_test.zig
             if [ '${{ matrix.zig }}' = '0.15.2' ]; then
+              zig test -O "$mode" -lc src/home/kms_scanout_host.zig
+              zig test -O "$mode" -lc .home-kms-upstream/packages/video/src/display/kms_scanout_host.zig
               zig test -O "$mode" -lc src/home/kms_discovery_host.zig
               zig test -O "$mode" -lc .home-kms-upstream/packages/video/src/display/kms_discovery_host.zig
             fi

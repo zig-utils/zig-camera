@@ -2008,3 +2008,20 @@ request ABI differences. Camera CI also drives real adapter entry points with
 an isolated independent C UAPI peer built from system libdrm headers. This checks
 protocol/projection/ownership and explicit failures, not actual display scanout.
 DRM preview/plane allocation/imports and physical acceptance remain open.
+
+## 0.109 direct atomic scanout
+
+Inspected Home 89c34efbad589a538b86d6fb07d989be17637393 plus the retained export,
+viewport and processed-format helpers. The catalog adapter supplied bounded
+Linux UAPI queries; no hosted atomic renderer existed. Added portable layout,
+PRIME alias reference and uncertain-flip ownership policy plus an atomic host
+in Home video at 1ab0d4f307c699a61f4e7061deda2141a4c71822. Camera vendors all six KMS files
+verbatim, sharing one format table and host query/error adapter. CI compares
+exact source bytes and exercises pure helpers on both supported Zig versions.
+
+Camera retains existing frame-export read owners across scanout and reuses Home
+viewport/orientation geometry. No encoder or pixel converter is inserted into
+the direct DMABUF path. An independent Linux C UAPI peer checks imported layouts,
+matching flip proofs, original property restoration and cleanup faults through
+C/Bun. Physical Pi scanout/color/performance acceptance remains open. See
+drm-preview.md for limits, synchronous waits and explicit cleanup retries.

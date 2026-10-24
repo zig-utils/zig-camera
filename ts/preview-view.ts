@@ -1,4 +1,5 @@
 import type { PreviewStream } from './preview-stream'
+import type {PreparedDrmPreview} from './drm-preview'
 import { native as n, storage, view, ptr, check } from './ffi'
 import {
   prepareImageTransform,
@@ -30,7 +31,8 @@ export interface PreparedPreviewView {
   readonly customized: boolean
 }
 export interface PreviewConfiguration {
-  readonly backend: 'sdl' | 'headless'
+  readonly backend: 'sdl' | 'headless' | 'drm'
+  readonly drm?:PreparedDrmPreview
   readonly title: string
   readonly stream?: PreviewStream
   readonly view: PreparedPreviewView

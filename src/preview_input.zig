@@ -34,6 +34,7 @@ extern fn zcm_preview_rgb_begin(*c.zc_preview, *?[*]u8, *u64, *u32) c_int;
 extern fn zcm_preview_rgb_end(*c.zc_preview, u32) c_int;
 extern fn zcm_preview_background(*c.zc_preview) c_int;
 pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, color: ?*const c.zc_color_space) c_int {
+    if (@import("drm_preview.zig").owns(p)) return c.ZC_UNSUPPORTED;
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
     const input = prepare(frame, color) catch |err| return switch (err) {
         error.UnsupportedFormat => c.ZC_UNSUPPORTED,
@@ -70,6 +71,7 @@ pub export fn zc_preview_show_input(p: *c.zc_preview, frame: *const c.zc_frame, 
     return zcm_preview_show(p, &chosen);
 }
 pub export fn zc_preview_show_background(p: *c.zc_preview) c_int {
+    if (@import("drm_preview.zig").owns(p)) return @import("drm_preview.zig").background(p);
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
     return zcm_preview_background(p);
 }
@@ -98,6 +100,7 @@ test "preview stream validation accepts padded I420 and rejects unknown color an
 }
 
 pub export fn zc_preview_show_stream(p: *c.zc_preview, camera: *c.zc_camera, token: u64, which: u32) c_int {
+    if (@import("drm_preview.zig").owns(p)) return @import("drm_preview.zig").show(p, camera, token, which);
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
     if (which != c.ZC_MAIN and which != c.ZC_LORES) return c.ZC_UNSUPPORTED;
     const core = @import("core.zig");

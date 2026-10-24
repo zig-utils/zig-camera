@@ -609,7 +609,7 @@ struct Device {
         const int orientation_rc=negotiatedOrientation(orientation,config->orientation,strict,actual_orientation);
         if(orientation_rc)return orientation_rc;
         const auto &main = config->at(0);
-        if (main.pixelFormat != processedPixelFormat(main_format) || !processedGeometry(main_format,main.size,main.stride)) return ZC_UNSUPPORTED;
+        if (main.pixelFormat.modifier()!=0 || main.pixelFormat != processedPixelFormat(main_format) || !processedGeometry(main_format,main.size,main.stride)) return ZC_UNSUPPORTED;
         if (cfg.raw && cfg.raw_format[0] && config->at(raw_index).pixelFormat.toString() != cfg.raw_format) {
             // A sensor flip can change CFA phase while preserving depth/packing.
             // The negotiated descriptor is authoritative for DNG and consumers.
@@ -627,7 +627,7 @@ struct Device {
         if(pipe.sensor_width && (pipeline.sensor_width!=pipe.sensor_width || pipeline.sensor_height!=pipe.sensor_height || pipeline.sensor_bit_depth!=pipe.sensor_bit_depth))return ZC_UNSUPPORTED;
         if(has_lores) {
             const auto &lores=config->at(1);
-            if(lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || !processedGeometry(pipe.lores_format,lores.size,lores.stride))return ZC_UNSUPPORTED;
+            if(lores.pixelFormat.modifier()!=0 || lores.pixelFormat!=processedPixelFormat(pipe.lores_format) || lores.size.width>main.size.width || lores.size.height>main.size.height || !processedGeometry(pipe.lores_format,lores.size,lores.stride))return ZC_UNSUPPORTED;
             pipeline.lores=geometry(lores);
         }
         if (camera->configure(config.get()) < 0) return ZC_DEVICE;

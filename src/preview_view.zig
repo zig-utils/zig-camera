@@ -31,6 +31,7 @@ pub export fn zc_preview_check_view(width: u32, height: u32, cfg: *const c.zc_pr
 extern fn zcm_preview_extent(*c.zc_preview, *u32, *u32) c_int;
 extern fn zcm_preview_view(*c.zc_preview, *const c.zc_preview_view) c_int;
 pub export fn zc_preview_set_view(p: *c.zc_preview, cfg: *const c.zc_preview_view) c_int {
+    if (@import("drm_preview.zig").owns(p)) return @import("drm_preview.zig").setView(p, cfg);
     if (!@import("options").preview) return c.ZC_UNSUPPORTED;
     var width: u32 = 0;
     var height: u32 = 0;

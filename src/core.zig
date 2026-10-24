@@ -3624,6 +3624,37 @@ test "map retirement consumes its reference on DMA failure and unsupported write
     try std.testing.expectEqual(c.ZC_OK, zc_frame_map_close(null));
 }
 
+test "export admission reports final DMA retirement failure after concurrent primary release" {
+    if (options.libcamera) return error.SkipZigTest;
+    const api = @import("frame_export.zig");
+    const Hook = struct {
+        fn releasePrimary(camera: *c.zc_camera, token: u64) void {
+            std.debug.assert(zc_release(camera, token) == c.ZC_OK);
+        }
+    };
+    for ([_]bool{ false, true }) |fail_end| {
+        var cfg: c.zc_config = undefined;
+        zc_default_config(&cfg);
+        cfg.width = 8;
+        cfg.height = 6;
+        var camera: ?*c.zc_camera = null;
+        try std.testing.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+        defer {
+            _ = zc_close(camera.?);
+        }
+        try std.testing.expectEqual(c.ZC_OK, zc_start(camera.?));
+        var frame: c.zc_frame = undefined;
+        try std.testing.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+        session(camera.?).device.?.fail_sync_end = fail_end;
+        api.TestHooks.after_map = Hook.releasePrimary;
+        defer api.TestHooks.after_map = null;
+        var exported: ?*c.zc_frame_export = null;
+        try std.testing.expectEqual(if (fail_end) c.ZC_IO else c.ZC_STALE, api.zc_frame_export_open(camera.?, frame.token, 1, 0, &exported));
+        try std.testing.expectEqual(null, exported);
+        try std.testing.expectEqual(@as(u32, 0), session(camera.?).stats.leased);
+    }
+}
+
 test "mapped readers preserve primary capacity and reject pool saturation without access-state changes" {
     if (options.libcamera) return error.SkipZigTest;
     var cfg: c.zc_config = undefined;

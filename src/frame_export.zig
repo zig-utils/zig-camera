@@ -8,6 +8,9 @@ const shared = @import("home/posix_shared_memory.zig");
 const Admission = @import("home/owned_admission.zig").Registry(32);
 const A = std.heap.c_allocator;
 const maximum = 256 * 1024 * 1024;
+pub const TestHooks = if (@import("builtin").is_test) struct {
+    pub var after_map: ?*const fn (*c.zc_camera, u64) void = null;
+} else struct {};
 var admission: Admission = .{ .max_bytes = 512 * 1024 * 1024, .max_items = 32 };
 var mutex: std.Thread.Mutex = .{};
 const Export = struct {
@@ -75,6 +78,11 @@ fn cleanup(self: *Export, writeback: bool) c_int {
     return result;
 }
 pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export) c_int {
+    var cleanup_result: c_int = c.ZC_OK;
+    const result = openExport(camera, token, streams, flags, output, &cleanup_result);
+    return if (cleanup_result != c.ZC_OK) cleanup_result else result;
+}
+fn openExport(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export, cleanup_result: *c_int) c_int {
     output.* = null;
     if (streams == 0 or streams & ~@as(u32, 7) != 0 or flags & ~@as(u32, c.ZC_EXPORT_WRITABLE) != 0) return c.ZC_INVALID;
     mutex.lock();
@@ -89,8 +97,12 @@ pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u3
     const rc = core.zc_frame_map_open(camera, token, @ctz(streams), flags & c.ZC_EXPORT_WRITABLE, &map);
     if (rc != c.ZC_OK) return rc;
     defer if (!handed) {
-        _ = core.zc_frame_map_close(map);
+        const code = core.zc_frame_map_close(map);
+        if (code != c.ZC_OK) cleanup_result.* = code;
     };
+    if (comptime @import("builtin").is_test) {
+        if (TestHooks.after_map) |hook| hook(camera, token);
+    }
     var catalog: ?*c.zc_catalog = null;
     const snapshot = core.zc_frame_metadata_catalog(camera, token, &catalog);
     if (snapshot != c.ZC_OK) return snapshot;
@@ -142,7 +154,8 @@ pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u3
     handed = true;
     var complete = false;
     defer if (!complete) {
-        _ = cleanup(self, false);
+        const code = cleanup(self, false);
+        if (code != c.ZC_OK) cleanup_result.* = code;
     };
     for (sources[0..info.plane_count], 0..) |plane, i| {
         var output_plane = c.zc_export_plane{ .fd = -1, .flags = flags, .offset = plane.offset, .length = plane.length, .bytes_used = plane.bytes_used };
