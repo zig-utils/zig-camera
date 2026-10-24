@@ -10,11 +10,26 @@ const Owner = struct {
     ticket: Admission.Ticket,
     budget: Budget,
     result: ?Decoder.Result = null,
+    refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
+    fn retain(self: *Owner) void {
+        const previous = self.refs.fetchAdd(1, .monotonic);
+        std.debug.assert(previous == 1);
+    }
+    fn release(self: *Owner) void {
+        const previous = self.refs.fetchSub(1, .acq_rel);
+        std.debug.assert(previous > 0);
+        if (previous == 1) {
+            std.debug.assert(self.budget.live == 0);
+            const ticket = self.ticket;
+            A.destroy(self);
+            Admission.release(ticket);
+        }
+    }
     fn destroy(self: *Owner) void {
         if (self.result) |*result| result.deinit();
         std.debug.assert(self.budget.live == 0);
-        Admission.release(self.ticket);
-        A.destroy(self);
+        self.result = null;
+        self.release();
     }
 };
 const Job = struct {
@@ -26,6 +41,7 @@ const Job = struct {
     data: []u8,
     options: Decoder.Options,
     owner: ?*Owner,
+    reservation: *Owner,
     output_size: usize = 0,
     peak: usize = 0,
     denials: usize = 0,
@@ -124,7 +140,10 @@ pub export fn zc_png_decode_async(data: ?[*]const u8, length: u64, limits: ?*con
     defer if (!success) A.destroy(self);
     const copied = A.dupe(u8, data.?[0..@intCast(length)]) catch return c.ZC_NOMEM;
     defer if (!success) A.free(copied);
-    self.* = .{ .data = copied, .options = options, .owner = owner };
+    self.* = .{ .data = copied, .options = options, .owner = owner, .reservation = owner };
+    // The result and job storage each retain the admission reservation.
+    owner.retain();
+    defer if (!success) owner.release();
     self.thread = std.Thread.spawn(.{}, Job.run, .{self}) catch return c.ZC_NOMEM;
     out.* = @ptrCast(self);
     success = true;
@@ -228,7 +247,9 @@ pub export fn zc_png_job_close(p: ?*c.zc_png_job) c_int {
     if (self.thread) |thread| thread.join();
     A.free(self.data);
     if (self.owner) |owner| owner.destroy();
+    const reservation = self.reservation;
     A.destroy(self);
+    reservation.release();
     return c.ZC_OK;
 }
 
@@ -356,4 +377,49 @@ test "PNG cancelled ready and active workers publish no owner and validation ret
     try t.expect(image == null);
     try t.expectEqual(c.ZC_OK, zc_png_decode(encoded.ptr, encoded.len, &testLimits(), &image));
     zc_png_close(image);
+}
+
+test "PNG image-first and concurrent close keep admission through both storage owners" {
+    const t = std.testing;
+    const encoded = try testEncoded();
+    defer A.free(encoded);
+    var jobs: [4]?*c.zc_png_job = @splat(null);
+    defer for (jobs) |p| testCleanup(p);
+    for (&jobs) |*p| {
+        try t.expectEqual(c.ZC_OK, zc_png_decode_async(encoded.ptr, encoded.len, &testLimits(), p));
+        try t.expectEqual(c.ZC_OK, (try testWait(p.*.?)).result);
+        var image: ?*c.zc_png_image = null;
+        try t.expectEqual(c.ZC_OK, zc_png_job_take_image(p.*.?, &image));
+        zc_png_close(image);
+    }
+    var blocked: ?*c.zc_png_image = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_BUSY, zc_png_decode(encoded.ptr, encoded.len, &testLimits(), &blocked));
+    try t.expect(blocked == null);
+    for (&jobs) |*p| {
+        try t.expectEqual(c.ZC_OK, zc_png_job_close(p.*));
+        p.* = null;
+    }
+    const Closer = struct {
+        fn close(p: *c.zc_png_image) void {
+            zc_png_close(p);
+        }
+    };
+    for (0..16) |_| {
+        var p: ?*c.zc_png_job = null;
+        try t.expectEqual(c.ZC_OK, zc_png_decode_async(encoded.ptr, encoded.len, &testLimits(), &p));
+        defer testCleanup(p);
+        try t.expectEqual(c.ZC_OK, (try testWait(p.?)).result);
+        var image: ?*c.zc_png_image = null;
+        try t.expectEqual(c.ZC_OK, zc_png_job_take_image(p.?, &image));
+        const thread = std.Thread.spawn(.{}, Closer.close, .{image.?}) catch |err| {
+            zc_png_close(image);
+            return err;
+        };
+        try t.expectEqual(c.ZC_OK, zc_png_job_close(p));
+        p = null;
+        thread.join();
+    }
+    var available: ?*c.zc_png_image = null;
+    try t.expectEqual(c.ZC_OK, zc_png_decode(encoded.ptr, encoded.len, &testLimits(), &available));
+    zc_png_close(available);
 }

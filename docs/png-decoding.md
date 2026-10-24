@@ -41,9 +41,10 @@ working allocations, 16 MiB aggregate ICC/Exif, 256 frames and 16384 chunks.
 Input/output/working limits can be raised to 256 MiB each; metadata/frame/chunk
 limits can only be reduced. All options are snapshotted before native admission.
 The native encoder and decoder share four reservations with a 512 MiB total
-ceiling, charged for input, configured workspace and owners. Completed results
-retain their native reservation until closed, including across asynchronous
-single-result transfer and job close. Bun copies all result pixels/metadata into
+ceiling, charged for input, configured workspace and owners. Starting in
+0.100.1, the job and its transferred result jointly retain that reservation until
+both close, in either order. Closing an image first cannot uncharge copied input
+still held by its job; closing a job first cannot uncharge the live result. Bun copies all result pixels/metadata into
 caller-owned images and closes the native result before returning. Caller-retained
 Bun images use ordinary application memory, as with captured image objects.
 

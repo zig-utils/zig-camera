@@ -1791,3 +1791,9 @@ Final metadata follow-up 207d20242d3dbaec74b9888f70b9f516521f55de rejects non-RG
 invalid range flags and JPEG-wrapped Exif, with preallocation regression checks.
 All 36 core tests, 936 independent cases per mode, and upstream adapter tests
 pass locally in both build modes; portable coverage uses both compilers.
+
+The 0.100.1 native close-order correction keeps Home admission/budget/gates
+unchanged. Home runtime ptr/ref_count.zig was inspected; it depends on Bun runtime
+allocation, thread locks and tracing. The hosted PNG owner instead uses a local
+two-reference atomic reservation lifetime for its job/result pair, with shared
+Home admission released only after both pixel and copied-input owners retire.

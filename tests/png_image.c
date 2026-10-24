@@ -39,6 +39,20 @@ int main(void){
   uint8_t *encoded=malloc((size_t)size);assert(encoded);assert(zc_image_blob_copy(blob,encoded,size,&size)==ZC_OK);zc_image_blob_close(blob);
   zc_png_limits limits;zc_default_png_limits(&limits);limits.max_working_bytes=1024*1024;
   zc_png_image *sync=NULL;assert(zc_png_decode(encoded,size,&limits,&sync)==ZC_OK);pixels_equal(sync);zc_png_close(sync);
+  /* Closing taken images must not retire copied job inputs/admission. */
+  zc_png_job *pending[4]={0};
+  for(int i=0;i<4;i++){
+    assert(zc_png_decode_async(encoded,size,&limits,&pending[i])==ZC_OK);
+    assert(wait_job(pending[i]).result==ZC_OK);
+    zc_png_image *taken=NULL;assert(zc_png_job_take_image(pending[i],&taken)==ZC_OK);zc_png_close(taken);
+  }
+  sync=(zc_png_image *)1;int held=zc_png_decode(encoded,size,&limits,&sync);
+  if(held!=ZC_BUSY||sync){
+    if(held==ZC_OK)zc_png_close(sync);
+    for(int i=0;i<4;i++)assert(zc_png_job_close(pending[i])==ZC_OK);
+    free(encoded);fputs("PNG reservation released before copied job inputs retired\n",stderr);return 44;
+  }
+  for(int i=0;i<4;i++)assert(zc_png_job_close(pending[i])==ZC_OK);
   zc_png_job *job=NULL;assert(zc_png_decode_async(encoded,size,&limits,&job)==ZC_OK);memset(encoded,0,(size_t)size);
   zc_image_job_state state=wait_job(job);assert(state.result==ZC_OK && state.input_bytes==size && state.working_peak<=limits.max_working_bytes);
   zc_png_image *image=NULL;assert(zc_png_job_take_image(job,&image)==ZC_OK);
