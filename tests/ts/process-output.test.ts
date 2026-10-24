@@ -180,7 +180,7 @@ test('failed-exec terminal proofs retire both private channels before preparatio
     try{
       const error=await failure(sink.start())
       expect(error).toBeInstanceOf(ProcessOutputError)
-      expect((error as ProcessOutputError).details.errno).toBe(2)
+      expect((error as ProcessOutputError).details.errno,String(error)).toBe(2)
       expect(sink.stats()).toMatchObject({phase:'stopped',supervisorExitCode:125,cancelled:false})
       expect([127,137,143]).toContain(sink.stats().consumerExitCode!)
       expect(alive(sink.stats().supervisorPid!)).toBe(false)

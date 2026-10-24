@@ -2025,3 +2025,12 @@ the direct DMABUF path. An independent Linux C UAPI peer checks imported layouts
 matching flip proofs, original property restoration and cleanup faults through
 C/Bun. Physical Pi scanout/color/performance acceptance remains open. See
 drm-preview.md for limits, synchronous waits and explicit cleanup retries.
+
+The 0.109 Linux preview validation also exposed a pre-existing failed-exec
+supervisor race on macOS CI. A child could exit after poll returned without an
+exec-pipe readiness bit, causing RESULT publication before unread errno bytes.
+Home 22c9d6786317fcb476ac2e53a53163a9c7a06dc0 snapshots child exit before processing
+exec status, drains the pipe even without that readiness bit and refuses to
+finish while exec status is unresolved. Camera reuses the shared host with only
+the established flattened wire import. Standalone host acceptance and repeated
+failed-exec checks retain exact ENOENT and joined process/channel retirement.
