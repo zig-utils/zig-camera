@@ -33,8 +33,8 @@ pub const Ref = struct {
 pub const Prepared = struct {
     owner: *backend.Handle,
     version: u64,
-    pending: [31]?c.zc_control,
-    desired: [31]?c.zc_control,
+    pending: [c.ZC_CONTROL_COUNT]?c.zc_control,
+    desired: [c.ZC_CONTROL_COUNT]?c.zc_control,
     current: ?*Ref,
     saved: ?*Ref,
     committed: bool = false,
@@ -175,7 +175,7 @@ fn prepareFallible(h: *backend.Handle, entries: []const ctl.Input, sink: *const 
     var ae_saved = false;
     for (entries, 0..) |entry, index| {
         for (entries[0..index]) |previous| if (previous.record.id == entry.record.id) return error.InvalidCatalog;
-        var info = if (entry.record.id < 31 and entry.record.id > 0) try knownInfo(h, entry.record.id) else if (entry.record.id >= first_id and entry.record.id < first_id + specs.len) specInfo(entry.record.id - first_id) else return error.Unsupported;
+        var info = if (entry.record.id < c.ZC_CONTROL_COUNT and entry.record.id > 0) try knownInfo(h, entry.record.id) else if (entry.record.id >= first_id and entry.record.id < first_id + specs.len) specInfo(entry.record.id - first_id) else return error.Unsupported;
         if (entry.record.name_length > 0 and !std.mem.eql(u8, entry.record.name[0..entry.record.name_length], info.name)) return error.Unsupported;
         if (entry.record.flags & 32 != 0 and !std.mem.eql(u8, entry.record.vendor[0..entry.record.vendor_length], info.vendor)) return error.Unsupported;
         const value: wire.Value = .{ .native_type = info.native_type, .kind = std.enums.fromInt(wire.Kind, entry.value.kind) orelse return error.InvalidCatalog, .flags = entry.value.flags, .count = entry.value.count, .data = entry.value.data[0..entry.value.length] };

@@ -81,6 +81,9 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/image-job-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/png_image.c -Lzig-out/lib -lzigcamera -o zig-out/png-image-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/png-image-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test
+          bun tests/ts/check-sensor-hdr-cli.ts zig-out/bin/zig-camera
           bun test tests/ts
           bun test tests/ts/processes.test.ts -t 'worker failure and deadline' --rerun-each 10
           bun tests/ts/check-alignment-cli.ts zig-out/bin/zig-camera

@@ -697,3 +697,7 @@ Home bounded PNG/APNG decoding (0.100):
   the camera copy includes it with the same import-only adaptation.
   Final PNG metadata validation 207d20242d3dbaec74b9888f70b9f516521f55de enforces the RGB cICP
   matrix and PNG Exif header structure; the camera copy includes this follow-up.
+
+src/home/manager_gate.zig, sensor_node.zig and boolean_control.zig are copied
+verbatim from home-lang/home packages/video/src/core at revision
+4a5d30540bd6b483c634ddd86de4fe27bef32115, under the MIT license above.

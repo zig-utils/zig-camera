@@ -615,3 +615,14 @@ loader or hosted worker owner. The exact PNG/streaming-inflate improvement lives
 in Home; camera supplies bounded native/Bun ownership and file integration.
 Home OS stays in its existing language and no OS source is copied, changed or
 executed. Its declarations do not establish physical Pi quality or throughput.
+
+The 0.101 sensor-HDR audit checks unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, CLAUDE.md, ADR-MC3 and
+kernel/src/drivers/camera.home, with targeted V4L2/HDR/media searches. The
+camera_capture stub and global geometry do not implement Linux subdevice
+controls, exclusive SDK manager lifetimes or a mode-catalog refresh. Pixel HDR
+and codec work belongs to Home's shared stdlib under the ADR; hardware decode
+remains a separate Home kernel driver. The portable gate, exact identity matcher
+and observed boolean control operation are therefore added to Home first and
+reused by zig-camera's hosted boundary. No OS source is copied, edited or
+executed; the kernel stub is not evidence of physical Pi HDR support.

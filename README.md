@@ -333,3 +333,7 @@ See [C ABI](include/zig_camera.h), [architecture](docs/architecture.md),
 [Home reuse](docs/home-reuse.md), [hardware](docs/hardware.md), and
 [performance acceptance](docs/performance.md). License: MIT; optional codec and
 system libraries retain their own licenses and notices.
+
+Pre-open IMX708 sensor HDR and independent runtime ISP HDR are available in Zig,
+C, Bun and the CLI. See [sensor HDR ownership and usage](docs/sensor-hdr.md) for
+mode refresh, async layout protection and hardware validation limits.

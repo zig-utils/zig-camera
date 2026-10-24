@@ -9,6 +9,8 @@ pub const color_matrix = [9]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 pub const Callback = @import("real.zig").Callback;
 pub const Handle = struct {
     config: c.zc_config,
+    hdr_snapshot: bool = false,
+    hdr_frames: [c.ZC_MAX_BUFFERS]i32 = @splat(0),
     color_request: c.zc_color_space = std.mem.zeroes(c.zc_color_space),
     context: ?*anyopaque,
     callback: Callback,
@@ -27,9 +29,9 @@ pub const Handle = struct {
     sequence: u64 = 0,
     revision: u64 = 0,
     applied_revision: u64 = 0,
-    active: [31]c.zc_control = @splat(std.mem.zeroes(c.zc_control)),
-    pending: [31]?c.zc_control = @splat(null),
-    saved: [31]?c.zc_control = @splat(null),
+    active: [c.ZC_CONTROL_COUNT]c.zc_control = @splat(std.mem.zeroes(c.zc_control)),
+    pending: [c.ZC_CONTROL_COUNT]?c.zc_control = @splat(null),
+    saved: [c.ZC_CONTROL_COUNT]?c.zc_control = @splat(null),
     vendor_current: ?*@import("typed_synthetic.zig").Ref = null,
     vendor_saved: ?*@import("typed_synthetic.zig").Ref = null,
     vendor_frames: [c.ZC_MAX_BUFFERS]?*@import("typed_synthetic.zig").Ref = @splat(null),
@@ -108,11 +110,17 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
     }
 }
 pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    const tuning_rc = @import("tuning_session.zig").begin(c.ZC_SYNTHETIC);
+    if (tuning_rc != c.ZC_OK) return tuning_rc;
+    var tuning_owned = true;
+    defer if (tuning_owned) @import("tuning_session.zig").end(c.ZC_SYNTHETIC);
+    const hdr_snapshot = @import("sensor_hdr_sim.zig").enabled();
+    const available = if (hdr_snapshot) modes[1..2] else &modes;
     const main_format = processed.main_format;
     const transform = orientation.Transform.fromOrientation(requested_orientation) catch return c.ZC_INVALID;
     if (opts.sensor_width != 0) {
         var found = false;
-        for (modes) |mode| if (mode.width == opts.sensor_width and mode.height == opts.sensor_height and mode.bit_depth == opts.sensor_bit_depth) {
+        for (available) |mode| if (mode.width == opts.sensor_width and mode.height == opts.sensor_height and mode.bit_depth == opts.sensor_bit_depth) {
             found = true;
         };
         if (!found) return c.ZC_UNSUPPORTED;
@@ -124,11 +132,11 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
     const main_output = orientation.Extent{ .width = width, .height = height };
     const main_source = transform.extent(main_output);
     const stride = std.mem.alignForward(u32, width * @import("processed_format.zig").bytes(main_format), 64);
-    h.* = .{ .config = config.*, .color_request = processed.color_space, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
+    h.* = .{ .config = config.*, .hdr_snapshot = hdr_snapshot, .color_request = processed.color_space, .context = context, .callback = callback, .info = std.mem.zeroes(c.zc_info) };
     h.pipeline.struct_size = @sizeOf(c.zc_pipeline_info);
     h.pipeline.sensor_width = if (opts.sensor_width != 0) opts.sensor_width else @intCast(main_source.width);
     h.pipeline.sensor_height = if (opts.sensor_width != 0) opts.sensor_height else @intCast(main_source.height);
-    h.pipeline.sensor_bit_depth = if (opts.sensor_width != 0) opts.sensor_bit_depth else 12;
+    h.pipeline.sensor_bit_depth = if (opts.sensor_width != 0) opts.sensor_bit_depth else if (hdr_snapshot) 10 else 12;
     if (opts.lores_width > width or opts.lores_height > height) {
         Alloc.destroy(h);
         return c.ZC_INVALID;
@@ -238,7 +246,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
             };
         }
     }
-    for (1..31) |id| {
+    for (1..c.ZC_CONTROL_COUNT) |id| {
         var descriptor: c.zc_control_info = undefined;
         _ = controlInfo(h, @intCast(id), &descriptor);
         var value = std.mem.zeroes(c.zc_control);
@@ -255,15 +263,11 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         h.active[c.ZC_LENS_POSITION].values[0] = config.lens_position;
         h.active[c.ZC_AF_MODE].values[0] = 0;
     }
-    for (1..31) |id| if (id != c.ZC_AF_TRIGGER and id != c.ZC_AF_PAUSE) {
+    for (1..c.ZC_CONTROL_COUNT) |id| if (id != c.ZC_AF_TRIGGER and id != c.ZC_AF_PAUSE) {
         h.saved[id] = h.active[id];
     };
-    const tuning_rc = @import("tuning_session.zig").begin(c.ZC_SYNTHETIC);
-    if (tuning_rc != c.ZC_OK) {
-        close(h);
-        return tuning_rc;
-    }
     h.tuning_held = true;
+    tuning_owned = false;
     pipeline.* = h.pipeline;
     info.* = h.info;
     out.* = h;
@@ -419,6 +423,7 @@ pub fn queue(h: *Handle, index: u32) c_int {
             if (h.af_pause_state == 1) h.af_pause_state = 2;
         }
     }
+    h.hdr_frames[index] = @intFromFloat(h.active[c.ZC_HDR_MODE].values[0]);
     h.catalog_metadata[index] = meta;
     h.callback(h.context, index, &f, &meta, c.ZC_OK);
     return c.ZC_OK;
@@ -549,6 +554,10 @@ pub fn controlInfo(h: *Handle, id: u32, out: *c.zc_control_info) c_int {
         30 => {
             hi = 1000000;
         },
+        c.ZC_HDR_MODE => {
+            hi = 4;
+            out.enum_mask = 31;
+        },
         else => return c.ZC_UNSUPPORTED,
     }
     out.min = @splat(lo);
@@ -584,11 +593,12 @@ const modes = [_]c.zc_sensor_mode{
     .{ .width = 1920, .height = 1080, .bit_depth = 10, .format = "SRGGB10".* ++ @as([25]u8, @splat(0)) },
     .{ .width = 4056, .height = 3040, .bit_depth = 12, .format = "SRGGB12".* ++ @as([25]u8, @splat(0)) },
 };
-pub fn sensorModes(_: *Handle, out: ?[*]c.zc_sensor_mode, capacity: u32, count: *u32) c_int {
-    count.* = modes.len;
+pub fn sensorModes(h: *Handle, out: ?[*]c.zc_sensor_mode, capacity: u32, count: *u32) c_int {
+    const available = if (h.hdr_snapshot) modes[1..2] else &modes;
+    count.* = @intCast(available.len);
     if (out == null) return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
-    if (capacity < modes.len) return c.ZC_INVALID;
-    @memcpy(out.?[0..modes.len], &modes);
+    if (capacity < available.len) return c.ZC_INVALID;
+    @memcpy(out.?[0..available.len], available);
     return c.ZC_OK;
 }
 pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
@@ -618,7 +628,7 @@ pub fn catalog(h: *Handle, kind: u32, index: u32, sink: *const @import("catalog.
         3 => implementation.controls(h, sink),
         4 => blk: {
             if (index >= h.info.buffer_count) break :blk c.ZC_INVALID;
-            const rc = implementation.metadata(sink, h.catalog_metadata[index], h.photo_wallclock_ns[index]);
+            const rc = implementation.metadata(sink, h.catalog_metadata[index], h.photo_wallclock_ns[index], h.hdr_frames[index]);
             break :blk if (rc != 0) rc else @import("typed_synthetic.zig").metadata(h, index, sink);
         },
         else => c.ZC_INVALID,

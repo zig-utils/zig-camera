@@ -273,3 +273,8 @@ tokens. Serialize ownership, join waiters before close, and do not use focus
 controls to invalidate a lock while another consumer owns it. Zig Camera exposes
 matching pause-start, restore and acquireFocusLocked helpers. These jobs validate
 metadata, not optical sharpness; hardware focus quality remains unmeasured.
+
+Runtime `HdrMode` is convenience control 31 (`Control.hdrMode`), values 0–4.
+`Camera.setHdrMode()` stages it through the existing validated batch/replay path.
+It is independent of pre-open IMX708 sensor HDR. Query availability and accepted
+ranges on the actual camera; see [sensor and ISP HDR](sensor-hdr.md).

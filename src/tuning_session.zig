@@ -4,6 +4,7 @@ const std = @import("std");
 const c = @import("abi.zig").c;
 const Home = @import("home/tuning.zig");
 const Env = @import("home/posix_env.zig");
+const ManagerGate = @import("home/manager_gate.zig").Gate;
 const A = std.heap.c_allocator;
 const key = "LIBCAMERA_RPI_TUNING_FILE";
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
@@ -17,8 +18,8 @@ const Profile = struct {
 const State = struct {
     profile: ?*Profile = null,
     users: u32 = 0,
-    managers: u32 = 0,
-    generation: u64 = 0,
+    manager: ManagerGate = .{},
+    layout: ManagerGate = .{},
     environment: ?Env.Override = null,
     external_change: bool = false,
     last_error: c_int = c.ZC_OK,
@@ -76,7 +77,7 @@ fn removeProfile(s: *State) c_int {
     return c.ZC_OK;
 }
 fn cleanup(s: *State) c_int {
-    if (s.managers != 0) return c.ZC_BUSY;
+    if (s.manager.users != 0) return c.ZC_BUSY;
     var rc = restore(s);
     if (rc == c.ZC_OK and s.users == 0) rc = removeProfile(s);
     s.last_error = rc;
@@ -114,7 +115,7 @@ pub fn create(data: ?[*]const u8, length: u64, backend: u32, out: *?*c.zc_tuning
     mutex.lock();
     defer mutex.unlock();
     const s = &states[backend];
-    if (s.users == 0 and s.managers == 0 and s.last_error != c.ZC_OK) {
+    if (s.users == 0 and s.manager.users == 0 and s.last_error != c.ZC_OK) {
         const retry = cleanup(s);
         if (retry != c.ZC_OK) return retry;
     }
@@ -123,7 +124,7 @@ pub fn create(data: ?[*]const u8, length: u64, backend: u32, out: *?*c.zc_tuning
         if (!std.mem.eql(u8, p.document.bytes, document.bytes)) return c.ZC_BUSY;
         if (s.environment != null and !sameEnvironment(s)) return c.ZC_BUSY;
     } else {
-        if (s.managers != 0) return c.ZC_BUSY;
+        if (s.manager.users != 0) return c.ZC_BUSY;
         const p = A.create(Profile) catch return c.ZC_NOMEM;
         p.* = .{ .document = document };
         document_owned = false;
@@ -150,7 +151,7 @@ pub export fn zc_tuning_session_close(p: *c.zc_tuning_session) c_int {
     defer mutex.unlock();
     const s = &states[token.backend];
     std.debug.assert(s.users > 0);
-    if (s.users == 1 and s.managers == 0) {
+    if (s.users == 1 and s.manager.users == 0) {
         // Decrement only on successful cleanup; failed close retains its token.
         s.users = 0;
         const rc = cleanup(s);
@@ -174,16 +175,28 @@ pub export fn zc_get_tuning_state(backend: u32, out: *c.zc_tuning_state) c_int {
     mutex.lock();
     defer mutex.unlock();
     const s = &states[backend];
-    out.* = .{ .struct_size = @sizeOf(c.zc_tuning_state), .backend = backend, .custom = @intFromBool(s.profile != null), .manager_users = s.managers, .session_users = s.users, .environment_active = @intFromBool(s.environment != null), .cleanup_pending = @intFromBool(s.profile != null and s.last_error != c.ZC_OK and s.managers == 0), .external_change = @intFromBool(s.external_change or (s.environment != null and !sameEnvironment(s))), .last_error = s.last_error, .reserved = 0, .generation = s.generation, .bytes = if (s.profile) |p| p.document.bytes.len else 0 };
+    out.* = .{ .struct_size = @sizeOf(c.zc_tuning_state), .backend = backend, .custom = @intFromBool(s.profile != null), .manager_users = s.manager.users, .session_users = s.users, .environment_active = @intFromBool(s.environment != null), .cleanup_pending = @intFromBool(s.profile != null and s.last_error != c.ZC_OK and s.manager.users == 0), .external_change = @intFromBool(s.external_change or (s.environment != null and !sameEnvironment(s))), .last_error = s.last_error, .reserved = 0, .generation = s.manager.generation, .bytes = if (s.profile) |p| p.document.bytes.len else 0 };
     return c.ZC_OK;
 }
 pub fn begin(backend: u32) c_int {
     mutex.lock();
     defer mutex.unlock();
+    return beginLocked(backend, false);
+}
+pub fn beginExclusive(backend: u32) c_int {
+    mutex.lock();
+    defer mutex.unlock();
+    return beginLocked(backend, true);
+}
+fn beginLocked(backend: u32, exclusive: bool) c_int {
+    if (backend > c.ZC_LIBCAMERA) return c.ZC_INVALID;
     const s = &states[backend];
-    if (s.managers == std.math.maxInt(u32)) return c.ZC_BUSY;
+    var next_layout = s.layout;
+    if (exclusive) _ = next_layout.enterExclusive() catch |err| return if (err == error.Busy) c.ZC_BUSY else c.ZC_STATE;
+    var next = s.manager;
+    _ = (if (exclusive) next.enterExclusive() else next.enterShared()) catch |err| return if (err == error.Busy) c.ZC_BUSY else c.ZC_STATE;
     if (s.environment != null and !sameEnvironment(s)) return c.ZC_BUSY;
-    if (s.managers == 0) {
+    if (s.manager.users == 0) {
         if (s.last_error != c.ZC_OK) {
             const rc = cleanup(s);
             if (rc != c.ZC_OK) return rc;
@@ -197,18 +210,53 @@ pub fn begin(backend: u32) c_int {
             if (s.environment == null)
                 s.environment = Env.Override.init(A, key, p.path.?) catch |err| return if (err == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
         }
-        s.generation +%= 1;
     }
-    s.managers += 1;
+    s.manager = next;
+    s.layout = next_layout;
     return c.ZC_OK;
 }
+
 pub fn end(backend: u32) void {
     mutex.lock();
     defer mutex.unlock();
     const s = &states[backend];
-    std.debug.assert(s.managers > 0);
-    s.managers -= 1;
-    if (s.managers == 0) _ = cleanup(s);
+    const last = s.manager.leaveShared() catch unreachable;
+    if (last) _ = cleanup(s);
+}
+pub fn endExclusive(backend: u32) c_int {
+    mutex.lock();
+    defer mutex.unlock();
+    if (backend > c.ZC_LIBCAMERA) return c.ZC_INVALID;
+    const s = &states[backend];
+    var manager = s.manager;
+    var layout = s.layout;
+    manager.leaveExclusive() catch return c.ZC_STATE;
+    layout.leaveExclusive() catch return c.ZC_STATE;
+    s.manager = manager;
+    s.layout = layout;
+    return cleanup(s);
+}
+// Layout leases span logical clients even when a worker closes its SDK handle.
+// They do not count as manager or tuning environment owners.
+pub fn beginLayout(backend: u32) c_int {
+    if (backend > c.ZC_LIBCAMERA) return c.ZC_INVALID;
+    mutex.lock();
+    defer mutex.unlock();
+    _ = states[backend].layout.enterShared() catch |err| return if (err == error.Busy) c.ZC_BUSY else c.ZC_STATE;
+    return c.ZC_OK;
+}
+pub fn endLayout(backend: u32) void {
+    mutex.lock();
+    defer mutex.unlock();
+    _ = states[backend].layout.leaveShared() catch unreachable;
+}
+pub fn layoutUsers(backend: u32, count: *u32) c_int {
+    count.* = 0;
+    if (backend > c.ZC_LIBCAMERA) return c.ZC_INVALID;
+    mutex.lock();
+    defer mutex.unlock();
+    count.* = states[backend].layout.users;
+    return c.ZC_OK;
 }
 // Private bridge symbols: the real manager serializes these around all users.
 pub export fn zct_tuning_manager_begin() c_int {
@@ -216,6 +264,12 @@ pub export fn zct_tuning_manager_begin() c_int {
 }
 pub export fn zct_tuning_manager_end() void {
     end(c.ZC_LIBCAMERA);
+}
+pub export fn zct_tuning_manager_exclusive_begin() c_int {
+    return beginExclusive(c.ZC_LIBCAMERA);
+}
+pub export fn zct_tuning_manager_exclusive_end() c_int {
+    return endExclusive(c.ZC_LIBCAMERA);
 }
 
 test "sessions own snapshots share exact data and conflict with live default managers" {
@@ -330,4 +384,32 @@ test "absent and empty environment values restore distinctly and replacement ino
         try t.expectEqualStrings("replacement", bytes);
         try std.fs.deleteFileAbsolute(path);
     }
+}
+
+test "exclusive manager mutation excludes shared entry and pins profiles through final cleanup" {
+    const t = std.testing;
+    const backend = c.ZC_SYNTHETIC;
+    const source: []const u8 = "{\"sensor\":true}";
+    var session: ?*c.zc_tuning_session = null;
+    try t.expectEqual(c.ZC_OK, create(source.ptr, source.len, backend, &session));
+    try t.expectEqual(c.ZC_OK, beginExclusive(backend));
+    var snapshot: c.zc_tuning_state = undefined;
+    _ = zc_get_tuning_state(backend, &snapshot);
+    try t.expectEqual(@as(u32, 1), snapshot.manager_users);
+    const generation = snapshot.generation;
+    try t.expectEqual(c.ZC_BUSY, begin(backend));
+    try t.expectEqual(c.ZC_BUSY, beginExclusive(backend));
+    try t.expectEqual(c.ZC_BUSY, zc_tuning_cleanup(backend));
+    try t.expectEqual(c.ZC_OK, zc_tuning_session_close(session.?));
+    session = null;
+    _ = zc_get_tuning_state(backend, &snapshot);
+    try t.expect(snapshot.custom == 1 and snapshot.session_users == 0 and snapshot.manager_users == 1);
+    try t.expectEqual(generation, snapshot.generation);
+    try t.expectEqual(c.ZC_OK, endExclusive(backend));
+    _ = zc_get_tuning_state(backend, &snapshot);
+    try t.expect(snapshot.custom == 0 and snapshot.manager_users == 0);
+    try t.expectEqual(c.ZC_STATE, endExclusive(backend));
+    try t.expectEqual(c.ZC_OK, begin(backend));
+    try t.expectEqual(c.ZC_BUSY, beginExclusive(backend));
+    end(backend);
 }

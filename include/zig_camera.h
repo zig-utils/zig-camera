@@ -258,6 +258,32 @@ typedef struct {
     float camera_to_srgb[9]; /* libcamera ColourCorrectionMatrix; WB is separate */
     char model[128];
 } zc_raw_metadata;
+/* IMX708 sensor HDR is a pre-open layout control, distinct from runtime HdrMode.
+ * Exact ID and index selection are mutually exclusive; UINT32_MAX means automatic
+ * first matching IMX708. Explicit synthetic backend models ownership only.
+ * At most 16 helpers may own descriptors. Mutations require every camera,
+ * discovery scope and manager watch in this process to have closed; BUSY never
+ * resets an active manager. Later camera opens obtain a fresh mode catalog.
+ * Flags preserve observations even on failed/partially applied writes. Unknown
+ * current/previous values remain absent. Close does not reset the sensor mode.
+ * Per-helper operations require caller serialization; close returns BUSY while
+ * an operation is entered. No HDR quality or hardware acceptance is implied. */
+/* Logical-client scopes protect sensor layouts across native close/reopen jobs.
+ * Native sessions and Bun Camera owners retain these automatically. Up to 64
+ * additional explicit scopes may be retained; close each exactly once. */
+typedef struct zc_sensor_layout_scope zc_sensor_layout_scope;
+int zc_sensor_layout_scope_open(uint32_t backend,zc_sensor_layout_scope **out);
+int zc_sensor_layout_scope_close(zc_sensor_layout_scope *);
+int zc_sensor_layout_users_get(uint32_t backend,uint32_t *count);
+typedef struct zc_imx708 zc_imx708;
+enum { ZC_SENSOR_HDR_CURRENT=1,ZC_SENSOR_HDR_PREVIOUS=2,ZC_SENSOR_HDR_CHANGED=4,ZC_SENSOR_HDR_WRITE_ATTEMPTED=8,ZC_SENSOR_HDR_WRITE_SUCCEEDED=16,ZC_SENSOR_HDR_CATALOG_INVALIDATED=32,ZC_SENSOR_HDR_SYNTHETIC=64 };
+typedef struct {uint32_t struct_size,backend,flags;int32_t system_errno;uint64_t manager_generation;uint32_t enabled,previous_enabled;} zc_sensor_hdr_state;
+int zc_imx708_open(uint32_t backend,uint32_t index,const uint8_t *id,uint32_t id_length,zc_imx708 **out);
+int zc_imx708_camera_id(zc_imx708 *,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_imx708_get_hdr_mode(zc_imx708 *,zc_sensor_hdr_state *);
+int zc_imx708_set_hdr_mode(zc_imx708 *,uint32_t enabled,zc_sensor_hdr_state *);
+int zc_imx708_close(zc_imx708 *);
+
 /* Typed bounded runtime controls. IDs map to libcamera names in docs/controls.md.
  * Query support/ranges; a batch is validated atomically and staged for the next
  * recycled request. Already queued frames and sensor pipeline latency remain.
@@ -269,7 +295,8 @@ enum { ZC_AE_ENABLE=1,ZC_EXPOSURE_TIME,ZC_ANALOGUE_GAIN,ZC_EXPOSURE_VALUE,
  ZC_AF_RANGE,ZC_AF_SPEED,ZC_AF_METERING,ZC_AF_WINDOWS,ZC_SCALER_CROP,
  ZC_NOISE_REDUCTION,ZC_AE_METERING,ZC_AE_EXPOSURE,ZC_AWB_MODE,
  ZC_EXPOSURE_TIME_MODE,ZC_ANALOGUE_GAIN_MODE,ZC_AF_PAUSE,ZC_AE_CONSTRAINT,
- ZC_COLOUR_TEMPERATURE,ZC_AE_FLICKER_MODE,ZC_AE_FLICKER_PERIOD };
+ ZC_COLOUR_TEMPERATURE,ZC_AE_FLICKER_MODE,ZC_AE_FLICKER_PERIOD,ZC_HDR_MODE,ZC_CONTROL_COUNT };
+enum { ZC_HDR_OFF=0,ZC_HDR_SINGLE_EXPOSURE=1,ZC_HDR_MULTI_EXPOSURE=2,ZC_HDR_NIGHT=3,ZC_HDR_MULTI_EXPOSURE_UNMERGED=4 };
 typedef struct {uint32_t id,type,count,reserved;double values[16];} zc_control;
 typedef struct {
  uint32_t id,type,min_count,max_count;

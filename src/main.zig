@@ -2,6 +2,8 @@ const std = @import("std");
 const camera = @import("camera");
 const help =
     \\zig-camera list|info|modes|capture|preview|record|bench [options]
+    \\zig-camera sensor-hdr get|on|off [--camera N|--camera-id ID] [--simulate]
+    \\  --hdr-mode NAME          Runtime off/single-exposure/multi-exposure/night/multi-exposure-unmerged
     \\  --width N --height N      Processed size; omit both for default still size
     \\  --buffers N              Preallocated request count, 2..32 (default 4)
     \\  --camera N               libcamera camera index (default 0)
@@ -61,6 +63,7 @@ fn run() !void {
         return;
     }
     const command = args[1];
+    if (eq(command, "sensor-hdr")) return sensorHdr(args[2..]);
     if (eq(command, "list")) {
         var simulate = false;
         for (args[2..]) |arg| {
@@ -110,6 +113,7 @@ fn run() !void {
     var show_preview = eq(command, "preview");
     var output: [:0]const u8 = if (eq(command, "record")) "capture.mkv" else "capture.ppm";
     var simulate = false;
+    var hdr_mode: ?camera.HdrMode = null;
     var camera_id: ?[:0]const u8 = null;
     var camera_index_set = false;
     var warmup: u32 = 30;
@@ -179,7 +183,10 @@ fn run() !void {
         i += 1;
         if (i >= args.len) return error.MissingOptionValue;
         const value = args[i];
-        if (eq(key, "--quality-tier")) {
+        if (eq(key, "--hdr-mode")) {
+            if (hdr_mode != null) return error.DuplicateHdrMode;
+            hdr_mode = try hdrMode(value);
+        } else if (eq(key, "--quality-tier")) {
             quality_tier = try camera.capture_quality.fromName(value);
         } else if (eq(key, "--image-format")) {
             image_format = try camera.still.formatFromName(value);
@@ -333,6 +340,7 @@ fn run() !void {
     const info = cam.info();
     if (info.backend == camera.c.ZC_SYNTHETIC and !simulate) return error.SyntheticBackendRequiresSimulateFlag;
     if (info.backend != camera.c.ZC_SYNTHETIC and simulate) return error.SimulateRequiresSyntheticBuild;
+    if (hdr_mode) |mode| _ = try cam.setHdrMode(mode);
     const negotiated = cam.pipelineInfo();
     const video_geometry = if (record_stream == camera.c.ZC_MAIN) info.main else negotiated.lores;
     if (eq(command, "record") and record_stream == camera.c.ZC_LORES) {
@@ -558,4 +566,64 @@ fn waitSyntheticRotation(recorder: *camera.c.zc_recorder, timeout_ms: u32) !void
         if (timer.read() >= @as(u64, timeout_ms) * 1_000_000) return error.Timeout;
         std.Thread.sleep(1_000_000);
     }
+}
+
+fn hdrMode(value: []const u8) !camera.HdrMode {
+    if (eq(value, "off")) return .off;
+    if (eq(value, "single-exposure")) return .single_exposure;
+    if (eq(value, "multi-exposure")) return .multi_exposure;
+    if (eq(value, "night")) return .night;
+    if (eq(value, "multi-exposure-unmerged")) return .multi_exposure_unmerged;
+    return error.InvalidHdrMode;
+}
+fn sensorHdr(args: []const [:0]u8) !void {
+    if (args.len == 0) return error.MissingSensorHdrAction;
+    const action = args[0];
+    if (!eq(action, "get") and !eq(action, "on") and !eq(action, "off")) return error.InvalidSensorHdrAction;
+    var simulate = false;
+    var index: ?u32 = null;
+    var id: ?[]const u8 = null;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const key = args[i];
+        if (eq(key, "--simulate")) {
+            if (simulate) return error.DuplicateOption;
+            simulate = true;
+            continue;
+        }
+        i += 1;
+        if (i == args.len) return error.MissingOptionValue;
+        if (eq(key, "--camera")) {
+            if (index != null) return error.DuplicateOption;
+            index = try std.fmt.parseInt(u32, args[i], 10);
+            if (index.? == std.math.maxInt(u32)) return error.InvalidCameraIndex;
+        } else if (eq(key, "--camera-id")) {
+            if (id != null) return error.DuplicateOption;
+            id = args[i];
+        } else return error.UnknownOption;
+    }
+    if (id != null and index != null) return error.AmbiguousCameraSelector;
+    var sensor = try camera.IMX708.init(if (simulate) camera.c.ZC_SYNTHETIC else camera.c.ZC_LIBCAMERA, index, id);
+    defer sensor.close() catch {};
+    const identity = try sensor.cameraId(std.heap.page_allocator);
+    defer std.heap.page_allocator.free(identity);
+    var state: camera.SensorHdrState = undefined;
+    const code = if (eq(action, "get")) camera.imx708.zc_imx708_get_hdr_mode(sensor.handle.?, &state) else camera.imx708.zc_imx708_set_hdr_mode(sensor.handle.?, @intFromBool(eq(action, "on")), &state);
+    const json = try std.json.Stringify.valueAlloc(std.heap.page_allocator, .{
+        .camera_id = identity,
+        .backend = if (simulate) @as([]const u8, "synthetic") else "libcamera",
+        .status = code,
+        .enabled = if (state.flags & camera.c.ZC_SENSOR_HDR_CURRENT != 0) @as(?bool, state.enabled != 0) else null,
+        .previous_enabled = if (state.flags & camera.c.ZC_SENSOR_HDR_PREVIOUS != 0) @as(?bool, state.previous_enabled != 0) else null,
+        .changed = if (state.flags & 3 == 3) @as(?bool, state.flags & camera.c.ZC_SENSOR_HDR_CHANGED != 0) else null,
+        .write_attempted = state.flags & camera.c.ZC_SENSOR_HDR_WRITE_ATTEMPTED != 0,
+        .write_succeeded = state.flags & camera.c.ZC_SENSOR_HDR_WRITE_SUCCEEDED != 0,
+        .catalog_invalidated = state.flags & camera.c.ZC_SENSOR_HDR_CATALOG_INVALIDATED != 0,
+        .manager_generation = state.manager_generation,
+        .system_errno = state.system_errno,
+    }, .{});
+    defer std.heap.page_allocator.free(json);
+    try std.fs.File.stdout().writeAll(json);
+    try std.fs.File.stdout().writeAll("\n");
+    try camera.check(code);
 }

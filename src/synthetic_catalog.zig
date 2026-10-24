@@ -5,7 +5,7 @@ const api = @import("catalog.zig");
 const Sink = api.Sink;
 const b = api.bridge;
 const synthetic = @import("synthetic.zig");
-pub const names = [_][]const u8{ "", "AeEnable", "ExposureTime", "AnalogueGain", "ExposureValue", "AwbEnable", "ColourGains", "Brightness", "Contrast", "Saturation", "Sharpness", "FrameDurationLimits", "LensPosition", "AfMode", "AfTrigger", "AfRange", "AfSpeed", "AfMetering", "AfWindows", "ScalerCrop", "NoiseReductionMode", "AeMeteringMode", "AeExposureMode", "AwbMode", "ExposureTimeMode", "AnalogueGainMode", "AfPause", "AeConstraintMode", "ColourTemperature", "AeFlickerMode", "AeFlickerPeriod" };
+pub const names = [_][]const u8{ "", "AeEnable", "ExposureTime", "AnalogueGain", "ExposureValue", "AwbEnable", "ColourGains", "Brightness", "Contrast", "Saturation", "Sharpness", "FrameDurationLimits", "LensPosition", "AfMode", "AfTrigger", "AfRange", "AfSpeed", "AfMetering", "AfWindows", "ScalerCrop", "NoiseReductionMode", "AeMeteringMode", "AeExposureMode", "AwbMode", "ExposureTimeMode", "AnalogueGainMode", "AfPause", "AeConstraintMode", "ColourTemperature", "AeFlickerMode", "AeFlickerPeriod", "HdrMode" };
 fn begin(s: *const Sink, group: u32, id: u32, name: []const u8, kind: u32, app_id: u32, flags: u32, extent: u32) c_int {
     const vendor = "synthetic";
     const r: b.zcd_catalog_record = .{ .group = group, .id = id, .app_id = app_id, .native_type = kind, .kind = kind, .flags = flags | 32, .extent = extent, .name = name.ptr, .name_length = name.len, .vendor = vendor.ptr, .vendor_length = vendor.len };
@@ -78,7 +78,7 @@ pub fn controls(h: *@import("synthetic.zig").Handle, s: *const Sink) c_int {
     }
     return @import("typed_synthetic.zig").capabilities(h, s);
 }
-pub fn metadata(s: *const Sink, m: c.zc_metadata, wallclock_ns: i64) c_int {
+pub fn metadata(s: *const Sink, m: c.zc_metadata, wallclock_ns: i64, hdr_mode: i32) c_int {
     const digital_gain: f32 = 1;
     const timestamp: i64 = @intCast(m.timestamp_ns);
     const duration: i64 = @intCast(m.frame_duration_us);
@@ -100,6 +100,7 @@ pub fn metadata(s: *const Sink, m: c.zc_metadata, wallclock_ns: i64) c_int {
         .{ .id = 109, .name = "SensorBlackLevels", .kind = 3, .count = 4, .data = std.mem.asBytes(&black), .is_array = true },
         .{ .id = 111, .name = "DigitalGain", .kind = 5, .data = std.mem.asBytes(&digital_gain) },
         .{ .id = 112, .name = "FrameWallClock", .kind = 4, .data = std.mem.asBytes(&wallclock_ns) },
+        .{ .id = 113, .name = "SyntheticHdrMode", .kind = 3, .data = std.mem.asBytes(&hdr_mode) },
         .{ .id = 0xf0000001, .name = "SyntheticOpaque", .kind = 255, .count = 2, .data = &.{ 0, 255, 127 }, .is_array = true },
     };
     for (fields) |f| {

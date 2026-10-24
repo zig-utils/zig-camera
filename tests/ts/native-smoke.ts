@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { Camera, CameraError, getTuningState, TuningSession } from '../../ts'
+import { Camera, CameraError, getTuningState, TuningSession, IMX708 } from '../../ts'
 import { native as n, ptr, storage, type Pointer } from '../../ts/ffi'
 
 // A real manager watch must outlive failed opens and discovery leases without
@@ -80,6 +80,7 @@ assert.deepEqual(
   discovered.map((c) => c.id),
 )
 console.log(`libcamera discovery returned ${discovered.length} cameras`)
+if (!discovered.length) assert.throws(() => new IMX708(), (error) => error instanceof CameraError && error.code === -8)
 try {
   const camera = new Camera()
   assert.equal(camera.info().backend, 1, 'real backend must load')

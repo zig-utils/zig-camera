@@ -91,10 +91,51 @@ pub const ImagePixels = @import("home/pixel_view.zig");
 pub const ImageResample = @import("home/pixel_resample.zig");
 pub const ImageOrthogonal = @import("home/oriented_pixels.zig");
 pub const PngDecoder = @import("home/png_decoder.zig");
+pub const sensor_layout = @import("sensor_layout.zig");
+pub const imx708 = @import("imx708.zig");
+comptime {
+    _ = imx708;
+    _ = sensor_layout;
+}
 pub const png_image = @import("png_image.zig");
 comptime {
     _ = png_image;
 }
+pub const HdrMode = enum(u32) { off = 0, single_exposure = 1, multi_exposure = 2, night = 3, multi_exposure_unmerged = 4 };
+pub const SensorHdrState = c.zc_sensor_hdr_state;
+pub const IMX708 = struct {
+    handle: ?*c.zc_imx708,
+    pub fn init(backend: u32, index: ?u32, id: ?[]const u8) Error!IMX708 {
+        if (id != null and id.?.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_imx708 = null;
+        try check(imx708.zc_imx708_open(backend, index orelse std.math.maxInt(u32), if (id) |value| value.ptr else null, if (id) |value| @intCast(value.len) else 0, &out));
+        return .{ .handle = out };
+    }
+    pub fn cameraId(self: IMX708, allocator: std.mem.Allocator) Error![]u8 {
+        const handle = self.handle orelse return error.Stopped;
+        var length: u64 = 0;
+        try check(imx708.zc_imx708_camera_id(handle, null, 0, &length));
+        const bytes = try allocator.alloc(u8, @intCast(length));
+        errdefer allocator.free(bytes);
+        try check(imx708.zc_imx708_camera_id(handle, bytes.ptr, bytes.len, &length));
+        return bytes;
+    }
+    pub fn getSensorHdrMode(self: IMX708) Error!SensorHdrState {
+        var out: SensorHdrState = undefined;
+        try check(imx708.zc_imx708_get_hdr_mode(self.handle orelse return error.Stopped, &out));
+        return out;
+    }
+    /// Keep out even on error: it reports known/unknown and partial changes.
+    pub fn setSensorHdrMode(self: IMX708, enabled: bool, out: *SensorHdrState) Error!void {
+        try check(imx708.zc_imx708_set_hdr_mode(self.handle orelse return error.Stopped, @intFromBool(enabled), out));
+    }
+    pub fn close(self: *IMX708) Error!void {
+        if (self.handle) |handle| {
+            try check(imx708.zc_imx708_close(handle));
+            self.handle = null;
+        }
+    }
+};
 pub const ImageOptions = c.zc_image_options;
 pub const ImageProfile = c.zc_image_profile;
 pub const ImageExif = c.zc_image_exif;
@@ -458,6 +499,14 @@ pub const Camera = struct {
         var out: c.zc_control_info = undefined;
         try check(core.zc_get_control_info(self.handle, id, &out));
         return out;
+    }
+    pub fn setHdrMode(self: Camera, mode: HdrMode) Error!u64 {
+        var control = std.mem.zeroes(c.zc_control);
+        control.id = c.ZC_HDR_MODE;
+        control.type = c.ZC_INT;
+        control.count = 1;
+        control.values[0] = @floatFromInt(@intFromEnum(mode));
+        return self.setControls(&.{control});
     }
     pub fn setControls(self: Camera, values: []const c.zc_control) Error!u64 {
         if (values.len == 0 or values.len > c.ZC_MAX_CONTROLS) return error.Invalid;
@@ -2141,4 +2190,29 @@ test "public Zig staged bytes preserve a retryable close owner until explicit pu
     const bytes = try tmp.dir.readFileAlloc(t.allocator, "encoded", 1024);
     defer t.allocator.free(bytes);
     try t.expectEqualStrings("encoded image", bytes);
+}
+
+test "public sensor HDR owner preserves busy state and runtime HDR controls" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var sensor = try IMX708.init(c.ZC_SYNTHETIC, null, null);
+    defer sensor.close() catch unreachable;
+    var state: SensorHdrState = undefined;
+    try sensor.setSensorHdrMode(false, &state);
+    defer sensor.setSensorHdrMode(false, &state) catch unreachable;
+    const id = try sensor.cameraId(std.testing.allocator);
+    defer std.testing.allocator.free(id);
+    try std.testing.expectEqualStrings("synthetic", id);
+    var cfg = defaultConfig();
+    cfg.width = 32;
+    cfg.height = 24;
+    const cam = try Camera.init(cfg);
+    try std.testing.expectError(error.Busy, sensor.setSensorHdrMode(true, &state));
+    try std.testing.expect(state.flags & c.ZC_SENSOR_HDR_CURRENT == 0);
+    _ = try cam.setHdrMode(.single_exposure);
+    try cam.deinit();
+    try sensor.setSensorHdrMode(true, &state);
+    try std.testing.expectEqual(@as(u32, 1), (try sensor.getSensorHdrMode()).enabled);
+    try sensor.close();
+    sensor = try IMX708.init(c.ZC_SYNTHETIC, 0, null);
+    try std.testing.expectEqual(@as(u32, 1), (try sensor.getSensorHdrMode()).enabled);
 }

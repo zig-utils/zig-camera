@@ -43,6 +43,21 @@ template<class T> void extraType(const zcd_catalog_sink &sink,Captured &out,T in
     }
 }
 int main() {
+    // Both concrete SDK users and logical worker-gap scopes reject mutation
+    // before constructing a manager or invoking the internal IO callback.
+    {
+        auto &host=managerHost(); bool invoked=false;
+        const uint8_t id[]="/base/test/imx708@1a";
+        const auto apply=+[](void *ctx)->int{*static_cast<bool *>(ctx)=true;return ZC_OK;};
+        host.users=1;
+        assert(zcd_imx708_mutate(id,sizeof(id)-1,&invoked,apply)==ZC_BUSY&&!invoked);
+        host.users=0;
+        zc_sensor_layout_scope *scope=nullptr;
+        assert(zc_sensor_layout_scope_open(ZC_LIBCAMERA,&scope)==ZC_OK);
+        assert(zcd_imx708_mutate(id,sizeof(id)-1,&invoked,apply)==ZC_BUSY&&!invoked);
+        assert(zc_sensor_layout_scope_close(scope)==ZC_OK);
+    }
+
     {
         struct Blocking {std::mutex mutex;std::condition_variable changed;bool entered=false,release=false;unsigned calls=0;} block;
         const auto relay=std::make_shared<WatchCallbacks>();

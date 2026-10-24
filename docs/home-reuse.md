@@ -1797,3 +1797,30 @@ unchanged. Home runtime ptr/ref_count.zig was inspected; it depends on Bun runti
 allocation, thread locks and tracing. The hosted PNG owner instead uses a local
 two-reference atomic reservation lifetime for its job/result pair, with shared
 Home admission released only after both pixel and copied-input owners retire.
+
+## Sensor layout and runtime HDR (0.101)
+
+Fetched Home main at 207d20242d3dbaec74b9888f70b9f516521f55de and inspected
+video core lifetime gates, device identity/catalog helpers, video/hdr and image
+HDR/tone-map implementations. The latter operate on pixels and do not implement
+V4L2 sensor HDR. Improvement 4a5d30540bd6b483c634ddd86de4fe27bef32115 adds
+portable manager_gate, sensor_node and boolean_control helpers with public video
+exports and documentation. The gate checks shared/exclusive lifetimes and
+saturation; exact bounded node matching rejects prefix/driver ambiguity; boolean
+writes preserve partial observations and the original write error. Eight leaf
+tests plus one explicitly imported public API test pass on pinned and development
+Zig in Debug/ReleaseSafe. Home exact-head Actions returned no runs at audit time;
+the camera consumer matrix therefore also checks the pinned upstream public API.
+
+Camera copies all three files verbatim, retains native/Bun scope admission,
+libcamera manager serialization, Linux character-fd/sysfs identity validation and
+V4L2 system-header IO. Shared gates protect both SDK leases and logical camera
+lifetimes across worker close/reopen gaps without changing tuning manager counts.
+Runtime HdrMode uses existing typed catalog, atomic controls and replay paths.
+No pixel HDR algorithm, Home OS source, Python or FFmpeg is introduced.
+
+The separate developer checkout at ~/Code/Home/lang was also searched at
+c190bb6bd96ef3f8399af52b9aea6a4b359b609c (with an unrelated existing untracked
+TypeScript benchmark evidence file left untouched). Its video/image/media/kernel
+packages contain no IMX708, wide_dynamic_range or V4L2 sensor-HDR implementation.
+The exact reusable implementation is the published Home revision above.

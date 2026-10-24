@@ -24,6 +24,7 @@ const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID
 const CaptureFilter = @import("capture_filter.zig");
 const colors = @import("color_policy.zig");
 const Session = struct {
+    layout_backend: u32 = 0,
     identity: Identity = .{},
     properties: ?*@import("catalog.zig").Catalog = null,
     desired: ControlState = .{},
@@ -290,8 +291,13 @@ pub export fn zc_align_camera_configuration(cfg: *const c.zc_config, pipeline: *
 fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (zc_check_camera_configuration(cfg, pipeline, processed, orientation, strict) != c.ZC_OK) return c.ZC_INVALID;
+    const layout_backend: u32 = if (options.libcamera) c.ZC_LIBCAMERA else c.ZC_SYNTHETIC;
+    const layout_rc = @import("tuning_session.zig").beginLayout(layout_backend);
+    if (layout_rc != c.ZC_OK) return layout_rc;
+    var layout_owned = true;
+    defer if (layout_owned) @import("tuning_session.zig").endLayout(layout_backend);
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
-    self.* = .{ .config = cfg.*, .processed = processed.*, .pipeline_options = pipeline.*, .strict_orientation = strict != 0 };
+    self.* = .{ .layout_backend = layout_backend, .config = cfg.*, .processed = processed.*, .pipeline_options = pipeline.*, .strict_orientation = strict != 0 };
     var actual: u32 = 0;
     const rc = if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
@@ -347,6 +353,7 @@ fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options,
         return c.ZC_DISCONNECTED;
     }
     out.* = self.ptr();
+    layout_owned = false;
     return c.ZC_OK;
 }
 fn colorNegotiation(self: *Session, which: u32, enforce: bool, out: *c.zc_color_negotiation) c_int {
@@ -1218,8 +1225,10 @@ fn closeWithState(p: *c.zc_camera, out: ?*c.zc_device_state) c_int {
     }
     if (self.native_desired) |*writer| writer.deinit();
     if (self.properties) |properties| properties.destroy();
+    const layout_backend = self.layout_backend;
     self.operation.unlock();
     std.heap.c_allocator.destroy(self);
+    @import("tuning_session.zig").endLayout(layout_backend);
     return c.ZC_OK;
 }
 pub export fn zc_get_stats(p: *c.zc_camera, out: *c.zc_stats) c_int {

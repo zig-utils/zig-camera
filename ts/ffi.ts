@@ -12,6 +12,14 @@ const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const native = dlopen(library, {
+  zc_sensor_layout_scope_open: {args:[u,p],returns:i},
+  zc_sensor_layout_scope_close: {args:[p],returns:i},
+  zc_sensor_layout_users_get: {args:[u,p],returns:i},
+  zc_imx708_open: {args:[u,u,p,u,p],returns:i},
+  zc_imx708_camera_id: {args:[p,p,n,p],returns:i},
+  zc_imx708_get_hdr_mode: {args:[p,p],returns:i},
+  zc_imx708_set_hdr_mode: {args:[p,u,p],returns:i},
+  zc_imx708_close: {args:[p],returns:i},
   zc_default_png_limits: {args:[p],returns:v},
   zc_png_decode: {args:[p,n,p,p],returns:i},
   zc_png_decode_async: {args:[p,n,p,p],returns:i},

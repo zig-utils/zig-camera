@@ -1,3 +1,8 @@
+export {
+  IMX708, SensorHdrError, HdrMode,
+  type SensorHdrState, type SensorHdrBackend, type Imx708Options, type HdrModeValue,
+} from './sensor-hdr'
+import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 import {
   prepareApng,
@@ -498,6 +503,7 @@ export const Control = {
   colourTemperature: 28,
   aeFlickerMode: 29,
   aeFlickerPeriod: 30,
+  hdrMode: 31,
 } as const
 const pause = (ms = 1) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -2044,6 +2050,7 @@ export class Camera {
   }
   private configuration: CameraOptions
   private tuningSession?: TuningSession
+  private sensorLayout?: ReturnType<typeof retainSensorLayout>
   private modeActive = false
   private sessionRecoveryActive = false
   private coordinatedGroup?: { recorders: Recorder[]; initials: Recording[] }
@@ -2173,6 +2180,7 @@ export class Camera {
         (this.info().backend === 0)
       )
         throw new CameraError(-8, 'synthetic backend unavailable')
+      this.sensorLayout = retainSensorLayout(this.readInfo().backend)
     } catch (error) {
       if (this.handle) {
         const code = n.zc_close(this.handle)
@@ -2183,6 +2191,8 @@ export class Camera {
           )
       }
       this.handle = 0 as Pointer
+      this.sensorLayout?.close()
+      this.sensorLayout = undefined
       try {
         this.tuningSession?.close()
         this.tuningSession = undefined
@@ -2477,6 +2487,13 @@ export class Camera {
       controlRevision: native.revision,
       nativeControls: encodeNativeSnapshot(native),
     }
+  }
+  /** Runtime ISP HDR, distinct from pre-open IMX708 sensor HDR. */
+  setHdrMode(mode: HdrModeValue) {
+    this.assertOpen()
+    if (typeof mode !== 'number' || !Number.isInteger(mode) || mode < 0 || mode > 4)
+      throw new RangeError('invalid HDR mode')
+    return this.setControls([{ id: Control.hdrMode, type: 'int', values: [mode] }])
   }
   setControls(controls: RuntimeControl[]) {
     this.assertOpen()
@@ -5969,6 +5986,7 @@ export class Camera {
       !this.previewConfiguration &&
       !this.overlayHandle &&
       !this.tuningSession &&
+      !this.sensorLayout &&
       this.audioGroups.size === 0 &&
       this.disconnectJobs.size === 0 &&
       (!this.reconnectJob || this.reconnectJob.done)
@@ -6006,10 +6024,15 @@ export class Camera {
         if (failure) throw failure
       })
       .finally(() => {
+        if (!this.handle && !this.fanout && !this.tuningSession && this.audioGroups.size === 0) {
+          this.sensorLayout?.close()
+          this.sensorLayout = undefined
+        }
         if (
           this.handle ||
           this.fanout ||
           this.tuningSession ||
+          this.sensorLayout ||
           this.audioGroups.size
         ) {
           this.closing = false

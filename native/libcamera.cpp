@@ -3,6 +3,7 @@
 // Ownership, ready queues, leases and consumer policy live in Zig.
 #include "zig_camera.h"
 #include "zig_camera_catalog_bridge.h"
+#include "imx708_control.hpp"
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
@@ -29,6 +30,8 @@ using namespace libcamera;
 using Completion = void (*)(void *, uint32_t, const zc_frame *, const zc_metadata *, int);
 extern "C" int zct_tuning_manager_begin();
 extern "C" void zct_tuning_manager_end();
+extern "C" int zct_tuning_manager_exclusive_begin();
+extern "C" int zct_tuning_manager_exclusive_end();
 namespace {
 bool nativeOrientation(uint32_t value,Orientation &out) {
     switch(value) {
@@ -141,7 +144,7 @@ const char *controlNames[]={nullptr,"AeEnable","ExposureTime","AnalogueGain","Ex
  "FrameDurationLimits","LensPosition","AfMode","AfTrigger","AfRange","AfSpeed",
  "AfMetering","AfWindows","ScalerCrop","NoiseReductionMode","AeMeteringMode",
  "AeExposureMode","AwbMode","ExposureTimeMode","AnalogueGainMode","AfPause",
- "AeConstraintMode","ColourTemperature","AeFlickerMode","AeFlickerPeriod"};
+ "AeConstraintMode","ColourTemperature","AeFlickerMode","AeFlickerPeriod","HdrMode"};
 bool numbers(const ControlValue &v,double *out) {
     switch(v.type()) {
     case ControlTypeBool: out[0]=v.get<bool>(); return true;
@@ -1171,4 +1174,47 @@ extern "C" int zcd_frame_sync_state(Device *device,uint32_t index,zc_frame_sync_
         }
     }
     return ZC_OK;
+}
+
+extern "C" int zcd_imx708_control(int fd,uint32_t operation,uint32_t *value,int32_t *system_error) {
+    return zc_sensor::control(fd,operation,value,system_error);
+}
+// Exclude every live camera/discovery/watch before a sensor layout mutation.
+// The temporary manager and camera are destroyed before the tuning/environment
+// guard retires. No active manager is reset; the next open constructs one anew.
+extern "C" int zcd_imx708_mutate(const uint8_t *id,uint32_t length,void *context,int (*apply)(void *)) {
+    auto &host=managerHost();
+    std::unique_lock<std::mutex> lock(host.mutex,std::try_to_lock);
+    if(!lock.owns_lock()||host.users!=0||host.manager)return ZC_BUSY;
+    const int entered=zct_tuning_manager_exclusive_begin();if(entered)return entered;
+    struct Guard {
+        bool held=true;
+        int finish(){if(!held)return ZC_STATE;held=false;return zct_tuning_manager_exclusive_end();}
+        ~Guard(){if(held)zct_tuning_manager_exclusive_end();}
+    } guard;
+    int result=ZC_OK;
+    try {
+        auto manager=std::make_unique<CameraManager>();
+        if(manager->start()<0)result=ZC_DEVICE;
+        else {
+            auto camera=manager->get(std::string(reinterpret_cast<const char *>(id),length));
+            if(!camera)result=ZC_DISCONNECTED;
+            else if(camera->properties().get(properties::Model).value_or("")!="imx708")result=ZC_UNSUPPORTED;
+            else {
+                const int acquired=camera->acquire();
+                if(acquired<0)result=acquired==-EBUSY?ZC_BUSY:ZC_DEVICE;
+                else {
+                    // Internal Zig callback only: validate pinned fd/sysfs identity,
+                    // query/write/read back and retain partial-outcome diagnostics.
+                    result=apply(context);
+                    const int released=camera->release();
+                    if(result==ZC_OK&&released<0)result=ZC_DEVICE;
+                }
+            }
+        }
+        // Shared Camera references leave scope before manager destruction.
+        manager.reset();
+    }catch(const std::bad_alloc &){result=ZC_NOMEM;}catch(...){result=ZC_DEVICE;}
+    const int cleanup=guard.finish();
+    return result==ZC_OK?cleanup:result;
 }
