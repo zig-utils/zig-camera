@@ -1,5 +1,21 @@
 # Home OS media reuse audit
 
+## 0.118 physical plane ownership audit
+
+Rechecked Home OS origin/main 151269666bc09aa15a271f1c1f4603f681132e65 and its
+camera, ISA DMA and framebuffer owners, with ADR-MC3/MC5. Independent video/UI
+planes and display cadence are useful architectural guidance. Their kernel
+addresses and fixed buffer states do not supply hosted DMA-BUF identity/extent
+checks, alias-safe component maps or libcamera SharedFD/FrameBuffer ownership.
+The camera capture path still explicitly contains a stub.
+
+The reusable object/window planner and backing changes therefore improve Home
+stdlib video and consume its existing IO provider and YUV encoders. Camera owns
+its SDK/Bun coordination; Home OS stays Home. No OS source is copied, translated,
+modified or executed. Neither display architecture nor GPU detection scaffolding
+is treated as physical capture/import/coherency or throughput evidence.
+
+
 ## 0.117 factory notifications and native thread retirement
 
 Checked current Home OS origin/main 151269666bc09aa15a271f1c1f4603f681132e65

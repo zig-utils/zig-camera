@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: b97e5fd55c73ec994314b683327ee2303bd9db23
+          ref: 8b50d2da7b04661ec52ab8871bf28c70ea732be0
           path: .home-allocation-upstream
           sparse-checkout: |
             packages/video
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in capture_allocation capture_backing capture_dma_heap capture_import_linux capture_host lease_pool owned_admission; do
+          for file in capture_allocation capture_objects capture_backing capture_dma_heap capture_import_linux capture_host lease_pool owned_admission; do
             cmp ".home-allocation-upstream/packages/video/src/core/$file.zig" "src/home/$file.zig"
           done
           cmp .home-allocation-upstream/packages/video/tests/capture_backing_fixture.zig tests/capture_backing_fixture.zig

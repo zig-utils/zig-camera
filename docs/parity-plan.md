@@ -1,5 +1,11 @@
 # Picamera2 capability parity worklist
 
+Version 0.118 adds [multi-object capture planes](capture-planes.md):
+linear planar/semi-planar imports and factories, per-object budgets/maps/fences,
+exact new factory loans, unchanged logical geometry and retained cleanup.
+GPU-specific layouts and physical Pi acceptance remain open.
+
+
 Version 0.117 adds [automatic capture buffer factories](capture-factories.md):
 actual negotiated layouts, asynchronous caller-input release, bounded native
 notification ownership, joined cancellation/rollback and async Camera.open in

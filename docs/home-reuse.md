@@ -1,5 +1,33 @@
 # Home reuse audit
 
+## 0.118 physical capture objects and component windows
+
+Rechecked Home b97e5fd55c73ec994314b683327ee2303bd9db23, capture_backing,
+capture_import_linux, plane_pack and yuv_rgb, plus image/gpu.zig. The planar
+encoders and copy helpers already accept component slices; the old backing owner
+had one resource per frame. GPU detection/context scaffolding does not supply
+hosted camera FD imports or a working graphics-API producer.
+
+Home [8b50d2da7b04661ec52ab8871bf28c70ea732be0](https://github.com/home-lang/home/commit/8b50d2da7b04661ec52ab8871bf28c70ea732be0)
+adds a portable per-frame object/window plan and extends the existing owner to
+four bounded physical planes. It normalizes disjoint same-object aliases once,
+charges whole extents before preparation, preserves per-plane windows and retains
+all objects/charges through failed cleanup. Managed and legacy contiguous APIs
+remain available. Borrowed import methods return the exact fresh loan, avoiding
+an older matching profile becoming idle during asynchronous factory preparation.
+All 37 ownership/range/failure tests pass locally on both compiler versions in
+Debug, ReleaseSafe and ReleaseFast; Camera pins exact-source comparisons.
+
+Camera vendors the two files verbatim, reuses Home's existing linear YUV row
+encoders for direct synthetic component writes and keeps pixel-format minima in
+Zig. Its thin system-C++ SDK adapter shares each adopted descriptor between
+same-object planes and binds the unique CPU fence list transactionally. Existing
+Bun factory/worker lifetimes, mapped access gates, exports, IPC and recorder
+admission are reused. C++ headers are explicit build inputs. No GPU context or
+hardware allocator is inferred from a stub or a system SDK constructor; physical
+Pi import, coherency and performance remain acceptance work.
+
+
 ## 0.117 automatic capture factories and joined worker ownership
 
 Rechecked Home af3017edbadf58ce1f93cf26324628b8aae3db4a, its async preparation_gate,

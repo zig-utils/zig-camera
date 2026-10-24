@@ -7,6 +7,12 @@ runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
 
+
+Version 0.118 adds [multi-object capture planes](docs/capture-planes.md):
+linear planar/semi-planar imports and factories, per-object budgets/maps/fences,
+exact new factory loans, unchanged logical geometry and retained cleanup.
+GPU-specific layouts and physical Pi acceptance remain open.
+
 Version 0.117 adds [automatic capture buffer factories](docs/capture-factories.md):
 actual negotiated layouts, asynchronous caller-input release, bounded native
 notification ownership, joined cancellation/rollback and async Camera.open in

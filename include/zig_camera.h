@@ -91,6 +91,14 @@ typedef struct {
     char format[32];
 } zc_capture_import_stream;
 typedef struct { int32_t fd; uint32_t reserved; uint64_t offset; } zc_capture_import_buffer;
+/* One frame may use disjoint planes of a shared object, independent objects,
+ * or a mixture. Each physical object is charged/duplicated/mapped once; objects
+ * may not alias across frames/entries. Plane ends must fit SDK uint32 ranges.
+ * Use count 1 for any existing contiguous format, 2 for linear NV12/NV21 or
+ * 3 for linear YUV420/YVU420. Extra declared capacity is allowed, overlapping
+ * ranges are not. Objects remain application-owned until import returns. */
+typedef struct { int32_t fd; uint32_t reserved; uint64_t offset,length; } zc_capture_import_plane;
+typedef struct { uint32_t struct_size,plane_count; zc_capture_import_plane planes[4]; } zc_capture_import_frame;
 typedef struct {
     uint32_t struct_size,backend,stream_count,id_length;
     uint8_t camera_id[4096];
@@ -103,6 +111,8 @@ int zc_capture_allocator_open_imported(const zc_capture_allocator_config *,zc_ca
 /* Buffers are stream-major, exactly sum(stream.buffer_count), max 3*64. */
 int zc_capture_allocator_import(zc_capture_allocator *,const uint8_t *camera_id,uint32_t id_length,
     const zc_capture_import_stream *,uint32_t stream_count,const zc_capture_import_buffer *,uint32_t buffer_count);
+int zc_capture_allocator_import_frames(zc_capture_allocator *,const uint8_t *camera_id,uint32_t id_length,
+    const zc_capture_import_stream *,uint32_t stream_count,const zc_capture_import_frame *,uint32_t frame_count);
 int zc_capture_allocator_state_get(zc_capture_allocator *,zc_capture_allocator_state *out);
 /* Pins keep the allocator alive across camera gaps and mode/open workers.
  * Each successful pin must be unpinned exactly once, after the worker joins. */
@@ -148,6 +158,7 @@ typedef struct {
 int zc_capture_allocator_factory_set(zc_capture_allocator *,zc_capture_allocator_factory_notify,void *context);
 int zc_capture_allocator_factory_begin(zc_capture_allocator *,uint64_t ticket,zc_capture_import_layout *out,zc_capture_factory_request_state *state);
 int zc_capture_allocator_factory_supply(zc_capture_allocator *,uint64_t ticket,const zc_capture_import_buffer *,uint32_t count);
+int zc_capture_allocator_factory_supply_frames(zc_capture_allocator *,uint64_t ticket,const zc_capture_import_frame *,uint32_t count);
 int zc_capture_allocator_factory_finish(zc_capture_allocator *,uint64_t ticket,int32_t result);
 /* Pipeline extensions preserve zc_config/zc_frame/zc_info ABI v1 layouts.
  * Explicit sensor selection requires both size and bit depth. Zero = automatic.

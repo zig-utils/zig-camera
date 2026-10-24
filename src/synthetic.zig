@@ -20,6 +20,9 @@ pub const Handle = struct {
     allocation_dirty: bool = false,
     buffer_fds: [3][c.ZC_MAX_BUFFERS]c_int = @splat(@splat(-1)),
     buffer_offsets: [3][c.ZC_MAX_BUFFERS]u64 = @splat(@splat(0)),
+    imported_counts: [3][c.ZC_MAX_BUFFERS]u8 = @splat(@splat(0)),
+    imported_planes: [3][c.ZC_MAX_BUFFERS][4]c.zc_plane = std.mem.zeroes([3][c.ZC_MAX_BUFFERS][4]c.zc_plane),
+    frame_lengths: [3]u64 = @splat(0),
     lores_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     info: c.zc_info,
@@ -80,6 +83,41 @@ fn attachProcessed(stream: *c.zc_stream, buf: []u8, fd: c_int, base_offset: u64)
         stream.planes[i] = .{ .data = buf[offset..].ptr, .length = len, .bytes_used = len, .fd = fd, .offset = if (fd >= 0) base_offset + offset else 0, .reserved = 0 };
     }
 }
+fn attachCapture(h: *Handle, stream: *c.zc_stream, buffer: []u8, which: usize, index: usize) void {
+    const count = h.imported_counts[which][index];
+    if (count > 1) {
+        stream.plane_count = count;
+        @memcpy(stream.planes[0..count], h.imported_planes[which][index][0..count]);
+    } else attachProcessed(stream, buffer, h.buffer_fds[which][index], h.buffer_offsets[which][index]);
+}
+fn sampleRaster(stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize) ![]u8 {
+    const tmp = try Alloc.alloc(u8, @as(usize, stream.width) * stream.height * 3);
+    const output = orientation.Extent{ .width = stream.width, .height = stream.height };
+    for (0..stream.height) |y| for (0..stream.width) |x| {
+        tmp[(y * stream.width + x) * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
+    };
+    return tmp;
+}
+fn writablePlane(plane: c.zc_plane) []u8 {
+    return @as([*]u8, @ptrCast(@constCast(plane.data)))[0..@intCast(plane.length)];
+}
+fn fillCapture(h: *Handle, which: usize, index: usize, buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, color: c.zc_color_space) !void {
+    const count = h.imported_counts[which][index];
+    if (count <= 1) return fillProcessed(buf, stream, transform, main_source, index, color);
+    const planes = h.imported_planes[which][index][0..count];
+    for (planes) |plane| @memset(writablePlane(plane), 0);
+    const rgb = try sampleRaster(stream, transform, main_source, index);
+    defer Alloc.free(rgb);
+    const format = @import("processed_format.zig").code(std.mem.sliceTo(&stream.format, 0)).?;
+    const conversion = try @import("stream_rgb.zig").conversion(color);
+    if (@import("processed_format.zig").semi(format)) {
+        try @import("home/yuv_rgb.zig").encodeSemi420(rgb, stream.width, stream.height, stream.width * 3, .{ writablePlane(planes[0]), writablePlane(planes[1]) }, .{ stream.stride, stream.stride }, format == c.ZC_NV21, conversion);
+    } else {
+        const first = writablePlane(planes[1]);
+        const second = writablePlane(planes[2]);
+        try @import("home/yuv_rgb.zig").encode420(rgb, stream.width, stream.height, stream.width * 3, .{ writablePlane(planes[0]), if (format == c.ZC_YVU420) second else first, if (format == c.ZC_YVU420) first else second }, .{ stream.stride, stream.stride / 2, stream.stride / 2 }, conversion);
+    }
+}
 fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize, color: c.zc_color_space) !void {
     @memset(buf, 0);
     const output = orientation.Extent{ .width = stream.width, .height = stream.height };
@@ -95,11 +133,8 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
         };
     } else {
         // Synthetic setup only: real hardware supplies the negotiated YUV planes.
-        const tmp = try Alloc.alloc(u8, @as(usize, stream.width) * stream.height * 3);
+        const tmp = try sampleRaster(stream, transform, main_source, index);
         defer Alloc.free(tmp);
-        for (0..stream.height) |y| for (0..stream.width) |x| {
-            tmp[(y * stream.width + x) * 3 ..][0..3].* = sampleRGB(transform, output, main_source, x, y, index);
-        };
         const ysize = @as(usize, stream.stride) * stream.height;
         const format = @import("processed_format.zig").code(std.mem.sliceTo(&stream.format, 0)).?;
         const conversion = try @import("stream_rgb.zig").conversion(color);
@@ -124,12 +159,19 @@ pub fn openAllocated(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
 }
 fn allocationBuffer(h: *Handle, allocation: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: usize) ![]u8 {
     const allocator = @import("capture_allocator.zig");
-    var result: allocator.bridge.zci_allocation_buffer = undefined;
-    const rc = allocator.zci_capture_allocator_buffer(allocation, loan, stream, @intCast(buffer), 1, &result);
+    var result: allocator.bridge.zci_allocation_frame = undefined;
+    const rc = allocator.zci_capture_allocator_frame(allocation, loan, stream, @intCast(buffer), 1, &result);
     if (rc != c.ZC_OK) return if (rc == c.ZC_NOMEM) error.OutOfMemory else error.CaptureIo;
-    h.buffer_fds[stream][buffer] = result.fd;
-    h.buffer_offsets[stream][buffer] = result.offset;
-    return @as([*]u8, @ptrCast(@constCast(result.data)))[0..@intCast(result.frame_bytes)];
+    const primary = result.planes[0];
+    h.buffer_fds[stream][buffer] = primary.fd;
+    h.buffer_offsets[stream][buffer] = primary.offset;
+    if (result.plane_count > 1) {
+        h.imported_counts[stream][buffer] = @intCast(result.plane_count);
+        for (result.planes[0..result.plane_count], 0..) |plane, p| {
+            h.imported_planes[stream][buffer][p] = .{ .data = plane.data, .length = plane.frame_bytes, .bytes_used = plane.frame_bytes, .fd = plane.fd, .offset = plane.offset, .reserved = 0 };
+        }
+    }
+    return @as([*]u8, @ptrCast(@constCast(primary.data)))[0..@intCast(primary.frame_bytes)];
 }
 fn allocationGeometry(stream: c.zc_stream, count: u32, bytes: u64) !@import("capture_allocator.zig").Home.policy.Stream {
     return @import("capture_allocator.zig").Home.policy.Stream.init(stream.width, stream.height, stream.stride, bytes, count, std.mem.sliceTo(&stream.format, 0), 0);
@@ -211,6 +253,7 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
     }
     const main_bytes = @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 2 else 1);
     const lores_bytes = @as(usize, h.pipeline.lores.stride) * h.pipeline.lores.height * @as(usize, if (@import("processed_format.zig").yuv420(opts.lores_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(opts.lores_format)) 2 else 1);
+    h.frame_lengths = .{ main_bytes, lores_bytes, @as(u64, h.info.raw.stride) * h.info.raw.height };
     if (allocation) |owner| {
         const allocator = @import("capture_allocator.zig");
         var descriptors: [3]allocator.Home.policy.Stream = undefined;
@@ -236,7 +279,7 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
             close(h);
             return if (failure == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
         };
-        fillProcessed(h.buffers[i], h.info.main, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, main_format) catch unreachable) catch {
+        fillCapture(h, 0, i, h.buffers[i], h.info.main, transform, main_source, @import("color_policy.zig").effective(h.color_request, main_format) catch unreachable) catch {
             close(h);
             return c.ZC_NOMEM;
         };
@@ -286,7 +329,7 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
                 close(h);
                 return if (failure == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
             };
-            fillProcessed(h.lores_buffers[i], l, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, opts.lores_format) catch unreachable) catch {
+            fillCapture(h, 1, i, h.lores_buffers[i], l, transform, main_source, @import("color_policy.zig").effective(h.color_request, opts.lores_format) catch unreachable) catch {
                 close(h);
                 return c.ZC_NOMEM;
             };
@@ -431,7 +474,7 @@ pub fn queue(h: *Handle, index: u32) c_int {
         f.raw.planes[0].fd = h.buffer_fds[raw_slot][index];
         f.raw.planes[0].offset = h.buffer_offsets[raw_slot][index];
     }
-    attachProcessed(&f.main, h.buffers[index], h.buffer_fds[0][index], h.buffer_offsets[0][index]);
+    attachCapture(h, &f.main, h.buffers[index], 0, index);
     f.sequence = h.sequence;
     h.sequence += 1;
     f.timestamp_ns = @import("capture_filter.zig").clockNs() catch return c.ZC_IO;
@@ -675,7 +718,7 @@ pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
 pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
     out.* = h.pipeline.lores;
     if (out.plane_count == 0) return c.ZC_UNSUPPORTED;
-    attachProcessed(out, h.lores_buffers[index], h.buffer_fds[1][index], h.buffer_offsets[1][index]);
+    attachCapture(h, out, h.lores_buffers[index], 1, index);
     return c.ZC_OK;
 }
 
@@ -733,7 +776,7 @@ pub fn captureLayout(h: *Handle, out: *c.zc_capture_import_layout) c_int {
     out.id_length = device_id.len;
     @memcpy(out.camera_id[0..device_id.len], device_id);
     var streams: [3]c.zc_stream = .{ h.info.main, h.pipeline.lores, h.info.raw };
-    const lengths = [3]usize{ h.buffers[0].len, h.lores_buffers[0].len, h.raw_buffers[0].len };
+    const lengths = h.frame_lengths;
     for (&streams, 0..) |*source, i| {
         if (source.plane_count == 0) continue;
         out.streams[out.stream_count] = .{ .width = source.width, .height = source.height, .stride = source.stride, .buffer_count = h.config.buffer_count, .frame_bytes = lengths[i], .modifier = 0, .format = source.format };

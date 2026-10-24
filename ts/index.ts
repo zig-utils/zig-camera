@@ -340,7 +340,7 @@ import { runFactoryMode, FactoryScopeCleanupError } from './factory-mode'
 import { CaptureAllocator, readCaptureLayout, captureAllocatorFactory } from './capture-allocator'
 export { CaptureAllocator } from './capture-allocator'
 export { CaptureFactoryError, type CaptureBufferFactory, type CaptureFactoryContext, type CaptureFactoryBuffers } from './capture-factory-client'
-export type { CaptureAllocatorOptions, CaptureAllocatorState, CaptureLayout, CaptureLayoutStream, CaptureImportBuffer } from './capture-allocator'
+export type { CaptureAllocatorOptions, CaptureAllocatorState, CaptureLayout, CaptureLayoutStream, CaptureImportBuffer, CaptureImportPlane, CaptureImportFrame } from './capture-allocator'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
   native as n,

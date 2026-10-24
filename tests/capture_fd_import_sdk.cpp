@@ -6,6 +6,7 @@
 #define _GNU_SOURCE
 #endif
 #include "zig_camera_allocator_bridge.h"
+#include "../native/capture_buffers.hpp"
 #include <libcamera/framebuffer.h>
 #include <libcamera/base/shared_fd.h>
 #include <libcamera/base/unique_fd.h>
@@ -43,6 +44,59 @@ static int file(bool supported=true) {
     const uint8_t byte=0x5a;assert(pwrite(fd,&byte,1,4093)==1);return fd;
 }
 static zc_capture_allocator_state state(zc_capture_allocator *p){zc_capture_allocator_state s{};assert(!zc_capture_allocator_state_get(p,&s));return s;}
+static void planar_objects() {
+    static_assert(sizeof(zci_allocation_frame)==168,"private plane ABI");
+    static_assert(sizeof(zc_capture_import_frame)==104,"public frame ABI");
+    for(int scenario=0;scenario<4;scenario++) {
+        known.clear();starts=ends=0;fault=scenario<3?scenario:0;
+        zc_capture_import_stream stream{};stream.width=8;stream.height=4;stream.stride=8;stream.buffer_count=2;stream.frame_bytes=48;std::memcpy(stream.format,"YUV420",6);
+        std::vector<int> originals{file(scenario!=3),file(),file(),file(),file()};
+        const int alias=fcntl(originals[1],F_DUPFD_CLOEXEC,0);assert(alias>=0);originals.push_back(alias);
+        zc_capture_import_frame frames[2]{};
+        for(auto &frame:frames){frame.struct_size=sizeof(frame);frame.plane_count=3;}
+        frames[0].planes[0]={originals[0],0,4093,32};frames[0].planes[1]={originals[1],0,128,8};frames[0].planes[2]={alias,0,160,8};
+        frames[1].planes[0]={originals[2],0,4093,32};frames[1].planes[1]={originals[3],0,128,8};frames[1].planes[2]={originals[4],0,160,8};
+        zc_capture_allocator_config config{};zc_default_capture_allocator_config(&config);config.max_bytes=8192*5;config.max_entries=2;
+        zc_capture_allocator *pool=nullptr;assert(!zc_capture_allocator_open_imported(&config,&pool));
+        const int result=zc_capture_allocator_import_frames(pool,reinterpret_cast<const uint8_t*>("planar"),6,&stream,1,frames,2);
+        if(scenario) {
+            assert(result==ZC_IO && !state(pool).entries && !state(pool).used_bytes);
+            if(scenario==1)assert(starts==1 && !ends);
+            if(scenario==2)assert(starts==1 && ends==1);
+            if(scenario==3)assert(!starts && !ends);
+        } else {
+            assert(result==ZC_OK && starts==5 && ends==5 && state(pool).allocations==5 && state(pool).used_bytes==8192*5);
+            for(int fd:originals)assert(!close(fd));originals.clear();
+            uint64_t loan=0;assert(!zci_capture_allocator_acquire(pool,reinterpret_cast<const uint8_t*>("planar"),6,&stream,1,&loan));
+            for(unsigned i=0;i<2;i++) {
+                zci_allocation_frame read{},write{};assert(!zci_capture_allocator_frame(pool,loan,0,i,0,&read));
+                assert(read.plane_count==3 && read.planes[0].data[0]==0x5a);
+                assert((read.planes[1].fd==read.planes[2].fd)==(i==0));
+                assert(!zci_capture_allocator_frame(pool,loan,0,i,1,&write));
+                assert(write.plane_count==3 && write.planes[0].data!=read.planes[0].data);
+                const_cast<uint8_t*>(write.planes[1].data)[0]=0x37;const_cast<uint8_t*>(write.planes[2].data)[0]=0x73;
+                assert(read.planes[1].data[0]==0x37 && read.planes[2].data[0]==0x73);
+                std::unique_ptr<libcamera::FrameBuffer> sdk;
+                assert(!zc_sdk::importFrame(read,sdk));
+                zc_stream bound{};std::array<int,ZC_MAX_PLANES*3> fds{};size_t count=0;
+                assert(!zc_sdk::bindFrame(*sdk,read,bound,fds,count));
+                assert(count==(i==0?2:3) && bound.plane_count==3 && bound.planes[1].offset==128 && bound.planes[2].offset==160);
+                assert((bound.planes[1].fd==bound.planes[2].fd)==(i==0));
+                assert(bound.planes[0].fd!=read.planes[0].fd && (fcntl(bound.planes[0].fd,F_GETFD)&FD_CLOEXEC));
+                auto wrong=read;wrong.planes[2].offset++;
+                const auto before=bound;const auto prior=fds;const auto prior_count=count;
+                assert(zc_sdk::bindFrame(*sdk,wrong,bound,fds,count)==ZC_STATE);
+                assert(!std::memcmp(&before,&bound,sizeof(bound)) && prior==fds && count==prior_count);
+                const int imported=bound.planes[0].fd;sdk.reset();assert(fcntl(imported,F_GETFD)==-1 && errno==EBADF);
+                assert(fcntl(read.planes[0].fd,F_GETFD)>=0);
+            }
+            assert(state(pool).writable_maps==5);zci_capture_allocator_release(pool,loan);
+        }
+        for(int fd:originals)assert(!close(fd));
+        assert(!zc_capture_allocator_close(pool));
+    }
+    std::puts("multi-object imports: per-object charge/probes/maps, aliased SDK descriptors, exact plane windows, atomic binding and retained lifetimes passed");
+}
 int main() {
     for(int scenario=0;scenario<4;scenario++) {
         known.clear();starts=ends=0;fault=scenario<3?scenario:0;
@@ -73,5 +127,6 @@ int main() {
         for(auto input:inputs)if(input.fd>=0)assert(!close(input.fd));
         assert(!zc_capture_allocator_close(p));
     }
+    planar_objects();
     std::puts("DMA-BUF imports: SDK offset/duplicate lifetime and START/END/unsupported failures passed");
 }

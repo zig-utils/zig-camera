@@ -14,6 +14,9 @@ typedef struct {
     uint32_t reserved;
     uint64_t offset;
 } zci_allocation_buffer;
+typedef struct { uint32_t plane_count,reserved; zci_allocation_buffer planes[4]; } zci_allocation_frame;
+int zci_capture_allocator_frame(zc_capture_allocator *,uint64_t loan,uint32_t stream,uint32_t buffer,
+    uint32_t writable,zci_allocation_frame *out);
 int zci_capture_allocator_acquire(zc_capture_allocator *,const uint8_t *id,uint32_t id_length,
     const zci_allocation_stream *,uint32_t streams,uint64_t *out_loan);
 int zci_capture_allocator_buffer(zc_capture_allocator *,uint64_t loan,uint32_t stream,uint32_t buffer,

@@ -1,6 +1,6 @@
 import { JSCallback, FFIType } from 'bun:ffi'
 import { native as n, storage, ptr, view, check, CameraError, type Pointer } from './ffi'
-import { decodeCaptureLayout, encodeCaptureImport, type CaptureLayout, type CaptureImportBuffer } from './capture-allocator'
+import { decodeCaptureLayout, encodeCaptureFrames, type CaptureLayout, type CaptureImportFrame } from './capture-allocator'
 export interface CaptureFactoryContext {
   readonly layout: Readonly<CaptureLayout>
   readonly signal: AbortSignal
@@ -12,7 +12,7 @@ export interface CaptureFactoryContext {
  * the import attempt (also on cancellation) and is joined before publication.
  * A failed release is reported with this returned object for caller recovery. */
 export interface CaptureFactoryBuffers {
-  readonly buffers: readonly (readonly CaptureImportBuffer[])[]
+  readonly buffers: readonly (readonly CaptureImportFrame[])[]
   release?(): void | PromiseLike<void>
 }
 export type CaptureBufferFactory = (context: Readonly<CaptureFactoryContext>) => CaptureFactoryBuffers | PromiseLike<CaptureFactoryBuffers>
@@ -95,8 +95,8 @@ export class CaptureFactoryClient {
       release = returned.release
       if (release !== undefined && typeof release !== 'function') throw new TypeError('invalid capture factory input release')
       if (controller.signal.aborted) throw controller.signal.reason
-      const encoded = encodeCaptureImport(context.layout, returned.buffers)
-      check(n.zc_capture_allocator_factory_supply(this.allocation, ticket, ptr(encoded.descriptors), encoded.count), 'supply capture factory buffers')
+      const encoded = encodeCaptureFrames(context.layout, returned.buffers)
+      check(n.zc_capture_allocator_factory_supply_frames(this.allocation, ticket, ptr(encoded.descriptors), encoded.count), 'supply capture factory buffers')
     } catch (error) {
       code = error instanceof CameraError && error.code >= -11 && error.code < 0 ? error.code : -6
       if (!(controller.signal.aborted && error === controller.signal.reason)) errors.push(error)

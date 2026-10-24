@@ -1,5 +1,9 @@
 # Caller-provided capture storage
 
+Version 0.118 adds [explicit multi-object planes](capture-planes.md) for linear
+YUV420/YVU420/NV12/NV21, with shared-object alias normalization and exact factory
+loan reservation. Existing single-window entry points remain available.
+
 Version 0.116 adds Linux imports through CaptureAllocator.importBuffers in
 Bun/Zig and zc_capture_allocator_open_imported/zc_capture_allocator_import in C.
 These explicitly provision storage for exact negotiated configurations. They

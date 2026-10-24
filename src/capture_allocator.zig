@@ -30,6 +30,16 @@ const Storage = union(enum) {
             inline else => |*value| value.view(claim, stream, buffer, writable),
         };
     }
+    fn planeCount(self: *Storage, claim: Home.policy.Claim, stream: u32, buffer: u32) !u8 {
+        return switch (self.*) {
+            inline else => |*value| value.planeCount(claim, stream, buffer),
+        };
+    }
+    fn viewPlane(self: *Storage, claim: Home.policy.Claim, stream: u32, buffer: u32, plane: u32, writable: bool) !Home.View {
+        return switch (self.*) {
+            inline else => |*value| value.viewPlane(claim, stream, buffer, plane, writable),
+        };
+    }
     fn trim(self: *Storage) !void {
         return switch (self.*) {
             inline else => |*value| value.trim(),
@@ -78,7 +88,7 @@ fn status(failure: anyerror) c_int {
         error.Unsupported, error.LayoutUnavailable => c.ZC_UNSUPPORTED,
         error.StaleClaim, error.StaleLease, error.StaleTicket => c.ZC_STALE,
         error.SequenceExhausted, error.SequenceOverflow, error.InvalidState => c.ZC_STATE,
-        error.AliasedResource, error.InvalidLayout, error.InvalidPath, error.InvalidResource, error.InvalidConfiguration, error.SizeOverflow, error.PayloadTooLarge => c.ZC_INVALID,
+        error.OverlappingPlanes, error.AliasedResource, error.InvalidLayout, error.InvalidPath, error.InvalidResource, error.InvalidConfiguration, error.SizeOverflow, error.PayloadTooLarge => c.ZC_INVALID,
         else => c.ZC_IO,
     };
 }
@@ -147,6 +157,40 @@ pub export fn zc_capture_allocator_import(handle: *c.zc_capture_allocator, id: ?
     if (comptime linux) switch (self.owner) {
         .managed => return c.ZC_STATE,
         .imported => |*value| value.importBuffers(&layout, inputs[0..buffer_count]) catch |failure| return status(failure),
+    } else return c.ZC_UNSUPPORTED;
+    return c.ZC_OK;
+}
+/// Pointer-free input decoding shared by explicit import and factory supply.
+pub fn decodeFrames(layout: *const Home.policy.Layout, inputs: []const c.zc_capture_import_frame, out: *[192]Home.ImportFrame) ![]const Home.ImportFrame {
+    var expected: usize = 0;
+    for (layout.streams[0..layout.stream_count]) |stream| expected += stream.buffer_count;
+    if (inputs.len != expected or inputs.len > out.len) return error.InvalidResource;
+    var at: usize = 0;
+    for (layout.streams[0..layout.stream_count]) |stream| for (0..stream.buffer_count) |_| {
+        out[at] = try @import("capture_planes.zig").decode(&inputs[at]);
+        try @import("capture_planes.zig").validate(&stream, &out[at]);
+        at += 1;
+    };
+    return out[0..at];
+}
+pub export fn zc_capture_allocator_import_frames(handle: *c.zc_capture_allocator, id: ?[*]const u8, id_length: u32, streams: ?[*]const c.zc_capture_import_stream, count: u32, buffers: ?[*]const c.zc_capture_import_frame, buffer_count: u32) c_int {
+    if (id == null or id_length == 0 or id_length > c.ZC_MAX_CAMERA_ID or streams == null or count == 0 or count > Home.policy.max_streams or
+        buffers == null or buffer_count == 0 or buffer_count > 192) return c.ZC_INVALID;
+    var descriptors: [Home.policy.max_streams]Home.policy.Stream = undefined;
+    for (streams.?[0..count], 0..) |stream, i| {
+        if (stream.buffer_count < 2 or stream.buffer_count > c.ZC_MAX_BUFFERS or stream.frame_bytes > std.math.maxInt(u32)) return c.ZC_INVALID;
+        descriptors[i] = Home.policy.Stream.init(stream.width, stream.height, stream.stride, stream.frame_bytes, stream.buffer_count, std.mem.sliceTo(&stream.format, 0), stream.modifier) catch return c.ZC_INVALID;
+    }
+    const layout = Home.policy.Layout.init(id.?[0..id_length], descriptors[0..count]) catch return c.ZC_INVALID;
+    var decoded: [192]Home.ImportFrame = undefined;
+    const frames = decodeFrames(&layout, buffers.?[0..buffer_count], &decoded) catch |failure| return status(failure);
+    const self = pool(handle);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.closing) return c.ZC_STATE;
+    if (comptime linux) switch (self.owner) {
+        .managed => return c.ZC_STATE,
+        .imported => |*value| value.importFrames(&layout, frames) catch |failure| return status(failure),
     } else return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
@@ -241,6 +285,21 @@ pub export fn zci_capture_allocator_acquire(handle: *c.zc_capture_allocator, id:
         descriptors[i] = Home.policy.Stream.init(stream.width, stream.height, stream.stride, stream.frame_bytes, stream.buffer_count, std.mem.sliceTo(&stream.format, 0), stream.modifier) catch |failure| return status(failure);
     }
     return borrow(handle, id.?[0..id_length], descriptors[0..count], out);
+}
+pub export fn zci_capture_allocator_frame(handle: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: u32, writable: u32, out: *bridge.zci_allocation_frame) c_int {
+    out.* = std.mem.zeroes(bridge.zci_allocation_frame);
+    for (&out.planes) |*plane| plane.fd = -1;
+    if (writable > 1) return c.ZC_INVALID;
+    const self = pool(handle);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    const count = self.owner.planeCount(.{ .token = loan }, stream, buffer) catch |failure| return status(failure);
+    for (0..count) |p| {
+        const result = self.owner.viewPlane(.{ .token = loan }, stream, buffer, @intCast(p), writable != 0) catch |failure| return status(failure);
+        out.planes[p] = .{ .data = result.bytes.ptr, .length = result.bytes.len, .frame_bytes = result.frame_bytes, .fd = result.fd, .reserved = 0, .offset = result.offset };
+    }
+    out.plane_count = count;
+    return c.ZC_OK;
 }
 pub export fn zci_capture_allocator_buffer(handle: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: u32, writable: u32, out: *bridge.zci_allocation_buffer) c_int {
     out.* = std.mem.zeroes(bridge.zci_allocation_buffer);

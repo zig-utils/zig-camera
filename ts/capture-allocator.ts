@@ -101,6 +101,14 @@ export class CaptureAllocator {
     const { id, descriptions, descriptors, count, streamCount } = encodeCaptureImport(layout, buffers)
     check(n.zc_capture_allocator_import(captureAllocatorHandle(this)!, ptr(id), id.length, ptr(descriptions), streamCount, ptr(descriptors), count), 'import capture buffers')
   }
+  importFrames(layout: CaptureLayout, frames: readonly (readonly CaptureImportFrame[])[]) {
+    const owner = owners.get(this)
+    if (!owner?.imported) throw new RangeError('allocator is not an imported owner')
+    if (!layout || typeof layout !== 'object' || (layout.backend === 'synthetic') !== owner.simulate || !['synthetic', 'libcamera'].includes(layout.backend))
+      throw new RangeError('invalid capture import layout')
+    const encoded = encodeCaptureFrames(layout, frames)
+    check(n.zc_capture_allocator_import_frames(captureAllocatorHandle(this)!, ptr(encoded.id), encoded.id.length, ptr(encoded.descriptions), encoded.streamCount, ptr(encoded.descriptors), encoded.count), 'import capture plane frames')
+  }
   get closed() { return !owners.get(this)?.handle }
   get state(): Readonly<CaptureAllocatorState> {
     const bytes = storage(112)
@@ -129,6 +137,8 @@ export class CaptureAllocator {
 }
 
 export interface CaptureImportBuffer { fd: number; offset?: number | bigint }
+export interface CaptureImportPlane extends CaptureImportBuffer { length: number | bigint }
+export type CaptureImportFrame = CaptureImportBuffer | { planes: readonly CaptureImportPlane[] }
 export interface CaptureLayoutStream {
   width: number; height: number; stride: number; bufferCount: number;
   frameBytes: bigint; modifier: bigint; format: string;
@@ -148,7 +158,7 @@ function unsigned(value: number | bigint, maximum: bigint, zero: boolean) {
   return result
 }
 function encodeIdentity(value: string) {
-  if (typeof value !== 'string' || !value.length || !value.isWellFormed() || value.includes('\0')) throw new RangeError('invalid import camera ID')
+  if (typeof value !== 'string' || !value.length || value.length > 4096 || !value.isWellFormed() || value.includes('\0')) throw new RangeError('invalid import camera ID')
   const result = new TextEncoder().encode(value)
   if (result.length > 4096) throw new RangeError('import camera ID too long')
   return result
@@ -173,37 +183,81 @@ export function decodeCaptureLayout(bytes: Uint8Array): Readonly<CaptureLayout> 
 }
 
 /** @internal Checked owned copies for both explicit and factory imports. */
-export function encodeCaptureImport(layout: CaptureLayout, buffers: readonly (readonly CaptureImportBuffer[])[]) {
+function boundedInputs<T>(value: readonly T[], minimum: number, maximum: number): T[] {
+  if (!Array.isArray(value)) throw new RangeError('import inputs must be arrays')
+  const length = integer(value.length, minimum, maximum), result = new Array<T>(length)
+  // Caller-owned iterators/map/slice methods cannot manufacture unbounded work.
+  for (let index = 0; index < length; index++) result[index] = value[index]
+  return result
+}
+function encodeCapturePlans<T, R>(layout: CaptureLayout, buffers: readonly (readonly T[])[], prepare: (frame: T, bytes: bigint) => R) {
     const id = encodeIdentity(layout.cameraId)
-    const streams = Array.from(layout.streams), supplied = Array.from(buffers)
+    const streams = boundedInputs(layout.streams, 1, 3), supplied = boundedInputs(buffers, 1, 3)
     if (!streams.length || streams.length > 3 || supplied.length !== streams.length) throw new RangeError('invalid capture import stream count')
     const descriptions = storage(streams.length * 64)
     const plans = streams.map((stream, index) => {
       if (!stream || typeof stream !== 'object' || !Array.isArray(supplied[index])) throw new RangeError('invalid import stream')
-      const list = Array.from(supplied[index]), data = view(descriptions), offset = index * 64
+      const list = boundedInputs(supplied[index], 2, 64), data = view(descriptions), offset = index * 64
       const count = integer(stream.bufferCount, 2, 64)
       if (list.length !== count) throw new RangeError('import buffer count differs from layout')
       data.setUint32(offset, integer(stream.width, 1, 0xffffffff), true)
       data.setUint32(offset + 4, integer(stream.height, 1, 0xffffffff), true)
       data.setUint32(offset + 8, integer(stream.stride, 1, 0xffffffff), true)
       data.setUint32(offset + 12, count, true)
-      data.setBigUint64(offset + 16, unsigned(stream.frameBytes, 0xffffffffn, false), true)
+      const frameBytes = unsigned(stream.frameBytes, 0xffffffffn, false)
+      data.setBigUint64(offset + 16, frameBytes, true)
       data.setBigUint64(offset + 24, unsigned(stream.modifier, 0xffffffffffffffffn, true), true)
       if (typeof stream.format !== 'string' || !stream.format.length || !stream.format.isWellFormed() || stream.format.includes('\0')) throw new RangeError('invalid import format')
       const format = new TextEncoder().encode(stream.format)
       if (format.length > 31) throw new RangeError('import format too long')
       descriptions.set(format, offset + 32)
-      return list.map(buffer => {
-        if (!buffer || typeof buffer !== 'object') throw new RangeError('invalid import buffer')
-        return { fd: integer(buffer.fd, 0, 0x7fffffff), offset: unsigned(buffer.offset ?? 0n, 0xffffffffn, true) }
-      })
+      return list.map(buffer => prepare(buffer, frameBytes))
     }).flat()
-    const descriptors = storage(plans.length * 16), data = view(descriptors)
-    plans.forEach((buffer, index) => {
-      data.setInt32(index * 16, buffer.fd, true)
-      data.setBigUint64(index * 16 + 8, buffer.offset, true)
+
+    return { id, descriptions, plans, streamCount: streams.length }
+}
+/** @internal Legacy single-window ABI remains available unchanged. */
+export function encodeCaptureImport(layout: CaptureLayout, buffers: readonly (readonly CaptureImportBuffer[])[]) {
+  const { plans, ...layoutData } = encodeCapturePlans(layout, buffers, buffer => {
+    if (!buffer || typeof buffer !== 'object') throw new RangeError('invalid import buffer')
+    return { fd: integer(buffer.fd, 0, 0x7fffffff), offset: unsigned(buffer.offset ?? 0n, 0xffffffffn, true) }
+  })
+  const descriptors = storage(plans.length * 16), data = view(descriptors)
+  plans.forEach((buffer, index) => {
+    data.setInt32(index * 16, buffer.fd, true)
+    data.setBigUint64(index * 16 + 8, buffer.offset, true)
+  })
+  return { ...layoutData, descriptors, count: plans.length }
+}
+/** @internal Own every scalar before native import; callbacks keep original
+ * descriptors stable until this synchronous import and input release join. */
+export function encodeCaptureFrames(layout: CaptureLayout, frames: readonly (readonly CaptureImportFrame[])[]) {
+  const { plans, ...layoutData } = encodeCapturePlans(layout, frames, (frame, frameBytes) => {
+    if (!frame || typeof frame !== 'object') throw new RangeError('invalid import frame')
+    const explicit = 'planes' in frame
+    const supplied = explicit ? frame.planes : undefined
+    if (explicit && !Array.isArray(supplied)) throw new RangeError('invalid import planes')
+    const planes = explicit ? boundedInputs(supplied!, 1, 4) : [{ fd: (frame as CaptureImportBuffer).fd, offset: (frame as CaptureImportBuffer).offset, length: frameBytes }]
+    if (planes.length < 1 || planes.length > 4) throw new RangeError('import plane count must be 1..4')
+    const encoded = planes.map(plane => {
+      if (!plane || typeof plane !== 'object') throw new RangeError('invalid import plane')
+      const fd = integer(plane.fd, 0, 0x7fffffff), offset = unsigned(plane.offset ?? 0n, 0xffffffffn, true), length = unsigned(plane.length, 0xffffffffn, false)
+      if (offset > 0xffffffffn - length) throw new RangeError('import plane end exceeds SDK range')
+      return { fd, offset, length }
     })
-  return { id, descriptions, descriptors, count: plans.length, streamCount: streams.length }
+    if (encoded.reduce((sum, plane) => sum + plane.length, 0n) < frameBytes) throw new RangeError('import planes do not cover configured frame capacity')
+    return encoded
+  })
+  const descriptors = storage(plans.length * 104), data = view(descriptors)
+  plans.forEach((planes, frame) => {
+    const base = frame * 104
+    data.setUint32(base, 104, true); data.setUint32(base + 4, planes.length, true)
+    planes.forEach((plane, index) => {
+      const at = base + 8 + index * 24
+      data.setInt32(at, plane.fd, true); data.setBigUint64(at + 8, plane.offset, true); data.setBigUint64(at + 16, plane.length, true)
+    })
+  })
+  return { ...layoutData, descriptors, count: plans.length }
 }
 const factoryClients = new Map<Pointer, CaptureFactoryClient>()
 /** @internal Main-thread factory lifetime; native workers receive only pointers. */

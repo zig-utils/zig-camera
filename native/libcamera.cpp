@@ -4,6 +4,7 @@
 #include "zig_camera.h"
 #include "zig_camera_catalog_bridge.h"
 #include "zig_camera_allocator_bridge.h"
+#include "capture_buffers.hpp"
 #include "imx708_control.hpp"
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
@@ -668,16 +669,13 @@ struct Device {
             if(borrowed)return borrowed;
             imported_buffers.resize(config->size());
             for(size_t s=0;s<config->size();s++)for(size_t i=0;i<config->at(s).bufferCount;i++) {
-                zci_allocation_buffer backing{};
-                const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,0,&backing);
+                zci_allocation_frame backing{};
+                const int found=zci_capture_allocator_frame(capture_allocator,allocation_loan,s,i,0,&backing);
                 if(found)return found;
-                if(backing.fd<0 || backing.frame_bytes>std::numeric_limits<unsigned int>::max() || backing.offset>std::numeric_limits<unsigned int>::max()-backing.frame_bytes)return ZC_UNSUPPORTED;
-                UniqueFD descriptor(fcntl(backing.fd,F_DUPFD_CLOEXEC,0));
-                if(!descriptor.isValid())return ZC_IO;
-                FrameBuffer::Plane plane;
-                plane.fd=SharedFD(std::move(descriptor));plane.offset=backing.offset;plane.length=backing.frame_bytes;
-                std::vector<FrameBuffer::Plane> planes;planes.push_back(std::move(plane));
-                imported_buffers[s].push_back(std::make_unique<FrameBuffer>(planes));
+                std::unique_ptr<FrameBuffer> buffer;
+                const int adopted=zc_sdk::importFrame(backing,buffer);
+                if(adopted)return adopted;
+                imported_buffers[s].push_back(std::move(buffer));
             }
         } else {
             allocator = std::make_unique<FrameBufferAllocator>(camera);
@@ -702,13 +700,11 @@ struct Device {
                 auto *buffer = capture_allocator ? imported_buffers[s][i].get() : allocator->buffers(stream)[i].get();
                 if (slot.request->addBuffer(stream, buffer) < 0) return ZC_DEVICE;
                 if(capture_allocator) {
-                    zci_allocation_buffer backing{};
-                    const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,0,&backing);
+                    zci_allocation_frame backing{};
+                    const int found=zci_capture_allocator_frame(capture_allocator,allocation_loan,s,i,0,&backing);
                     if(found)return found;
-                    auto &target=this->stream(slot,s);target.plane_count=1;
-                    auto &plane=target.planes[0];plane.data=backing.data;plane.length=backing.frame_bytes;
-                    plane.fd=buffer->planes()[0].fd.get();plane.offset=backing.offset;
-                    slot.fds[slot.fd_count++]=plane.fd;
+                    const int bound=zc_sdk::bindFrame(*buffer,backing,this->stream(slot,s),slot.fds,slot.fd_count);
+                    if(bound)return bound;
                 } else {
                     const int rc = map(buffer, this->stream(slot,s), slot);
                     if (rc) return rc;
@@ -836,14 +832,15 @@ struct Device {
         if(capture_allocator) {
             // Prepare all separate write maps before changing any published read
             // descriptor. Failed preparation retains RO pointers and capability.
-            std::array<std::array<const uint8_t*,3>,ZC_MAX_BUFFERS> prepared{};
+            std::array<std::array<std::array<const uint8_t*,ZC_MAX_PLANES>,3>,ZC_MAX_BUFFERS> prepared{};
             for(size_t i=0;i<slots.size();i++)for(size_t s=0;s<config->size();s++) {
-                zci_allocation_buffer backing{};
-                const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,1,&backing);
+                zci_allocation_frame backing{};
+                const int found=zci_capture_allocator_frame(capture_allocator,allocation_loan,s,i,1,&backing);
                 if(found)return found;
-                prepared[i][s]=backing.data;
+                if(backing.plane_count!=stream(slots[i],s).plane_count)return ZC_STATE;
+                for(size_t p=0;p<backing.plane_count;p++)prepared[i][s][p]=backing.planes[p].data;
             }
-            for(size_t i=0;i<slots.size();i++)for(size_t s=0;s<config->size();s++)stream(slots[i],s).planes[0].data=prepared[i][s];
+            for(size_t i=0;i<slots.size();i++)for(size_t s=0;s<config->size();s++)for(size_t p=0;p<stream(slots[i],s).plane_count;p++)stream(slots[i],s).planes[p].data=prepared[i][s][p];
             writable=true;return ZC_OK;
         }
         for(auto &slot:slots)for(auto &map:slot.mappings) {

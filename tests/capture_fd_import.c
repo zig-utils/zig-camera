@@ -20,6 +20,30 @@ static zc_capture_allocator_state state(zc_capture_allocator *p){zc_capture_allo
 static zc_capture_allocator *allocator(uint64_t bytes){zc_capture_allocator_config c;zc_default_capture_allocator_config(&c);c.max_entries=2;c.max_bytes=bytes;zc_capture_allocator *p=0;assert(!zc_capture_allocator_open_imported(&c,&p));return p;}
 static int provision(zc_capture_allocator *p,const zc_capture_import_layout *l,const zc_capture_import_buffer *b){uint32_t n=0;for(uint32_t i=0;i<l->stream_count;i++)n+=l->streams[i].buffer_count;return zc_capture_allocator_import(p,l->camera_id,l->id_length,l->streams,l->stream_count,b,n);}
 static uint64_t borrow(zc_capture_allocator *p,const zc_capture_import_layout *l){uint64_t loan=0;assert(!zci_capture_allocator_acquire(p,l->camera_id,l->id_length,l->streams,l->stream_count,&loan));return loan;}
+static void multi_objects(void){
+    zc_capture_import_stream stream={0};stream.width=8;stream.height=4;stream.stride=32;stream.buffer_count=2;stream.frame_bytes=192;memcpy(stream.format,"YUV420",6);
+    int originals[5];for(unsigned i=0;i<5;i++)originals[i]=file(8192,1);
+    zc_capture_import_frame frames[2]={0};for(unsigned i=0;i<2;i++){frames[i].struct_size=sizeof(frames[i]);frames[i].plane_count=3;}
+    frames[0].planes[0]=(zc_capture_import_plane){originals[0],0,4093,128};frames[0].planes[1]=(zc_capture_import_plane){originals[1],0,128,32};frames[0].planes[2]=(zc_capture_import_plane){originals[1],0,200,32};
+    frames[1].planes[0]=(zc_capture_import_plane){originals[2],0,4093,128};frames[1].planes[1]=(zc_capture_import_plane){originals[3],0,128,32};frames[1].planes[2]=(zc_capture_import_plane){originals[4],0,200,32};
+    zc_capture_allocator *p=allocator(8192*5);
+    zc_unmap_peer_arm(-1);zc_unmap_peer_map_fault(2);
+    assert(zc_capture_allocator_import_frames(p,(const uint8_t *)"planar",6,&stream,1,frames,2)==ZC_IO);
+    assert(state(p).retiring==1 && state(p).used_bytes==8192*5 && !state(p).borrowed);
+    zc_unmap_peer_arm(0);assert(!zc_capture_allocator_trim(p));assert(!state(p).entries);
+    assert(!zc_capture_allocator_import_frames(p,(const uint8_t *)"planar",6,&stream,1,frames,2));
+    for(unsigned i=0;i<5;i++)assert(!close(originals[i]));
+    uint64_t loan=0;assert(!zci_capture_allocator_acquire(p,(const uint8_t *)"planar",6,&stream,1,&loan));
+    zci_allocation_frame read,write;assert(!zci_capture_allocator_frame(p,loan,0,0,0,&read));assert(read.plane_count==3 && read.planes[1].fd==read.planes[2].fd);
+    assert(zci_capture_allocator_buffer(p,loan,0,0,0,&write.planes[0])==ZC_UNSUPPORTED);
+    assert(!zci_capture_allocator_frame(p,loan,0,0,1,&write));assert(state(p).writable_maps==2);
+    ((uint8_t *)(uintptr_t)write.planes[2].data)[0]=42;assert(read.planes[2].data[0]==42 && read.planes[1].data[0]==0);
+    assert(write.planes[1].offset==128 && write.planes[2].offset==200 && write.planes[2].data-write.planes[1].data==72);
+    zci_capture_allocator_discard(p,loan);zc_unmap_peer_arm(-1);
+    assert(zc_capture_allocator_close(p)==ZC_IO && state(p).closing && state(p).retiring==1 && state(p).used_bytes==8192*5);
+    zc_unmap_peer_arm(0);assert(!zc_capture_allocator_close(p));
+    puts("multi-object imports: aliased plane windows, partial map/unmap cleanup and full charge retention passed");
+}
 #endif
 int main(void){
     _Static_assert(sizeof(zc_capture_import_layout)==4304,"layout ABI");
@@ -61,6 +85,7 @@ int main(void){
     /* Discard never invents replacement caller storage. */
     p=allocator(size*2);buffers[0].fd=file(size,1);buffers[1].fd=file(size,1);assert(!provision(p,&layout,buffers));assert(!close(buffers[0].fd) && !close(buffers[1].fd));
     zci_capture_allocator_discard(p,borrow(p,&layout));uint64_t absent=91;assert(zci_capture_allocator_acquire(p,layout.camera_id,layout.id_length,layout.streams,1,&absent)==ZC_BUSY && !absent);assert(!zc_capture_allocator_trim(p));assert(zci_capture_allocator_acquire(p,layout.camera_id,layout.id_length,layout.streams,1,&absent)==ZC_UNSUPPORTED && !absent);assert(!zc_capture_allocator_close(p));
+    multi_objects();
     puts("capture FD imports: exact layout, aliases, extent budgets, partial cleanup, offset exports and recycled descriptor checks passed");
 #endif
 }

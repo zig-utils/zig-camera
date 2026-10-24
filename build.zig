@@ -52,6 +52,8 @@ pub fn build(b: *std.Build) void {
         bridge.addFileArg(b.path("native/libcamera.cpp"));
         bridge.addFileInput(b.path("include/zig_camera.h"));
         bridge.addFileInput(b.path("include/zig_camera_catalog_bridge.h"));
+        bridge.addFileInput(b.path("include/zig_camera_allocator_bridge.h"));
+        bridge.addFileInput(b.path("native/capture_buffers.hpp"));
         const driver_lib = bridge.addOutputFileArg("libzigcamera_driver.so");
         mod.addObjectFile(driver_lib);
         mod.addRPath(driver_lib.dirname());

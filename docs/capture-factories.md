@@ -1,5 +1,9 @@
 # Automatic capture buffer factories
 
+Version 0.118 adds [explicit multi-object planes](capture-planes.md) for linear
+YUV420/YVU420/NV12/NV21, with shared-object alias normalization and exact factory
+loan reservation. Existing single-window entry points remain available.
+
 Version 0.117 adds Linux imported-allocator factories in Bun and an additive C
 notification protocol. They extend [explicit buffer imports](capture-imports.md)
 and use the same whole-object budgets, FD identity/offset checks, DMA coherency

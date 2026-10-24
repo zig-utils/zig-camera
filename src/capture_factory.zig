@@ -154,11 +154,36 @@ pub export fn zc_capture_allocator_factory_supply(handle: *c.zc_capture_allocato
                 _ = request.handoff.cancel();
                 return c.ZC_CANCELLED;
             }
-            owner.importBuffers(&request.layout, inputs[0..count]) catch |failure| return pools.factoryStatus(failure);
-            // Reserve the prepared loan under this same mutex. A concurrent
-            // same-layout camera cannot steal newly supplied storage here.
-            const result = owner.checkoutExisting(&request.layout) catch unreachable;
-            request.loan = result.claim;
+            // Reserve these exact newly supplied objects. An older matching
+            // profile may have become idle while the producer was preparing.
+            request.loan = owner.importBuffersBorrowed(&request.layout, inputs[0..count]) catch |failure| return pools.factoryStatus(failure);
+        },
+    } else return c.ZC_UNSUPPORTED;
+    request.handoff.supply() catch unreachable;
+    return c.ZC_OK;
+}
+pub export fn zc_capture_allocator_factory_supply_frames(handle: *c.zc_capture_allocator, ticket: u64, buffers: ?[*]const c.zc_capture_import_frame, count: u32) c_int {
+    if (buffers == null or count == 0 or count > 192) return c.ZC_INVALID;
+    const pool = pools.factoryPool(handle);
+    pool.mutex.lock();
+    defer pool.mutex.unlock();
+    const request = find(pool, ticket) orelse return c.ZC_STALE;
+    if (!request.handoff.callback_started or request.handoff.callback_done or request.handoff.supplied) return c.ZC_STATE;
+    if (cancelled(request)) {
+        _ = request.handoff.cancel();
+        return c.ZC_CANCELLED;
+    }
+    var decoded: [192]backing.ImportFrame = undefined;
+    const frames = pools.decodeFrames(&request.layout, buffers.?[0..count], &decoded) catch |failure| return pools.factoryStatus(failure);
+    if (comptime @import("builtin").os.tag == .linux) switch (pool.owner) {
+        .managed => return c.ZC_STATE,
+        .imported => |*owner| {
+            owner.reapPending() catch |failure| return pools.factoryStatus(failure);
+            if (cancelled(request)) {
+                _ = request.handoff.cancel();
+                return c.ZC_CANCELLED;
+            }
+            request.loan = owner.importFramesBorrowed(&request.layout, frames) catch |failure| return pools.factoryStatus(failure);
         },
     } else return c.ZC_UNSUPPORTED;
     request.handoff.supply() catch unreachable;

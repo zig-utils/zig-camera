@@ -123,6 +123,8 @@ pub const CaptureAllocatorConfig = c.zc_capture_allocator_config;
 pub const CaptureAllocatorState = c.zc_capture_allocator_state;
 pub const CaptureImportStream = c.zc_capture_import_stream;
 pub const CaptureImportBuffer = c.zc_capture_import_buffer;
+pub const CaptureImportPlane = c.zc_capture_import_plane;
+pub const CaptureImportFrame = c.zc_capture_import_frame;
 pub const CaptureImportLayout = c.zc_capture_import_layout;
 pub fn defaultCaptureAllocatorConfig() CaptureAllocatorConfig {
     var out: CaptureAllocatorConfig = undefined;
@@ -139,6 +141,10 @@ pub const CaptureAllocator = struct {
     pub fn importBuffers(self: CaptureAllocator, layout: *const CaptureImportLayout, buffers: []const CaptureImportBuffer) Error!void {
         if (layout.struct_size != @sizeOf(CaptureImportLayout) or layout.id_length == 0 or layout.id_length > 4096 or layout.stream_count == 0 or layout.stream_count > 3 or buffers.len > 192) return error.Invalid;
         try check(@import("capture_allocator.zig").zc_capture_allocator_import(self.handle orelse return error.Stopped, &layout.camera_id, layout.id_length, &layout.streams, layout.stream_count, buffers.ptr, @intCast(buffers.len)));
+    }
+    pub fn importFrames(self: CaptureAllocator, layout: *const CaptureImportLayout, frames: []const CaptureImportFrame) Error!void {
+        if (layout.struct_size != @sizeOf(CaptureImportLayout) or layout.id_length == 0 or layout.id_length > 4096 or layout.stream_count == 0 or layout.stream_count > 3 or frames.len > 192) return error.Invalid;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_import_frames(self.handle orelse return error.Stopped, &layout.camera_id, layout.id_length, &layout.streams, layout.stream_count, frames.ptr, @intCast(frames.len)));
     }
     pub fn init(config: CaptureAllocatorConfig, heap_path: ?[]const u8) Error!CaptureAllocator {
         if (heap_path) |path| if (path.len > 4096) return error.Invalid;
