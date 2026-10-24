@@ -6,6 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.113 adds [DRM hardware overlays](docs/drm-overlays.md): shared video/alpha
+planes, exact straight or premultiplied BGRA uploads, atomic scene updates,
+async overlay jobs and preserved camera/recording mode snapshots. Home OS's
+[display architecture](docs/home-os-reuse.md) guides the ownership boundary.
+Physical Pi scanout/color acceptance and desktop integration remain open.
+
 Version 0.112 adds [explicit RGB16 DRM display copies](docs/drm-rgb16.md) through
 shared Home word conversion and reusable driver-owned BGRX buffers. Async copies
 release camera inputs before waiting for the display flip, with storage telemetry
@@ -19,7 +25,7 @@ and matched Picamera2 performance acceptance remain open.
 Version 0.109 adds [direct Linux DRM preview](docs/drm-preview.md) through shared
 Home atomic scanout helpers, retained DMABUF inputs and event-proven retirement,
 with Bun main/lores selection, mode restoration and retryable display cleanup.
-Physical Pi display acceptance, overlays and desktop integration remain open.
+Physical Pi display acceptance and desktop integration remain open.
 
 Version 0.108 adds [read-only Linux DRM/KMS display discovery](docs/drm-discovery.md)
 with connector/mode/format identities, explicit per-card failures and owned results.

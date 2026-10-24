@@ -30,7 +30,7 @@ try{
       assert.equal(camera.previewInfo()?.drmState?.retainedFrames,1);assert.ok(camera.stats().leased>=1)
       const initial=properties();assert.deepEqual([...initial.slice(6,10)],[5n,7n,320n,240n]);assert.equal(initial[14],65535n)
       if(isYuv(format)){assert.equal(initial[11],1n);assert.equal(initial[12],0n)}
-      assert.throws(()=>camera.setOverlay({data:new Uint8Array([1,2,3,255]),width:1,height:1}),/not implemented/)
+      assert.throws(()=>camera.setOverlay({data:new Uint8Array([1,2,3,255]),width:1,height:1}),/(-8)/)
       camera.setPreviewView({window:settings.window,transform:{rotation:90}})
       const rotated=properties();assert.equal(rotated[10],8n);assert.deepEqual([...rotated.slice(6,10)],[75n,7n,180n,240n])
       camera.setPreviewStream('lores');await camera.captureMetadata();assert.equal(camera.previewStreamInfo()?.width,4)
@@ -87,7 +87,7 @@ try{
   const rejected=new Camera({simulate:true,width:8,height:6})
   try{
     lib.symbols.zkms_test_fault(16)
-    assert.throws(()=>rejected.startPreview({...settings,overlay:{transform:{hflip:true}}}),/cleanup/)
+    assert.throws(()=>rejected.startPreview({...settings,transform:{hflip:true}}),/cleanup/)
     assert.equal(rejected.previewCleanupPending,1)
     await rejected.close();assert.equal(rejected.previewCleanupPending,0)
   }finally{lib.symbols.zkms_test_fault(0);await rejected.close()}

@@ -2,9 +2,9 @@ name: Home KMS display
 on:
   push:
     branches: [main]
-    paths: ['src/home/kms*.zig', 'src/drm_discovery.zig', 'tests/drm*', 'tests/ts/drm-discovery.test.ts', 'tests/ts/check-drm-kms.ts', '.github/workflows/home-kms-discovery.yml']
+    paths: ['src/home/kms*.zig', 'src/home/rgba_view.zig', 'src/drm_discovery.zig', 'tests/drm*', 'tests/ts/drm-discovery.test.ts', 'tests/ts/check-drm-kms.ts', '.github/workflows/home-kms-discovery.yml']
   pull_request:
-    paths: ['src/home/kms*.zig', 'src/drm_discovery.zig', 'tests/drm*', 'tests/ts/drm-discovery.test.ts', 'tests/ts/check-drm-kms.ts', '.github/workflows/home-kms-discovery.yml']
+    paths: ['src/home/kms*.zig', 'src/home/rgba_view.zig', 'src/drm_discovery.zig', 'tests/drm*', 'tests/ts/drm-discovery.test.ts', 'tests/ts/check-drm-kms.ts', '.github/workflows/home-kms-discovery.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 61f16552303ad61d404d056df0849df0f173c170
+          ref: 2559d54a0ca33909b8e8d327151b8eddf4c9db41
           path: .home-kms-upstream
           sparse-checkout: |
             packages/video
@@ -38,7 +38,10 @@ jobs:
             cmp ".home-kms-upstream/packages/video/src/display/$file.zig" "src/home/$file.zig"
           done
           cmp .home-kms-upstream/packages/image/src/ops/rgb16_view.zig src/home/rgb16_view.zig
+          cmp .home-kms-upstream/packages/image/src/ops/rgba_view.zig src/home/rgba_view.zig
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/rgba_view.zig
+            zig test -O "$mode" .home-kms-upstream/packages/image/src/ops/rgba_view.zig
             zig test -O "$mode" src/home/rgb16_view.zig
             zig test -O "$mode" .home-kms-upstream/packages/image/src/ops/rgb16_view.zig
             zig test -lc -O "$mode" --dep video -Mroot=.home-kms-upstream/packages/video/tests/kms_exports.zig -Mvideo=.home-kms-upstream/packages/video/src/video.zig

@@ -28,3 +28,9 @@ export function readDrmPreviewStorage(pointer:Pointer){
  return Object.freeze({inputFormat:processedFormatName(d.getUint32(4,true)),scanoutFormat:processedFormatName(d.getUint32(8,true)),copyPolicy:d.getUint32(12,true)?'rgb16-high-byte' as const:'direct' as const,buffers:d.getUint32(16,true),cpuActive:d.getUint32(20,true),copiedFrames:d.getBigUint64(32,true),storageBytes:d.getBigUint64(40,true)})
 }
 export type DrmPreviewStorageState=ReturnType<typeof readDrmPreviewStorage>
+
+export function readDrmPreviewOverlay(pointer:Pointer){
+ const data=storage(56),d=view(data);check(n.zc_drm_preview_overlay_state_get(pointer,ptr(data)),'DRM overlay state')
+ return Object.freeze({planeId:d.getUint32(4,true),configured:!!d.getUint32(8,true),visible:!!d.getUint32(12,true),blendMode:(['none','coverage','premultiplied'] as const)[d.getUint32(16,true)]!,buffers:d.getUint32(20,true),uncertain:!!d.getUint32(24,true),cpuActive:d.getUint32(28,true),poisoned:!!d.getUint32(32,true),storageBytes:d.getBigUint64(40,true),updates:d.getBigUint64(48,true)})
+}
+export type DrmPreviewOverlayState=ReturnType<typeof readDrmPreviewOverlay>

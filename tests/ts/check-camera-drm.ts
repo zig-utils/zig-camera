@@ -30,7 +30,7 @@ try{
       assert.throws(()=>camera.stopPreview(),/stopPreviewAsync/)
       assert.throws(()=>camera.setPreviewView(),/asynchronous/)
       assert.throws(()=>camera.setPreviewStream('lores'),/asynchronous/)
-      assert.throws(()=>camera.setOverlay({data:new Uint8Array(4),width:1,height:1}),/not implemented/)
+      assert.throws(()=>camera.setOverlay({data:new Uint8Array(4),width:1,height:1}),/asynchronous/)
       const offered={window:{x:9,y:11,width:320,height:240}},view=camera.setPreviewViewAsync(offered)
       offered.window.x=199;await view;assert.equal(camera.previewInfo()?.window?.x,9)
       await camera.setPreviewStreamAsync('lores');await camera.captureMetadata();await camera.drainPreviewAsync()
@@ -124,7 +124,7 @@ try{
   const preparation=new Camera(options)
   try{
     peer.symbols.zkms_test_fault(16)
-    assert.throws(()=>preparation.startPreview({...settings,overlay:{transform:{hflip:true}}}),/cleanup/)
+    assert.throws(()=>preparation.startPreview({...settings,transform:{hflip:true}}),/cleanup/)
     assert.equal(preparation.previewCleanupPending,1)
     peer.symbols.zkms_test_fault(0);await preparation.close();assert.equal(preparation.previewCleanupPending,0)
   }finally{peer.symbols.zkms_test_fault(0);await preparation.close()}

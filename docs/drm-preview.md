@@ -21,9 +21,9 @@ the four packed 422 orders. RGB161616/BGR161616 additionally support an explicit
 [high-byte display-copy policy](drm-rgb16.md) through driver-owned storage. Layouts preserve physical offsets and padded strides.
 YUV requires named driver COLOR_ENCODING/COLOR_RANGE properties and negotiated
 601/709/2020 matrix/range. No gamut, transfer or HDR conversion is implied. Camera
-configuration rejects nonlinear processed modifiers. Other formats/modifiers,
-overlay planes, Qt integration and mode setting remain open. Non-null overlays
-and overlay transforms/rectangles reject explicitly. Aspect fitting, placement,
+configuration rejects nonlinear processed modifiers. [Separate alpha planes](drm-overlays.md) support RGBA overlays and independent
+transforms/rectangles when suitable driver properties are available. Other
+formats/modifiers, Qt integration and mode setting remain open. Aspect fitting, placement,
 scaling and orthogonal image transforms use existing Home viewport policy.
 
 Actual fd-backed camera inputs retain existing exported read owners and import

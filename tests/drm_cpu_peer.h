@@ -74,12 +74,15 @@ void zkms_test_cpu_counts(uint32_t *out){
  for(unsigned i=0;i<8;i++){out[6]+=!!cpu_buffers[i].handle;out[7]+=!!cpu_buffers[i].access;}pthread_mutex_unlock(&peer_mutex);
 }
 /* Returns current scanout dimensions/pitch and actual shared-map bytes. */
-int zkms_test_cpu_snapshot(uint8_t *out,uint32_t capacity,uint32_t *info){
- pthread_mutex_lock(&peer_mutex);int index=-1;
- for(unsigned f=0;f<fb_count;f++)if(fbs[f]==plane_values[0])index=cpu_index(cpu_fb_handles[f]);
+static int cpu_snapshot(int overlay,uint8_t *out,uint32_t capacity,uint32_t *info){
+ pthread_mutex_lock(&peer_mutex);const uint32_t fb=overlay?overlay_values[0]:plane_values[0];int index=-1;
+ for(unsigned f=0;f<fb_count;f++)if(fbs[f]==fb)index=cpu_index(cpu_fb_handles[f]);
  if(index<0){pthread_mutex_unlock(&peer_mutex);return -1;}const struct cpu_buffer *b=&cpu_buffers[index];
  info[0]=b->width;info[1]=b->height;info[2]=b->pitch;info[3]=(uint32_t)b->size;
  if(capacity<b->size){pthread_mutex_unlock(&peer_mutex);return -1;}
  const int ok=syscall(SYS_pread64,b->backing,out,b->size,0)==(ssize_t)b->size;
  pthread_mutex_unlock(&peer_mutex);return ok?0:-1;
 }
+
+int zkms_test_cpu_snapshot(uint8_t *out,uint32_t capacity,uint32_t *info){return cpu_snapshot(0,out,capacity,info);}
+int zkms_test_overlay_snapshot(uint8_t *out,uint32_t capacity,uint32_t *info){return cpu_snapshot(1,out,capacity,info);}

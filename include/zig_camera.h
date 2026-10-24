@@ -809,6 +809,7 @@ const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */
 typedef struct zc_preview zc_preview;
+typedef struct zc_preview_overlay zc_preview_overlay;
 /* Linux atomic scanout on an unused non-cursor plane of an already active CRTC.
  * card is NUL-terminated (empty selects discovery); zero connector/plane selects
  * automatically. Set dimensions/processed format, timeout 1..60000 ms, reserved=0.
@@ -825,6 +826,11 @@ int zc_drm_preview_state_get(zc_preview *,zc_drm_preview_state *);
 int zc_preview_open_drm_rgb16(const zc_drm_preview_config *,zc_preview **);
 typedef struct {uint32_t struct_size,input_format,scanout_format,copy_policy,buffers,cpu_active,reserved[2];uint64_t copied_frames,storage_bytes;} zc_drm_preview_storage_state;
 int zc_drm_preview_storage_state_get(zc_preview *,zc_drm_preview_storage_state *);
+/* One unused ARGB overlay plane shares the preview master/event FD. Inputs are
+ * immutable retained snapshots; queued cancellation joins their native release. */
+typedef struct {uint32_t struct_size,plane_id,configured,visible,blend_mode,buffers,uncertain,cpu_active,poisoned,reserved;uint64_t storage_bytes,updates;} zc_drm_preview_overlay_state;
+int zc_drm_preview_overlay_state_get(zc_preview *,zc_drm_preview_overlay_state *);
+int zc_drm_preview_overlay_seed(zc_preview *,const zc_preview_overlay *);
 /* Optional native serial worker; 1..8 outstanding operations, active included.
  * Synchronous mutation returns BUSY while work executes. State is the last
  * completed operation snapshot. Queued frame jobs retain exports before return.
@@ -834,6 +840,7 @@ int zc_drm_preview_storage_state_get(zc_preview *,zc_drm_preview_storage_state *
 typedef struct zc_drm_preview_job zc_drm_preview_job;
 typedef struct {uint32_t struct_size,capacity,outstanding,queued,active,live_jobs,retiring,reserved;uint64_t issued,completed,rejected;} zc_drm_preview_queue_state;
 int zc_drm_preview_enable_async(zc_preview *,uint32_t capacity);
+int zc_drm_preview_overlay_async(zc_preview *,const zc_preview_overlay *,zc_drm_preview_job **);
 int zc_drm_preview_queue_state_get(zc_preview *,zc_drm_preview_queue_state *);
 int zc_drm_preview_show_async(zc_preview *,zc_camera *,uint64_t token,uint32_t stream,zc_drm_preview_job **);
 /* command: 0 cleanup fence, 1 background/detach, 2 copied view, 3 close device.
@@ -925,7 +932,7 @@ int zc_preview_set_view(zc_preview *,const zc_preview_view *);
 /* Immutable owned straight-alpha RGBA8, max 4096x4096 (64 MiB compact).
  * create copies active bytes synchronously; padding is excluded. Caller owns the
  * overlay independently of previews. Serialize use/close; NULL close is safe. */
-typedef struct zc_preview_overlay zc_preview_overlay;
+
 int zc_preview_overlay_create(const uint8_t *data,uint64_t length,uint32_t width,uint32_t height,uint32_t stride,zc_preview_overlay **out);
 /* Independent owned compact snapshot. Source remains valid and may be closed
  * after success. Serialize with source close; failed clone clears *out. */

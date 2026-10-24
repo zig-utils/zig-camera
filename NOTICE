@@ -749,3 +749,8 @@ under the MIT license above.
 src/home/serial_worker.zig is copied from home-lang/home packages/video/src/io
 at 10203a0bd0beb877fa64d2eff6e7155fbab7b663 with only its owned_admission import
 flattened, under the MIT license above.
+
+Home RGBA view and the six src/home/kms*.zig helpers are copied verbatim from
+home-lang/home at 2559d54a0ca33909b8e8d327151b8eddf4c9db41, under the MIT license above.
+The update adds checked BGRA alpha uploads, strict stacking and shared two-plane
+atomic retirement. Home OS kernel sources are not copied into this repository.

@@ -6,6 +6,12 @@ int main(void) {
     _Static_assert(sizeof(zc_drm_preview_state)==40,"state ABI");
     _Static_assert(sizeof(zc_drm_preview_queue_state)==56,"queue state ABI");
     _Static_assert(sizeof(zc_drm_preview_storage_state)==48,"storage ABI");
+    _Static_assert(sizeof(zc_drm_preview_overlay_state)==56,"overlay ABI");
+    zc_drm_preview_overlay_state overlay;memset(&overlay,1,sizeof(overlay));
+    assert(zc_drm_preview_overlay_state_get((void *)1,&overlay)==ZC_UNSUPPORTED && !overlay.struct_size);
+    assert(zc_drm_preview_overlay_seed((void *)1,NULL)==ZC_UNSUPPORTED);
+    zc_drm_preview_job *overlay_job=(void *)1;
+    assert(zc_drm_preview_overlay_async((void *)1,NULL,&overlay_job)==ZC_UNSUPPORTED && !overlay_job);
     zc_drm_preview_storage_state storage;memset(&storage,1,sizeof(storage));
     zc_preview *invalid=(void *)1;
     assert(zc_drm_preview_storage_state_get(invalid,&storage)==ZC_UNSUPPORTED && storage.struct_size==0);

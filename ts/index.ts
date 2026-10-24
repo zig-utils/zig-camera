@@ -11,11 +11,12 @@ import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './png-compositor'
 export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplayFormat,type DrmDiscoveryIssue,type DrmDisplayDiscovery} from './drm-discovery'
-import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,type DrmPreviewOptions,type DrmPreviewState,type DrmPreviewStorageState} from './drm-preview'
-export type {DrmPreviewOptions,DrmPreviewState,DrmPreviewStorageState} from './drm-preview'
+import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,readDrmPreviewOverlay,type DrmPreviewOptions,type DrmPreviewState,type DrmPreviewStorageState,type DrmPreviewOverlayState} from './drm-preview'
+export type {DrmPreviewOptions,DrmPreviewState,DrmPreviewStorageState,DrmPreviewOverlayState} from './drm-preview'
 export {DrmPreview,DrmPreviewCleanupError,type DrmPreviewSessionOptions} from './drm-preview-async'
 import {DrmPreview,DrmPreviewCleanupError} from './drm-preview-async'
-import {submitDrmPreviewFrame} from './drm-preview-frame'
+import {submitDrmPreviewFrame,setDrmPreviewOverlay,seedDrmPreviewOverlay} from './drm-preview-frame'
+import {createPreviewOverlay} from './preview-overlay'
 import {
   prepareApng,
   runApng,
@@ -720,6 +721,7 @@ export interface PreviewInfo extends PreviewViewOptions {
   drm?:DrmPreviewOptions
   drmState?:DrmPreviewState
   drmStorage?:DrmPreviewStorageState
+  drmOverlay?:DrmPreviewOverlayState
   drmQueue?:DrmPreview['queueState']
   workerFrames?:Readonly<{offered:bigint;completed:bigint;skipped:bigint}>
   title: string
@@ -1466,10 +1468,7 @@ export class Camera {
         if (!configuration) return
         camera.openPreviewOwned(configuration)
         if (overlay) {
-          check(
-            n.zc_preview_set_overlay(camera.previewHandle, overlay),
-            'restore recovery overlay',
-          )
+          camera.seedPreviewOverlay(overlay)
           camera.overlayHandle = overlay
           overlay = 0 as Pointer
         }
@@ -1930,8 +1929,8 @@ export class Camera {
         backend: this.previewConfiguration.backend,
         title: this.previewConfiguration.title,
         ...(this.previewConfiguration.drm?{drm:{...this.previewConfiguration.drm}}:{}),
-        ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle),drmStorage:readDrmPreviewStorage(this.previewHandle)}:{}),
-        ...(this.previewWorker&&!this.previewWorker.closed?{drmState:this.previewWorker.state,drmStorage:this.previewWorker.storageState,drmQueue:this.previewWorker.queueState}:{}),
+        ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle),drmStorage:readDrmPreviewStorage(this.previewHandle),drmOverlay:readDrmPreviewOverlay(this.previewHandle)}:{}),
+        ...(this.previewWorker&&!this.previewWorker.closed?{drmState:this.previewWorker.state,drmStorage:this.previewWorker.storageState,drmOverlay:this.previewWorker.overlayState,drmQueue:this.previewWorker.queueState}:{}),
         ...(this.previewConfiguration.backend==='drm-async'?{workerFrames:Object.freeze({offered:this.previewOffered,completed:this.previewCompleted,skipped:this.previewSkipped})}:{}),
         ...(this.previewConfiguration.stream !== undefined
           ? { stream: this.previewConfiguration.stream }
@@ -3934,57 +3933,45 @@ export class Camera {
     this.lastPreviewError = undefined
   }
   /** Replace or clear the display-only overlay. Does not modify capture/encoding. */
-  setOverlay(overlay: PreviewOverlay | null) {
-    guardRequestCallback()
-    guardOutputHook()
-    this.assertOpen()
-    if (this.hasPendingModes()) throw new CameraError(-4, 'mode jobs pending')
-    if (!this.previewActive) throw new CameraError(-2, 'preview not active')
-    if((this.previewConfiguration!.backend==='drm'||this.previewConfiguration!.backend==='drm-async')&&overlay!==null)throw new CameraError(-8,'DRM overlay planes are not implemented')
-    let candidate = 0 as Pointer
-    if (overlay !== null) {
-      const data = overlay.data,
-        width = uint(overlay.width, 4096),
-        height = uint(overlay.height, 4096),
-        stride = uint(overlay.stride ?? width * 4)
-      if (
-        !(data instanceof Uint8Array) ||
-        !width ||
-        !height ||
-        stride < width * 4 ||
-        data.byteLength < (height - 1) * stride + width * 4
-      )
-        throw new RangeError('invalid RGBA preview overlay')
-      // Application accessors can reenter; recheck before reserving native data.
+  setOverlay(overlay:PreviewOverlay|null){
+    guardRequestCallback();guardOutputHook();this.assertOpen()
+    if(this.pendingPreviewJobs()||this.hasPendingModes())throw new CameraError(-4,'preview/mode jobs pending')
+    if(!this.previewActive)throw new CameraError(-2,'preview not active')
+    if(this.previewConfiguration?.backend==='drm-async')throw new CameraError(-4,'use asynchronous overlay transition')
+    const owner=this.previewConfiguration!,candidate=createPreviewOverlay(overlay,owner.backend!=='headless')
+    try{
       this.assertOpen()
-      if (this.hasPendingModes() || !this.previewActive)
-        throw new CameraError(-4, 'preview changed during overlay validation')
-      if (this.previewConfiguration!.backend === 'headless') return
-      const out = outPointer()
-      check(
-        n.zc_preview_overlay_create(
-          ptr(data),
-          BigInt(data.byteLength),
-          width,
-          height,
-          stride,
-          ptr(out),
-        ),
-      )
-      candidate = handle(out)
-    }
-    if (this.previewConfiguration!.backend === 'headless'||this.previewConfiguration!.backend==='drm-async') return
-    try {
-      check(n.zc_preview_set_overlay(this.previewHandle, candidate))
-    } catch (error) {
-      n.zc_preview_overlay_close(candidate)
-      throw error
-    }
-    n.zc_preview_overlay_close(this.overlayHandle)
-    this.overlayHandle = candidate
+      if(this.pendingPreviewJobs()||this.hasPendingModes()||!this.previewActive||this.previewConfiguration!==owner)throw new CameraError(-4,'preview changed during overlay validation')
+      if(owner.backend==='headless'){n.zc_preview_overlay_close(candidate);return}
+      check(n.zc_preview_set_overlay(this.previewHandle,candidate||null),'preview overlay')
+    }catch(error){n.zc_preview_overlay_close(candidate);throw error}
+    n.zc_preview_overlay_close(this.overlayHandle);this.overlayHandle=candidate
+  }
+  setOverlayAsync(overlay:PreviewOverlay|null,options:JobOptions<void>={}):BunJob<void>{
+    guardRequestCallback();guardOutputHook();this.assertOpen()
+    let candidate=createPreviewOverlay(overlay,this.previewConfiguration?.backend!=='headless')
+    const cleanup=()=>{if(candidate){n.zc_preview_overlay_close(candidate);candidate=0 as Pointer}}
+    try{return this.submitPreview(async current=>{
+      const owner=this.previewConfiguration
+      if(!owner||this.previewSuspended)throw new CameraError(-2,'preview not active')
+      if(this.previewWorker){
+        const child=this.previewWorker[setDrmPreviewOverlay](candidate)
+        current.setCancellationGuard(reason=>child.cancel(reason))
+        try{await child}catch(error){if(this.previewWorker.state.poisoned||this.previewWorker.overlayState.poisoned)this.failPreview(error);throw error}finally{current.setCancellationGuard(()=>false)}
+      }else{
+        current.check();current.setCancellationGuard(()=>false)
+        if(owner.backend==='headless')return
+        check(n.zc_preview_set_overlay(this.previewHandle,candidate||null),'preview overlay')
+      }
+      n.zc_preview_overlay_close(this.overlayHandle);this.overlayHandle=candidate;candidate=0 as Pointer
+    },options,cleanup)}catch(error){cleanup();throw error}
+  }
+  private seedPreviewOverlay(input:Pointer){
+    if(this.previewWorker)this.previewWorker[seedDrmPreviewOverlay](input)
+    else check(this.previewConfiguration?.backend==='drm'?n.zc_drm_preview_overlay_seed(this.previewHandle,input||null):n.zc_preview_set_overlay(this.previewHandle,input||null),'preview overlay bootstrap')
   }
   private pendingPreviewJobs(){return [...this.previewJobs].some(job=>!job.done)}
-  private submitPreview<T>(operation:(current:BunJob<T>)=>Promise<T>,source:JobOptions<T>={}):BunJob<T>{
+  private submitPreview<T>(operation:(current:BunJob<T>)=>Promise<T>,source:JobOptions<T>={},cleanup:()=>void=()=>{}):BunJob<T>{
     const admit=()=>{
       guardRequestCallback();guardOutputHook();this.assertOpen()
       if(this.hasPendingModes()||this.sessionRecoveryActive||(this.captureFilesJob&&!this.captureFilesJob.done)||(this.pngCaptureJob&&!this.pngCaptureJob.done))throw new CameraError(-4,'camera transition active')
@@ -3994,11 +3981,11 @@ export class Camera {
     const options=snapshotJobOptions(source)
     admit()
     let job:BunJob<T>|undefined
-    job=new BunJob<T>(async current=>{current.check();this.assertOpen();return operation(current)},()=>{if(job)this.previewJobs.delete(job as BunJob<unknown>)},options)
+    job=new BunJob<T>(async current=>{try{current.check();this.assertOpen();return await operation(current)}finally{cleanup()}},()=>{if(job)this.previewJobs.delete(job as BunJob<unknown>);cleanup()},options)
     // Signal listener registration is application code and can stop the camera,
     // fill this queue, or reserve a mode. Recheck before publishing any owner.
-    try{admit()}catch(error){job.cancel(error);throw error}
-    if(job.done)return job
+    try{admit()}catch(error){job.cancel(error);cleanup();throw error}
+    if(job.done){cleanup();return job}
     const accepted=job
     this.previewJobs.add(accepted as BunJob<unknown>);this.previewPauses++
     void accepted.operationDone.then(()=>{this.previewPauses--;if(this.handle&&!this.closing&&!this.stopJob&&this.previewActive)this.ensurePump()})
@@ -4127,10 +4114,13 @@ export class Camera {
     if (configuration.backend === 'headless')
       return { handle: 0 as Pointer, input,worker:undefined as DrmPreview|undefined }
     if(configuration.backend==='drm-async'){
+      let worker:DrmPreview|undefined
       try{
-        const worker=new DrmPreview({width,height,format:input.info.format,...configuration.drm!,operations:1,view:copyPreviewViewOptions(configuration.view)})
+        worker=new DrmPreview({width,height,format:input.info.format,...configuration.drm!,operations:1,view:copyPreviewViewOptions(configuration.view)})
+        if(this.overlayHandle)worker[seedDrmPreviewOverlay](this.overlayHandle)
         return {handle:0 as Pointer,input,worker}
       }catch(error){
+        if(worker){this.preparedWorkerCleanup.add(worker);throw new DrmPreviewCleanupError([error],worker)}
         if(error instanceof DrmPreviewCleanupError)this.preparedWorkerCleanup.add(error.cleanup)
         throw error
       }
@@ -4151,7 +4141,7 @@ export class Camera {
           'preview view',
         )
       if (this.overlayHandle)
-        check(n.zc_preview_set_overlay(candidate, this.overlayHandle))
+        check(configuration.backend==='drm'?n.zc_drm_preview_overlay_seed(candidate,this.overlayHandle):n.zc_preview_set_overlay(candidate, this.overlayHandle))
     } catch (error) {
       this.retirePreparedPreview(candidate)
       throw error

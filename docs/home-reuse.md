@@ -2091,3 +2091,24 @@ Public C ABI and Bun telemetry make this precision/copy policy explicit. Pure
 helpers and the portable video root are checked on pinned/development Zig;
 Linux native ownership/pixel/fault acceptance uses the independent C peer.
 This does not establish physical Pi display support, sensor FPS or a speedup.
+
+## 0.113 shared video and alpha planes
+
+Re-fetched Home 61f16552303ad61d404d056df0849df0f173c170 and checked existing
+rgba_view, viewport, KMS property/CPU-buffer/gate and serial-worker helpers.
+The previous device owner handled only one plane and image copies did not emit
+BGRA with an explicit alpha convention. Home 2559d54a0ca33909b8e8d327151b8eddf4c9db41 adds
+validated straight/rounded-premultiplied BGRA writes and shared master/event-FD
+ownership for a separate AR24 plane. Selection requires named blend modes and
+strictly proven zpos; one two-object TEST/actual transaction quarantines possible
+GPU sources in both owners after unknown submission. A borrower reservation
+prevents primary FD retirement while child cleanup remains.
+
+Camera vendors rgba_view plus the six KMS files verbatim, retaining Home
+attribution and pinning source comparisons. It reuses Home owned_admission for
+a global immutable overlay snapshot budget, atomic native references, existing
+viewport geometry and the existing joined serial worker. No second renderer or
+executor is added. Home pure helpers/public root pass both safety modes on
+pinned 0.15.2 and 0.18.0-dev.470+6817928c3; native roots and independent C peers
+compile for Linux ARM/x86. Independent runtime peers exercise actual shared-map
+bytes and event FDs in CI; they do not establish physical Pi behavior.

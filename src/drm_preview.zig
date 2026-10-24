@@ -36,6 +36,24 @@ pub export fn zc_drm_preview_storage_state_get(p: *c.zc_preview, out: *c.zc_drm_
     if (comptime available) return impl.storageState(p, out);
     return c.ZC_UNSUPPORTED;
 }
+pub export fn zc_drm_preview_overlay_state_get(p: *c.zc_preview, out: *c.zc_drm_preview_overlay_state) c_int {
+    out.* = @import("std").mem.zeroes(c.zc_drm_preview_overlay_state);
+    if (comptime available) return impl.overlayState(p, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_overlay_seed(p: *c.zc_preview, input: ?*const c.zc_preview_overlay) c_int {
+    if (comptime available) return impl.setOverlay(p, input, false);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_overlay_async(p: *c.zc_preview, input: ?*const c.zc_preview_overlay, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    if (comptime available) return impl.overlayAsync(p, input, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub fn setOverlay(p: *c.zc_preview, input: ?*const c.zc_preview_overlay) c_int {
+    if (comptime available) return impl.setOverlay(p, input, true);
+    return c.ZC_UNSUPPORTED;
+}
 pub export fn zc_drm_preview_enable_async(p: *c.zc_preview, capacity: u32) c_int {
     if (capacity == 0 or capacity > 8) return c.ZC_INVALID;
     if (comptime available) return impl.enableAsync(p, capacity);

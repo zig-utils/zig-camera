@@ -1,10 +1,11 @@
-import type {Frame} from './index'
+import type {Frame,PreviewOverlay} from './index'
 import {native as n,storage,view,ptr,outPointer,handle,check,cameraError,type Pointer} from './ffi'
 import {BunJob,snapshotJobOptions,type JobOptions} from './jobs'
-import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,snapshotDrmPreview,type DrmPreviewOptions} from './drm-preview'
+import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,readDrmPreviewOverlay,snapshotDrmPreview,type DrmPreviewOptions} from './drm-preview'
 import {preparePreviewView,validatePreviewView,type PreviewViewOptions} from './preview-view'
 import {processedFormatCode,type ProcessedFormat} from './processed-format'
-import {submitDrmPreviewFrame} from './drm-preview-frame'
+import {submitDrmPreviewFrame,setDrmPreviewOverlay,seedDrmPreviewOverlay} from './drm-preview-frame'
+import {createPreviewOverlay} from './preview-overlay'
 
 export interface DrmPreviewSessionOptions extends DrmPreviewOptions {
   width:number
@@ -56,6 +57,7 @@ export class DrmPreview implements AsyncDisposable {
   get pendingJobs(){return this.nativeJobs.size}
   get state(){if(!this.handle)throw cameraError(-2,'closed DRM preview');return readDrmPreviewState(this.handle)}
   get storageState(){if(!this.handle)throw cameraError(-2,'closed DRM preview');return readDrmPreviewStorage(this.handle)}
+  get overlayState(){if(!this.handle)throw cameraError(-2,'closed DRM preview');return readDrmPreviewOverlay(this.handle)}
   get queueState(){
     if(!this.handle)throw cameraError(-2,'closed DRM preview')
     const data=storage(56),d=view(data);check(n.zc_drm_preview_queue_state_get(this.handle,ptr(data)))
@@ -85,25 +87,37 @@ export class DrmPreview implements AsyncDisposable {
     else failure=failure===undefined?cameraError(retired,'DRM job cleanup'):new AggregateError([failure,cameraError(retired,'DRM job cleanup')],'DRM operation and cleanup failed')
     if(failure!==undefined){this.lastError=failure;throw failure}
   }
-  private create(start:()=>Pointer,source:JobOptions<void>,waitCapacity=false){
-    const options=snapshotJobOptions(source)
-    this.assertOpen()
-    const job=new BunJob<void>(async current=>{
-      let native:Pointer
-      for(;;){
-        current.check();this.assertOpen()
-        try{native=start();break}catch(error){
-          if(!waitCapacity||!(error instanceof Error)||!('code' in error)||error.code!==-4)throw error
-          await Bun.sleep(1)
+  private create(start:()=>Pointer,source:JobOptions<void>,waitCapacity=false,cleanup:()=>void=()=>{}){
+    const admit=()=>{this.assertOpen();if([...this.jobs].filter(job=>!job.done).length>=32)throw cameraError(-4,'DRM job queue full')}
+    admit();const options=snapshotJobOptions(source);admit()
+    let job:BunJob<void>|undefined
+    job=new BunJob<void>(async current=>{
+      try{
+        let native:Pointer
+        for(;;){
+          current.check();this.assertOpen()
+          try{native=start();break}catch(error){
+            if(!waitCapacity||!(error instanceof Error)||!('code' in error)||error.code!==-4)throw error
+            await Bun.sleep(1)
+          }
         }
-      }
-      this.nativeJobs.add(native)
-      // Cancellation is linearized against native claim. Active DRM ioctls/
-      // event waits are not interruptible; returning false preserves that fact.
-      current.setCancellationGuard(()=>n.zc_drm_preview_job_cancel(native)===0)
-      await this.finish(native,current)
-    },()=>this.jobs.delete(job),options)
+        this.nativeJobs.add(native)
+        current.setCancellationGuard(()=>n.zc_drm_preview_job_cancel(native)===0)
+        await this.finish(native,current)
+      }finally{cleanup()}
+    },()=>{if(job)this.jobs.delete(job);cleanup()},options)
+    try{admit()}catch(error){job.cancel(error);cleanup();throw error}
+    if(job.done){cleanup();return job}
     this.jobs.add(job);void job.start();return job
+  }
+  [seedDrmPreviewOverlay](input:Pointer){this.assertOpen();check(n.zc_drm_preview_overlay_seed(this.handle,input||null),'DRM overlay bootstrap')}
+  [setDrmPreviewOverlay](input:Pointer,options:JobOptions<void>={}){
+    return this.create(()=>{const out=outPointer();check(n.zc_drm_preview_overlay_async(this.handle,input||null,ptr(out)),'DRM overlay admission');return handle(out)},options,true)
+  }
+  setOverlayAsync(overlay:PreviewOverlay|null,options:JobOptions<void>={}){
+    let input=createPreviewOverlay(overlay)
+    const cleanup=()=>{if(input){n.zc_preview_overlay_close(input);input=0 as Pointer}}
+    try{return this.create(()=>{const out=outPointer();check(n.zc_drm_preview_overlay_async(this.handle,input||null,ptr(out)),'DRM overlay admission');return handle(out)},options,true,cleanup)}catch(error){cleanup();throw error}
   }
   showAsync(frame:Frame,options:JobOptions<void>&{stream?:'main'|'lores'}={}){
     const stream=options.stream??'main'

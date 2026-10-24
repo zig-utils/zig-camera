@@ -782,3 +782,20 @@ scanout storage and explicit word conversion, reused by camera. OS source stays
 Home; no kernel files are copied, modified, translated or executed. The OS
 hardware-plane design guides the ownership boundary and does not substitute for
 physical Pi scanout/color/performance acceptance.
+
+## 0.113 hardware overlay ownership audit
+
+Re-fetched clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 from
+~/Code/Home/os. Re-read ADR-MC3/MC5, framebuffer_double.home and
+video/compositor.home, including the separate UI/video plane design. Keeping
+video native while uploading independent ARGB UI directly follows MC5's display
+architecture. Its bandwidth figures are calculations, and its Pi register paths
+remain explicitly unverified; they are not hardware acceptance evidence.
+
+Kernel framebuffer addresses/swaps and opaque-target RGB blending cannot own
+hosted Linux master/event FDs, dma-buf CPU fences or per-pixel alpha conventions.
+The reusable conversion, strict stacking and shared atomic plane retirement
+therefore improve Home stdlib image/video under ADR-MC3. Camera consumes those
+helpers and owns its Bun lifecycle. No Home OS source is copied, modified,
+translated or executed; the OS stays Home. Physical Pi color/scanout and camera
+performance remain acceptance work.

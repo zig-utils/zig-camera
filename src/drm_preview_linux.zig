@@ -15,6 +15,10 @@ pub const Owner = struct {
     format_code: u32,
     copy_rgb16: bool = false,
     copied_frames: u64 = 0,
+    overlay_device: ?*host.Device = null,
+    overlay_slot: ?usize = null,
+    overlay_updates: u64 = 0,
+    scene_started: bool = false,
     view: c.zc_preview_view,
     sources: [2]?*c.zc_frame_export = @splat(null),
     last_error: c_int = 0,
@@ -27,6 +31,7 @@ pub const Owner = struct {
     cache_lock: std.Thread.Mutex = .{},
     cache: c.zc_drm_preview_state = std.mem.zeroes(c.zc_drm_preview_state),
     storage_cache: c.zc_drm_preview_storage_state = std.mem.zeroes(c.zc_drm_preview_storage_state),
+    overlay_cache: c.zc_drm_preview_overlay_state = std.mem.zeroes(c.zc_drm_preview_overlay_state),
     fn busy(self: *Owner) bool {
         if (self.executor) |*worker| return (worker.snapshot() catch return true).outstanding != 0;
         return false;
@@ -34,17 +39,19 @@ pub const Owner = struct {
     fn publishState(self: *Owner) void {
         const value = liveState(self);
         const storage = liveStorage(self);
+        const overlay = liveOverlay(self);
         self.cache_lock.lock();
         defer self.cache_lock.unlock();
         self.cache = value;
         self.storage_cache = storage;
+        self.overlay_cache = overlay;
     }
     fn geometry(self: *Owner, view: *const c.zc_preview_view, color: ?*const c.zc_color_space) !host.Geometry {
-        if (view.flags & 8 != 0 or view.overlay_orientation != 1) return error.Unsupported;
         if (@import("preview_view.zig").zc_preview_check_view(self.width, self.height, view) != c.ZC_OK) return error.InvalidGeometry;
         const width = if (view.flags & 2 != 0) view.window_width else self.device.screen_width;
         const height = if (view.flags & 2 != 0) view.window_height else self.device.screen_height;
-        const plan = try @import("home/viewport.zig").Plan.init(self.width, self.height, width, height, view.image_orientation, 1, view.flags & 1 != 0, null);
+        const rectangle: ?@import("home/region.zig").Region = if (view.flags & 8 != 0) .{ .x = view.overlay_x, .y = view.overlay_y, .width = view.overlay_width, .height = view.overlay_height } else null;
+        const plan = try @import("home/viewport.zig").Plan.init(self.width, self.height, width, height, view.image_orientation, view.overlay_orientation, view.flags & 1 != 0, rectangle);
         const x = std.math.add(i32, if (view.flags & 4 != 0) view.window_x else 0, @intCast(plan.image.x)) catch return error.InvalidGeometry;
         const y = std.math.add(i32, if (view.flags & 4 != 0) view.window_y else 0, @intCast(plan.image.y)) catch return error.InvalidGeometry;
         var result = host.Geometry{ .x = x, .y = y, .width = plan.image.width, .height = plan.image.height, .rotation = try host.policy.rotation(view.image_orientation) };
@@ -66,6 +73,44 @@ pub const Owner = struct {
         try self.device.checkGeometry(result);
         return result;
     }
+    fn overlayGeometry(self: *Owner, view: *const c.zc_preview_view) !?host.Geometry {
+        const device = self.overlay_device orelse return null;
+        const width = if (view.flags & 2 != 0) view.window_width else self.device.screen_width;
+        const height = if (view.flags & 2 != 0) view.window_height else self.device.screen_height;
+        const rectangle: ?@import("home/region.zig").Region = if (view.flags & 8 != 0) .{ .x = view.overlay_x, .y = view.overlay_y, .width = view.overlay_width, .height = view.overlay_height } else null;
+        const plan = try @import("home/viewport.zig").Plan.init(self.width, self.height, width, height, view.image_orientation, view.overlay_orientation, view.flags & 1 != 0, rectangle);
+        if (plan.overlay.width == 0 or plan.overlay.height == 0) return null;
+        const x = std.math.add(i32, if (view.flags & 4 != 0) view.window_x else 0, @intCast(plan.overlay.x)) catch return error.InvalidGeometry;
+        const y = std.math.add(i32, if (view.flags & 4 != 0) view.window_y else 0, @intCast(plan.overlay.y)) catch return error.InvalidGeometry;
+        const result = host.Geometry{ .x = x, .y = y, .width = plan.overlay.width, .height = plan.overlay.height, .rotation = try host.policy.rotation(view.overlay_orientation) };
+        try device.checkGeometry(result);
+        return result;
+    }
+    fn presentScene(self: *Owner, slot: ?usize, geo: host.Geometry) !void {
+        if (self.overlay_device) |other| {
+            if (other.poisoned) return error.State;
+            const over = if (self.overlay_slot != null) try self.overlayGeometry(&self.view) else null;
+            const target = if (over != null) self.overlay_slot else null;
+            try self.device.presentPair(other, slot, geo, target, over orelse .{ .width = 1, .height = 1 });
+        } else if (slot) |index| try self.device.present(index, geo) else try self.device.detach();
+        self.scene_started = true;
+    }
+    fn reapOverlay(self: *Owner) c_int {
+        const device = self.overlay_device orelse return c.ZC_OK;
+        var code: c_int = c.ZC_OK;
+        for (0..2) |index| {
+            if (device.gate.current == index + 1 or device.gate.candidate == index + 1) continue;
+            device.recycle(index) catch |err| {
+                if (code == c.ZC_OK) code = status(err);
+            };
+        }
+        if (code != c.ZC_OK) {
+            self.last_error = code;
+            self.device.poisoned = true;
+            self.device.driver.last_errno = device.driver.last_errno;
+        }
+        return code;
+    }
     fn reap(self: *Owner) c_int {
         var result: c_int = c.ZC_OK;
         for (0..2) |i| {
@@ -79,6 +124,8 @@ pub const Owner = struct {
                 if (code != c.ZC_OK and result == c.ZC_OK) result = code;
             }
         }
+        const overlay = self.reapOverlay();
+        if (overlay != c.ZC_OK and result == c.ZC_OK) result = overlay;
         if (result != c.ZC_OK) {
             self.last_error = result;
             self.device.poisoned = true;
@@ -222,7 +269,7 @@ fn presentOwned(owner: *Owner, slot: usize, source: *c.zc_frame_export) c_int {
         owner.last_error = status(err);
         return owner.last_error;
     };
-    owner.device.present(slot, geometry) catch |err| {
+    owner.presentScene(slot, geometry) catch |err| {
         owner.last_error = status(err);
         return owner.last_error;
     };
@@ -283,6 +330,109 @@ pub fn storageState(p: *c.zc_preview, out: *c.zc_drm_preview_storage_state) c_in
     } else out.* = liveStorage(owner);
     return c.ZC_OK;
 }
+fn liveOverlay(owner: *Owner) c.zc_drm_preview_overlay_state {
+    var result = std.mem.zeroes(c.zc_drm_preview_overlay_state);
+    result.struct_size = @sizeOf(c.zc_drm_preview_overlay_state);
+    result.updates = owner.overlay_updates;
+    result.configured = @intFromBool(owner.overlay_slot != null);
+    if (owner.overlay_device) |device| {
+        result.plane_id = device.plane;
+        result.visible = @intFromBool(device.gate.current != 0);
+        result.blend_mode = if (device.premultipliedAlpha()) 2 else 1;
+        result.uncertain = @intFromBool(device.gate.uncertain);
+        result.poisoned = @intFromBool(device.poisoned);
+        for (device.slots) |slot| {
+            result.buffers += @intFromBool(slot.dumb != 0 or slot.cpu_fd >= 0 or slot.mapping != null);
+            result.cpu_active += @intFromBool(slot.cpu_access);
+            if (slot.mapping) |mapping| result.storage_bytes += mapping.len;
+        }
+    }
+    return result;
+}
+pub fn overlayState(p: *c.zc_preview, out: *c.zc_drm_preview_overlay_state) c_int {
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.executor != null) {
+        owner.cache_lock.lock();
+        defer owner.cache_lock.unlock();
+        out.* = owner.overlay_cache;
+    } else out.* = liveOverlay(owner);
+    return c.ZC_OK;
+}
+fn closeOverlay(owner: *Owner) c_int {
+    const device = owner.overlay_device orelse {
+        owner.overlay_slot = null;
+        return c.ZC_OK;
+    };
+    device.detach() catch |err| {
+        owner.device.driver.last_errno = device.driver.last_errno;
+        return status(err);
+    };
+    device.finishClose() catch |err| {
+        owner.device.driver.last_errno = device.driver.last_errno;
+        return status(err);
+    };
+    A.destroy(device);
+    owner.overlay_device = null;
+    owner.overlay_slot = null;
+    return c.ZC_OK;
+}
+pub fn setOverlay(p: *c.zc_preview, input: ?*const c.zc_preview_overlay, render: bool) c_int {
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.busy()) return c.ZC_BUSY;
+    if (owner.retiring) return c.ZC_STATE;
+    if (!render and owner.scene_started) return c.ZC_STATE;
+    defer owner.publishState();
+    return setOverlayOwned(owner, input, render);
+}
+fn setOverlayOwned(owner: *Owner, input: ?*const c.zc_preview_overlay, render: bool) c_int {
+    if (owner.device.closed) return c.ZC_STATE;
+    const source = input orelse {
+        const code = closeOverlay(owner);
+        if (code == c.ZC_OK) owner.overlay_updates +|= 1;
+        return code;
+    };
+    if (owner.device.poisoned) return c.ZC_STATE;
+    if (owner.overlay_device == null) {
+        const device = A.create(host.Device) catch return c.ZC_NOMEM;
+        device.* = .{};
+        device.openOverlay(&owner.device) catch |err| {
+            owner.device.driver.last_errno = device.driver.last_errno;
+            A.destroy(device);
+            return status(err);
+        };
+        owner.overlay_device = device;
+    }
+    const device = owner.overlay_device.?;
+    if (device.closed or device.poisoned or device.gate.uncertain) return c.ZC_STATE;
+    const image = @import("preview_overlay.zig").borrowedView(source);
+    var selected: ?usize = null;
+    for (0..2) |index| {
+        if (owner.overlay_slot == index or device.gate.current == index + 1 or device.gate.candidate == index + 1) continue;
+        selected = index;
+        break;
+    }
+    const slot = selected orelse return c.ZC_BUSY;
+    if (device.slots[slot].dumb != 0 and (device.slots[slot].width != image.width or device.slots[slot].height != image.height)) device.retire(slot) catch |err| return status(err);
+    const target = device.prepareCpu(slot, @intCast(image.width), @intCast(image.height)) catch |err| {
+        owner.device.driver.last_errno = device.driver.last_errno;
+        return status(err);
+    };
+    image.toBgra(target.bytes, target.pitch, device.premultipliedAlpha()) catch {
+        device.finishCpu(slot) catch return c.ZC_IO;
+        return c.ZC_INVALID;
+    };
+    device.finishCpu(slot) catch return c.ZC_IO;
+    const over = owner.overlayGeometry(&owner.view) catch |err| return status(err);
+    if (render) {
+        const main: ?usize = if (owner.device.gate.current != 0) @intCast(owner.device.gate.current - 1) else null;
+        const geometry = if (main != null) owner.geometry(&owner.view, if (owner.current_color) |*color| color else null) catch |err| return status(err) else host.Geometry{ .width = 1, .height = 1 };
+        owner.device.presentPair(device, main, geometry, if (over != null) slot else null, over orelse .{ .width = 1, .height = 1 }) catch |err| return status(err);
+        owner.scene_started = true;
+    }
+    owner.overlay_slot = slot;
+    owner.overlay_updates +|= 1;
+    return owner.reapOverlay();
+}
 pub fn background(p: *c.zc_preview) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
     if (owner.busy()) return c.ZC_BUSY;
@@ -291,7 +441,19 @@ pub fn background(p: *c.zc_preview) c_int {
 }
 fn backgroundOwned(owner: *Owner) c_int {
     if (owner.device.closed) return c.ZC_STATE;
-    owner.device.detach() catch |err| {
+    if (owner.overlay_device != null) {
+        const over = owner.overlayGeometry(&owner.view) catch |err| return status(err);
+        const other = owner.overlay_device.?;
+        const target = if (over != null) owner.overlay_slot else null;
+        if (!owner.device.needs_detach and !other.gate.uncertain and other.gate.current == (if (target) |index| index + 1 else @as(u64, 0))) {
+            owner.scene_started = true;
+            return owner.reap();
+        }
+        owner.presentScene(null, .{ .width = 1, .height = 1 }) catch |err| {
+            owner.last_error = status(err);
+            return owner.last_error;
+        };
+    } else owner.device.detach() catch |err| {
         owner.last_error = status(err);
         return owner.last_error;
     };
@@ -306,25 +468,30 @@ pub fn setView(p: *c.zc_preview, view: *const c.zc_preview_view) c_int {
 }
 fn setViewOwned(owner: *Owner, view: *const c.zc_preview_view) c_int {
     if (owner.device.closed) return c.ZC_STATE;
-    // Before first YUV frame, validate geometry/rotation without inventing a color
-    // description; actual matrix/range admission happens on the first source.
-    const geometry = owner.geometry(view, if (owner.current_color) |*color| color else null) catch |err| {
-        if (err == error.Unsupported and format.yuv(owner.format_code) and owner.current_color == null and view.flags & 8 == 0 and view.overlay_orientation == 1) {
-            if (@import("preview_view.zig").zc_preview_check_view(owner.width, owner.height, view) != c.ZC_OK) return c.ZC_INVALID;
-            const rotation = host.policy.rotation(view.image_orientation) catch return c.ZC_INVALID;
-            owner.device.checkGeometry(.{ .width = 1, .height = 1, .rotation = rotation }) catch |failure| return status(failure);
-            owner.view = view.*;
-            return c.ZC_OK;
-        }
-        return status(err);
+    const geometry = owner.geometry(view, if (owner.current_color) |*color| color else null) catch |err| blk: {
+        if (err != error.Unsupported or !format.yuv(owner.format_code) or owner.current_color != null or owner.device.gate.current != 0 or owner.device.gate.candidate != 0) return status(err);
+        if (@import("preview_view.zig").zc_preview_check_view(owner.width, owner.height, view) != c.ZC_OK) return c.ZC_INVALID;
+        const rotation = host.policy.rotation(view.image_orientation) catch return c.ZC_INVALID;
+        const fallback = host.Geometry{ .width = 1, .height = 1, .rotation = rotation };
+        owner.device.checkGeometry(fallback) catch |failure| return status(failure);
+        break :blk fallback;
     };
-    owner.device.changeGeometry(geometry) catch |err| {
+    if (owner.overlay_device) |other| {
+        const over = if (owner.overlay_slot != null) owner.overlayGeometry(view) catch |err| return status(err) else null;
+        const target = if (owner.scene_started and over != null) owner.overlay_slot else null;
+        const main: ?usize = if (owner.device.gate.current != 0) @intCast(owner.device.gate.current - 1) else null;
+        if (main != null or other.gate.current != 0 or target != null) owner.device.presentPair(other, main, geometry, target, over orelse .{ .width = 1, .height = 1 }) catch |err| {
+            owner.last_error = status(err);
+            return owner.last_error;
+        };
+    } else owner.device.changeGeometry(geometry) catch |err| {
         owner.last_error = status(err);
         return owner.last_error;
     };
     owner.view = view.*;
-    return c.ZC_OK;
+    return owner.reap();
 }
+
 pub fn close(p: *c.zc_preview) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
     if (owner.busy() or owner.live_jobs != 0) return c.ZC_BUSY;
@@ -339,6 +506,11 @@ pub fn close(p: *c.zc_preview) c_int {
     return c.ZC_OK;
 }
 fn closeResources(owner: *Owner) c_int {
+    const over = closeOverlay(owner);
+    if (over != c.ZC_OK) {
+        owner.last_error = over;
+        return over;
+    }
     if (owner.device.closed) {
         owner.device.finishClose() catch |err| return status(err);
         return c.ZC_OK;
@@ -361,13 +533,14 @@ fn closeResources(owner: *Owner) c_int {
 const Jobs = @import("home/owned_admission.zig").Registry(32);
 var job_admission: Jobs = .{ .max_bytes = 32, .max_items = 32 };
 var job_lock: std.Thread.Mutex = .{};
-const Kind = enum { frame, fence, background, view, close_device };
+const Kind = enum { frame, fence, background, view, close_device, overlay };
 const Job = struct {
     owner: *Owner,
     kind: Kind,
     ticket: u64 = 0,
     reservation: Jobs.Ticket,
     source: ?*c.zc_frame_export = null,
+    overlay: ?*c.zc_preview_overlay = null,
     view: c.zc_preview_view = undefined,
     mutex: std.Thread.Mutex = .{},
     started: bool = false,
@@ -385,6 +558,7 @@ const Job = struct {
             .background => backgroundOwned(self.owner),
             .view => setViewOwned(self.owner, &self.view),
             .close_device => closeResources(self.owner),
+            .overlay => setOverlayOwned(self.owner, self.overlay, true),
         };
         if (self.source) |source| {
             self.source = null;
@@ -393,6 +567,10 @@ const Job = struct {
                 code = cleanup;
                 self.owner.device.poisoned = true;
             }
+        }
+        if (self.overlay) |image| {
+            @import("preview_overlay.zig").zc_preview_overlay_close(image);
+            self.overlay = null;
         }
         if (code != c.ZC_OK and code != c.ZC_CANCELLED) self.owner.last_error = code;
         self.owner.publishState();
@@ -476,6 +654,7 @@ fn submitJob(self: *Job, out: *?*c.zc_drm_preview_job) c_int {
             const cleanup = exports.zc_frame_export_close(source);
             if (cleanup != c.ZC_OK) code = cleanup;
         }
+        if (self.overlay) |image| @import("preview_overlay.zig").zc_preview_overlay_close(image);
         releaseJob(self);
         return code;
     };
@@ -501,6 +680,19 @@ pub fn showAsync(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32
         releaseJob(self);
         return acquired;
     }
+    return submitJob(self, out);
+}
+pub fn overlayAsync(p: *c.zc_preview, input: ?*const c.zc_preview_overlay, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    var allocated: ?*Job = null;
+    const code = allocateJob(owner, .overlay, &allocated);
+    if (code != c.ZC_OK) return code;
+    const self = allocated.?;
+    if (input) |image| self.overlay = @import("preview_overlay.zig").retain(image) catch {
+        releaseJob(self);
+        return c.ZC_STATE;
+    };
     return submitJob(self, out);
 }
 pub fn commandAsync(p: *c.zc_preview, command: u32, input: ?*const anyopaque, out: *?*c.zc_drm_preview_job) c_int {

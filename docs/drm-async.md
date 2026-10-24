@@ -30,8 +30,10 @@ they never call Bun/application functions or camera-manager callbacks.
 `showAsync` returns a BunJob after synchronous native export admission, before
 waiting for the display. It rejects full admission without retaining the frame.
 `setViewAsync` copies and validates scalar view options before waiting for queue
-capacity. `backgroundAsync` detaches with matching event proof and releases source
-owners. `drainAsync` joins the accepted callback prefix; a displayed or uncertain
+capacity. `setOverlayAsync` uploads an immutable RGBA snapshot to a separate alpha plane;
+see [DRM overlays](drm-overlays.md). `backgroundAsync` detaches the camera image
+with matching event proof and releases source owners; an independently configured
+overlay stays visible. `drainAsync` joins the accepted callback prefix; a displayed or uncertain
 source remains retained. A drain is not a GPU-retirement or operation-success
 watermark. Inspect individual jobs for their outcomes.
 

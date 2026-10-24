@@ -55,7 +55,7 @@ int close(int fd) {
         closed++;
         if(scenario>=10){
             int pending=0;
-            if(syscall(SYS_ioctl,fd,FIONREAD,&pending)<0 || pending || plane_values[0] || (image_ever&&!retired_proof))peer_bad(__func__,__LINE__);
+            if(syscall(SYS_ioctl,fd,FIONREAD,&pending)<0 || pending || plane_values[0] || overlay_values[0] || (image_ever&&!retired_proof))peer_bad(__func__,__LINE__);
             if(event_writer>=0){(void)syscall(SYS_close,event_writer);event_writer=-1;}
             cpu_card_closed();
             held_valid=0; /* A proved detach supersedes any withheld old event. */
