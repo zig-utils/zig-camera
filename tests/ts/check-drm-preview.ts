@@ -20,7 +20,7 @@ function retired(){
 try{
   for(const format of ['BGR888','RGB888','XBGR8888','XRGB8888','YUV420','YVU420','NV12','NV21','YUYV','YVYU','UYVY','VYUY'] as ProcessedFormat[]){
     lib.symbols.zkms_test_scenario(10)
-    const camera=new Camera({simulate:true,width:8,height:6,buffers:4,fifo:true,format,colorSpace:isYuv(format)?'rec709':'srgb',lores:{width:4,height:2}})
+    const camera=new Camera({simulate:true,width:8,height:6,buffers:4,fifo:true,format,colorSpace:isYuv(format)?'rec709':'srgb',lores:{width:4,height:2,format}})
     try{
       camera.startPreview(settings);await camera.captureMetadata();await camera.captureMetadata()
       assert.equal(camera.previewInfo()?.drmState?.retainedFrames,1);assert.ok(camera.stats().leased>=1)
@@ -32,7 +32,7 @@ try{
       camera.setPreviewStream('lores');await camera.captureMetadata();assert.equal(camera.previewStreamInfo()?.width,4)
       camera.setPreviewStream(null);await camera.captureMetadata();assert.equal(camera.previewInfo()?.drmState?.retainedFrames,0)
       camera.setPreviewStream('main');await camera.captureMetadata()
-      await camera.switchMode({width:12,height:8,format,lores:{width:6,height:4}})
+      await camera.switchMode({width:12,height:8,format,lores:{width:6,height:4,format}})
       await camera.captureMetadata();assert.equal(camera.previewStreamInfo()?.width,12);assert.equal(camera.previewInfo()?.drm?.card,settings.drm.card)
       await camera.switchModeAndCaptureRGB({width:10,height:8,format})
       assert.equal(camera.previewStreamInfo()?.width,12)
