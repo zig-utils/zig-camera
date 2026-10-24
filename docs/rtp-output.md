@@ -149,3 +149,7 @@ target-qualified builds and all failure logs are retained.
 A socketFactory must not wrap one underlying socket in multiple owners. Object
 identity checks reject reusing the same returned socket object; hidden descriptor
 aliasing inside caller-defined wrappers remains the factory's responsibility.
+
+The 0.102.1 setup correction closes a newly opened default UDP socket when
+multicast option setup fails before its owner is published. A deterministic
+regression reproduces the leak against 0.102.0, then verifies joined cleanup.

@@ -93,7 +93,12 @@ const defaultFactory: RtpSocketFactory = async (endpoint, handlers) => {
       error: (_, error) => handlers.error(error),
     },
   })
-  if (ipv4Multicast(endpoint.address)) socket.setMulticastTTL(1)
+  try {
+    if (ipv4Multicast(endpoint.address)) socket.setMulticastTTL(1)
+  } catch (error) {
+    socket.close()
+    throw error
+  }
   return {
     send(data) {
       if (socket.closed) throw new CameraError(-2, 'closed RTP socket')
