@@ -35,6 +35,9 @@ import {
 export interface ModeRequest {
   /** Main thread pins this native owner until the worker settles. */
   allocation?: Pointer
+  /** Parent-owned native root, attached only while this message runs. */
+  openScope?: bigint
+  initial?: boolean
   /** Reconnection creates a separate owner. Never reopen a failed candidate as rollback. */
   fresh?: boolean
   disposeOnly?: boolean
@@ -123,6 +126,20 @@ declare const self: {
   ) => void
 }
 self.onmessage = ({ data: request }) => {
+  const scope = request.openScope
+  if (scope) {
+    const code = n.zc_capture_open_scope_attach(scope)
+    if (code) throw new CameraError(code, 'attach native camera scope')
+  }
+  try { run(request) }
+  finally {
+    if (scope) {
+      const code = n.zc_capture_open_scope_detach(scope)
+      if (code) throw new CameraError(code, 'detach native camera scope')
+    }
+  }
+}
+function run(request: ModeRequest) {
   const status = (error: unknown) =>
     typeof error === 'number'
       ? error
@@ -153,7 +170,7 @@ self.onmessage = ({ data: request }) => {
   ) => {
     const out = outPointer()
     const selected = config.slice()
-    view(selected).setUint32(12, 0, true)
+    if (!request.initial) view(selected).setUint32(12, 0, true)
     const mainFormat =
       (restoring ? request.previousMainFormat : request.mainFormat) ?? 1
     let processed = restoring ? request.previousProcessed : request.processed
@@ -163,7 +180,14 @@ self.onmessage = ({ data: request }) => {
       view(processed).setUint32(4, mainFormat, true)
     }
     check(
-      request.allocation && processed
+      request.openScope && processed
+        ? n.zc_open_allocated_scoped_pipeline(
+            request.openScope,ptr(selected),ptr(pipeline),ptr(processed),
+            (restoring ? request.previousOrientation : request.orientation) ?? 1,
+            (restoring ? request.previousStrictOrientation : request.strictOrientation) ? 1 : 0,
+            request.cameraId.length ? ptr(request.cameraId) : null,request.cameraId.length,restoring ? 1 : 0,ptr(out),
+          )
+        : request.allocation && processed
         ? n.zc_open_allocated_pipeline(
             ptr(selected),ptr(pipeline),ptr(processed),
             (restoring ? request.previousOrientation : request.orientation) ?? 1,
@@ -227,6 +251,7 @@ self.onmessage = ({ data: request }) => {
     result.started = false
     if (restoring ? request.previousWritable : request.writable)
       check(n.zc_enable_writable(result.handle))
+    if (!request.initial) {
     const revision = new BigUint64Array(1)
     const replay = n.zc_restore_controls(
       result.handle,
@@ -259,8 +284,9 @@ self.onmessage = ({ data: request }) => {
       }
       result.controlRevision = revision[0]
     }
+    }
     if (start) {
-      check(n.zc_start(result.handle))
+      check((request.openScope ? n.zc_capture_open_scope_start_camera(request.openScope) : n.zc_start(result.handle)))
       result.started = true
     }
   }
@@ -273,10 +299,10 @@ self.onmessage = ({ data: request }) => {
     check(n.zc_get_controls(result.handle, null, 0, ptr(count), ptr(revision)))
     if (revision[0] > result.controlRevision)
       result.controlRevision = revision[0]
-    check(n.zc_stop(result.handle))
+    check((request.openScope ? n.zc_capture_open_scope_stop_camera(request.openScope) : n.zc_stop(result.handle)))
     result.started = false
     const finalState = storage(32)
-    check(n.zc_close_with_device_state(result.handle, ptr(finalState)))
+    check(request.openScope ? n.zc_capture_open_scope_close_camera(request.openScope, ptr(finalState)) : n.zc_close_with_device_state(result.handle, ptr(finalState)))
     result.handle = 0 as Pointer
     const state = decodeDeviceState(finalState)
     if (!state.connected) result.deviceLoss ??= state
@@ -596,7 +622,7 @@ self.onmessage = ({ data: request }) => {
         }
       }
       if (retainedFrame) {
-        check(n.zc_stop(result.handle))
+        check((request.openScope ? n.zc_capture_open_scope_stop_camera(request.openScope) : n.zc_stop(result.handle)))
         result.started = false
       }
     }
@@ -645,7 +671,7 @@ self.onmessage = ({ data: request }) => {
     result.handle
   ) {
     try {
-      check(n.zc_start(result.handle))
+      check((request.openScope ? n.zc_capture_open_scope_start_camera(request.openScope) : n.zc_start(result.handle)))
       result.started = true
     } catch (code) {
       result.restoreCode = status(code)

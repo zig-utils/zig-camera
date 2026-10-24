@@ -6,10 +6,15 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+
+Version 0.117 adds [automatic capture buffer factories](docs/capture-factories.md):
+actual negotiated layouts, asynchronous caller-input release, bounded native
+notification ownership, joined cancellation/rollback and async Camera.open in
+Bun. Physical Pi acceptance and the remaining parity families stay open.
+
 Version 0.116 adds [caller-provided capture buffers](docs/capture-imports.md):
 exact negotiated-layout snapshots, bounded Linux FD imports, checked offsets,
-retained cleanup and inherited Zig/C/Bun mode-job ownership. Physical DMA
-acceptance and automatic allocator factories remain open.
+retained cleanup and inherited Zig/C/Bun mode-job ownership. Physical DMA acceptance remains open; automatic factories follow in 0.117.
 
 Version 0.115.1 fixes [shared-mapping cleanup](docs/shared-cleanup.md): failed
 unmaps retain their original bounded ownership and budget, with explicit retry

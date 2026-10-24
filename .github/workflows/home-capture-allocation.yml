@@ -2,9 +2,9 @@ name: Home capture allocation ownership
 on:
   push:
     branches: [main]
-    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
+    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'src/capture_factory.zig', 'src/capture_open_*.zig', 'src/home/factory_handoff.zig', 'src/home/thread_attachment.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
   pull_request:
-    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
+    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'src/capture_factory.zig', 'src/capture_open_*.zig', 'src/home/factory_handoff.zig', 'src/home/thread_attachment.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,9 +24,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: af3017edbadf58ce1f93cf26324628b8aae3db4a
+          ref: b97e5fd55c73ec994314b683327ee2303bd9db23
           path: .home-allocation-upstream
-          sparse-checkout: packages/video
+          sparse-checkout: |
+            packages/video
+            packages/async
+            packages/io
           persist-credentials: false
       - name: Verify shared allocation policy and ownership failure coverage
         shell: bash
@@ -37,8 +40,14 @@ jobs:
           done
           cmp .home-allocation-upstream/packages/video/tests/capture_backing_fixture.zig tests/capture_backing_fixture.zig
           cmp .home-allocation-upstream/packages/video/tests/capture_backing_linux.c tests/capture_backing_linux.c
-          zig fmt --check src/home/capture_allocation.zig
+          cmp .home-allocation-upstream/packages/async/src/factory_handoff.zig src/home/factory_handoff.zig
+          cmp .home-allocation-upstream/packages/io/src/thread_attachment.zig src/home/thread_attachment.zig
+          zig fmt --check src/home/capture_allocation.zig src/home/factory_handoff.zig src/home/thread_attachment.zig
           for mode in Debug ReleaseSafe ReleaseFast; do
+            zig test -lc -O "$mode" src/home/factory_handoff.zig
+            zig test -lc -O "$mode" src/home/thread_attachment.zig
+            zig test -lc -O "$mode" .home-allocation-upstream/packages/async/src/factory_handoff.zig
+            zig test -lc -O "$mode" .home-allocation-upstream/packages/io/src/thread_attachment.zig
             zig test -O "$mode" src/home/capture_allocation.zig
             zig test -O "$mode" .home-allocation-upstream/packages/video/src/core/capture_allocation.zig
             zig test -lc -O "$mode" src/home/capture_backing.zig

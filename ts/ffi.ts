@@ -13,6 +13,21 @@ const library =
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const libraryPath = resolve(library)
 export const native = dlopen(library, {
+  zc_capture_open_scope_open:{args:[p,p,u,u,p],returns:i},
+  zc_capture_open_scope_attach:{args:[n],returns:i},
+  zc_capture_open_scope_detach:{args:[n],returns:i},
+  zc_capture_open_scope_state_get:{args:[n,p],returns:i},
+  zc_capture_open_scope_cancel:{args:[n,u],returns:i},
+  zc_capture_open_scope_take:{args:[n,p,p],returns:i},
+  zc_capture_open_scope_close:{args:[n],returns:i},
+  zc_open_allocated_scoped_pipeline:{args:[n,p,p,p,u,u,p,u,u,p],returns:i},
+  zc_capture_open_scope_stop_camera: { args: [n], returns: i },
+  zc_capture_open_scope_start_camera:{args:[n],returns:i},
+  zc_capture_open_scope_close_camera:{args:[n,p],returns:i},
+  zc_capture_allocator_factory_set:{args:[p,p,p],returns:i},
+  zc_capture_allocator_factory_begin:{args:[p,n,p,p],returns:i},
+  zc_capture_allocator_factory_supply:{args:[p,n,p,u],returns:i},
+  zc_capture_allocator_factory_finish:{args:[p,n,i],returns:i},
   zc_capture_allocator_open_imported:{args:[p,p],returns:i},
   zc_capture_allocator_import:{args:[p,p,u,p,u,p,u],returns:i},
   zc_camera_capture_layout_get:{args:[p,p],returns:i},

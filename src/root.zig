@@ -18,6 +18,7 @@ comptime {
     _ = socket_output;
     _ = process_output;
     _ = @import("shared_cleanup.zig");
+    _ = @import("capture_open_scope.zig");
 }
 pub const processed_format = @import("processed_format.zig");
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;

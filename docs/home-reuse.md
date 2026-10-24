@@ -1,5 +1,33 @@
 # Home reuse audit
 
+## 0.117 automatic capture factories and joined worker ownership
+
+Rechecked Home af3017edbadf58ce1f93cf26324628b8aae3db4a, its async preparation_gate,
+video capture_backing/cache, lease_pool and owned_admission, plus IO shared maps,
+descriptor channels and hosted runtime thread state. PreparationGate supplies
+publication/cancellation transitions but has no separately retained queued
+notification lifetime; runtime worker bookkeeping has no actual POSIX thread-exit
+owner for a foreign Bun worker.
+
+Home [60f56fb46ad98ca73a3929a4c572119eea9fad6b](https://github.com/home-lang/home/commit/60f56fb46ad98ca73a3929a4c572119eea9fad6b)
+adds FactoryHandoff to compose the existing gate and ThreadAttachment to own
+stable parent-provided TLS bindings through explicit detach or actual pthread
+exit. Cleanup may free its enclosing binding; the Key stays counted until the
+callback joins. Home [b97e5fd55c73ec994314b683327ee2303bd9db23](https://github.com/home-lang/home/commit/b97e5fd55c73ec994314b683327ee2303bd9db23)
+adds pending-only capture retirement, preserving idle rollback profiles instead
+of trimming them during a target preparation retry. Camera vendors these three
+files verbatim, preserving attribution and exact-source CI comparisons.
+
+Camera uses its existing configure workers and native allocation/FD owners.
+No second camera manager, image staging pool or media executor is introduced.
+The native scope owns cameras across Bun worker failures; its independent waiter,
+callback and thread references gate publication/cleanup. Bun performs async input
+release on its owning thread, with bounded diagnostics and no implicit close
+retry. Both Home compiler versions pass each helper in all three optimization
+modes locally; camera CI checks source pins on Linux ARM/x86 and Darwin. This
+establishes software ownership behavior, not physical Pi DMA or throughput.
+
+
 ## 0.116 explicitly imported capture storage
 
 Re-fetched Home a26569ce2ab717fa05446c7b1c1c9875771e0b84 and Home OS

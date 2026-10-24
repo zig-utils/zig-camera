@@ -1,5 +1,23 @@
 # Home OS media reuse audit
 
+## 0.117 factory notifications and native thread retirement
+
+Checked current Home OS origin/main 151269666bc09aa15a271f1c1f4603f681132e65
+at ~/Code/Home/os and re-read ADR-MC3/MC5, camera.home, drivers/dma.home,
+framebuffer_double.home and media/video_decoder.home. The camera capture and
+software codec success stubs do not implement configured libcamera buffer
+factories. ISA DMA channels and display FREE/DRAWING/READY/DISPLAYED bookkeeping
+cannot prove a hosted Bun callback or pthread has retired.
+
+The explicit kernel/device versus hosted media ownership boundary is retained.
+Home stdlib async/IO gain joined callback handoffs and stable POSIX attachment
+ownership, while Home video gains pending-only cleanup to preserve source
+profiles during rollback. Camera consumes those shared helpers and its existing
+hosted FD imports. No Home OS source is copied, translated, modified or executed;
+OS source remains Home. Hardware acceleration and physical Pi acceptance are
+not inferred from architecture or stub returns.
+
+
 Audit target: `~/Code/Home/os`, home-lang/home-os commit
 [151269666bc09aa15a271f1c1f4603f681132e65](https://github.com/home-lang/home-os/tree/151269666bc09aa15a271f1c1f4603f681132e65).
 Source inspection only; no kernel or device execution was performed. Include this

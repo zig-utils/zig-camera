@@ -107,6 +107,8 @@ jobs:
         run: |
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iinclude tests/capture_factory.c -Lzig-out/lib -lzigcamera -o zig-out/capture-factory-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/capture-factory-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/capture_allocator.c -Lzig-out/lib -lzigcamera -o zig-out/capture-allocator-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/capture-allocator-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/frame_export.c -Lzig-out/lib -lzigcamera -o zig-out/frame-export-test

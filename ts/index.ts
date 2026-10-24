@@ -336,8 +336,10 @@ import {
   cameraIdentity,
 } from './config'
 import type { ModeRequest, ModeResponse, ModeRequestHook } from './mode-worker'
-import { CaptureAllocator, readCaptureLayout } from './capture-allocator'
+import { runFactoryMode, FactoryScopeCleanupError } from './factory-mode'
+import { CaptureAllocator, readCaptureLayout, captureAllocatorFactory } from './capture-allocator'
 export { CaptureAllocator } from './capture-allocator'
+export { CaptureFactoryError, type CaptureBufferFactory, type CaptureFactoryContext, type CaptureFactoryBuffers } from './capture-factory-client'
 export type { CaptureAllocatorOptions, CaptureAllocatorState, CaptureLayout, CaptureLayoutStream, CaptureImportBuffer } from './capture-allocator'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
@@ -593,11 +595,25 @@ export class CameraCleanupError extends AggregateError {
     if (errors.length) throw new CameraCleanupError(errors, this.owners)
   }
 }
-class ModeWorkerFault extends Error {}
+class ModeWorkerFault extends CameraCleanupError {
+  constructor(message: string, errors: unknown[] = [], owners: readonly { close(): Promise<void> }[] = []) {
+    super([new Error(message), ...errors], owners)
+    this.name = 'ModeWorkerFault'
+    this.message = message
+  }
+}
 function runModeWorker(
   request: ModeRequest,
   onHook?: (request: ModeRequestHook) => void,
 ): Promise<ModeResponse> {
+  const factory = request.allocation && captureAllocatorFactory(request.allocation)
+  if (factory) return runFactoryMode(request, factory, onHook).catch(error => {
+    if (error instanceof FactoryScopeCleanupError) {
+      if (error.dispatched) throw new ModeWorkerFault('camera worker ownership retired after failure', error.errors, [error.owner])
+      throw new CameraCleanupError(error.errors, [error.owner])
+    }
+    throw error
+  })
   let allocationPin: BigUint64Array | undefined
   return new Promise<ModeResponse>((resolve, reject) => {
     let worker: Worker
@@ -746,6 +762,10 @@ export interface PreviewOverlay {
   width: number
   height: number
   stride?: number
+}
+export interface CameraOpenOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
 }
 export interface CameraOptions {
   /** Keep bounded backing across compatible camera/mode reopens. */
@@ -1120,6 +1140,59 @@ type CaptureRequest = {
   signal?: AbortSignal
 }
 export class Camera {
+  /** Factory preparation runs on the creating Bun thread while a native
+   * configure worker waits after negotiation. Resolves only after input release
+   * and worker retirement have joined. */
+  static async open(options: CameraOptions = {}, job: CameraOpenOptions = {}): Promise<Camera> {
+    guardRequestCallback(); guardOutputHook()
+    const selected = copyConfiguration(options), encoded = cameraConfiguration(selected)
+    const timeout = job.timeoutMs ?? 30000, signal = job.signal
+    if (!Number.isFinite(timeout) || timeout < 0) throw new RangeError('invalid camera open deadline')
+    if (signal?.aborted) throw signal.reason ?? new JobCancelledError()
+    if (!selected.allocator?.hasFactory) return new Camera(selected)
+    const cancel = new SharedArrayBuffer(8), deadline = Date.now() + timeout
+    const abort = () => Atomics.store(new Int32Array(cancel), 0, 1)
+    let tuning: TuningSession | undefined, candidate: Camera | undefined
+    const layout = retainSensorLayout(selected.simulate ? 0 : 1)
+    let failure: unknown
+    try {
+      if (selected.tuning !== undefined) tuning = TuningSession.open(selected.tuning, { simulate: selected.simulate ?? false })
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+      const request: ModeRequest = { ...encoded, handle: 0 as Pointer, fresh: true, initial: true,
+        targetStarted: false, cameraId: encoded.cameraId ?? new Uint8Array(),
+        previousConfig: encoded.config, previousPipeline: encoded.pipeline, previousStarted: false,
+        controls: new Uint8Array(), controlCount: 0, controlRevision: 0n,
+        cancel, deadline, dropFrames: 0 }
+      const response = await runModeWorker(request)
+      const admission: CameraAdmission = { [nativeAdmission]: response.handle, started: response.started, claimed: false }
+      try {
+        if (response.callbackError) throw response.callbackError
+        if (signal?.aborted) throw signal.reason ?? new JobCancelledError()
+        if (Date.now() >= deadline) throw new CameraError(-3, 'camera open deadline')
+        if (response.code || response.restoreCode) throw cameraError(response.code || response.restoreCode, 'open camera')
+        candidate = new Camera(selected, admission)
+      } catch (error) {
+        if (response.handle && !admission.claimed) {
+          const owner = recoveryCleanup(request, response.handle)
+          try { await owner.close() } catch (cleanup) { throw new CameraCleanupError([error, cleanup], [owner]) }
+        }
+        throw error
+      }
+    } catch (error) { failure = error }
+    finally {
+      signal?.removeEventListener('abort', abort)
+      layout.close()
+      try { tuning?.close() } catch (cleanup) {
+        failure = new TuningCleanupError(failure === undefined ? [cleanup] : [failure, cleanup], tuning!)
+      }
+    }
+    if (failure !== undefined) {
+      if (candidate) { try { await candidate.close() } catch (cleanup) { throw new CameraCleanupError([failure, cleanup], [candidate]) } }
+      throw failure
+    }
+    return candidate!
+  }
   static loadTuningFile(name: string, options: LoadTuningOptions = {}) {
     return loadTuningFile(name, options)
   }
@@ -2129,6 +2202,8 @@ export class Camera {
   }
   constructor(options: CameraOptions = {}, admission?: CameraAdmission) {
     this.configuration = copyConfiguration(options)
+    if (!admission && this.configuration.allocator?.hasFactory)
+      throw new CameraError(-2, 'capture factories require await Camera.open(options)')
     const {
       config: cfg,
       allocation,

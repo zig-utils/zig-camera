@@ -1,5 +1,8 @@
 # Persistent capture allocators
 
+Version 0.117 adds [automatic negotiated-layout factories](capture-factories.md)
+with async Bun Camera.open, joined caller-input release and native worker ownership.
+
 Version 0.116 also supports [explicitly imported Linux buffers](capture-imports.md),
 using the same camera/request/map/export and worker ownership. Query captureLayout
 for exact actual geometry and provision independent FD sets before opening modes.

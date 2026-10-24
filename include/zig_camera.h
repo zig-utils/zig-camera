@@ -112,6 +112,43 @@ int zc_capture_allocator_unpin(zc_capture_allocator *,uint64_t pin);
  * IO failure retains the owner for retry. Serialize final close with new calls. */
 int zc_capture_allocator_trim(zc_capture_allocator *);
 int zc_capture_allocator_close(zc_capture_allocator *);
+/* Native ownership for an allocation-capable worker. Success transfers initial
+ * camera ownership into this scope until take; null is an initial open. A scope
+ * is bound to one allocator and one attached native thread. IDs are generation
+ * checked, so late calls fail STALE rather than dereferencing freed wrappers.
+ * Detach runs after the worker body; an actual pthread exit also retires its
+ * attachment. Close returns BUSY with native calls/threads/factories in flight.
+ * Close requests fatal cancellation, retains ownership on errors, and otherwise
+ * closes any camera not taken. Serialize final disposal with new calls. */
+typedef uint64_t zc_capture_open_scope;
+typedef struct {
+    uint32_t struct_size,stage,started,threads;
+    uint32_t active,pending_factories,cancelled,aborted;
+    zc_camera *camera;
+} zc_capture_open_scope_state;
+int zc_capture_open_scope_open(zc_capture_allocator *,zc_camera *initial,uint32_t started,uint32_t timeout_ms,zc_capture_open_scope *out);
+int zc_capture_open_scope_attach(zc_capture_open_scope);
+int zc_capture_open_scope_detach(zc_capture_open_scope);
+int zc_capture_open_scope_state_get(zc_capture_open_scope,zc_capture_open_scope_state *out);
+int zc_capture_open_scope_cancel(zc_capture_open_scope,uint32_t fatal);
+int zc_capture_open_scope_take(zc_capture_open_scope,zc_camera **out,uint32_t *started);
+int zc_capture_open_scope_close(zc_capture_open_scope);
+/* Imported-pool allocation notification. Register before cameras/scopes/pins
+ * start. The notification returns void; it never returns buffers synchronously.
+ * Only a scoped native opening waits for its factory. begin claims one ticket,
+ * supply duplicates inputs and reserves that exact loan, finish follows joined
+ * producer/input cleanup. Always finish a successful begin, including cancelled
+ * notifications; tickets retain allocator/scope ownership until both actors
+ * retire. Nonzero finish codes report failure; do not reuse finished tickets. */
+typedef void (*zc_capture_allocator_factory_notify)(void *context,uint64_t ticket);
+typedef struct {
+    uint32_t struct_size,accepting,restoring,cancelled;
+    zc_capture_open_scope scope;
+} zc_capture_factory_request_state;
+int zc_capture_allocator_factory_set(zc_capture_allocator *,zc_capture_allocator_factory_notify,void *context);
+int zc_capture_allocator_factory_begin(zc_capture_allocator *,uint64_t ticket,zc_capture_import_layout *out,zc_capture_factory_request_state *state);
+int zc_capture_allocator_factory_supply(zc_capture_allocator *,uint64_t ticket,const zc_capture_import_buffer *,uint32_t count);
+int zc_capture_allocator_factory_finish(zc_capture_allocator *,uint64_t ticket,int32_t result);
 /* Pipeline extensions preserve zc_config/zc_frame/zc_info ABI v1 layouts.
  * Explicit sensor selection requires both size and bit depth. Zero = automatic.
  * Lores: both dimensions zero disable; YUV420 requires even dimensions.
@@ -171,6 +208,11 @@ int zc_open_id_processed_pipeline(const zc_config *,const zc_pipeline_options *,
 /* Null ID + zero length selects camera_index. Allocator backing is retained
  * through every request/map/export lease and reused only after camera close. */
 int zc_open_allocated_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,const uint8_t *id,uint32_t length,zc_capture_allocator *,zc_camera **out);
+/* Attached-thread operations. The scope owns every opened camera until take;
+ * restoring suppresses ordinary cancellation/deadline during source recovery. */
+int zc_open_allocated_scoped_pipeline(zc_capture_open_scope,const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,const uint8_t *id,uint32_t length,uint32_t restoring,zc_camera **out);
+int zc_capture_open_scope_stop_camera(zc_capture_open_scope scope);
+int zc_capture_open_scope_start_camera(zc_capture_open_scope);
 int zc_camera_capture_allocator_get(zc_camera *,zc_capture_allocator **out_borrowed);
 /* flags: configured=1, strict=2, RGB-normalized=4, backend-adjusted=8.
  * Absent/unknown actual metadata counts as adjusted for configured requests.
@@ -662,6 +704,7 @@ int zc_simulate_disconnect(zc_camera *);
 /* Same close ownership contract; successful close copies final state AFTER
  * callback retirement and before freeing the handle. Failure leaves out intact. */
 int zc_close_with_device_state(zc_camera *,zc_device_state *out);
+int zc_capture_open_scope_close_camera(zc_capture_open_scope,zc_device_state *out);
 int zc_get_stats(zc_camera *, zc_stats *out);
 /* quality 1..100, 4:4:4 sampling; operates on an outstanding lease, no RGB copy. */
 int zc_save_jpeg(zc_camera *, uint64_t token, const char *path, uint32_t quality);

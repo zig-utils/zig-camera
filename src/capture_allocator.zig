@@ -14,7 +14,7 @@ const ImportedOwner = Home.Owner(16, ImportProvider);
 const Storage = union(enum) {
     managed: Owner,
     imported: ImportedOwner,
-    fn cache(self: *Storage) *Owner.Cache {
+    pub fn cache(self: *Storage) *Owner.Cache {
         return switch (self.*) {
             inline else => |*value| &value.cache,
         };
@@ -45,15 +45,16 @@ const Storage = union(enum) {
             inline else => |*value| value.release(claim),
         };
     }
-    fn discard(self: *Storage, claim: Home.policy.Claim) !void {
+    pub fn discard(self: *Storage, claim: Home.policy.Claim) !void {
         return switch (self.*) {
             inline else => |*value| value.discard(claim),
         };
     }
 };
-const Pool = struct {
+pub const Pool = struct {
     mutex: std.Thread.Mutex = .{},
     owner: Storage,
+    factory: @import("capture_factory.zig").State = .{},
     pins: @import("home/lease_pool.zig").Pool(1, 257) = .{},
     root_pin: u64 = 0,
     closing: bool = false,
@@ -61,6 +62,12 @@ const Pool = struct {
         return @ptrCast(self);
     }
 };
+pub fn factoryPool(handle: *c.zc_capture_allocator) *Pool {
+    return pool(handle);
+}
+pub fn factoryStatus(failure: anyerror) c_int {
+    return status(failure);
+}
 fn pool(handle: *c.zc_capture_allocator) *Pool {
     return @ptrCast(@alignCast(handle));
 }
@@ -216,7 +223,12 @@ pub fn borrow(handle: *c.zc_capture_allocator, id: []const u8, streams: []const 
     self.mutex.lock();
     defer self.mutex.unlock();
     if (self.closing) return c.ZC_STATE;
-    const result = self.owner.checkoutEvictingConcurrent(&layout) catch |failure| return status(failure);
+    const result = self.owner.checkoutEvictingConcurrent(&layout) catch |failure| {
+        const code = status(failure);
+        if (failure == error.LayoutUnavailable or failure == error.LayoutBusy)
+            return @import("capture_factory.zig").wait(self, handle, &layout, code, out);
+        return code;
+    };
     out.* = result.claim.token;
     return c.ZC_OK;
 }
