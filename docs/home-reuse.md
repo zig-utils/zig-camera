@@ -1948,3 +1948,11 @@ uses the split mode and joins both sockets without weakening final-result/no-chi
 proof validation. Native tests cover both modes, after-exec closed private fds,
 late cancel and a controlled peer that exits with cancellation intentionally
 unread. Neither Home OS kernel pipes nor its process table are imported.
+
+The native cancellation regression was refined at Home
+2510ea1fcb91d31ae8d4d031eca1d55f9d97f503 to accept the documented failed-exec
+retirement outcomes (127 or supervisor TERM/KILL) while still checking exact
+ENOENT, the final result and the dead consumer. The already-reaped controlled
+fixture remains exact at 127. Native runtime bytes are unchanged from 126f6952;
+CI pins the new test revision. This corrects a scheduling assumption in tests,
+not the process ownership/proof contract.

@@ -141,3 +141,9 @@ channels to close plus the same strict result/no-child and actual exit proofs.
 An unread late cancellation cannot share the socket carrying the final result.
 The native acceptance fixture deliberately leaves cancellation unread before
 exit, and exec consumers verify that neither private descriptor survives exec.
+
+A failed exec reports its original errno (ENOENT for a missing executable). The
+joined consumer may exit 127 or be terminated by TERM/KILL before its `_exit`
+runs; its actual status is retained. This does not change the requirement for a
+final consumer-result record. Controlled fixtures whose child was already reaped
+before the problem record continue to require exactly their known exit status.

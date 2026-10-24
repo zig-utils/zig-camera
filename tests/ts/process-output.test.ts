@@ -59,7 +59,7 @@ test('nonzero EOF exit is reported after joined cleanup with retained diagnostic
 })
 test('exec failure rejects preparation with errno and releases all process ownership',async()=>{
   const sink=new ProcessSink({command:['/no-such-zig-camera-consumer']})
-  const error=await failure(sink.start());expect(error).toBeInstanceOf(ProcessOutputError);expect((error as ProcessOutputError).details.errno).toBeGreaterThan(0)
+  const error=await failure(sink.start());expect(error).toBeInstanceOf(ProcessOutputError);expect((error as ProcessOutputError).details.errno).toBe(2)
   await sink.close();expect(sink.stats().phase).toBe('stopped');expect(alive(sink.stats().supervisorPid!)).toBe(false)
 })
 test('Home Matroska recording travels through a supervised process stdin without a media subprocess',async()=>{
@@ -180,8 +180,9 @@ test('failed-exec terminal proofs retire both private channels before preparatio
     try{
       const error=await failure(sink.start())
       expect(error).toBeInstanceOf(ProcessOutputError)
-      expect((error as ProcessOutputError).details.errno).toBeGreaterThan(0)
-      expect(sink.stats()).toMatchObject({phase:'stopped',supervisorExitCode:125,consumerExitCode:127,cancelled:false})
+      expect((error as ProcessOutputError).details.errno).toBe(2)
+      expect(sink.stats()).toMatchObject({phase:'stopped',supervisorExitCode:125,cancelled:false})
+      expect([127,137,143]).toContain(sink.stats().consumerExitCode!)
       expect(alive(sink.stats().supervisorPid!)).toBe(false)
       expect(alive(sink.stats().consumerPid!)).toBe(false)
     }finally{await sink.close()}
