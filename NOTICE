@@ -704,5 +704,5 @@ verbatim from home-lang/home packages/video/src/core at revision
 
 src/home/nal_convert.zig and rtp_wire.zig are copied verbatim from
 home-lang/home packages/video/src/{core,streaming} at revision
-dccdadf958d36fb87f02f37709352e1a9759221a. rtp_packetizer.zig adapts only its
+f0db151808bbd71a8459050fc299aaf6681b5303. rtp_packetizer.zig adapts only its
 flattened nal_convert import. All are under the MIT license above.

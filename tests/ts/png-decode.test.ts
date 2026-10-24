@@ -4,6 +4,7 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {runInNewContext} from 'node:vm'
+import {native as n,ptr,storage,view,outPointer,handle,check,type Pointer} from '../../ts/ffi'
 const same=(a:Uint8Array,b:Uint8Array)=>expect(Buffer.from(a)).toEqual(Buffer.from(b))
 for(const format of ['gray','rgb','rgba'] as const)for(const bits of [8,16] as const)for(const endian of ['little','big'] as const)test(`PNG loading retains ${format}${bits} ${endian} through filters and async source retirement`,async()=>{
   const count=({gray:1,rgb:3,rgba:4})[format],data=new Uint8Array(5*3*count*(bits/8)),v=new DataView(data.buffer)
@@ -93,14 +94,19 @@ test('PNG active cancellation joins workers before callbacks and completed jobs 
 })
 test('PNG concurrent worker overflow rejects promptly and releases each native reservation after join',async()=>{
   using image=CapturedImage.fromRaster({data:new Uint8Array([1,2,3]),width:1,height:1})
-  const bytes=image.encode({format:'png'}),jobs=Array.from({length:5},()=>decodePngAsync(bytes,{maxWorkingBytes:1024*1024})),values:DecodedPng[]=[]
+  const bytes=image.encode({format:'png'}),limits=storage(48),owners:Pointer[]=[]
+  n.zc_default_png_limits(ptr(limits));view(limits).setBigUint64(32,1024n*1024n,true)
+  const retire=async()=>{while(owners.length){const owner=owners.at(-1)!;let code:number;while((code=n.zc_png_job_close(owner))===-4)await Bun.sleep(1);check(code,'held PNG job close');owners.pop()}}
   try{
-    const results=await Promise.allSettled(jobs.map(job=>job.wait()))
-    for(const result of results)if(result.status==='fulfilled')values.push(result.value)
-    expect(values.length).toBe(4);expect(results.filter(result=>result.status==='rejected').length).toBe(1)
-    await Promise.all(jobs.map(job=>job.cleanupDone))
+    // Native reservations are held explicitly. Tiny decodes may otherwise
+    // finish and retire before the next public job is scheduled.
+    for(let i=0;i<4;i++){const out=outPointer();check(n.zc_png_decode_async(ptr(bytes),BigInt(bytes.length),ptr(limits),ptr(out)),'held PNG job');owners.push(handle(out))}
+    const rejected=decodePngAsync(bytes,{maxWorkingBytes:1024*1024})
+    await expect(rejected.wait()).rejects.toMatchObject({code:-4});await rejected.cleanupDone
+    await retire()
     using available=await decodePngAsync(bytes,{maxWorkingBytes:1024*1024})
-  }finally{for(const value of values)value.close();await Promise.all(jobs.map(job=>job.cleanupDone))}
+    same(available.image.copyPixels(),new Uint8Array([1,2,3]))
+  }finally{await retire()}
 })
 test('PNG file loading bounds actual reads, joins cancellation and does not retain files',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'zc-load-png-'))

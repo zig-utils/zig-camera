@@ -638,3 +638,7 @@ framing and parsing improvements therefore live in Home's video stdlib under the
 ADR, with Bun using OS UDP facilities and camera retaining hosted ownership. No
 OS source is copied, edited or executed. No kernel declaration supplies physical
 Pi capture, packet-loss, network throughput or A/V synchronization evidence.
+
+The subsequent current-Zig list-alias and deterministic admission-test corrections
+retain that same Home OS revision and boundary; they do not alter kernel UDP,
+AirPlay control code or camera drivers.

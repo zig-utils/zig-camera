@@ -1851,3 +1851,10 @@ shared framing owns standards bytes; camera owns ABI snapshots, socket/cursor
 admission and Bun UDP lifecycle. No kernel source or external media framework is
 introduced. Physical network/codec performance and microphone/camera sync remain
 separate acceptance requirements.
+
+Current Zig CI (0.18.0-dev.470+6817928c3) removed ArrayListUnmanaged. Home
+follow-up f0db151808bbd71a8459050fc299aaf6681b5303 uses the allocator-explicit ArrayList spelling
+with identical ownership on pinned Zig. All 16+5+1 shared tests pass Debug and
+ReleaseSafe on pinned 0.15.2, local development 0.18-dev.146, and the exact CI
+0.18-dev.470 compiler. Camera copies that NAL change verbatim and pins its
+consumer checkout to this revision. The project compiler remains 0.15.2.
