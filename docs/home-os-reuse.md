@@ -674,3 +674,24 @@ available there. Per ADR-MC3, forward-only AAC timing and bounded prefix release
 therefore improve Home video's existing MP4 writer. No OS code is copied, changed
 or executed. General container/loopback tests do not establish Pi sensor or
 microphone synchronization, player interoperability or camera performance.
+
+The 0.106 listening-output audit fetches clean main at the unchanged
+151269666bc09aa15a271f1c1f4603f681132e65 revision. It inspects
+kernel/src/net/tcp.home's bounded connection table, tcp_listen, TCPConnectionInfo
+and current tcp_accept implementation, as well as ADR-MC3. tcp_accept searches
+established child connections while the listener handle remains separate;
+older neighboring comments describe a different receive-path design and are
+not used as proof of current backlog behavior. These kernel connection IDs,
+allocator buffers and device/packet handlers cannot own a hosted Bun server or
+POSIX socket lifetime. The useful boundary is separate listener/peer identities;
+the hosted implementation retains Home stdlib send progress and camera mailbox
+ownership, then joins both Bun resources. No OS source is copied, edited or
+executed, and no hardware/network-performance acceptance is inferred.
+
+The process-group startup follow-up also rechecks core/process.home's pid/pgid
+fields, process_get_pgid and default PCB group assignment at that same revision.
+These refer to the kernel process table, not hosted POSIX fork/exec or a joined
+consumer group. The actual postcondition fix therefore lands in Home video's
+standalone POSIX supervisor, with independent after-exec group verification.
+No Home OS source is modified or executed, and kernel declarations are not used
+as proof of hosted process retirement.

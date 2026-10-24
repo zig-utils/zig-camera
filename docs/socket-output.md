@@ -76,8 +76,8 @@ factory result rather than abandoning its owner. The same returned transport
 object cannot have two owners across raw and RTP adapters. Factories must not hide the same underlying
 socket behind different wrappers. Arbitrary custom promises cannot be forcibly
 settled by the library. Raw UDP is a best-effort transport with no receive ACK,
-retransmission or congestion control. TLS, DNS/Unix sockets, listening outputs,
-process outputs and broader network sessions remain separate parity work.
+retransmission or congestion control. TLS, DNS/Unix sockets and broader network sessions remain separate parity work.
+Listening and process outputs are documented in the later version notes below.
 
 Validation includes independent raw IPv4/IPv6 TCP/UDP receivers, peer half-close,
 exact whole/suffix progress, deterministic backpressure/deadlines, joined setup
@@ -110,3 +110,9 @@ For forward-only AVC/HEVC/AAC MP4 over TCP, use `MuxedOutput(sink, 'fmp4')`.
 See [forward MP4](forward-mp4.md) for startup bounds, edit-list requirements and
 validation. This general fragmented mode does not claim browser or player
 interoperability.
+
+Version 0.106 adds [listening TCP outputs](listening-output.md), with one accepted
+peer per session and shared TCP chunk/flush/finish ownership. Listening output,
+dialing output and process sinks share the same admission budget. Bound endpoints,
+accept deadlines and bind cancellation are explicit; additional consumers and
+protocols remain separate work.

@@ -2,9 +2,9 @@ name: Home socket output progress
 on:
   push:
     branches: [main]
-    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
+    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'ts/tcp-transport.ts', 'ts/listening-output.ts', 'tests/ts/listening*.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
   pull_request:
-    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
+    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'ts/tcp-transport.ts', 'ts/listening-output.ts', 'tests/ts/listening*.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: b32fcc0e9cb086d29ae37f0d463b9cccfd43fcb9
+          ref: 5fe691d067a7aa33d60ad6fc276e2ba2aed0c121
           path: .home-socket-upstream
           sparse-checkout: packages/video
           persist-credentials: false

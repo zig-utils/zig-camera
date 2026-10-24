@@ -224,3 +224,11 @@ See forward-mp4.md. This general ISO BMFF mode does not claim CMAF/MSE or player
 interoperability. Broader containers/protocols, remaining output and device
 families, physical synchronization and matched performance remain open. The
 full Picamera2 parity goal is still active.
+
+Version 0.106 adds one-peer listening TCP byte/raw outputs, shared dialing/accept
+TCP chunk ownership, immutable session endpoints, joined bind/accept cancellation,
+write deadlines and global transport admission. Real loopback tests exercise raw
+Home codecs, PCM Matroska, decoded AAC fMP4, async splits and isolated recovery.
+See listening-output.md. Borrowed socket adoption, multiple consumers, broader
+protocols, other capability families and physical/performance acceptance remain
+open. This does not complete Picamera2 parity.

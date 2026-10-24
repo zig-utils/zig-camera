@@ -1916,3 +1916,27 @@ writer/public-export tests run in Debug/ReleaseSafe on Zig 0.15.2 and developmen
 Zig, with exact-upstream CI checks. Home OS is inspected at the unchanged revision
 in home-os-reuse.md; its AAC scaffolding has no hosted fragmented MP4 writer to
 reuse. No external media program, Python or OS source is introduced.
+
+The 0.106 listening-output audit fetches Home main at unchanged
+19b67a8a7df2a5bc4ea2dddbe0a8ef9a3e761519. It inspects
+packages/net/src/socket.zig listen/accept, its Basics allocator/netdev socket
+registry, async preparation/completion gates, and video core/socket_write.zig.
+The network package's own descriptor and TCP-stack owners are not Bun's hosted
+Node-compatible server/socket handles. Listening output therefore reuses the
+existing verbatim Home send cursor, native mailbox and shared bounded transport
+lifecycle. It extracts the tested hosted TCP adapter for both dialing/accepted
+peers, adds no media queue, and keeps kernel ownership separate. No shared Home
+algorithm needs duplication or a speculative API change. CI now pins the exact
+current Home revision for cursor/public-export checks on both compilers and
+three platforms. Home OS's bounded connection identities are also inspected;
+see home-os-reuse.md. No OS code, Python or external media tool is executed.
+
+The same validation also isolates an intermittent child setpgid failure in the
+shared Home process-output host. The corrective postcondition check, independent
+native consumer and repeated startup harness land upstream at
+5fe691d067a7aa33d60ad6fc276e2ba2aed0c121 before camera reuse. Error handling now
+accepts only an already-owned target group, preserving the original errno for
+an unowned group. The wire/ABI stay unchanged. Positive, negative and stress
+evidence is recorded in process-group-startup.md; no diagnostic fault injection
+is shipped in production. The socket matrix also pins this exact current Home
+revision; its cursor bytes are unchanged.

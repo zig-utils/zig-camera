@@ -356,3 +356,8 @@ for sockets, supervised processes and custom sinks without seeking. Home retains
 late audio placement, encoder delay and final padding with bounded startup
 storage. Async splits, snapshots and restarted recording sessions retain the
 existing output lifecycle; this does not complete full Picamera2 parity.
+
+[Listening TCP outputs](docs/listening-output.md) accept one IPv4/IPv6 consumer
+per session through `ListeningSocketOutput` or `ListeningSocketSink`. They reuse
+Home progress and existing bounded recording queues, with joined accept/write
+cancellation and fresh consumers through async split/recovery.
