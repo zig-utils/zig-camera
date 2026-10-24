@@ -706,3 +706,7 @@ src/home/nal_convert.zig and rtp_wire.zig are copied verbatim from
 home-lang/home packages/video/src/{core,streaming} at revision
 f0db151808bbd71a8459050fc299aaf6681b5303. rtp_packetizer.zig adapts only its
 flattened nal_convert import. All are under the MIT license above.
+
+src/home/socket_write.zig is copied verbatim from home-lang/home
+packages/video/src/core/socket_write.zig at revision
+b32fcc0e9cb086d29ae37f0d463b9cccfd43fcb9, under the MIT license above.

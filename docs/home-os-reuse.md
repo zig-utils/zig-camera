@@ -642,3 +642,14 @@ Pi capture, packet-loss, network throughput or A/V synchronization evidence.
 The subsequent current-Zig list-alias and deterministic admission-test corrections
 retain that same Home OS revision and boundary; they do not alter kernel UDP,
 AirPlay control code or camera drivers.
+
+The 0.103 raw-socket audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and rechecks CLAUDE.md, ADR-MC3 and
+kernel/src/net/udp.home. Its finite kernel queues/65507-byte payload bound are
+useful boundary references but rely on the kernel network/device stack. They are
+not a hosted TCP connection owner or Bun ByteSink. Home packages/net socket and
+io buffered helpers have separate ownership dependencies as well. The checked
+allocation-free send-progress primitive is therefore implemented in Home video
+stdlib and copied verbatim into camera; hosted queues remain in camera's native
+mailbox and Bun owns OS sockets. No Home OS source is copied, changed or executed;
+no kernel declaration establishes physical networking or Pi capture acceptance.

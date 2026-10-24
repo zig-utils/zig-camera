@@ -341,3 +341,7 @@ mode refresh, async layout protection and hardware validation limits.
 [Bounded RTP recording output](docs/rtp-output.md) sends AVC/HEVC and AAC-LC over
 Bun UDP with Home framing, signed priming timestamps, shared RTCP clock reports,
 SDP, cancellation, recovery and circular snapshot integration.
+
+[Raw socket outputs](docs/socket-output.md) send elementary JPEG/AVC/HEVC over
+bounded TCP/UDP with joined cancellation and partial-write/deadline handling.
+`SocketSink` also carries Home Matroska A/V through `MuxedOutput` without seeking.

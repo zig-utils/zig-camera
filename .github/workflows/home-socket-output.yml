@@ -1,0 +1,44 @@
+name: Home socket output progress
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
+  pull_request:
+    paths: ['src/home/socket_write.zig', 'src/socket_output.zig', 'ts/socket-output.ts', 'tests/socket_output.c', 'tests/ts/socket*.ts', '.github/workflows/home-socket-output.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  progress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: b32fcc0e9cb086d29ae37f0d463b9cccfd43fcb9
+          path: .home-socket-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact shared progress and public Home API
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/socket_write.zig .home-socket-upstream/packages/video/src/core/socket_write.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" src/home/socket_write.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-socket-upstream/packages/video/tests/socket_write.zig -Mvideo=.home-socket-upstream/packages/video/src/video.zig
+          done
+      - name: Camera C ABI progress
+        if: matrix.zig == '0.15.2'
+        run: |
+          zig test -lc -Iinclude -O Debug src/socket_output.zig
+          zig test -lc -Iinclude -O ReleaseSafe src/socket_output.zig

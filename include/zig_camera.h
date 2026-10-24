@@ -1064,6 +1064,15 @@ int zc_video_close_outputs(zc_recorder *,zc_output_result *,uint32_t capacity,ui
 int zc_video_get_headers(zc_recorder *,uint8_t *,uint64_t capacity,uint64_t *length);
 /* Exact Picamera2-style milliseconds with 3 decimals/LF, from microsecond PTS. */
 int zc_format_pts(uint64_t timestamp_us,uint8_t *,uint32_t capacity,uint32_t *length);
+/* Caller-owned, serial progress for raw UDP (whole chunks) or TCP (prefixes).
+ * No socket/byte ownership. chunk_bytes: 1..65507 UDP, 1..1048576 TCP.
+ * next returns offset/size, size=0 at EOF. accept(0) means backpressure.
+ * Invalid advances preserve state. Init failure zeroes state; next failure
+ * zeroes results. Do not alias result pointers with state or each other. */
+typedef struct { uint32_t struct_size,datagram,chunk_bytes,reserved;uint64_t total,offset; } zc_socket_write_cursor;
+int zc_socket_write_init(uint64_t total,uint32_t chunk_bytes,uint32_t datagram,zc_socket_write_cursor *);
+int zc_socket_write_next(const zc_socket_write_cursor *,uint64_t *offset,uint32_t *size);
+int zc_socket_write_accept(zc_socket_write_cursor *,uint32_t accepted);
 /* Prepare a fresh file, force a keyframe, move at the next encoded key. No input
  * duplication/loss across a successful split. stats.split_pending tracks commit. */
 int zc_video_split(zc_recorder *,const char *path);

@@ -1858,3 +1858,24 @@ with identical ownership on pinned Zig. All 16+5+1 shared tests pass Debug and
 ReleaseSafe on pinned 0.15.2, local development 0.18-dev.146, and the exact CI
 0.18-dev.470 compiler. Camera copies that NAL change verbatim and pins its
 consumer checkout to this revision. The project compiler remains 0.15.2.
+
+## Raw socket output progress (0.103)
+
+Home main b32fcc0e9cb086d29ae37f0d463b9cccfd43fcb9 adds allocation-free
+`packages/video/src/core/socket_write.zig`, exposed as SocketWriteCursor. The
+helper checks TCP prefix progress and all-or-nothing UDP chunks, including
+backpressure, tail chunks and u64 endpoints. Four standalone tests plus a public
+API test pass Debug/ReleaseSafe on pinned Zig 0.15.2 and current development
+0.18.0-dev.470. Camera copies the helper verbatim and uses it through an additive
+caller-owned C ABI; its existing native mailbox retains all queue/admission
+ownership. The Bun adapter owns socket lifecycle and at most one pending TCP
+chunk, with explicit deadlines and joined cleanup. Existing Home packet_output
+still supplies Annex B/parameter sets and PTS, and Home Matroska supplies muxed A/V.
+
+Inspected Home packages/net/src/socket.zig and packages/io/src/buffered.zig as well
+as video packet_output/target helpers. The socket API is coupled to Home netdev,
+protocols and Basics allocators; the buffered writer does not provide cancellable
+hosted socket ownership. Neither is copied into the Bun host. Home OS remains
+151269666bc09aa15a271f1c1f4603f681132e65 (clean fetched main): kernel UDP queues and
+the AirPlay RTSP control module do not provide this hosted transport. No OS source
+is copied, changed or executed. See socket-output.md for ownership/transport limits.

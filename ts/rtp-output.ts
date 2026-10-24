@@ -10,6 +10,7 @@ import {
   type RtpCodec,
 } from './rtp'
 import { CameraError } from './ffi'
+import { socketOwners } from './socket-ownership'
 export interface RtpDatagramSocket {
   send(data: Uint8Array): boolean
   close(): void | Promise<void>
@@ -71,7 +72,6 @@ interface Track {
   lastNs?: bigint
   reportedAt?: bigint
 }
-const socketOwners = new WeakMap<object, Endpoint>()
 const activeOutputs = new Set<RtpOutput>()
 const random32 = () => crypto.getRandomValues(new Uint32Array(1))[0]
 const port = (value: unknown) => {
@@ -333,7 +333,7 @@ export class RtpOutput implements CustomOutput, AsyncDisposable {
     endpoint.socket = socket
   }
   start(): Promise<void> {
-    if (!['idle', 'stopped'].includes(this.phase))
+    if (this.stopping || !['idle', 'stopped'].includes(this.phase))
       return Promise.reject(new CameraError(-4, 'RTP output already started'))
     if (activeOutputs.size === 16)
       return Promise.reject(new CameraError(-4, 'RTP output capacity'))
