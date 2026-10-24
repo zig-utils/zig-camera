@@ -49,8 +49,9 @@ int main(void){
     zci_capture_allocator_release(p,loan);
     /* Imported source fd propagates through capture, export and mapped offset. */
     zc_pipeline_options pipeline;zc_default_pipeline_options(&pipeline);zc_processed_options processed;zc_default_processed_options(&processed);
-    zc_unmap_peer_map_fault(1);c=(void *)(uintptr_t)1;assert(zc_open_allocated_pipeline(&config,&pipeline,&processed,0,0,0,0,p,&c)==ZC_IO && !c);assert(!state(p).borrowed);
-    assert(!zc_open_allocated_pipeline(&config,&pipeline,&processed,0,0,0,0,p,&c));assert(!zc_start(c));zc_frame frame;assert(!zc_acquire(c,1000,&frame));assert(frame.main.planes[0].fd>=0 && frame.main.planes[0].offset>=4093);
+    assert(zc_check_camera_configuration(&config,&pipeline,&processed,ZC_ROTATE0,0)==ZC_OK);
+    zc_unmap_peer_map_fault(1);c=(void *)(uintptr_t)1;assert(zc_open_allocated_pipeline(&config,&pipeline,&processed,ZC_ROTATE0,0,0,0,p,&c)==ZC_IO && !c);assert(!state(p).borrowed);
+    assert(!zc_open_allocated_pipeline(&config,&pipeline,&processed,ZC_ROTATE0,0,0,0,p,&c));assert(!zc_start(c));zc_frame frame;assert(!zc_acquire(c,1000,&frame));assert(frame.main.planes[0].fd>=0 && frame.main.planes[0].offset>=4093);
     zc_frame_export *exported=0;assert(!zc_frame_export_open(c,frame.token,1,0,&exported));zc_export_info info;assert(!zc_frame_export_info(exported,&info));assert(!(info.flags&ZC_EXPORT_STAGED));assert(!zc_release(c,frame.token));assert(!zc_frame_export_close(exported));assert(!zc_close(c));
     /* FD close error consumes its number once; retry cannot close its reuse. */
     const uint64_t again=borrow(p,&layout);assert(!zci_capture_allocator_buffer(p,again,0,0,0,&ro));zci_capture_allocator_release(p,again);const int old=ro.fd;
