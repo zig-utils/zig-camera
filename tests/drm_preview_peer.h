@@ -133,7 +133,7 @@ static int preview_ioctl(unsigned long request,void *arg){
         if(v->flags&DRM_MODE_ATOMIC_TEST_ONLY){
             test_commits++;if(preview_fault==13&&(next[0][0]||next[1][0])){preview_fault=0;errno=EINVAL;return -1;}return 0;
         }
-        if(v->flags!=(DRM_MODE_ATOMIC_NONBLOCK|DRM_MODE_PAGE_FLIP_EVENT)||!v->user_data||(v->user_data<last_cookie||(v->user_data==last_cookie&&(next[0][0]||next[1][0])))){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
+        if(v->flags!=(DRM_MODE_ATOMIC_NONBLOCK|DRM_MODE_PAGE_FLIP_EVENT)||!v->user_data||(v->user_data<last_cookie||(v->user_data==last_cookie&&(((seen&1)&&next[0][0])||((seen&2)&&next[1][0]))))){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         last_cookie=v->user_data;commits++;pair_commits+=v->count_objs==2;
         memcpy(plane_values,next[0],sizeof(plane_values));memcpy(overlay_values,next[1],sizeof(overlay_values));
         const int detach=!next[0][0]&&!next[1][0];

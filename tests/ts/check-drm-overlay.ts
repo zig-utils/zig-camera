@@ -71,11 +71,13 @@ try{
   }finally{peer.symbols.zkms_test_fault(0);await preview.close();await camera.close()}
   retired()
  }
+ console.log('DRM alpha bytes, named blend/stacking, two-slot reuse, atomic geometry/background and rejected TEST preservation passed')
  for(const scenario of [42,43,44,45,46]){
   peer.symbols.zkms_test_scenario(scenario);const preview=new DrmPreview(settings)
   try{await assert.rejects(preview.setOverlayAsync(rgba()).wait(),/(-8)/);assert.equal(preview.overlayState.configured,false);assert.equal(io()[0],1)}finally{await preview.close()}
   retired()
  }
+ console.log('Unsuitable alpha-plane topologies reject without a second master FD')
  // A held pair flip owns both GPU buffers but leaves Bun and cancellation live.
  peer.symbols.zkms_test_scenario(40)
  const camera=new Camera(options),preview=new DrmPreview({...settings,timeoutMs:1500,operations:3})
@@ -90,6 +92,7 @@ try{
   const last=preview.setOverlayAsync(null,{signalFunction:async()=>{await preview.close()}});await last;await last.cleanupDone;assert.equal(last.callbackError,undefined)
  }finally{peer.symbols.zkms_test_fault(0);await preview.close();await camera.close()}
  retired()
+ console.log('Held pair flip, immutable queued snapshots, queued cancellation and callback close passed')
  // Unknown pair submit must quarantine video AND overlay until joined detach.
  for(const fault of [12,14]){
   peer.symbols.zkms_test_scenario(40);const camera=new Camera(options),preview=new DrmPreview({...settings,timeoutMs:50})
@@ -102,6 +105,7 @@ try{
   }finally{peer.symbols.zkms_test_fault(0);await preview.close();await camera.close()}
   retired()
  }
+ console.log('Unknown pair submission quarantines both owners and retries restoration while primary remains live')
  // Failed CPU END keeps child mapping/fd and shared master until retry succeeds.
  peer.symbols.zkms_test_scenario(40)
  const poisoned=new DrmPreview(settings)
