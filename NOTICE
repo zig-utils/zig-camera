@@ -726,3 +726,8 @@ src/home/process_output_host.zig includes the verified existing-group startup
 fix from home-lang/home packages/video/src/io/process_output_host.zig at
 5fe691d067a7aa33d60ad6fc276e2ba2aed0c121, with only the wire import flattened,
 under the MIT license above.
+
+src/home/process_output_host.zig includes independent cancellation/proof channels
+from home-lang/home packages/video/src/io/process_output_host.zig at
+126f6952de819aae4decb31f6c42e71967e33ae9, with only the wire import flattened,
+under the MIT license above.

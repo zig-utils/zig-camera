@@ -1940,3 +1940,11 @@ an unowned group. The wire/ABI stay unchanged. Positive, negative and stress
 evidence is recorded in process-group-startup.md; no diagnostic fault injection
 is shipped in production. The socket matrix also pins this exact current Home
 revision; its cursor bytes are unchanged.
+
+The 0.106.1 terminal-proof follow-up contributes independent proof/cancellation
+channels to Home at 126f6952de819aae4decb31f6c42e71967e33ae9. Native fd 4 is optional
+behind an explicit CLI flag, preserving the legacy standalone mode. The camera
+uses the split mode and joins both sockets without weakening final-result/no-child
+proof validation. Native tests cover both modes, after-exec closed private fds,
+late cancel and a controlled peer that exits with cancellation intentionally
+unread. Neither Home OS kernel pipes nor its process table are imported.

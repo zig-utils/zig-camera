@@ -88,26 +88,32 @@ async function prepare(options:Snapshot, context:Context, handlers:ManagedTransp
   context.current = undefined
   signal.throwIfAborted()
   const stdout = new Tail(options.diagnostics), stderr = new Tail(options.diagnostics)
-  const child = Bun.spawn([options.host, String(options.grace), '--', ...options.command], {
-    stdio:['pipe', 'pipe', 'pipe', 'socket-fd'], cwd:options.cwd, env:options.env,
+  const child = Bun.spawn([options.host, String(options.grace), '--control-fd4', '--', ...options.command], {
+    stdio:['pipe', 'pipe', 'pipe', 'socket-fd', 'socket-fd'], cwd:options.cwd, env:options.env,
   })
   const session:Session = context.current = {supervisorPid:child.pid, cancelled:false, stdout, stderr}
-  const fd = child.stdio[3]
-  if(fd===null||fd===undefined) {child.kill('SIGTERM'); await child.exited; throw new ProcessOutputError('supervisor control descriptor unavailable', {supervisorPid:child.pid})}
-  const control = createConnection({fd} as any), closed = deferred<void>(), ready = deferred<void>()
-  let ending = false, closing = false, result = false, noChildProof = false, protocolBroken = false, cancelSent = false, protocolBytes = 0, held = 0
+  const fd = child.stdio[3], cancelFd = child.stdio[4]
+  if(fd===null||fd===undefined||cancelFd===null||cancelFd===undefined||cancelFd===fd) {child.kill('SIGTERM'); await child.exited; throw new ProcessOutputError('supervisor control descriptor unavailable', {supervisorPid:child.pid})}
+  const control = createConnection({fd} as any), cancelControl = createConnection({fd:cancelFd} as any), closed = deferred<void>(), cancelClosed = deferred<void>(), ready = deferred<void>()
+  let ending = false, closing = false, result = false, noChildProof = false, terminalProblem = false, protocolBroken = false, cancelSent = false, protocolBytes = 0, held = 0
+  let proofChannelError:unknown,cancelChannelError:unknown
   let acknowledged:number|undefined
   let pending:Promise<void>|undefined, inputEnd:Promise<unknown>|undefined, pipeError:unknown
   const frame = storage(32)
   function details(extra:Record<string, unknown>={}) { return {supervisorPid:child.pid, consumerPid:session.consumerPid, ...extra}}
-  function cancel() { if(cancelSent)return; cancelSent = true; session.cancelled = true
-  try {control.write(Buffer.from([1]))}catch {}
+  function cancel() { if(cancelSent||result||terminalProblem)return; cancelSent = true; session.cancelled = true
+  try {cancelControl.write(Buffer.from([1]))}catch {}
+  // The cancellation fd is separate from proof records: unread late cancel
+  // bytes cannot reset the socket carrying the final joined-exit result.
   // Queue cancellation on the inherited fd even before the host installs
   // its handlers. Signalling immediately could kill a still-starting host
   // before it can send its result. Parent-fd EOF follows the same path.
 }
 function fail(error:unknown) {ready.reject(error); handlers.error(error); cancel()}
-control.on('error', error=>{ if(!closing)fail(new ProcessOutputError('supervisor control failed', details({cause:error})))})
+cancelControl.on('close',()=>cancelClosed.resolve())
+cancelControl.on('error', error=>{cancelChannelError=error;if(!closing&&!cancelSent&&!terminalProblem&&!result)fail(new ProcessOutputError('supervisor cancellation channel failed',details({cause:error})))})
+cancelControl.on('data',()=>{protocolBroken=true;fail(new ProcessOutputError('unexpected cancellation channel data',details()))})
+control.on('error', error=>{ proofChannelError=error;if(!closing)fail(new ProcessOutputError('supervisor control failed', details({cause:error})))})
 control.on('close', ()=>{closed.resolve(); if(!result&&!noChildProof&&!closing)fail(new ProcessOutputError('supervisor closed without a result', details()))})
 control.on('data', (bytes:Buffer)=>{
   try {
@@ -119,7 +125,7 @@ control.on('data', (bytes:Buffer)=>{
     held = 0
     if(supervisor!==child.pid||result||noChildProof||(session.consumerPid!==undefined&&session.consumerPid!==consumer))throw Error('supervisor identity/order mismatch')
     if(kind===1) { if(session.consumerPid!==undefined)throw Error('duplicate supervisor ready'); session.consumerPid = consumer; ready.resolve()}
-    else if(kind===3) { if(consumer)session.consumerPid = consumer; else noChildProof = true; fail(new ProcessOutputError('consumer could not start', details({errno:status})))}
+    else if(kind===3) { terminalProblem = true; if(consumer)session.consumerPid = consumer; else noChildProof = true; fail(new ProcessOutputError('consumer could not start', details({errno:status})))}
     else {result = true; session.consumerPid = consumer; session.consumerExitCode = status
     if(!ending&&!session.cancelled)fail(new ProcessOutputError('consumer exited before input EOF', details({exitCode:status})))
   }
@@ -135,8 +141,8 @@ async function drain(stream:ReadableStream<Uint8Array>, tail:Tail) {
 const readers = Promise.all([drain(child.stdout, stdout), drain(child.stderr, stderr)])
 readers.catch(()=>{})
 const exited = child.exited.then(code=>{session.supervisorExitCode = code; return code})
-const joined = Promise.all([exited, readers, closed.promise]).then(([code])=>{
-  if(protocolBroken||(!result&&!(noChildProof&&code===125))||held)throw new ProcessOutputError('incomplete supervisor exit proof', details({exitCode:code}))
+const joined = Promise.all([exited, readers, closed.promise, cancelClosed.promise]).then(([code])=>{
+  if(protocolBroken||(!result&&!(noChildProof&&code===125))||held)throw new ProcessOutputError('incomplete supervisor exit proof', details({exitCode:code,receivedResult:result,noChildProof,protocolBroken,bufferedProtocolBytes:held,protocolBytes,proofChannelError,cancelChannelError}))
   return code
 })
 joined.catch(error=>{ if(!closing)fail(error)})
@@ -188,6 +194,7 @@ const transport:ManagedTransport = {
     const input = endInput().catch(()=>{})
     await joined; await input; await pending?.catch(()=>{})
     if(!control.destroyed)control.destroy()
+    if(!cancelControl.destroyed)cancelControl.destroy()
   },
 }
 const abort = ()=>{ready.reject(signal.reason); cancel()}

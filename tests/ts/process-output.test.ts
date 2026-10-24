@@ -174,3 +174,16 @@ test('installed supervisor discovery stays tied to a relative library loaded bef
   try{const [code,errors]=await Promise.all([child.exited,new Response(child.stderr).text(),new Response(child.stdout).text()]);expect(code,errors).toBe(0)}
   finally{child.kill('SIGKILL');await child.exited;rmSync(dir,{recursive:true,force:true})}
 })
+test('failed-exec terminal proofs retire both private channels before preparation rejects',async()=>{
+  for(let i=0;i<20;i++){
+    const sink=new ProcessSink({command:['/no-such-zig-camera-terminal-proof']})
+    try{
+      const error=await failure(sink.start())
+      expect(error).toBeInstanceOf(ProcessOutputError)
+      expect((error as ProcessOutputError).details.errno).toBeGreaterThan(0)
+      expect(sink.stats()).toMatchObject({phase:'stopped',supervisorExitCode:125,consumerExitCode:127,cancelled:false})
+      expect(alive(sink.stats().supervisorPid!)).toBe(false)
+      expect(alive(sink.stats().consumerPid!)).toBe(false)
+    }finally{await sink.close()}
+  }
+},15000)

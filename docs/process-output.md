@@ -50,12 +50,13 @@ The installed `zig-camera-output-host` is a separate single-threaded Zig POSIX
 executable, built on pinned Zig 0.15.2. `ProcessSink` discovers it beside the
 library's sibling bin directory; set `hostPath` or `ZIG_CAMERA_OUTPUT_HOST` for
 another installation layout. Use the matching provided host, not an arbitrary
-program: its private fd-3 protocol is part of the ownership contract. Consumer
+program: its private proof/cancellation protocol is part of the ownership contract. Consumer
 argv/cwd/env are used by that host without shell interpolation. No fork happens
 inside a running camera or Bun callback thread.
 
 The consumer inherits media fd 0 and stdout/stderr fd 1/2, and never inherits the
-private control fd. The parent drains both diagnostic pipes concurrently through
+private descriptors. In 0.106.1, fd 3 carries only proof records and fd 4 carries
+only cancellation/parent EOF. The parent drains both diagnostic pipes concurrently through
 Home's allocation-free ByteTail. Each retains only the last configured bytes
 (default 64 KiB, maximum 1 MiB; zero still drains/counts). `diagnostics()` returns
 owned binary snapshots with exact bigint total/dropped counts; `stats()` exposes
@@ -80,7 +81,7 @@ host before it can report ownership. The parent validates fixed 32-byte records,
 PID identities/order, terminal state and actual supervisor exit.
 
 Normal stop joins the producer, sends stdin EOF, waits for the consumer result,
-drains diagnostics, and joins supervisor/control close. Nonzero exits fail normal
+drains diagnostics, and joins the supervisor and both private channels. Nonzero exits fail normal
 stop with ProcessOutputError, preserving diagnostics and exit fields. Write/finish
 deadlines and discard request cancellation, with SIGTERM then SIGKILL after the
 configured grace period. Discard can escalate an active drain. Signal dispatch or
@@ -88,7 +89,7 @@ Bun's killed flag is never treated as process exit proof; cleanup retains its
 owner until real joins complete. OS-uninterruptible processes may therefore keep
 cleanup pending beyond a requested deadline.
 
-The control fd remains independent of media: a child that never reads stdin
+The cancellation fd remains independent of media and proof delivery: a child that never reads stdin
 cannot hide cancellation or parent-fd EOF. Parent app death follows this path
 and terminates the owned process group. The host observes the leader with
 waitid(WNOWAIT), signals remaining group members while the PID/PGID is still
@@ -130,3 +131,13 @@ fails macOS libSystem linking before project compilation; target-qualified
 builds/tests pass and logs are retained.
 The minimal profile has 532 passes and two explicit skips; both Linux real-backend
 Zig objects compile with the new exports as well.
+
+Version 0.106.1 separates cancellation (fd 4) from readiness/problem/final proof
+records (fd 3), using `grace-ms --control-fd4 -- command argv...`. Rebuild the
+matching standalone host with these Bun bindings. The native host still supports
+its legacy duplex CLI for standalone clients. Terminal problem/result records
+no longer cause an unnecessary cancel write; normal retirement requires both
+channels to close plus the same strict result/no-child and actual exit proofs.
+An unread late cancellation cannot share the socket carrying the final result.
+The native acceptance fixture deliberately leaves cancellation unread before
+exit, and exec consumers verify that neither private descriptor survives exec.

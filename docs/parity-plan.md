@@ -232,3 +232,9 @@ Home codecs, PCM Matroska, decoded AAC fMP4, async splits and isolated recovery.
 See listening-output.md. Borrowed socket adoption, multiple consumers, broader
 protocols, other capability families and physical/performance acceptance remain
 open. This does not complete Picamera2 parity.
+
+Version 0.106.1 hardens process retirement with independent cancellation and proof
+channels, joined ownership of both sockets, native closed-descriptor checks and
+controlled unread-cancel terminal fixtures. The record ABI and strict final proof
+requirement remain unchanged. Full Picamera2 parity and physical acceptance remain
+open; this is an output-lifecycle correction.

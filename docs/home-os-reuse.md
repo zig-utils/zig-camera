@@ -695,3 +695,9 @@ consumer group. The actual postcondition fix therefore lands in Home video's
 standalone POSIX supervisor, with independent after-exec group verification.
 No Home OS source is modified or executed, and kernel declarations are not used
 as proof of hosted process retirement.
+
+The 0.106.1 control-channel follow-up retains the same inspected Home OS revision
+and kernel/host ownership boundary. The hosted POSIX helper now separates proof
+records from cancellation sockets; Home OS IPC pipes and PCB groups do not supply
+a Bun fd owner or supervisor-result transport. The shared implementation and
+controlled IPC tests stay in Home stdlib/camera. No OS source is changed or run.
