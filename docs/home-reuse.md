@@ -2112,3 +2112,30 @@ executor is added. Home pure helpers/public root pass both safety modes on
 pinned 0.15.2 and 0.18.0-dev.470+6817928c3; native roots and independent C peers
 compile for Linux ARM/x86. Independent runtime peers exercise actual shared-map
 bytes and event FDs in CI; they do not establish physical Pi behavior.
+
+## 0.114 shared JPEG decoding and image admission
+
+Re-fetched Home 2559d54a0ca33909b8e8d327151b8eddf4c9db41 and audited
+formats/jpeg.zig, jpeg_encoder/jpeg_dct, PNG decoding and injected image budgets.
+The old decoder assumed one block per component/MCU, did not reconstruct
+progressive scans and used obsolete syntax. Home
+7a3fbfdff7d9654d521bade9b5b84180aacfa1a3 replaces that path with a shared
+bounded sequential/progressive Huffman JPEG decoder, reusing the existing DCT
+inverse and native encoder for allocation/mutation tests. The Image adapter
+adopts decoded pixels without a second image copy. Its whole Image API is
+checked on development Zig; existing Home std.Io dependencies prevent compiling
+that whole API on 0.15.2, while the standalone decoder works on both compilers.
+
+The decoder preserves exact source ICC/Exif bytes, validates sampling/scans/
+restart state, accounts all explicit live workspace and uses two reconstructed
+block rows per component. Independent libjpeg cases exercise baseline/extended
+sequential, custom progressive bands/refinements, separate scans, sampling,
+restarts, RGB/gray/CMYK/YCCK, metadata and truncation. Camera vendors decoder/DCT
+and fixtures verbatim with revision comparisons. It reuses Home preparation_gate,
+budget_allocator and existing shared image_admission for native copied-input
+jobs, retained reservation through result transfer, cooperative cancellation and
+joined close. Bun PNG/JPEG share bounded file reads; PNG's mixed wall/monotonic
+deadline was corrected with a timer-starvation regression test.
+
+This is software codec/ownership evidence. It provides no physical camera
+quality/performance result or claim of complete JPEG/Picamera2 conformance.

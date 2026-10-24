@@ -1,5 +1,5 @@
 import {native as n,ptr,storage,outPointer,handle,check,CameraError,type Pointer} from './ffi'
-import {CapturedImage,pngImageAdmission,apngCompositeInto} from './image-object'
+import {CapturedImage,decodedImageAdmission,apngCompositeInto} from './image-object'
 import type {DecodedPngFrame} from './png-decode'
 export interface PngCompositeOptions {
   /** Two native RGBA canvases, independent of decoded input and yielded copies.
@@ -54,7 +54,7 @@ export class PngCompositor implements IterableIterator<CompositedPngFrame>,Dispo
       const bytes=storage(this.width*this.height*4*(this.bits/8)),length=new BigUint64Array(1)
       frame.image[apngCompositeInto](this.pointer,frame.x,frame.y,frame.dispose,frame.blend)
       check(n.zc_apng_compositor_copy(this.pointer,ptr(bytes),BigInt(bytes.length),ptr(length)),'APNG display copy')
-      const image=CapturedImage[pngImageAdmission](bytes,this.width,this.height,'rgba',this.bits)
+      const image=CapturedImage[decodedImageAdmission](bytes,this.width,this.height,'rgba',this.bits)
       const value=Object.freeze({image,index:this.index++,delay:frame.delay})
       return {done:false,value}
     }catch(error){this.close();throw error}

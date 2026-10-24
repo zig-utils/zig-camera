@@ -55,6 +55,9 @@ jobs:
           echo "ZC_PIXEL_DECODER=$PWD/zig-out/decode-pixels" >> "$GITHUB_ENV"
           cc -std=c11 -Wall -Wextra -Werror tests/decode_gif.c -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o zig-out/decode-gif
           echo "ZC_GIF_DECODER=$PWD/zig-out/decode-gif" >> "$GITHUB_ENV"
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep jpeg -Mroot=tests/jpeg_decode_fixture.zig -Mjpeg=src/home/jpeg_decoder.zig -femit-bin=zig-out/jpeg-decode-fixture.o
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/jpeg_decode_libjpeg.c zig-out/jpeg-decode-fixture.o $(pkg-config --cflags --libs libjpeg) -o zig-out/jpeg-decode-fixture
+          echo "ZC_JPEG_FIXTURE=$PWD/zig-out/jpeg-decode-fixture" >> "$GITHUB_ENV"
           echo "ZC_IMAGE_DECODER=$PWD/zig-out/decode-images" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
@@ -81,6 +84,8 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/image-job-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/png_image.c -Lzig-out/lib -lzigcamera -o zig-out/png-image-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/png-image-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/jpeg_decode.c -Lzig-out/lib -lzigcamera -o zig-out/jpeg-decode-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/jpeg-decode-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/apng_compositor.c -Lzig-out/lib -lzigcamera -o zig-out/apng-compositor-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/apng-compositor-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/drm_discovery.c -Lzig-out/lib -lzigcamera -o zig-out/drm-discovery-test

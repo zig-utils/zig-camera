@@ -712,6 +712,29 @@ typedef struct {
  * Source/target overlap rejects, except identical no-op copies. Native endian
  * is explicit; 8->16 replicates bytes and 16->8 selects high bytes. */
 typedef zc_apng_raster zc_raster;
+/* Strict 8-bit Huffman JPEG loading through Home. Sequential/progressive,
+ * component sampling, restarts and owned source ICC/Exif; no implicit ICC/Exif
+ * orientation conversion. Result pixels are gray8 or RGB8 (CMYK converted).
+ * Upsampling: 0 centered bilinear, 1 nearest. Unsupported coding returns UNSUPPORTED.
+ * Jobs copy input before return; cancellation joins checkpoints and native close.
+ * Result and job share the existing image admission; take transfers once. */
+typedef struct zc_jpeg_image zc_jpeg_image;
+typedef struct zc_jpeg_job zc_jpeg_job;
+typedef struct {uint32_t struct_size,max_scans,max_markers,upsampling;uint64_t max_input_bytes,max_output_bytes,max_working_bytes,max_metadata_bytes,max_work_units;} zc_jpeg_limits;
+typedef struct {uint32_t struct_size,width,height,components,progressive,scans,color_model,upsampling,sampling[4],metadata_flags,adobe_transform,reserved[2];uint64_t stride,length,working_peak,work_units;} zc_jpeg_info;
+void zc_default_jpeg_limits(zc_jpeg_limits *);
+int zc_jpeg_decode(const uint8_t *,uint64_t,const zc_jpeg_limits *,zc_jpeg_image **out);
+int zc_jpeg_decode_async(const uint8_t *,uint64_t,const zc_jpeg_limits *,zc_jpeg_job **out);
+int zc_jpeg_info_get(zc_jpeg_image *,zc_jpeg_info *);
+int zc_jpeg_pixels_copy(zc_jpeg_image *,uint8_t *,uint64_t,uint64_t *);
+/* metadata kind: 1 source ICC profile, 2 source Exif TIFF bytes. */
+int zc_jpeg_metadata_copy(zc_jpeg_image *,uint32_t,uint8_t *,uint64_t,uint64_t *);
+void zc_jpeg_close(zc_jpeg_image *);
+int zc_jpeg_job_state_get(zc_jpeg_job *,zc_image_job_state *);
+int zc_jpeg_job_cancel(zc_jpeg_job *);
+int zc_jpeg_job_take_image(zc_jpeg_job *,zc_jpeg_image **out);
+int zc_jpeg_job_close(zc_jpeg_job *);
+
 /* Strict PNG/APNG loading. All pixel words are little endian and straight alpha.
  * Default image slot is 0; animation rectangles are slots 1..frame_count.
  * Scalar metadata flags: ICC=1, Exif=2, sRGB=4, gamma=8, cHRM=16, cICP=32.

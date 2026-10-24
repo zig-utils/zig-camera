@@ -799,3 +799,15 @@ therefore improve Home stdlib image/video under ADR-MC3. Camera consumes those
 helpers and owns its Bun lifecycle. No Home OS source is copied, modified,
 translated or executed; the OS stays Home. Physical Pi color/scanout and camera
 performance remain acceptance work.
+
+## 0.114 hosted JPEG decoder audit
+
+Re-fetched clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65. Re-read
+ADR-MC3 and the media/video_decoder.home and audio_codec.home entry points. Their
+placeholder success/sample-count returns do not implement JPEG parsing, entropy
+scans or validated hosted image ownership. The compositor consumes opaque-target
+RGB; it is not an image decoder. ADR-MC3 explicitly places software image/codec
+work in Home stdlib and requires corpus evidence. The bounded JPEG decoder and
+independent reference corpus therefore improve Home's image package and are
+consumed by camera. No Home OS kernel code is copied, modified, translated or
+executed; the OS remains Home. This audit is not physical hardware acceptance.

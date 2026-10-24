@@ -754,3 +754,10 @@ Home RGBA view and the six src/home/kms*.zig helpers are copied verbatim from
 home-lang/home at 2559d54a0ca33909b8e8d327151b8eddf4c9db41, under the MIT license above.
 The update adds checked BGRA alpha uploads, strict stacking and shared two-plane
 atomic retirement. Home OS kernel sources are not copied into this repository.
+
+Home JPEG decoder and the independent reference fixtures are copied verbatim
+from home-lang/home at 7a3fbfdff7d9654d521bade9b5b84180aacfa1a3:
+packages/image/src/jpeg_decoder.zig -> src/home/jpeg_decoder.zig;
+packages/image/tests/jpeg_decode_{fixture.zig,libjpeg.c} -> tests/.
+The existing jpeg_dct.zig is reused verbatim. All are under the MIT license above.
+Libjpeg is an independent test producer/decoder, not a runtime decode dependency.

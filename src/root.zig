@@ -122,10 +122,12 @@ comptime {
     _ = imx708;
     _ = sensor_layout;
 }
+pub const jpeg_image = @import("jpeg_image.zig");
 pub const png_image = @import("png_image.zig");
 pub const apng_compositor = @import("apng_compositor.zig");
 comptime {
     _ = png_image;
+    _ = jpeg_image;
     _ = apng_compositor;
 }
 pub const HdrMode = enum(u32) { off = 0, single_exposure = 1, multi_exposure = 2, night = 3, multi_exposure_unmerged = 4 };

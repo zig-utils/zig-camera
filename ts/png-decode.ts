@@ -1,6 +1,7 @@
 import {native as n,ptr,storage,view,outPointer,handle,check,CameraError,type Pointer} from './ffi'
 import {BunJob,snapshotJobOptions,type JobOptions} from './jobs'
-import {CapturedImage,pngImageAdmission,type RasterFormat} from './image-object'
+import {CapturedImage,decodedImageAdmission,type RasterFormat} from './image-object'
+import{encodedImageInput,imageDecodePath,withEncodedImageFile}from'./image-decode-input'
 import {PngCompositor,type PngCompositeOptions} from './png-compositor'
 export interface PngDecodeLimits {
   maxInputBytes?: number
@@ -54,15 +55,7 @@ function prepare(source:PngDecodeLimits){
   for(const [at,value,max] of [[16,input,256*1024*1024],[24,output,256*1024*1024],[32,working,256*1024*1024],[40,metadata,16*1024*1024]])d.setBigUint64(at!,BigInt(integer(value,max!)),true)
   return {bytes,input:integer(input,256*1024*1024)}
 }
-const typed=Object.getPrototypeOf(Uint8Array.prototype),buffer=Object.getOwnPropertyDescriptor(typed,'buffer')!.get!,offset=Object.getOwnPropertyDescriptor(typed,'byteOffset')!.get!,length=Object.getOwnPropertyDescriptor(typed,'byteLength')!.get!,ordinaryBufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,'byteLength')!.get!
-function inputView(source:Uint8Array,limit:number){
-  if(!(source instanceof Uint8Array))throw new TypeError('encoded PNG must be Uint8Array')
-  const backing=buffer.call(source)
-  try{ordinaryBufferLength.call(backing)}catch{throw new TypeError('shared encoded PNG input is not immutable')}
-  const bytes=new Uint8Array(backing,offset.call(source),length.call(source))
-  if(!bytes.byteLength||bytes.byteLength>limit)throw new RangeError('encoded PNG input exceeds limit')
-  return bytes
-}
+function inputView(source:Uint8Array,limit:number){return encodedImageInput(source,limit,'PNG')}
 function copied(p:Pointer,kind:number,slot?:number){
   const size=new BigUint64Array(1)
   const copy=(data:Pointer|null,capacity:bigint)=>slot===undefined?n.zc_png_metadata_copy(p,kind,data,capacity,ptr(size)):n.zc_png_frame_copy(p,slot,data,capacity,ptr(size))
@@ -77,7 +70,7 @@ function consume(p:Pointer){
     const info=storage(96),d=view(info);check(n.zc_png_info_get(p,ptr(info)),'PNG info')
     const read=(slot:number)=>{
       const desc=storage(64),v=view(desc);check(n.zc_png_frame_get(p,slot,ptr(desc)),'PNG frame')
-      const image=CapturedImage[pngImageAdmission](copied(p,0,slot),v.getUint32(4,true),v.getUint32(8,true),(['gray','rgb','rgba'] as const)[v.getUint32(12,true)] as RasterFormat,v.getUint32(16,true) as 8|16)
+      const image=CapturedImage[decodedImageAdmission](copied(p,0,slot),v.getUint32(4,true),v.getUint32(8,true),(['gray','rgb','rgba'] as const)[v.getUint32(12,true)] as RasterFormat,v.getUint32(16,true) as 8|16)
       owned.push(image)
       return {image,x:v.getUint32(20,true),y:v.getUint32(24,true),delay:Object.freeze({numerator:v.getUint32(28,true),denominator:v.getUint32(32,true)}),dispose:(['none','background','previous'] as const)[v.getUint32(36,true)]!,blend:(['source','over'] as const)[v.getUint32(40,true)]!}
     }
@@ -124,28 +117,15 @@ async function run(bytes:Uint8Array,limits:ReturnType<typeof prepare>,current:Bu
 /** Copies encoded input synchronously into a bounded native joined worker. */
 export function decodePngAsync(source:Uint8Array,options:PngDecodeLimits&JobOptions<DecodedPng>={}){
   const limits=prepare(options),admitted=snapshotJobOptions(options,30000),bytes=inputView(source,limits.input)
-  const deadline=Date.now()+(admitted.timeoutMs??Infinity)
+  const deadline=performance.now()+(admitted.timeoutMs??Infinity)
   const job=new BunJob<DecodedPng>(current=>run(bytes,limits,current,deadline),()=>{},admitted)
   void job.start();return job
 }
-let fileReaders=0,fileBytes=0
-/** Bounded Bun file read followed by a joined native decode. Concurrent reads
- * have a separate four-reader, 512 MiB encoded-input cap and no waiting queue. */
+/** Bounded shared JPEG/PNG file admission, retained through joined native decode. */
 export function loadPngAsync(path:string,options:PngDecodeLimits&JobOptions<DecodedPng>={}){
-  if(typeof path!=='string'||!path.length||path.includes('\0'))throw new TypeError('invalid PNG path')
+  imageDecodePath(path,'PNG')
   const limits=prepare(options),admitted=snapshotJobOptions(options,30000)
-  const deadline=Date.now()+(admitted.timeoutMs??Infinity)
-  const job=new BunJob<DecodedPng>(async current=>{
-    current.check()
-    const charge=limits.input+1
-    if(fileReaders>=4||charge>512*1024*1024-fileBytes)throw new CameraError(-4,'PNG file read admission')
-    fileReaders++;fileBytes+=charge
-    try{
-      // Bound the actual read as well as its result, including growth after stat.
-      const bytes=new Uint8Array(await Bun.file(path).slice(0,charge).arrayBuffer())
-      current.check();inputView(bytes,limits.input)
-      return await run(bytes,limits,current,deadline)
-    }finally{fileReaders--;fileBytes-=charge}
-  },()=>{},admitted)
+  const deadline=performance.now()+(admitted.timeoutMs??Infinity)
+  const job=new BunJob<DecodedPng>(current=>withEncodedImageFile(path,limits.input,'PNG',current,bytes=>run(bytes,limits,current,deadline)),()=>{},admitted)
   void job.start();return job
 }

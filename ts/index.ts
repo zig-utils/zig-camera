@@ -1,3 +1,4 @@
+export {decodeJpeg,decodeJpegAsync,loadJpegAsync,DecodedJpeg,type JpegDecodeLimits,type JpegDecodeMetadata,type JpegColorModel} from './jpeg-decode'
 export { ListeningSocketSink, ListeningSocketOutput, type ListeningSocketSinkOptions, type ListeningEndpoint } from './listening-output'
 export { RtpPacketizer, rtpTimestamp, rtcpSenderReport, rtpHevcProfile, type RtpPacketizerOptions, type RtpCodec, type RtpFormat, type RtcpSenderReport } from "./rtp"
 export { RtpOutput, type RtpOutputOptions, type RtpSocketFactory, type RtpDatagramSocket, type RtpSocketHandlers } from "./rtp-output"

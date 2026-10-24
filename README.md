@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.114 adds [owned JPEG loading](docs/jpeg-loading.md) through Home's
+bounded sequential/progressive decoder, including sampling, restart markers,
+source ICC/Exif, async jobs and file reads shared with PNG admission.
+
 Version 0.113 adds [DRM hardware overlays](docs/drm-overlays.md): shared video/alpha
 planes, exact straight or premultiplied BGRA uploads, atomic scene updates,
 async overlay jobs and preserved camera/recording mode snapshots. Home OS's
