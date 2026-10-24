@@ -701,3 +701,21 @@ and kernel/host ownership boundary. The hosted POSIX helper now separates proof
 records from cancellation sockets; Home OS IPC pipes and PCB groups do not supply
 a Bun fd owner or supervisor-result transport. The shared implementation and
 controlled IPC tests stay in Home stdlib/camera. No OS source is changed or run.
+
+## 0.107 APNG composition audit
+
+Re-fetched origin/main and inspected clean Home OS
+151269666bc09aa15a271f1c1f4603f681132e65. Read ADR-MC3, the media decoder path
+and `kernel/src/video/compositor.home::color_blend` plus its compositor callsites.
+`kernel/src/container/image.home` is OCI container-image management, not a raster
+codec; its name is not evidence of reusable image decoding. Video decode stubs
+and the ADR explicitly do not establish working image/animation decoding.
+
+The OS compositor blends packed 8-bit RGB against an opaque target and sets
+output alpha to 255. That kernel display contract cannot preserve APNG's
+straight-alpha canvas, native 16-bit samples or PREVIOUS/BACKGROUND disposal.
+Do not transplant it into a hosted image operation. ADR-MC3 explicitly places
+media algorithms in Home stdlib; the checked two-canvas APNG renderer therefore
+lands in Home's image package and is reused by camera. Kernel display/device
+ownership remains separate. No Home OS files are changed, copied or executed;
+this audit provides no physical display/GPU/camera acceptance.

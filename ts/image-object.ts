@@ -55,6 +55,8 @@ type Metadata = ReturnType<typeof decodeMetadata>
 const captureAdmission = Symbol('capture image admission')
 /** @internal Native PNG copies only; never a borrowed application raster. */
 export const pngImageAdmission = Symbol('PNG image admission')
+/** @internal Synchronous borrowed descriptor, no pixel pointer escapes. */
+export const apngCompositeInto = Symbol('APNG composite into')
 export type ImageSourceMetadata = Readonly<Omit<Metadata, 'crop'>> & {
   readonly crop: Readonly<Metadata['crop']>
 }
@@ -302,6 +304,11 @@ export class CapturedImage implements Disposable {
       this.endian,
       this.stride,
     )
+  }
+  /** @internal Native canvas borrows pixels only during this call. */
+  [apngCompositeInto](canvas: import('./ffi').Pointer, x:number, y:number, dispose:number, blend:number) {
+    const source=this.descriptor()
+    check(n.zc_apng_compositor_push(canvas,ptr(source.data),x,y,dispose,blend),'APNG composite frame')
   }
   get width() {
     return this.info.width

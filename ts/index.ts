@@ -9,6 +9,7 @@ export {
 } from './sensor-hdr'
 import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
+export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './png-compositor'
 import {
   prepareApng,
   runApng,

@@ -36,6 +36,10 @@ metadata is explicit through
 the existing image encoder options; RGB ICC validation/gray restrictions remain.
 Changing an Exif orientation tag does not rotate pixels automatically.
 
+Version 0.107 adds an explicit [sequential display compositor](png-compositing.md)
+through `decoded.compositor()`. It yields independent full-canvas images while
+preserving the raw rectangles and separate default image described here.
+
 Defaults: 64 MiB encoded input, 64 MiB aggregate default/frame pixels, 128 MiB
 working allocations, 16 MiB aggregate ICC/Exif, 256 frames and 16384 chunks.
 Input/output/working limits can be raised to 256 MiB each; metadata/frame/chunk

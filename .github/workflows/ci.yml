@@ -81,6 +81,8 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/image-job-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/png_image.c -Lzig-out/lib -lzigcamera -o zig-out/png-image-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/png-image-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/apng_compositor.c -Lzig-out/lib -lzigcamera -o zig-out/apng-compositor-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/apng-compositor-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/rtp.c -Lzig-out/lib -lzigcamera -o zig-out/rtp-abi-test

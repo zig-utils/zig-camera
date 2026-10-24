@@ -1956,3 +1956,28 @@ ENOENT, the final result and the dead consumer. The already-reaped controlled
 fixture remains exact at 127. Native runtime bytes are unchanged from 126f6952;
 CI pins the new test revision. This corrects a scheduling assumption in tests,
 not the process ownership/proof contract.
+
+## 0.107 APNG display composition
+
+Inspected Home 2510ea1fcb91d31ae8d4d031eca1d55f9d97f503: the checked PNG decoder
+already preserves raw rectangles, integer depth and dispose/blend controls;
+`formats/pixel_view.zig` supplies validated native samples and stride/endian
+handling. `blend.zig`/`compose.zig` implement broader Image/Color operations, but
+their Image/Color path does not supply a bounded native-word APNG canvas with
+transactional validation and frame disposal. Reused pixel views rather than
+introducing another pixel layout or importing an 8-bit composition layer.
+
+Added `packages/image/src/apng_compositor.zig`, exported as `ApngCompositor`, at
+Home 24733f83b0a09b8b8edc733967bf2c7d7ed0d025. It allocates two canvases once,
+validates each input before pending disposal, applies source/over and all APNG
+disposal modes with native-precision widened integer math, and resets each play
+to transparent black. Camera copies the helper with only its flattened pixel
+import changed. Native image admission owns the camera-facing allocation; Bun
+iterates copied displays with explicit source/result lifetimes and joined close.
+
+Pure tests exercise both Zig compilers in Debug/ReleaseSafe, checked region/
+endian/depth semantics, 10,000 independent floating-point blend comparisons and
+all allocator failures. Camera adds C ABI and encoded-APNG/Bun integration,
+excluded posters, two-dimensional disposal, exact partial-alpha words, iterator
+termination and shared saturation. These are software ownership/sample tests,
+not physical camera or performance measurements. See png-compositing.md.

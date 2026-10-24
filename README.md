@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.107 adds [bounded APNG display compositing](docs/png-compositing.md):
+native RGBA8/16 alpha/disposal handling, owned Bun display frames and joined
+iterator cleanup, backed by a new shared Home image primitive.
+
 Version 0.100 adds [bounded PNG/APNG loading](docs/png-decoding.md): sync and
 joined async owned images, exact 16-bit reconstruction, Adam7, raw animation
 rectangles and copied metadata. Home gains the shared decoder and a corrected

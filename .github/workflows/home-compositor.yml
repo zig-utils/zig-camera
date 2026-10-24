@@ -1,0 +1,41 @@
+name: Home APNG compositor
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
+  pull_request:
+    paths: ['src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compositor:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 24733f83b0a09b8b8edc733967bf2c7d7ed0d025
+          path: .home-compositor-upstream
+          sparse-checkout: packages/image
+          persist-credentials: false
+      - name: Verify shared source and both safety modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed 's|formats/pixel_view.zig|pixel_view.zig|' .home-compositor-upstream/packages/image/src/apng_compositor.zig > /tmp/home-compositor.zig
+          cmp /tmp/home-compositor.zig src/home/apng_compositor.zig
+          cmp .home-compositor-upstream/packages/image/src/formats/pixel_view.zig src/home/pixel_view.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/apng_compositor.zig
+            zig test -O "$mode" .home-compositor-upstream/packages/image/src/apng_compositor.zig
+          done

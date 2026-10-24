@@ -101,6 +101,7 @@ pub const ImagePixels = @import("home/pixel_view.zig");
 pub const ImageResample = @import("home/pixel_resample.zig");
 pub const ImageOrthogonal = @import("home/oriented_pixels.zig");
 pub const PngDecoder = @import("home/png_decoder.zig");
+pub const ApngCompositor = @import("home/apng_compositor.zig");
 pub const sensor_layout = @import("sensor_layout.zig");
 pub const imx708 = @import("imx708.zig");
 comptime {
@@ -108,8 +109,10 @@ comptime {
     _ = sensor_layout;
 }
 pub const png_image = @import("png_image.zig");
+pub const apng_compositor = @import("apng_compositor.zig");
 comptime {
     _ = png_image;
+    _ = apng_compositor;
 }
 pub const HdrMode = enum(u32) { off = 0, single_exposure = 1, multi_exposure = 2, night = 3, multi_exposure_unmerged = 4 };
 pub const SensorHdrState = c.zc_sensor_hdr_state;

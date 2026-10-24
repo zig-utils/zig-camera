@@ -1,6 +1,7 @@
 import {native as n,ptr,storage,view,outPointer,handle,check,CameraError,type Pointer} from './ffi'
 import {BunJob,snapshotJobOptions,type JobOptions} from './jobs'
 import {CapturedImage,pngImageAdmission,type RasterFormat} from './image-object'
+import {PngCompositor,type PngCompositeOptions} from './png-compositor'
 export interface PngDecodeLimits {
   maxInputBytes?: number
   /** Aggregate default image and animation rectangle pixels; metadata is separate. */
@@ -27,11 +28,16 @@ export interface DecodedPngFrame {
   readonly dispose: 'none'|'background'|'previous'
   readonly blend: 'source'|'over'
 }
-/** Owned default image and raw frame rectangles. No automatic compositing,
- * gamma/gamut conversion or Exif orientation. close() closes every image. */
+/** Owned default image and raw frame rectangles. Explicit compositor available;
+ * no gamma/gamut conversion or Exif orientation. close() closes every image. */
 export class DecodedPng implements Disposable {
   /** @internal */
   constructor(readonly image:CapturedImage,readonly frames:readonly DecodedPngFrame[],readonly defaultIsFrame:boolean,readonly plays:number,readonly sourceDepth:number,readonly sourceColor:number,readonly interlaced:boolean,readonly metadata:Readonly<PngDecodeMetadata>){}
+  /** Render one play from transparent black, ignoring an excluded poster. */
+  compositor(options:PngCompositeOptions={}){
+    if(this.image.closed)throw new CameraError(-5,'closed PNG image')
+    return new PngCompositor(this.image.width,this.image.height,this.image.bits,this.frames,options)
+  }
   close(){this.image.close();for(const frame of this.frames)frame.image.close()}
   [Symbol.dispose](){this.close()}
 }

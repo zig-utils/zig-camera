@@ -739,6 +739,20 @@ int zc_png_job_cancel(zc_png_job *);
 int zc_png_job_take_image(zc_png_job *,zc_png_image **out);
 int zc_png_job_close(zc_png_job *);
 
+/* APNG display canvas: exact RGBA8/16, little endian, straight alpha. External
+ * serialization required. push borrows a checked raster of matching bit depth
+ * for this call only. The canvas starts/reset to transparent black; disposal
+ * applies before the next valid push. Invalid pushes leave all state unchanged.
+ * Working limit (1..256 MiB) covers two full RGBA canvases. Global image admission
+ * is shared with PNG/image jobs. No transfers, gamma conversion or timer implied.
+ * copy queries with NULL,0; insufficient capacity writes nothing. close(NULL) OK. */
+typedef struct zc_apng_compositor zc_apng_compositor;
+int zc_apng_compositor_open(uint32_t width,uint32_t height,uint32_t bits,uint64_t max_working_bytes,zc_apng_compositor **out);
+int zc_apng_compositor_push(zc_apng_compositor *,const zc_raster *,uint32_t x,uint32_t y,uint32_t dispose,uint32_t blend);
+int zc_apng_compositor_copy(zc_apng_compositor *,uint8_t *,uint64_t capacity,uint64_t *length);
+void zc_apng_compositor_reset(zc_apng_compositor *);
+void zc_apng_compositor_close(zc_apng_compositor *);
+
 int zc_raster_convert(const zc_raster *,uint32_t format,uint32_t bits,uint32_t big_endian,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_crop(const zc_raster *,uint32_t x,uint32_t y,uint32_t width,uint32_t height,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_pixel16(const zc_raster *,uint32_t x,uint32_t y,uint16_t rgba[4]);

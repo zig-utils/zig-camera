@@ -8,7 +8,7 @@ const files = @import("image_file.zig");
 const exif = @import("exif.zig");
 const A = std.heap.c_allocator;
 const maximum = 256 * 1024 * 1024;
-fn read(source: ?*const c.zc_raster) !pixel.View {
+pub fn read(source: ?*const c.zc_raster) !pixel.View {
     const value = source orelse return error.InvalidOptions;
     if (value.struct_size != @sizeOf(c.zc_raster) or value.format > 2 or value.big_endian > 1 or (value.bits != 8 and value.bits != 16) or value.stride > std.math.maxInt(usize) or value.length > std.math.maxInt(usize) or value.data == null) return error.InvalidOptions;
     const view = pixel.View{ .data = value.data[0..@intCast(value.length)], .width = value.width, .height = value.height, .stride = @intCast(value.stride), .format = @enumFromInt(value.format), .bits = @intCast(value.bits), .endian = if (value.big_endian == 1) .big else .little };
