@@ -6,16 +6,13 @@ extern "C" {
 #endif
 /* Internal SDK boundary. Full normalized camera identity/configuration is the
  * key. A loan is exclusive to one Device, including all its requests/exports. */
-typedef struct {
-    uint32_t width,height,stride,buffer_count;
-    uint64_t frame_bytes,modifier;
-    char format[32];
-} zci_allocation_stream;
+typedef zc_capture_import_stream zci_allocation_stream;
 typedef struct {
     const uint8_t *data;
     uint64_t length,frame_bytes;
     int32_t fd;
     uint32_t reserved;
+    uint64_t offset;
 } zci_allocation_buffer;
 int zci_capture_allocator_acquire(zc_capture_allocator *,const uint8_t *id,uint32_t id_length,
     const zci_allocation_stream *,uint32_t streams,uint64_t *out_loan);

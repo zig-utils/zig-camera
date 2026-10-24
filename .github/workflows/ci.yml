@@ -39,6 +39,8 @@ jobs:
             cc -std=c11 -O2 -Wall -Wextra -Werror -c tests/capture_backing_linux.c -o zig-out/capture-allocator-peer.o
             c++ -std=c++17 -O2 -Wall -Wextra -Werror -I include tests/capture_allocator_import.cpp zig-out/capture-allocator-fixture.o zig-out/capture-allocator-peer.o $(pkg-config --cflags --libs libcamera) -o zig-out/capture-allocator-sdk-test
             ./zig-out/capture-allocator-sdk-test
+            c++ -std=c++17 -O2 -Wall -Wextra -Werror -I include tests/capture_fd_import_sdk.cpp zig-out/capture-allocator-fixture.o $(pkg-config --cflags --libs libcamera) -o zig-out/capture-fd-import-sdk-test
+            ./zig-out/capture-fd-import-sdk-test
           done
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
@@ -93,10 +95,13 @@ jobs:
             cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -fPIC -shared tests/shared_unmap_preload.c -o zig-out/lib/libshared-unmap-peer.so
           fi
           cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iinclude tests/shared_cleanup.c -Lzig-out/lib -lzigcamera -lshared-unmap-peer -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/shared-cleanup-test
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iinclude tests/capture_fd_import.c -Lzig-out/lib -lzigcamera -lshared-unmap-peer -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/capture-fd-import-test
           if [ "$RUNNER_OS" = macOS ]; then
             env DYLD_INSERT_LIBRARIES="$PWD/zig-out/lib/libshared-unmap-peer.dylib" zig-out/shared-cleanup-test
+            env DYLD_INSERT_LIBRARIES="$PWD/zig-out/lib/libshared-unmap-peer.dylib" zig-out/capture-fd-import-test
           else
             env LD_PRELOAD="$PWD/zig-out/lib/libshared-unmap-peer.so" zig-out/shared-cleanup-test
+            env LD_PRELOAD="$PWD/zig-out/lib/libshared-unmap-peer.so" zig-out/capture-fd-import-test
           fi
       - name: Verify C ABI, Bun lifecycle, native automation and CLI
         run: |

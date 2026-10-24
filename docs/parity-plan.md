@@ -1,5 +1,11 @@
 # Picamera2 capability parity worklist
 
+Version 0.116 adds explicitly provisioned caller-owned Linux capture buffers,
+exact negotiated allocation snapshots, whole-object budgets, FD identity/offset
+validation, DMA_SYNC capability checks, inherited mode workers and retryable
+cleanup in Zig/C/Bun; see capture-imports.md. Automatic factory callbacks,
+multi-object/GPU frame layouts and physical Pi acceptance remain open.
+
 Version 0.115.1 fixes retained cleanup of failed shared-memory unmaps in Home
 and camera export/remote owners, with bounded explicit retry and telemetry in
 Zig/C/Bun. See shared-cleanup.md. This is an ownership prerequisite for custom

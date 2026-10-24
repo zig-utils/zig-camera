@@ -44,6 +44,8 @@ pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, p
     return zcd_open_id(cfg, pipeline, processed, orientation, strict, actual, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
 }
 pub const cameraId = zcd_camera_id;
+pub extern fn zcd_capture_layout(*Handle, *c.zc_capture_import_layout) c_int;
+pub const captureLayout = zcd_capture_layout;
 pub extern fn zcd_open_allocated(*const c.zc_config, *const c.zc_pipeline_options, *const c.zc_processed_options, u32, bool, *u32, ?[*]const u8, u32, *c.zc_capture_allocator, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
 pub fn openAllocated(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: bool, actual: *u32, id: ?[]const u8, allocation: *c.zc_capture_allocator, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, negotiated: *c.zc_pipeline_info) c_int {
     return zcd_open_allocated(cfg, pipeline, processed, orientation, strict, actual, if (id) |value| value.ptr else null, if (id) |value| @intCast(value.len) else 0, allocation, context, callback, out, info, negotiated);

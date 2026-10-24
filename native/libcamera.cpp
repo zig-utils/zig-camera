@@ -671,11 +671,11 @@ struct Device {
                 zci_allocation_buffer backing{};
                 const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,0,&backing);
                 if(found)return found;
-                if(backing.fd<0 || backing.frame_bytes>std::numeric_limits<unsigned int>::max())return ZC_UNSUPPORTED;
+                if(backing.fd<0 || backing.frame_bytes>std::numeric_limits<unsigned int>::max() || backing.offset>std::numeric_limits<unsigned int>::max()-backing.frame_bytes)return ZC_UNSUPPORTED;
                 UniqueFD descriptor(fcntl(backing.fd,F_DUPFD_CLOEXEC,0));
                 if(!descriptor.isValid())return ZC_IO;
                 FrameBuffer::Plane plane;
-                plane.fd=SharedFD(std::move(descriptor));plane.offset=0;plane.length=backing.frame_bytes;
+                plane.fd=SharedFD(std::move(descriptor));plane.offset=backing.offset;plane.length=backing.frame_bytes;
                 std::vector<FrameBuffer::Plane> planes;planes.push_back(std::move(plane));
                 imported_buffers[s].push_back(std::make_unique<FrameBuffer>(planes));
             }
@@ -707,7 +707,7 @@ struct Device {
                     if(found)return found;
                     auto &target=this->stream(slot,s);target.plane_count=1;
                     auto &plane=target.planes[0];plane.data=backing.data;plane.length=backing.frame_bytes;
-                    plane.fd=buffer->planes()[0].fd.get();plane.offset=0;
+                    plane.fd=buffer->planes()[0].fd.get();plane.offset=backing.offset;
                     slot.fds[slot.fd_count++]=plane.fd;
                 } else {
                     const int rc = map(buffer, this->stream(slot,s), slot);
@@ -1037,6 +1037,25 @@ extern "C" int zcd_camera_id(Device *device,uint8_t *data,uint64_t capacity,uint
     if(!data)return capacity==0 ? ZC_OK : ZC_INVALID;
     if(capacity<id.size())return ZC_INVALID;
     std::memcpy(data,id.data(),id.size());return ZC_OK;
+}
+extern "C" int zcd_capture_layout(Device *device,zc_capture_import_layout *out) {
+    *out={};
+    try {
+        if(!device->config || device->config->size()==0 || device->config->size()>3)return ZC_STATE;
+        const auto &id=device->camera->id();
+        if(id.empty() || id.size()>sizeof(out->camera_id))return ZC_UNSUPPORTED;
+        zc_capture_import_layout layout{};
+        layout.struct_size=sizeof(layout);layout.backend=ZC_LIBCAMERA;layout.id_length=id.size();
+        std::memcpy(layout.camera_id,id.data(),id.size());layout.stream_count=device->config->size();
+        for(size_t s=0;s<device->config->size();s++) {
+            const auto &source=device->config->at(s);auto &target=layout.streams[s];
+            target.width=source.size.width;target.height=source.size.height;target.stride=source.stride;
+            target.buffer_count=source.bufferCount;target.frame_bytes=source.frameSize;target.modifier=source.pixelFormat.modifier();
+            const auto name=source.pixelFormat.toString();if(name.size()>=sizeof(target.format))return ZC_UNSUPPORTED;
+            text(target.format,sizeof(target.format),name);
+        }
+        *out=layout;return ZC_OK;
+    }catch(const std::bad_alloc &){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
 }
 
 // Preparing copies pending/backend replay state and validates everything before

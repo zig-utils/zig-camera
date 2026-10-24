@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.116 adds [caller-provided capture buffers](docs/capture-imports.md):
+exact negotiated-layout snapshots, bounded Linux FD imports, checked offsets,
+retained cleanup and inherited Zig/C/Bun mode-job ownership. Physical DMA
+acceptance and automatic allocator factories remain open.
+
 Version 0.115.1 fixes [shared-mapping cleanup](docs/shared-cleanup.md): failed
 unmaps retain their original bounded ownership and budget, with explicit retry
 and telemetry in Zig/C/Bun after export/remote handles are consumed.

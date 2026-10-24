@@ -1,5 +1,9 @@
 # Persistent capture allocators
 
+Version 0.116 also supports [explicitly imported Linux buffers](capture-imports.md),
+using the same camera/request/map/export and worker ownership. Query captureLayout
+for exact actual geometry and provision independent FD sets before opening modes.
+
 Version 0.115 adds `CaptureAllocator` in Zig/Bun and additive C allocator handles.
 Pass one to Camera to retain bounded backing and mappings across compatible
 reopens, temporary captures, permanent modes, recorder/group switches, rollback

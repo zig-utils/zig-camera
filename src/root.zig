@@ -120,6 +120,9 @@ pub const KmsScanout = @import("home/kms_scanout.zig");
 pub const CaptureAllocationPolicy = @import("home/capture_allocation.zig");
 pub const CaptureAllocatorConfig = c.zc_capture_allocator_config;
 pub const CaptureAllocatorState = c.zc_capture_allocator_state;
+pub const CaptureImportStream = c.zc_capture_import_stream;
+pub const CaptureImportBuffer = c.zc_capture_import_buffer;
+pub const CaptureImportLayout = c.zc_capture_import_layout;
 pub fn defaultCaptureAllocatorConfig() CaptureAllocatorConfig {
     var out: CaptureAllocatorConfig = undefined;
     @import("capture_allocator.zig").zc_default_capture_allocator_config(&out);
@@ -127,6 +130,15 @@ pub fn defaultCaptureAllocatorConfig() CaptureAllocatorConfig {
 }
 pub const CaptureAllocator = struct {
     handle: ?*c.zc_capture_allocator,
+    pub fn initImported(config: CaptureAllocatorConfig) Error!CaptureAllocator {
+        var out: ?*c.zc_capture_allocator = null;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_open_imported(&config, &out));
+        return .{ .handle = out.? };
+    }
+    pub fn importBuffers(self: CaptureAllocator, layout: *const CaptureImportLayout, buffers: []const CaptureImportBuffer) Error!void {
+        if (layout.struct_size != @sizeOf(CaptureImportLayout) or layout.id_length == 0 or layout.id_length > 4096 or layout.stream_count == 0 or layout.stream_count > 3 or buffers.len > 192) return error.Invalid;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_import(self.handle orelse return error.Stopped, &layout.camera_id, layout.id_length, &layout.streams, layout.stream_count, buffers.ptr, @intCast(buffers.len)));
+    }
     pub fn init(config: CaptureAllocatorConfig, heap_path: ?[]const u8) Error!CaptureAllocator {
         if (heap_path) |path| if (path.len > 4096) return error.Invalid;
         var out: ?*c.zc_capture_allocator = null;
@@ -639,6 +651,11 @@ pub const Camera = struct {
         var i: Info = undefined;
         check(core.zc_get_info(self.handle, &i)) catch unreachable;
         return i;
+    }
+    pub fn captureLayout(self: Camera) Error!CaptureImportLayout {
+        var out: CaptureImportLayout = undefined;
+        try check(core.zc_camera_capture_layout_get(self.handle, &out));
+        return out;
     }
     pub fn stats(self: Camera) Stats {
         var s: Stats = undefined;

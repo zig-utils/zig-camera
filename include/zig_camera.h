@@ -73,6 +73,36 @@ typedef struct {
 } zc_capture_allocator_state;
 void zc_default_capture_allocator_config(zc_capture_allocator_config *);
 int zc_capture_allocator_open(const zc_capture_allocator_config *,const uint8_t *heap_path,uint32_t path_length,zc_capture_allocator **out);
+/* Explicitly provisioned Linux FD imports. No fallback allocation/eviction.
+ * Inputs remain caller-owned; keep them stable/inactive through import. Success
+ * owns CLOEXEC duplicates; callers may close their descriptors afterwards.
+ * Relinquish outside CPU/device access until these imported resources retire;
+ * do not concurrently use them through another owner or allocator.
+ * Each frame needs a distinct underlying object (aliases are rejected even for
+ * disjoint ranges). Whole object sizes count against max_bytes. Offsets/frame
+ * ends fit uint32 SDK ranges. Synthetic inputs must be sealed against grow and
+ * shrink; real inputs must support DMA_BUF_IOCTL_SYNC. Import cleanup failures
+ * retain an entry/budget for trim/close retry. Never discard the allocator owner
+ * after a failed import. Exact negotiated configuration/stream order is the key.
+ * Provision another independent set for overlapping same-layout reconnects. */
+typedef struct {
+    uint32_t width,height,stride,buffer_count;
+    uint64_t frame_bytes,modifier;
+    char format[32];
+} zc_capture_import_stream;
+typedef struct { int32_t fd; uint32_t reserved; uint64_t offset; } zc_capture_import_buffer;
+typedef struct {
+    uint32_t struct_size,backend,stream_count,id_length;
+    uint8_t camera_id[4096];
+    zc_capture_import_stream streams[3]; /* main, optional lores, optional raw */
+} zc_capture_import_layout;
+/* Owned scalar snapshot of the actual SDK frameSize/stride/count/modifier and
+ * full ID. Query a configured camera; no capture/start is required. */
+int zc_camera_capture_layout_get(zc_camera *,zc_capture_import_layout *out);
+int zc_capture_allocator_open_imported(const zc_capture_allocator_config *,zc_capture_allocator **out);
+/* Buffers are stream-major, exactly sum(stream.buffer_count), max 3*64. */
+int zc_capture_allocator_import(zc_capture_allocator *,const uint8_t *camera_id,uint32_t id_length,
+    const zc_capture_import_stream *,uint32_t stream_count,const zc_capture_import_buffer *,uint32_t buffer_count);
 int zc_capture_allocator_state_get(zc_capture_allocator *,zc_capture_allocator_state *out);
 /* Pins keep the allocator alive across camera gaps and mode/open workers.
  * Each successful pin must be unpinned exactly once, after the worker joins. */

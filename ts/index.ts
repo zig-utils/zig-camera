@@ -336,9 +336,9 @@ import {
   cameraIdentity,
 } from './config'
 import type { ModeRequest, ModeResponse, ModeRequestHook } from './mode-worker'
-import { CaptureAllocator } from './capture-allocator'
+import { CaptureAllocator, readCaptureLayout } from './capture-allocator'
 export { CaptureAllocator } from './capture-allocator'
-export type { CaptureAllocatorOptions, CaptureAllocatorState } from './capture-allocator'
+export type { CaptureAllocatorOptions, CaptureAllocatorState, CaptureLayout, CaptureLayoutStream, CaptureImportBuffer } from './capture-allocator'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
   native as n,
@@ -2277,6 +2277,10 @@ export class Camera {
   info() {
     this.assertOpen()
     return this.readInfo()
+  }
+  captureLayout() {
+    this.assertOpen()
+    return readCaptureLayout(this.handle)
   }
   colorSpace(stream: StreamName = 'main') {
     this.assertOpen()

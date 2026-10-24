@@ -24,7 +24,7 @@ static void run(unsigned scenario) {
     static_assert(sizeof(zc_capture_allocator_config)==24);
     static_assert(sizeof(zc_capture_allocator_state)==112);
     static_assert(sizeof(zci_allocation_stream)==64);
-    static_assert(sizeof(zci_allocation_buffer)==32);
+    static_assert(sizeof(zci_allocation_buffer)==40);
     zc_capture_allocator_config config{};zc_default_capture_allocator_config(&config);
     const uint64_t page=static_cast<uint64_t>(sysconf(_SC_PAGESIZE));require(page>0);
     config.max_bytes=page*8;config.max_entries=2;require(config.backend==ZC_LIBCAMERA);

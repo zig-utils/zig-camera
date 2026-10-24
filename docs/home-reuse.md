@@ -1,5 +1,31 @@
 # Home reuse audit
 
+## 0.116 explicitly imported capture storage
+
+Re-fetched Home a26569ce2ab717fa05446c7b1c1c9875771e0b84 and Home OS
+151269666bc09aa15a271f1c1f4603f681132e65. Improved Home video at
+[af3017edbadf58ce1f93cf26324628b8aae3db4a](https://github.com/home-lang/home/commit/af3017edbadf58ce1f93cf26324628b8aae3db4a):
+capture_allocation adds distinct fresh preparation with explicit full backing
+charge and existing-only checkout; capture_backing composes imported resources
+with the same bounded leases/admission/retirement. Identity checks reject aliases
+within and across retained entries before descriptor duplication or mapping.
+Four new pure tests cover budgets, offsets, independent same-layout loans,
+partial cleanup, alias protection and every allocation failure, on both compiler
+versions and all three safety modes.
+
+The explicit capture_host entry exposes LinuxImport, parameterized by Home IO's
+posix_shared_memory module rather than creating another FD/mapping implementation.
+It duplicates CLOEXEC, revalidates actual duplicate identity/extent, checks
+DMA_BUF_IOCTL_SYNC START/END for real storage and irreversible size seals for
+synthetic memfds. Separate RO/RW map windows retain failed cleanup and consume
+FD close errors once. The generic portable owner stays free of native C import.
+Camera copies these helpers verbatim and pins the donor in its ownership matrix.
+
+Home OS camera/DMA/framebuffer sources still provide kernel-owned allocations,
+stub capture and ISA/display ownership, rather than Linux descriptor imports.
+No OS code was copied, modified, translated or run. Hosted syscall/SDK tests and
+real-backend load smokes do not prove physical DMA, sensor FPS or Pi throughput.
+
 ## 0.115.1 shared mapping retirement
 
 Inspected Home 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395 and re-fetched

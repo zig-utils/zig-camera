@@ -18,6 +18,8 @@ pub const Handle = struct {
     capture_allocator: ?*c.zc_capture_allocator = null,
     allocation_loan: u64 = 0,
     allocation_dirty: bool = false,
+    buffer_fds: [3][c.ZC_MAX_BUFFERS]c_int = @splat(@splat(-1)),
+    buffer_offsets: [3][c.ZC_MAX_BUFFERS]u64 = @splat(@splat(0)),
     lores_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     info: c.zc_info,
@@ -70,12 +72,12 @@ fn sampleRGB(transform: orientation.Transform, output: orientation.Extent, main_
     const point = transform.sourcePoint(source, .{ .x = x, .y = y }) catch unreachable;
     return .{ @truncate(point.x * main_source.width / source.width), @truncate(point.y * main_source.height / source.height), @truncate(index * 37) };
 }
-fn attachProcessed(stream: *c.zc_stream, buf: []u8) void {
+fn attachProcessed(stream: *c.zc_stream, buf: []u8, fd: c_int, base_offset: u64) void {
     const ysize = @as(usize, stream.stride) * stream.height;
     for (0..stream.plane_count) |i| {
         const offset = if (i == 0) 0 else ysize + (i - 1) * ysize / 4;
         const len = if (stream.plane_count == 1) buf.len else if (i == 0) ysize else if (stream.plane_count == 2) ysize / 2 else ysize / 4;
-        stream.planes[i] = .{ .data = buf[offset..].ptr, .length = len, .bytes_used = len, .fd = -1, .offset = 0, .reserved = 0 };
+        stream.planes[i] = .{ .data = buf[offset..].ptr, .length = len, .bytes_used = len, .fd = fd, .offset = if (fd >= 0) base_offset + offset else 0, .reserved = 0 };
     }
 }
 fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transform, main_source: orientation.Extent, index: usize, color: c.zc_color_space) !void {
@@ -120,10 +122,13 @@ pub fn openAllocated(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
     if (id) |selected| if (!std.mem.eql(u8, selected, device_id)) return c.ZC_DEVICE;
     return openWithAllocator(config, opts, processed, requested_orientation, strict, actual, context, callback, out, info, pipeline, allocation);
 }
-fn allocationBuffer(allocation: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: usize) ![]u8 {
+fn allocationBuffer(h: *Handle, allocation: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: usize) ![]u8 {
     const allocator = @import("capture_allocator.zig");
     var result: allocator.bridge.zci_allocation_buffer = undefined;
-    if (allocator.zci_capture_allocator_buffer(allocation, loan, stream, @intCast(buffer), 1, &result) != c.ZC_OK) return error.InvalidResource;
+    const rc = allocator.zci_capture_allocator_buffer(allocation, loan, stream, @intCast(buffer), 1, &result);
+    if (rc != c.ZC_OK) return if (rc == c.ZC_NOMEM) error.OutOfMemory else error.CaptureIo;
+    h.buffer_fds[stream][buffer] = result.fd;
+    h.buffer_offsets[stream][buffer] = result.offset;
     return @as([*]u8, @ptrCast(@constCast(result.data)))[0..@intCast(result.frame_bytes)];
 }
 fn allocationGeometry(stream: c.zc_stream, count: u32, bytes: u64) !@import("capture_allocator.zig").Home.policy.Stream {
@@ -227,9 +232,9 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
         h.capture_allocator = owner;
     }
     for (0..config.buffer_count) |i| {
-        h.buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, 0, i) else Alloc.alloc(u8, main_bytes)) catch {
+        h.buffers[i] = (if (allocation) |owner| allocationBuffer(h, owner, h.allocation_loan, 0, i) else Alloc.alloc(u8, main_bytes)) catch |failure| {
             close(h);
-            return c.ZC_NOMEM;
+            return if (failure == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
         };
         fillProcessed(h.buffers[i], h.info.main, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, main_format) catch unreachable) catch {
             close(h);
@@ -237,9 +242,9 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
         };
         if (config.raw != 0) {
             const raw = h.info.raw;
-            h.raw_buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, if (opts.lores_width != 0) 2 else 1, i) else Alloc.alloc(u8, @as(usize, raw.stride) * raw.height)) catch {
+            h.raw_buffers[i] = (if (allocation) |owner| allocationBuffer(h, owner, h.allocation_loan, if (opts.lores_width != 0) 2 else 1, i) else Alloc.alloc(u8, @as(usize, raw.stride) * raw.height)) catch |failure| {
                 close(h);
-                return c.ZC_NOMEM;
+                return if (failure == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
             };
             @memset(h.raw_buffers[i], 0);
             const format = @import("raw.zig").Format.parse(std.mem.sliceTo(&raw.format, 0)) catch unreachable;
@@ -277,9 +282,9 @@ fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_opti
         }
         if (opts.lores_width != 0) {
             const l = h.pipeline.lores;
-            h.lores_buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, 1, i) else Alloc.alloc(u8, lores_bytes)) catch {
+            h.lores_buffers[i] = (if (allocation) |owner| allocationBuffer(h, owner, h.allocation_loan, 1, i) else Alloc.alloc(u8, lores_bytes)) catch |failure| {
                 close(h);
-                return c.ZC_NOMEM;
+                return if (failure == error.OutOfMemory) c.ZC_NOMEM else c.ZC_IO;
             };
             fillProcessed(h.lores_buffers[i], l, transform, main_source, i, @import("color_policy.zig").effective(h.color_request, opts.lores_format) catch unreachable) catch {
                 close(h);
@@ -422,9 +427,11 @@ pub fn queue(h: *Handle, index: u32) c_int {
         f.raw.planes[0].data = h.raw_buffers[index].ptr;
         f.raw.planes[0].length = h.raw_buffers[index].len;
         f.raw.planes[0].bytes_used = h.raw_buffers[index].len;
-        f.raw.planes[0].fd = -1;
+        const raw_slot: usize = if (h.pipeline.lores.width != 0) 2 else 1;
+        f.raw.planes[0].fd = h.buffer_fds[raw_slot][index];
+        f.raw.planes[0].offset = h.buffer_offsets[raw_slot][index];
     }
-    attachProcessed(&f.main, h.buffers[index]);
+    attachProcessed(&f.main, h.buffers[index], h.buffer_fds[0][index], h.buffer_offsets[0][index]);
     f.sequence = h.sequence;
     h.sequence += 1;
     f.timestamp_ns = @import("capture_filter.zig").clockNs() catch return c.ZC_IO;
@@ -668,7 +675,7 @@ pub fn colorSpace(h: *Handle, stream: u32, out: *c.zc_color_space) c_int {
 pub fn lores(h: *Handle, index: u32, out: *c.zc_stream) c_int {
     out.* = h.pipeline.lores;
     if (out.plane_count == 0) return c.ZC_UNSUPPORTED;
-    attachProcessed(out, h.lores_buffers[index]);
+    attachProcessed(out, h.lores_buffers[index], h.buffer_fds[1][index], h.buffer_offsets[1][index]);
     return c.ZC_OK;
 }
 
@@ -714,6 +721,23 @@ pub fn photoValues(h: *Handle, index: u32, out: *@import("catalog.zig").bridge.z
     if (h.photo_wallclock_ns[index] > 0) {
         out.wallclock_ns = h.photo_wallclock_ns[index];
         out.valid |= 2;
+    }
+    return c.ZC_OK;
+}
+
+/// Snapshot exact configured allocation geometry, independent of frame ownership.
+pub fn captureLayout(h: *Handle, out: *c.zc_capture_import_layout) c_int {
+    out.* = std.mem.zeroes(c.zc_capture_import_layout);
+    out.struct_size = @sizeOf(c.zc_capture_import_layout);
+    out.backend = c.ZC_SYNTHETIC;
+    out.id_length = device_id.len;
+    @memcpy(out.camera_id[0..device_id.len], device_id);
+    var streams: [3]c.zc_stream = .{ h.info.main, h.pipeline.lores, h.info.raw };
+    const lengths = [3]usize{ h.buffers[0].len, h.lores_buffers[0].len, h.raw_buffers[0].len };
+    for (&streams, 0..) |*source, i| {
+        if (source.plane_count == 0) continue;
+        out.streams[out.stream_count] = .{ .width = source.width, .height = source.height, .stride = source.stride, .buffer_count = h.config.buffer_count, .frame_bytes = lengths[i], .modifier = 0, .format = source.format };
+        out.stream_count += 1;
     }
     return c.ZC_OK;
 }

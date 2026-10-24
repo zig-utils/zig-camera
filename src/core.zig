@@ -310,6 +310,13 @@ pub export fn zc_camera_capture_allocator_get(camera: *c.zc_camera, out: *?*c.zc
     out.* = self.capture_allocator;
     return c.ZC_OK;
 }
+pub export fn zc_camera_capture_layout_get(camera: *c.zc_camera, out: *c.zc_capture_import_layout) c_int {
+    out.* = std.mem.zeroes(c.zc_capture_import_layout);
+    const self = session(camera);
+    self.operation.lock();
+    defer self.operation.unlock();
+    return driver.captureLayout(self.device orelse return c.ZC_STATE, out);
+}
 fn openAllocatedPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, allocation: ?*c.zc_capture_allocator, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (zc_check_camera_configuration(cfg, pipeline, processed, orientation, strict) != c.ZC_OK) return c.ZC_INVALID;

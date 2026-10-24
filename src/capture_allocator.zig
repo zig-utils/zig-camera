@@ -8,9 +8,52 @@ pub const Home = @import("home/capture_backing.zig");
 const backend: u32 = if (options.libcamera) c.ZC_LIBCAMERA else c.ZC_SYNTHETIC;
 const Provider = if (options.libcamera) @import("home/capture_dma_heap.zig").LinuxHeap else Home.Ram;
 const Owner = Home.Owner(16, Provider);
+const linux = @import("builtin").os.tag == .linux;
+const ImportProvider = if (linux) @import("home/capture_import_linux.zig").Linux(@import("home/posix_shared_memory.zig")) else Home.Ram;
+const ImportedOwner = Home.Owner(16, ImportProvider);
+const Storage = union(enum) {
+    managed: Owner,
+    imported: ImportedOwner,
+    fn cache(self: *Storage) *Owner.Cache {
+        return switch (self.*) {
+            inline else => |*value| &value.cache,
+        };
+    }
+    fn checkoutEvictingConcurrent(self: *Storage, layout: *const Home.policy.Layout) !Owner.Cache.Checkout {
+        return switch (self.*) {
+            .managed => |*value| value.checkoutEvictingConcurrent(layout),
+            .imported => |*value| value.checkoutExisting(layout),
+        };
+    }
+    fn view(self: *Storage, claim: Home.policy.Claim, stream: u32, buffer: u32, writable: bool) !Home.View {
+        return switch (self.*) {
+            inline else => |*value| value.view(claim, stream, buffer, writable),
+        };
+    }
+    fn trim(self: *Storage) !void {
+        return switch (self.*) {
+            inline else => |*value| value.trim(),
+        };
+    }
+    fn close(self: *Storage) !void {
+        return switch (self.*) {
+            inline else => |*value| value.close(),
+        };
+    }
+    fn release(self: *Storage, claim: Home.policy.Claim) !void {
+        return switch (self.*) {
+            inline else => |*value| value.release(claim),
+        };
+    }
+    fn discard(self: *Storage, claim: Home.policy.Claim) !void {
+        return switch (self.*) {
+            inline else => |*value| value.discard(claim),
+        };
+    }
+};
 const Pool = struct {
     mutex: std.Thread.Mutex = .{},
-    owner: Owner,
+    owner: Storage,
     pins: @import("home/lease_pool.zig").Pool(1, 257) = .{},
     root_pin: u64 = 0,
     closing: bool = false,
@@ -25,10 +68,10 @@ fn status(failure: anyerror) c_int {
     return switch (failure) {
         error.Busy, error.BufferFull, error.LayoutBusy, error.ResourceBusy, error.ReferenceLimit => c.ZC_BUSY,
         error.OutOfMemory => c.ZC_NOMEM,
-        error.Unsupported => c.ZC_UNSUPPORTED,
+        error.Unsupported, error.LayoutUnavailable => c.ZC_UNSUPPORTED,
         error.StaleClaim, error.StaleLease, error.StaleTicket => c.ZC_STALE,
         error.SequenceExhausted, error.SequenceOverflow, error.InvalidState => c.ZC_STATE,
-        error.InvalidLayout, error.InvalidPath, error.InvalidResource, error.InvalidConfiguration, error.SizeOverflow, error.PayloadTooLarge => c.ZC_INVALID,
+        error.AliasedResource, error.InvalidLayout, error.InvalidPath, error.InvalidResource, error.InvalidConfiguration, error.SizeOverflow, error.PayloadTooLarge => c.ZC_INVALID,
         else => c.ZC_IO,
     };
 }
@@ -46,7 +89,7 @@ pub export fn zc_capture_allocator_open(config: *const c.zc_capture_allocator_co
         std.heap.c_allocator.destroy(self);
         return status(failure);
     } else .{ .allocator = std.heap.c_allocator };
-    self.* = .{ .owner = Owner.init(provider, @intCast(config.max_bytes), config.max_entries) catch unreachable };
+    self.* = .{ .owner = .{ .managed = Owner.init(provider, @intCast(config.max_bytes), config.max_entries) catch unreachable } };
     self.root_pin = self.pins.acquire(0) catch unreachable;
     out.* = self.handle();
     return c.ZC_OK;
@@ -58,6 +101,46 @@ pub export fn zc_capture_allocator_pin(handle: *c.zc_capture_allocator, out: *u6
     defer self.mutex.unlock();
     if (self.closing) return c.ZC_STATE;
     out.* = self.pins.retain(self.root_pin) catch |failure| return status(failure);
+    return c.ZC_OK;
+}
+pub export fn zc_capture_allocator_open_imported(config: *const c.zc_capture_allocator_config, out: *?*c.zc_capture_allocator) c_int {
+    out.* = null;
+    if (config.struct_size != @sizeOf(c.zc_capture_allocator_config) or config.reserved != 0 or config.max_entries == 0 or config.max_entries > 16 or
+        config.max_bytes == 0 or config.max_bytes > @as(u64, 8) * 1024 * 1024 * 1024) return c.ZC_INVALID;
+    if (!linux or config.backend != backend) return c.ZC_UNSUPPORTED;
+    if (comptime linux) {
+        const self = std.heap.c_allocator.create(Pool) catch return c.ZC_NOMEM;
+        self.* = .{ .owner = .{ .imported = ImportedOwner.init(.{ .dma_buf = options.libcamera }, @intCast(config.max_bytes), config.max_entries) catch unreachable } };
+        self.root_pin = self.pins.acquire(0) catch unreachable;
+        out.* = self.handle();
+        return c.ZC_OK;
+    } else return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_capture_allocator_import(handle: *c.zc_capture_allocator, id: ?[*]const u8, id_length: u32, streams: ?[*]const c.zc_capture_import_stream, count: u32, buffers: ?[*]const c.zc_capture_import_buffer, buffer_count: u32) c_int {
+    if (id == null or id_length == 0 or id_length > c.ZC_MAX_CAMERA_ID or streams == null or count == 0 or count > Home.policy.max_streams or
+        buffers == null or buffer_count == 0 or buffer_count > Home.policy.max_streams * Home.policy.max_buffers) return c.ZC_INVALID;
+    var descriptors: [Home.policy.max_streams]Home.policy.Stream = undefined;
+    var expected: usize = 0;
+    for (streams.?[0..count], 0..) |stream, i| {
+        if (stream.buffer_count < 2 or stream.buffer_count > c.ZC_MAX_BUFFERS or stream.frame_bytes > std.math.maxInt(u32)) return c.ZC_INVALID;
+        descriptors[i] = Home.policy.Stream.init(stream.width, stream.height, stream.stride, stream.frame_bytes, stream.buffer_count, std.mem.sliceTo(&stream.format, 0), stream.modifier) catch return c.ZC_INVALID;
+        expected += stream.buffer_count;
+    }
+    if (expected != buffer_count) return c.ZC_INVALID;
+    var inputs: [Home.policy.max_streams * Home.policy.max_buffers]Home.ImportBuffer = undefined;
+    for (buffers.?[0..buffer_count], 0..) |buffer, i| {
+        if (buffer.reserved != 0 or buffer.fd < 0) return c.ZC_INVALID;
+        inputs[i] = .{ .fd = buffer.fd, .offset = buffer.offset };
+    }
+    const layout = Home.policy.Layout.init(id.?[0..id_length], descriptors[0..count]) catch return c.ZC_INVALID;
+    const self = pool(handle);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.closing) return c.ZC_STATE;
+    if (comptime linux) switch (self.owner) {
+        .managed => return c.ZC_STATE,
+        .imported => |*value| value.importBuffers(&layout, inputs[0..buffer_count]) catch |failure| return status(failure),
+    } else return c.ZC_UNSUPPORTED;
     return c.ZC_OK;
 }
 pub export fn zc_capture_allocator_unpin(handle: *c.zc_capture_allocator, token: u64) c_int {
@@ -73,8 +156,7 @@ pub export fn zc_capture_allocator_state_get(handle: *c.zc_capture_allocator, ou
     const self = pool(handle);
     self.mutex.lock();
     defer self.mutex.unlock();
-    const owner = &self.owner;
-    const cache = &owner.cache;
+    const cache = self.owner.cache();
     out.* = std.mem.zeroes(c.zc_capture_allocator_state);
     out.struct_size = @sizeOf(c.zc_capture_allocator_state);
     out.backend = backend;
@@ -82,20 +164,24 @@ pub export fn zc_capture_allocator_state_get(handle: *c.zc_capture_allocator, ou
     out.entries = @intCast(cache.reservations.count);
     out.borrowed = @intCast(cache.owners.used);
     out.pins = @intCast(self.pins.used - 1);
-    for (owner.retirements) |retirement| if (retirement != null) {
-        out.retiring += 1;
-    };
     out.max_bytes = cache.reservations.max_bytes;
     out.used_bytes = cache.reservations.used;
     out.high_bytes = cache.reservations.high_bytes;
     out.preparations = cache.preparations;
     out.reuses = cache.reuses;
     out.retired = cache.retired;
-    out.allocations = owner.allocations;
-    out.writable_maps = owner.writable_maps;
-    out.cleanup_errors = owner.cleanup_errors;
     out.closing = @intFromBool(self.closing);
-    if (options.libcamera) out.last_errno = owner.provider.last_errno;
+    switch (self.owner) {
+        inline else => |*owner| {
+            for (owner.retirements) |retirement| if (retirement != null) {
+                out.retiring += 1;
+            };
+            out.allocations = owner.allocations;
+            out.writable_maps = owner.writable_maps;
+            out.cleanup_errors = owner.cleanup_errors;
+            if (@hasField(@TypeOf(owner.provider), "last_errno")) out.last_errno = owner.provider.last_errno;
+        },
+    }
     return c.ZC_OK;
 }
 pub export fn zc_capture_allocator_trim(handle: *c.zc_capture_allocator) c_int {
@@ -108,7 +194,7 @@ pub export fn zc_capture_allocator_trim(handle: *c.zc_capture_allocator) c_int {
 pub export fn zc_capture_allocator_close(handle: *c.zc_capture_allocator) c_int {
     const self = pool(handle);
     self.mutex.lock();
-    if (self.pins.used != 1 or self.owner.cache.owners.used != 0) {
+    if (self.pins.used != 1 or self.owner.cache().owners.used != 0) {
         self.mutex.unlock();
         return c.ZC_BUSY;
     }
@@ -152,7 +238,7 @@ pub export fn zci_capture_allocator_buffer(handle: *c.zc_capture_allocator, loan
     self.mutex.lock();
     defer self.mutex.unlock();
     const result = self.owner.view(.{ .token = loan }, stream, buffer, writable != 0) catch |failure| return status(failure);
-    out.* = .{ .data = result.bytes.ptr, .length = result.bytes.len, .frame_bytes = result.frame_bytes, .fd = result.fd, .reserved = 0 };
+    out.* = .{ .data = result.bytes.ptr, .length = result.bytes.len, .frame_bytes = result.frame_bytes, .fd = result.fd, .reserved = 0, .offset = result.offset };
     return c.ZC_OK;
 }
 pub export fn zci_capture_allocator_release(handle: *c.zc_capture_allocator, loan: u64) void {

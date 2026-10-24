@@ -47,6 +47,20 @@ camera. Deferred slots preserve budget until physical cleanup succeeds, without
 repeating camera writeback or closing recycled FDs. This follows the ADR's
 shared-package boundary. No OS code was modified, copied, translated or run.
 
+## 0.116 caller-provided capture storage
+
+Re-fetched 151269666bc09aa15a271f1c1f4603f681132e65 and inspected camera.home,
+drivers/dma.home, framebuffer_double.home and ADR-MC3. The fixed kernel camera
+allocation/stub capture, ISA 8237 DMA restrictions and display-owned buffer states
+do not supply hosted FD duplication, inode/extent admission, sealed memfd storage,
+Linux DMA-BUF synchronization or SDK FrameBuffer offset imports.
+
+Reuse therefore extends Home video's existing backing/cache policy and Home IO's
+mapping/descriptor helpers. Native Linux import remains an explicit host module;
+portable ownership works on both Home compiler versions. Physical ownership must
+still be verified on Pi hardware. No kernel code was copied, translated, modified
+or executed, and no OS acceleration or throughput claim follows from these tests.
+
 | Source | Observed implementation | Reuse decision |
 | --- | --- | --- |
 | docs/adr/ADR-MC3-media-stdlib.md | Accepted architecture places codec/container/image implementation in Home stdlib; OS consumes bindings and keeps OS source in Home | Improve shared Home packages, keep Zig helpers out of the OS tree |
