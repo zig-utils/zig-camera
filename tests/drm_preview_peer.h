@@ -111,7 +111,11 @@ ssize_t read(int fd,void *data,size_t length){
     memmove(event_queue,event_queue+count,(event_count-count)*sizeof(event_queue[0]));memmove(event_detach,event_detach+count,(event_count-count)*sizeof(event_detach[0]));event_count-=count;
     return count*sizeof(event_queue[0]);
 }
-int poll(struct pollfd *fds,nfds_t count,int timeout){
+/* glibc declares poll's array write_only even though fd/events are inputs.
+ * A distinct C identifier avoids inheriting that annotation in this interposer;
+ * the ELF symbol is still exactly poll. Keep GCC's strict warnings enabled. */
+int zkms_poll(struct pollfd *fds,nfds_t count,int timeout) __asm__("poll");
+int zkms_poll(struct pollfd *fds,nfds_t count,int timeout){
     const int current=atomic_load(&owned);
     if(scenario>=10 && current>=0 && count==1 && fds[0].fd==current){
         fds[0].revents=event_count?POLLIN:0;
