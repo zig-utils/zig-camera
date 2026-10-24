@@ -36,7 +36,8 @@ try{
       await camera.setPreviewStreamAsync('lores');await camera.captureMetadata();await camera.drainPreviewAsync()
       assert.equal(camera.previewStreamInfo()?.width,4)
       await camera.setPreviewStreamAsync(null);await camera.drainPreviewAsync();assert.equal(camera.stats().leased,0)
-      await camera.setPreviewStreamAsync('main')
+      await camera.setPreviewStreamAsync('main');await camera.captureMetadata();await camera.drainPreviewAsync()
+      assert.equal(camera.stats().leased,1)
       if(format==='BGR888'){
         const borrowed=await camera.captureRequest()
         try{
@@ -54,6 +55,7 @@ try{
     finally{peer.symbols.zkms_test_fault(0);await camera.close()}
     retired()
   }
+  console.log('Camera native worker format/stream/view and lease-safe mode matrix passed')
   // A held real flip packet must not block Bun, capture, encoder delivery or bounded admission.
   peer.symbols.zkms_test_scenario(10)
   const camera=new Camera(options),recorder=await Recorder.open({outputframe(){}},{width:8,height:6,codec:'mjpeg',fps:25})
@@ -69,6 +71,7 @@ try{
     const jobs=Array.from({length:32},()=>camera.drainPreviewAsync())
     assert.throws(()=>camera.drainPreviewAsync(),/queue full/)
     assert.throws(()=>camera.switchRecordingModeAsync(recorder,{width:12,height:8},{},{outputframe(){}}),/jobs active/)
+    await Bun.sleep(10);assert.equal(jobs[0]!.state,'running')
     const reason=new Error('queued Camera view cancelled')
     for(const job of jobs)assert.equal(job.cancel(reason),true)
     const results=await Promise.allSettled(jobs.map(job=>job.wait()))
@@ -83,9 +86,12 @@ try{
     const group=await camera.switchRecordingsModeAsync({width:10,height:8},[{recording,output:{outputframe(){}}}])
     recording=group[0]!
     await until(()=>recording.stats().completed>=2n);assert.equal(camera.previewStreamInfo()?.width,10)
+    console.log('Camera worker held-flip progress and recorder/group modes passed')
     peer.symbols.zkms_test_fault(12)
-    await until(()=>!!camera.previewError)
-    await until(()=>camera.previewCleanupPending===1)
+    // A dropped detach event cannot be recreated by changing the injector.
+    // Join the failed automatic cleanup attempt before issuing a fresh retry.
+    await until(()=>camera.previewError instanceof AggregateError)
+    assert.equal(camera.previewCleanupPending,1)
     assert.equal(camera.previewInfo()?.drmState?.uncertain,true)
     const healthy=recording.stats().completed;await until(()=>recording.stats().completed>healthy)
     peer.symbols.zkms_test_fault(0);await camera.stopPreviewAsync()
