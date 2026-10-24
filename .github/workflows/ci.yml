@@ -88,9 +88,10 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/drm_preview.c -Lzig-out/lib -lzigcamera -o zig-out/drm-preview-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/drm-preview-test
           if [ "$RUNNER_OS" = Linux ]; then
-            cc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared $(pkg-config --cflags libdrm) tests/drm_kms_preload.c -o zig-out/drm-kms-preload.so
+            cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -fPIC -shared $(pkg-config --cflags libdrm) tests/drm_kms_preload.c -o zig-out/drm-kms-preload.so
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-kms.ts
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-preview.ts
+            env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-async.ts
           fi
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test

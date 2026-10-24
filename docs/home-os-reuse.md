@@ -747,3 +747,16 @@ retirement. ADR-MC3/MC5 place hosted algorithms in Home stdlib and device driver
 in the kernel. The new atomic renderer therefore improves Home video and is
 reused by camera, without copying, modifying or executing OS kernel sources.
 This review supplies architectural guidance, not physical hardware evidence.
+
+## 0.110 hosted serial display execution
+
+Rechecked Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and its message queues,
+framebuffer_double.home page_flip and ADR-MC5. The message queue owns kernel
+message bytes; it does not supply hosted callback contexts, joined POSIX threads
+or camera-export cleanup fences. page_flip currently updates bookkeeping and
+explicitly defers actual hardware programming. IRQ/display architecture guides
+the device boundary but supplies no tested Linux event-loop executor.
+
+The bounded native worker therefore lands in Home stdlib video, preserving the
+ADR-MC3/MC5 split. No OS kernel code is copied, modified or executed; OS source
+remains Home. This audit is not physical display or performance evidence.

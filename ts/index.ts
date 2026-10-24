@@ -13,6 +13,8 @@ export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './
 export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplayFormat,type DrmDiscoveryIssue,type DrmDisplayDiscovery} from './drm-discovery'
 import {openDrmPreview,readDrmPreviewState,type DrmPreviewOptions,type DrmPreviewState} from './drm-preview'
 export type {DrmPreviewOptions,DrmPreviewState} from './drm-preview'
+export {DrmPreview,DrmPreviewCleanupError,type DrmPreviewSessionOptions} from './drm-preview-async'
+import {submitDrmPreviewFrame} from './drm-preview-frame'
 import {
   prepareApng,
   runApng,
@@ -769,6 +771,13 @@ export class Frame {
   private open() {
     if (this.released) throw new CameraError(-5, 'released frame')
     this.camera.assertOpen()
+  }
+  /** @internal The native job owns an exported read lease before this returns. */
+  [submitDrmPreviewFrame](preview:Pointer,stream:'main'|'lores') {
+    this.open()
+    const out=outPointer()
+    check(n.zc_drm_preview_show_async(preview,this.camera.handle,this.token,stream==='main'?0:2,ptr(out)),'async DRM frame admission')
+    return handle(out)
   }
   get [readableFrame]() {
     this.open()

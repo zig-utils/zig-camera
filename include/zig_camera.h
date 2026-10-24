@@ -819,6 +819,25 @@ typedef struct {uint32_t struct_size,retained_frames,uncertain,poisoned,device_c
 void zc_default_drm_preview_config(zc_drm_preview_config *);
 int zc_preview_open_drm(const zc_drm_preview_config *,zc_preview **);
 int zc_drm_preview_state_get(zc_preview *,zc_drm_preview_state *);
+/* Optional native serial worker; 1..8 outstanding operations, active included.
+ * Synchronous mutation returns BUSY while work executes. State is the last
+ * completed operation snapshot. Queued frame jobs retain exports before return.
+ * Poll/close jobs before closing the preview; close is BUSY with live job handles.
+ * finish returns TIMEOUT until callback cleanup completes, then OK with result.
+ * Queued cancellation joins cleanup; active work cannot be cancelled. */
+typedef struct zc_drm_preview_job zc_drm_preview_job;
+typedef struct {uint32_t struct_size,capacity,outstanding,queued,active,live_jobs,retiring,reserved;uint64_t issued,completed,rejected;} zc_drm_preview_queue_state;
+int zc_drm_preview_enable_async(zc_preview *,uint32_t capacity);
+int zc_drm_preview_queue_state_get(zc_preview *,zc_drm_preview_queue_state *);
+int zc_drm_preview_show_async(zc_preview *,zc_camera *,uint64_t token,uint32_t stream,zc_drm_preview_job **);
+/* command: 0 cleanup fence, 1 background/detach, 2 copied view, 3 close device.
+ * Close stops new admission; failure retains the preview for retry. After a
+ * successful close-device job, close that job and call zc_preview_close to join
+ * the worker and consume the preview. Fence completion is not GPU retirement. */
+int zc_drm_preview_command_async(zc_preview *,uint32_t command,const void *view,zc_drm_preview_job **);
+int zc_drm_preview_job_finish(zc_drm_preview_job *,int32_t *result);
+int zc_drm_preview_job_cancel(zc_drm_preview_job *);
+int zc_drm_preview_job_close(zc_drm_preview_job *);
 /* Read-only Linux KMS discovery. Fixed limits: 64 cards, 256 displays, 64
  * connectors, 32 CRTCs, 128 encoders/planes/modes and 256 union formats. NULL
  * card scans /dev/dri/card0..63; exact paths have 1..63 non-NUL bytes. Missing

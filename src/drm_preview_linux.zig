@@ -7,6 +7,7 @@ const exports = @import("frame_export.zig");
 const core = @import("core.zig");
 const format = @import("processed_format.zig");
 const A = std.heap.c_allocator;
+const Serial = @import("home/serial_worker.zig");
 pub const Owner = struct {
     device: host.Device = .{},
     width: u32,
@@ -16,6 +17,23 @@ pub const Owner = struct {
     sources: [2]?*c.zc_frame_export = @splat(null),
     last_error: c_int = 0,
     current_color: ?c.zc_color_space = null,
+    executor: ?Serial.Worker = null,
+    capacity: u32 = 0,
+    live_jobs: u32 = 0,
+    retiring: bool = false,
+    rejected: u64 = 0,
+    cache_lock: std.Thread.Mutex = .{},
+    cache: c.zc_drm_preview_state = std.mem.zeroes(c.zc_drm_preview_state),
+    fn busy(self: *Owner) bool {
+        if (self.executor) |*worker| return (worker.snapshot() catch return true).outstanding != 0;
+        return false;
+    }
+    fn publishState(self: *Owner) void {
+        const value = liveState(self);
+        self.cache_lock.lock();
+        defer self.cache_lock.unlock();
+        self.cache = value;
+    }
     fn geometry(self: *Owner, view: *const c.zc_preview_view, color: ?*const c.zc_color_space) !host.Geometry {
         if (view.flags & 8 != 0 or view.overlay_orientation != 1) return error.Unsupported;
         if (@import("preview_view.zig").zc_preview_check_view(self.width, self.height, view) != c.ZC_OK) return error.InvalidGeometry;
@@ -143,21 +161,32 @@ pub fn open(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview) c_int {
 }
 pub fn state(p: *c.zc_preview, out: *c.zc_drm_preview_state) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
-    out.* = std.mem.zeroes(c.zc_drm_preview_state);
-    out.struct_size = @sizeOf(c.zc_drm_preview_state);
-    for (owner.sources) |source| out.retained_frames += @intFromBool(source != null);
-    out.uncertain = @intFromBool(owner.device.gate.uncertain);
-    out.poisoned = @intFromBool(owner.device.poisoned);
-    out.device_closed = @intFromBool(owner.device.closed);
-    out.last_error = owner.last_error;
-    out.last_error_number = owner.device.driver.last_errno;
-    out.connector_id = owner.device.connector;
-    out.plane_id = owner.device.plane;
-    out.crtc_id = owner.device.crtc;
+    if (owner.executor != null) {
+        owner.cache_lock.lock();
+        defer owner.cache_lock.unlock();
+        out.* = owner.cache;
+    } else out.* = liveState(owner);
     return c.ZC_OK;
+}
+fn liveState(owner: *Owner) c.zc_drm_preview_state {
+    var value = std.mem.zeroes(c.zc_drm_preview_state);
+    value.struct_size = @sizeOf(c.zc_drm_preview_state);
+    for (owner.sources) |source| value.retained_frames += @intFromBool(source != null);
+    value.uncertain = @intFromBool(owner.device.gate.uncertain);
+    value.poisoned = @intFromBool(owner.device.poisoned);
+    value.device_closed = @intFromBool(owner.device.closed);
+    value.last_error = owner.last_error;
+    value.last_error_number = owner.device.driver.last_errno;
+    value.connector_id = owner.device.connector;
+    value.plane_id = owner.device.plane;
+    value.crtc_id = owner.device.crtc;
+    return value;
 }
 pub fn show(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.busy()) return c.ZC_BUSY;
+    if (owner.retiring) return c.ZC_STATE;
+    defer owner.publishState();
     if (stream != c.ZC_MAIN and stream != c.ZC_LORES) return c.ZC_UNSUPPORTED;
     var info: c.zc_info = undefined;
     const inf = core.zc_get_info(camera, &info);
@@ -196,6 +225,11 @@ fn presentOwned(owner: *Owner, slot: usize, source: *c.zc_frame_export) c_int {
 }
 pub fn background(p: *c.zc_preview) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.busy()) return c.ZC_BUSY;
+    defer owner.publishState();
+    return backgroundOwned(owner);
+}
+fn backgroundOwned(owner: *Owner) c_int {
     if (owner.device.closed) return c.ZC_STATE;
     owner.device.detach() catch |err| {
         owner.last_error = status(err);
@@ -205,6 +239,12 @@ pub fn background(p: *c.zc_preview) c_int {
 }
 pub fn setView(p: *c.zc_preview, view: *const c.zc_preview_view) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.busy()) return c.ZC_BUSY;
+    if (owner.retiring) return c.ZC_STATE;
+    defer owner.publishState();
+    return setViewOwned(owner, view);
+}
+fn setViewOwned(owner: *Owner, view: *const c.zc_preview_view) c_int {
     if (owner.device.closed) return c.ZC_STATE;
     // Before first YUV frame, validate geometry/rotation without inventing a color
     // description; actual matrix/range admission happens on the first source.
@@ -227,11 +267,19 @@ pub fn setView(p: *c.zc_preview, view: *const c.zc_preview_view) c_int {
 }
 pub fn close(p: *c.zc_preview) c_int {
     const owner = find(p) orelse return c.ZC_UNSUPPORTED;
-    if (owner.device.closed) {
-        remove(owner);
-        A.destroy(owner);
-        return c.ZC_OK;
+    if (owner.busy() or owner.live_jobs != 0) return c.ZC_BUSY;
+    const result = closeResources(owner);
+    if (result != c.ZC_OK) {
+        owner.publishState();
+        return result;
     }
+    if (owner.executor) |*worker| worker.deinit() catch return c.ZC_STATE;
+    remove(owner);
+    A.destroy(owner);
+    return c.ZC_OK;
+}
+fn closeResources(owner: *Owner) c_int {
+    if (owner.device.closed) return c.ZC_OK;
     owner.device.detach() catch |err| {
         owner.last_error = status(err);
         return owner.last_error;
@@ -244,7 +292,198 @@ pub fn close(p: *c.zc_preview) c_int {
         owner.last_error = result;
         return result;
     } // retained acknowledgement owner
-    remove(owner);
-    A.destroy(owner);
+    return c.ZC_OK;
+}
+
+const Jobs = @import("home/owned_admission.zig").Registry(32);
+var job_admission: Jobs = .{ .max_bytes = 32, .max_items = 32 };
+var job_lock: std.Thread.Mutex = .{};
+const Kind = enum { frame, fence, background, view, close_device };
+const Job = struct {
+    owner: *Owner,
+    kind: Kind,
+    ticket: u64 = 0,
+    reservation: Jobs.Ticket,
+    source: ?*c.zc_frame_export = null,
+    view: c.zc_preview_view = undefined,
+    mutex: std.Thread.Mutex = .{},
+    started: bool = false,
+    cancel_requested: bool = false,
+    code: c_int = c.ZC_TIMEOUT,
+    fn execute(context: *anyopaque) void {
+        const self: *Job = @ptrCast(@alignCast(context));
+        self.mutex.lock();
+        self.started = true;
+        const cancelled = self.cancel_requested;
+        self.mutex.unlock();
+        var code: c_int = if (cancelled) c.ZC_CANCELLED else switch (self.kind) {
+            .frame => self.present(),
+            .fence => c.ZC_OK,
+            .background => backgroundOwned(self.owner),
+            .view => setViewOwned(self.owner, &self.view),
+            .close_device => closeResources(self.owner),
+        };
+        if (self.source) |source| {
+            self.source = null;
+            const cleanup = exports.zc_frame_export_close(source);
+            if (cleanup != c.ZC_OK) {
+                code = cleanup;
+                self.owner.device.poisoned = true;
+            }
+        }
+        if (code != c.ZC_OK and code != c.ZC_CANCELLED) self.owner.last_error = code;
+        self.owner.publishState();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.code = code;
+    }
+    fn present(self: *Job) c_int {
+        const slot = self.owner.device.freeSlot() catch |err| return status(err);
+        const source = self.source.?;
+        self.source = null;
+        self.owner.sources[slot] = source;
+        const result = presentOwned(self.owner, slot, source);
+        const cleanup = self.owner.reap();
+        return if (cleanup != c.ZC_OK) cleanup else result;
+    }
+};
+fn castJob(p: *c.zc_drm_preview_job) *Job {
+    return @ptrCast(@alignCast(p));
+}
+fn releaseJob(self: *Job) void {
+    job_lock.lock();
+    job_admission.release(self.reservation) catch unreachable;
+    job_lock.unlock();
+    A.destroy(self);
+}
+pub fn enableAsync(p: *c.zc_preview, capacity: u32) c_int {
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (capacity == 0 or capacity > 8) return c.ZC_INVALID;
+    if (owner.executor != null or owner.device.closed or owner.retiring) return c.ZC_STATE;
+    const worker = Serial.Worker.init(A, capacity) catch return c.ZC_NOMEM;
+    owner.publishState();
+    owner.capacity = capacity;
+    owner.executor = worker;
+    return c.ZC_OK;
+}
+pub fn queueState(p: *c.zc_preview, out: *c.zc_drm_preview_queue_state) c_int {
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    const worker = if (owner.executor) |*worker| worker else return c.ZC_STATE;
+    const value = worker.snapshot() catch return c.ZC_STATE;
+    out.* = .{ .struct_size = @sizeOf(c.zc_drm_preview_queue_state), .capacity = owner.capacity, .outstanding = @intCast(value.outstanding), .queued = @intCast(value.queued), .active = @intFromBool(value.active), .live_jobs = owner.live_jobs, .retiring = @intFromBool(owner.retiring), .reserved = 0, .issued = value.issued, .completed = value.completed, .rejected = value.rejected +| owner.rejected };
+    return c.ZC_OK;
+}
+fn canSubmit(owner: *Owner, kind: Kind) c_int {
+    const worker = if (owner.executor) |*worker| worker else return c.ZC_STATE;
+    if (owner.retiring and kind != .close_device) return c.ZC_STATE;
+    const current = worker.snapshot() catch return c.ZC_STATE;
+    if (owner.retiring and (current.outstanding != 0 or owner.live_jobs != 0)) return c.ZC_BUSY;
+    if (current.outstanding >= owner.capacity) return c.ZC_BUSY;
+    return c.ZC_OK;
+}
+fn allocateJob(owner: *Owner, kind: Kind, out: *?*Job) c_int {
+    out.* = null;
+    const code = canSubmit(owner, kind);
+    if (code != c.ZC_OK) {
+        owner.rejected +|= 1;
+        return code;
+    }
+    job_lock.lock();
+    const reservation = job_admission.reserve(1) catch {
+        job_lock.unlock();
+        owner.rejected +|= 1;
+        return c.ZC_BUSY;
+    };
+    job_lock.unlock();
+    const value = A.create(Job) catch {
+        job_lock.lock();
+        job_admission.release(reservation) catch unreachable;
+        job_lock.unlock();
+        return c.ZC_NOMEM;
+    };
+    value.* = .{ .owner = owner, .kind = kind, .reservation = reservation };
+    out.* = value;
+    return c.ZC_OK;
+}
+fn submitJob(self: *Job, out: *?*c.zc_drm_preview_job) c_int {
+    const owner = self.owner;
+    self.ticket = owner.executor.?.submit(.{ .function = Job.execute, .context = self }) catch |err| {
+        var code: c_int = if (err == error.BufferFull) c.ZC_BUSY else c.ZC_STATE;
+        if (self.source) |source| {
+            const cleanup = exports.zc_frame_export_close(source);
+            if (cleanup != c.ZC_OK) code = cleanup;
+        }
+        releaseJob(self);
+        return code;
+    };
+    owner.live_jobs += 1;
+    if (self.kind == .close_device) owner.retiring = true;
+    out.* = @ptrCast(self);
+    return c.ZC_OK;
+}
+pub fn showAsync(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    if (stream != c.ZC_MAIN and stream != c.ZC_LORES) return c.ZC_UNSUPPORTED;
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    var info: c.zc_info = undefined;
+    const rc = core.zc_get_info(camera, &info);
+    if (rc != c.ZC_OK) return rc;
+    if (info.buffer_count < 2) return c.ZC_UNSUPPORTED;
+    var allocated: ?*Job = null;
+    const created = allocateJob(owner, .frame, &allocated);
+    if (created != c.ZC_OK) return created;
+    const self = allocated.?;
+    const acquired = exports.zc_frame_export_open(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, &self.source);
+    if (acquired != c.ZC_OK) {
+        releaseJob(self);
+        return acquired;
+    }
+    return submitJob(self, out);
+}
+pub fn commandAsync(p: *c.zc_preview, command: u32, input: ?*const anyopaque, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    if (command > 3 or ((command == 2) != (input != null))) return c.ZC_INVALID;
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    const kind: Kind = switch (command) {
+        0 => .fence,
+        1 => .background,
+        2 => .view,
+        3 => .close_device,
+        else => unreachable,
+    };
+    var view: c.zc_preview_view = undefined;
+    if (input) |raw| {
+        view = @as(*align(1) const c.zc_preview_view, @ptrCast(raw)).*;
+        const code = @import("preview_view.zig").zc_preview_check_view(owner.width, owner.height, &view);
+        if (code != c.ZC_OK) return code;
+    }
+    var allocated: ?*Job = null;
+    const created = allocateJob(owner, kind, &allocated);
+    if (created != c.ZC_OK) return created;
+    if (input != null) allocated.?.view = view;
+    return submitJob(allocated.?, out);
+}
+pub fn finishJob(p: *c.zc_drm_preview_job, out: *i32) c_int {
+    const self = castJob(p);
+    out.* = c.ZC_TIMEOUT;
+    if (!(self.owner.executor.?.finished(self.ticket) catch return c.ZC_STATE)) return c.ZC_TIMEOUT;
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    out.* = self.code;
+    return c.ZC_OK;
+}
+pub fn cancelJob(p: *c.zc_drm_preview_job) c_int {
+    const self = castJob(p);
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    if (self.started) return c.ZC_BUSY;
+    self.cancel_requested = true;
+    return c.ZC_OK;
+}
+pub fn closeJob(p: *c.zc_drm_preview_job) c_int {
+    const self = castJob(p);
+    if (!(self.owner.executor.?.finished(self.ticket) catch return c.ZC_STATE)) return c.ZC_BUSY;
+    self.owner.live_jobs -= 1;
+    releaseJob(self);
     return c.ZC_OK;
 }

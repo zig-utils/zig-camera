@@ -11,19 +11,29 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <pthread.h>
+#include <assert.h>
 #include <drm.h>
 #include <drm_mode.h>
 static _Atomic int owned=-1;
 static int scenario;
+static pthread_mutex_t peer_mutex=PTHREAD_MUTEX_INITIALIZER;
 static uint32_t opened,closed,queries,unexpected,flag_errors,resource_calls;
 static int ids(uint64_t,uint32_t,uint32_t *,const uint32_t *,uint32_t);
+static int fixture_open(int,mode_t);
 #include "drm_preview_peer.h"
-void zkms_test_scenario(int value) { scenario=value;opened=closed=queries=unexpected=flag_errors=resource_calls=0;preview_reset(); }
-void zkms_test_counts(uint32_t *out) { out[0]=opened;out[1]=closed;out[2]=queries;out[3]=unexpected;out[4]=flag_errors; }
+void zkms_test_scenario(int value) { pthread_mutex_lock(&peer_mutex);assert(atomic_load(&owned)==-1);scenario=value;opened=closed=queries=unexpected=flag_errors=resource_calls=0;preview_reset();pthread_mutex_unlock(&peer_mutex); }
+void zkms_test_counts(uint32_t *out) { pthread_mutex_lock(&peer_mutex);out[0]=opened;out[1]=closed;out[2]=queries;out[3]=unexpected;out[4]=flag_errors;pthread_mutex_unlock(&peer_mutex); }
 int open(const char *path,int flags,...) {
     mode_t mode=0;
     if((flags&O_CREAT)||((flags&O_TMPFILE)==O_TMPFILE)){va_list ap;va_start(ap,flags);mode=va_arg(ap,mode_t);va_end(ap);}
     if(strcmp(path,"/dev/zig-camera-kms-fixture"))return (int)syscall(SYS_openat,AT_FDCWD,path,flags,mode);
+    pthread_mutex_lock(&peer_mutex);
+    const int fd=fixture_open(flags,mode);
+    pthread_mutex_unlock(&peer_mutex);
+    return fd;
+}
+static int fixture_open(int flags,mode_t mode) {
     if((flags&O_ACCMODE)!=(scenario>=10?O_RDWR:O_RDONLY) || !(flags&O_CLOEXEC) || !(flags&O_NONBLOCK)){flag_errors++;errno=EPERM;return -1;}
     /* Completion events travel through an actual readable FD. Some hosts bind
      * read/poll themselves, so interposing those functions is not a sound peer. */
@@ -37,6 +47,8 @@ int open(const char *path,int flags,...) {
     opened++;return fd;
 }
 int close(int fd) {
+    if(fd<0 || atomic_load(&owned)!=fd)return (int)syscall(SYS_close,fd);
+    pthread_mutex_lock(&peer_mutex);
     int expected=fd;
     if(fd>=0 && atomic_compare_exchange_strong(&owned,&expected,-1)){
         closed++;
@@ -44,20 +56,19 @@ int close(int fd) {
             int pending=0;
             if(syscall(SYS_ioctl,fd,FIONREAD,&pending)<0 || pending || plane_values[0] || (image_ever&&!retired_proof))peer_bad(__func__,__LINE__);
             if(event_writer>=0){(void)syscall(SYS_close,event_writer);event_writer=-1;}
+            held_valid=0; /* A proved detach supersedes any withheld old event. */
         }
-        if(preview_fault==16){preview_fault=0;(void)syscall(SYS_close,fd);errno=EIO;return -1;}
+        if(preview_fault==16){preview_fault=0;(void)syscall(SYS_close,fd);pthread_mutex_unlock(&peer_mutex);errno=EIO;return -1;}
     }
-    return (int)syscall(SYS_close,fd);
+    const int result=(int)syscall(SYS_close,fd);
+    pthread_mutex_unlock(&peer_mutex);
+    return result;
 }
 static int ids(uint64_t pointer,uint32_t capacity,uint32_t *count,const uint32_t *values,uint32_t length){
     *count=length;if(capacity<length)return 0;
     memcpy((void *)(uintptr_t)pointer,values,length*sizeof(*values));return 0;
 }
-int ioctl(int fd,unsigned long request,...) {
-    void *arg=NULL;
-    if(request!=FIOCLEX && request!=FIONCLEX){va_list ap;va_start(ap,request);arg=va_arg(ap,void *);va_end(ap);}
-    const int current=atomic_load(&owned);
-    if(current<0 || fd!=current)return (int)syscall(SYS_ioctl,fd,request,arg);
+static int fixture_ioctl(unsigned long request,void *arg) {
     queries++;
     const int preview=preview_ioctl(request,arg);if(preview!=-2)return preview;
     if(request==DRM_IOCTL_SET_CLIENT_CAP){
@@ -93,4 +104,15 @@ int ioctl(int fd,unsigned long request,...) {
         return 0;
     }
     unexpected++;errno=EPERM;return -1;
+}
+
+int ioctl(int fd,unsigned long request,...) {
+    void *arg=NULL;
+    if(request!=FIOCLEX && request!=FIONCLEX){va_list ap;va_start(ap,request);arg=va_arg(ap,void *);va_end(ap);}
+    const int current=atomic_load(&owned);
+    if(current<0 || fd!=current)return (int)syscall(SYS_ioctl,fd,request,arg);
+    pthread_mutex_lock(&peer_mutex);
+    const int result=fixture_ioctl(request,arg);
+    pthread_mutex_unlock(&peer_mutex);
+    return result;
 }

@@ -2042,3 +2042,19 @@ conditional namespace export is insufficient. Public-root regressions now check
 both compiler versions/modes, and pinned native tests check the explicit entry.
 Camera KMS and process matrices pin this revision; vendored KMS implementation
 bytes remain identical to 1ab0d4f3 and the standalone host to 22c9d6786.
+
+## 0.110 native asynchronous DRM jobs
+
+Inspected Home e6d336c643ec8a4e8bcd16dadf7f5e526f638e2e, including video core
+ring buffers, async executors and perf/threading.zig. The historical perf pool
+has stack-local startup addresses, separated empty/wait predicates and a queue-
+only drain; its old core import is absent. It is not reused as a working backend.
+The generic ring buffer also lacks accepted-work close and cleanup fences.
+
+Home 10203a0bd0beb877fa64d2eff6e7155fbab7b663 adds an explicit native serial
+executor with stable allocated state, active-inclusive capacity, condition/
+predicate serialization, exact cleanup prefixes, draining joined close and
+self-join/wait rejection. It reuses the existing ownership registry. Camera
+vendors the implementation with only its owned_admission import flattened.
+The DRM owner keeps GPU/source retirement independent from worker completion;
+a finished callback does not release current scanout. See drm-async.md.

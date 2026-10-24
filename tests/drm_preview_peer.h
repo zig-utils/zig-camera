@@ -6,6 +6,8 @@ static int preview_fault;
 static uint64_t plane_values[15];
 static uint32_t fbs[8],fb_count,next_fb,imports,gem_closes,commits,test_commits,detaches,event_reads;
 static int event_writer=-1,retired_proof,image_ever;
+static struct drm_event_vblank held_event;
+static int held_valid;
 static void peer_bad(const char *operation,int line){
     unexpected++;
     fprintf(stderr,"KMS peer rejected %s at line %d (fb=%llu, resources=%u, fault=%d)\n",operation,line,(unsigned long long)plane_values[0],fb_count,preview_fault);
@@ -14,11 +16,19 @@ static const char *property_names[]={"FB_ID","CRTC_ID","SRC_X","SRC_Y","SRC_W","
 static void preview_reset(void){
     memset(plane_values,0,sizeof(plane_values));plane_values[10]=1;plane_values[12]=1;plane_values[14]=32768;
     memset(fbs,0,sizeof(fbs));fb_count=0;next_fb=600;imports=gem_closes=commits=test_commits=detaches=event_reads=0;
-    retired_proof=image_ever=preview_fault=0;
+    retired_proof=image_ever=preview_fault=held_valid=0;
 }
-void zkms_test_fault(int value){preview_fault=value;}
-void zkms_test_preview_counts(uint32_t *out){out[0]=imports;out[1]=gem_closes;out[2]=commits;out[3]=test_commits;out[4]=detaches;out[5]=event_reads;out[6]=fb_count;out[7]=plane_values[0];}
-void zkms_test_properties(uint64_t *out){memcpy(out,plane_values,sizeof(plane_values));}
+void zkms_test_fault(int value){
+    pthread_mutex_lock(&peer_mutex);
+    preview_fault=value;
+    if(!value&&held_valid){
+        if(syscall(SYS_write,event_writer,&held_event,sizeof(held_event))!=(ssize_t)sizeof(held_event))peer_bad(__func__,__LINE__);
+        else{held_valid=0;event_reads++;}
+    }
+    pthread_mutex_unlock(&peer_mutex);
+}
+void zkms_test_preview_counts(uint32_t *out){pthread_mutex_lock(&peer_mutex);out[0]=imports;out[1]=gem_closes;out[2]=commits;out[3]=test_commits;out[4]=detaches;out[5]=event_reads;out[6]=fb_count;out[7]=plane_values[0];pthread_mutex_unlock(&peer_mutex);}
+void zkms_test_properties(uint64_t *out){pthread_mutex_lock(&peer_mutex);memcpy(out,plane_values,sizeof(plane_values));pthread_mutex_unlock(&peer_mutex);}
 static int preview_ioctl(unsigned long request,void *arg){
     if(scenario<10)return -2;
     if(request==DRM_IOCTL_SET_MASTER)return 0;
@@ -92,6 +102,10 @@ static int preview_ioctl(unsigned long request,void *arg){
         if(preview_fault==12 || (preview_fault==11&&!detach))return 0;
         struct drm_event_vblank event;memset(&event,0,sizeof(event));
         event.base.type=DRM_EVENT_FLIP_COMPLETE;event.base.length=sizeof(event);event.user_data=v->user_data;event.crtc_id=10;
+        if(preview_fault==17&&!detach){
+            if(held_valid){peer_bad(__func__,__LINE__);errno=EOVERFLOW;return -1;}
+            held_event=event;held_valid=1;return 0;
+        }
         if(syscall(SYS_write,event_writer,&event,sizeof(event))!=(ssize_t)sizeof(event)){peer_bad(__func__,__LINE__);errno=EIO;return -1;}
         event_reads++; /* Events emitted to the real FD, rather than intercepted reads. */
         if(detach)retired_proof=1;

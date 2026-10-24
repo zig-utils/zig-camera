@@ -24,6 +24,40 @@ pub export fn zc_drm_preview_state_get(p: *c.zc_preview, out: *c.zc_drm_preview_
     if (comptime available) return impl.state(p, out);
     return c.ZC_UNSUPPORTED;
 }
+pub export fn zc_drm_preview_enable_async(p: *c.zc_preview, capacity: u32) c_int {
+    if (capacity == 0 or capacity > 8) return c.ZC_INVALID;
+    if (comptime available) return impl.enableAsync(p, capacity);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_queue_state_get(p: *c.zc_preview, out: *c.zc_drm_preview_queue_state) c_int {
+    out.* = @import("std").mem.zeroes(c.zc_drm_preview_queue_state);
+    if (comptime available) return impl.queueState(p, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_show_async(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    if (comptime available) return impl.showAsync(p, camera, token, stream, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_command_async(p: *c.zc_preview, command: u32, view: ?*const anyopaque, out: *?*c.zc_drm_preview_job) c_int {
+    out.* = null;
+    if (command > 3 or ((command == 2) != (view != null))) return c.ZC_INVALID;
+    if (comptime available) return impl.commandAsync(p, command, view, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_job_finish(p: *c.zc_drm_preview_job, out: *i32) c_int {
+    out.* = c.ZC_TIMEOUT;
+    if (comptime available) return impl.finishJob(p, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_job_cancel(p: *c.zc_drm_preview_job) c_int {
+    if (comptime available) return impl.cancelJob(p);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_job_close(p: *c.zc_drm_preview_job) c_int {
+    if (comptime available) return impl.closeJob(p);
+    return c.ZC_UNSUPPORTED;
+}
 pub fn close(p: *c.zc_preview) c_int {
     if (comptime available) return impl.close(p);
     return c.ZC_UNSUPPORTED;

@@ -745,3 +745,7 @@ src/home/process_output_host.zig includes exec-status retirement ordering from
 home-lang/home packages/video/src/io/process_output_host.zig at
 22c9d6786317fcb476ac2e53a53163a9c7a06dc0, with only the wire import flattened,
 under the MIT license above.
+
+src/home/serial_worker.zig is copied from home-lang/home packages/video/src/io
+at 10203a0bd0beb877fa64d2eff6e7155fbab7b663 with only its owned_admission import
+flattened, under the MIT license above.
