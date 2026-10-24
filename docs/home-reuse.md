@@ -2034,3 +2034,11 @@ exec status, drains the pipe even without that readiness bit and refuses to
 finish while exec status is unresolved. Camera reuses the shared host with only
 the established flattened wire import. Standalone host acceptance and repeated
 failed-exec checks retain exact ENOENT and joined process/channel retirement.
+
+Home e6d336c643ec8a4e8bcd16dadf7f5e526f638e2e keeps portable KMS policy in video.zig
+and moves native C-translation hosts to an explicit src/kms_host.zig entry point.
+Development Zig parses even unused conditional imports and rejects @cImport; a
+conditional namespace export is insufficient. Public-root regressions now check
+both compiler versions/modes, and pinned native tests check the explicit entry.
+Camera KMS and process matrices pin this revision; vendored KMS implementation
+bytes remain identical to 1ab0d4f3 and the standalone host to 22c9d6786.

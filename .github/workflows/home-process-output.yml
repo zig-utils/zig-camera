@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 22c9d6786317fcb476ac2e53a53163a9c7a06dc0
+          ref: e6d336c643ec8a4e8bcd16dadf7f5e526f638e2e
           path: .home-process-upstream
           sparse-checkout: packages/video
           persist-credentials: false
