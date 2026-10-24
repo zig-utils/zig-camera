@@ -3,8 +3,9 @@
 Version 0.116 adds Linux imports through CaptureAllocator.importBuffers in
 Bun/Zig and zc_capture_allocator_open_imported/zc_capture_allocator_import in C.
 These explicitly provision storage for exact negotiated configurations. They
-extend persistent allocator ownership; automatic allocator/factory callbacks,
-multi-object frames and GPU-specific preparation remain future work.
+extend persistent allocator ownership. Version 0.117 adds
+[automatic negotiated-layout factories](capture-factories.md); multi-object
+frames and GPU-specific preparation remain future work.
 
 Query Camera.captureLayout() on a configured camera before capture/start. Its
 owned immutable snapshot contains the full camera ID and ordered stream width,

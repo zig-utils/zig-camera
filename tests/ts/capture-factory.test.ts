@@ -170,8 +170,10 @@ linux('same-layout overlapping cameras allocate independent bounded sets while o
   const allocator = new CaptureAllocator({ simulate: true, maxEntries: 2, factory: context => { calls++; return files(context) } })
   let first: Camera | undefined, second: Camera | undefined
   try {
-    first = await Camera.open({ ...base, allocator }); first.start()
-    const frame = first.acquire(), map = frame.mapStream('main'); frame.release()
+    first = await Camera.open({ ...base, allocator, writable: true }); first.start()
+    using frame = first.acquire()
+    using map = frame.mapStream('main')
+    frame.release()
     try {
       second = await Camera.open({ ...base, allocator })
       expect(allocator.state.borrowed).toBe(2)
