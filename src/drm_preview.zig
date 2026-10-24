@@ -13,15 +13,27 @@ pub export fn zc_default_drm_preview_config(out: *c.zc_drm_preview_config) void 
     out.timeout_ms = 1000;
 }
 pub export fn zc_preview_open_drm(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview) c_int {
+    return openConfigured(cfg, out, false);
+}
+pub export fn zc_preview_open_drm_rgb16(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview) c_int {
+    return openConfigured(cfg, out, true);
+}
+fn openConfigured(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview, copy_rgb16: bool) c_int {
     out.* = null;
+    if (copy_rgb16 and cfg.format != c.ZC_RGB48 and cfg.format != c.ZC_BGR48) return c.ZC_INVALID;
     if (cfg.struct_size != @sizeOf(c.zc_drm_preview_config) or cfg.reserved != 0 or cfg.width == 0 or cfg.height == 0 or cfg.width > 16384 or cfg.height > 16384 or cfg.timeout_ms == 0 or cfg.timeout_ms > 60000) return c.ZC_INVALID;
     if (!@import("processed_format.zig").valid(cfg.format) or @import("std").mem.indexOfScalar(u8, &cfg.card, 0) == null) return c.ZC_INVALID;
-    if (comptime available) return impl.open(cfg, out);
+    if (comptime available) return impl.open(cfg, out, copy_rgb16);
     return c.ZC_UNSUPPORTED;
 }
 pub export fn zc_drm_preview_state_get(p: *c.zc_preview, out: *c.zc_drm_preview_state) c_int {
     out.* = @import("std").mem.zeroes(c.zc_drm_preview_state);
     if (comptime available) return impl.state(p, out);
+    return c.ZC_UNSUPPORTED;
+}
+pub export fn zc_drm_preview_storage_state_get(p: *c.zc_preview, out: *c.zc_drm_preview_storage_state) c_int {
+    out.* = @import("std").mem.zeroes(c.zc_drm_preview_storage_state);
+    if (comptime available) return impl.storageState(p, out);
     return c.ZC_UNSUPPORTED;
 }
 pub export fn zc_drm_preview_enable_async(p: *c.zc_preview, capacity: u32) c_int {

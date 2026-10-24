@@ -12,9 +12,11 @@ static void peer_bad(const char *operation,int line){
     unexpected++;
     fprintf(stderr,"KMS peer rejected %s at line %d (fb=%llu, resources=%u, fault=%d)\n",operation,line,(unsigned long long)plane_values[0],fb_count,preview_fault);
 }
+#include "drm_cpu_peer.h"
 static const char *property_names[]={"FB_ID","CRTC_ID","SRC_X","SRC_Y","SRC_W","SRC_H","CRTC_X","CRTC_Y","CRTC_W","CRTC_H","rotation","COLOR_ENCODING","COLOR_RANGE","type","alpha"};
 static void preview_reset(void){
     memset(plane_values,0,sizeof(plane_values));plane_values[10]=1;plane_values[12]=1;plane_values[14]=32768;
+    cpu_reset();
     memset(fbs,0,sizeof(fbs));fb_count=0;next_fb=600;imports=gem_closes=commits=test_commits=detaches=event_reads=0;
     retired_proof=image_ever=preview_fault=held_valid=0;
 }
@@ -31,6 +33,7 @@ void zkms_test_preview_counts(uint32_t *out){pthread_mutex_lock(&peer_mutex);out
 void zkms_test_properties(uint64_t *out){pthread_mutex_lock(&peer_mutex);memcpy(out,plane_values,sizeof(plane_values));pthread_mutex_unlock(&peer_mutex);}
 static int preview_ioctl(unsigned long request,void *arg){
     if(scenario<10)return -2;
+    const int cpu=cpu_driver_ioctl(request,arg);if(cpu!=-2)return cpu;
     if(request==DRM_IOCTL_SET_MASTER)return 0;
     if(request==DRM_IOCTL_MODE_GETPLANE){
         struct drm_mode_get_plane *v=arg;
@@ -66,14 +69,15 @@ static int preview_ioctl(unsigned long request,void *arg){
         imports++;v->handle=500;return 0; /* Deliberately aliases across imports. */
     }
     if(request==DRM_IOCTL_MODE_ADDFB2){
-        struct drm_mode_fb_cmd2 *v=arg;if(!v->width||!v->height||v->handles[0]!=500||fb_count>=8){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
+        struct drm_mode_fb_cmd2 *v=arg;if(!v->width||!v->height||(v->handles[0]!=500&&cpu_index(v->handles[0])<0)||fb_count>=8){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
+        if(cpu_index(v->handles[0])>=0){if(preview_fault==28){preview_fault=0;errno=EIO;return -1;}const struct cpu_buffer *b=&cpu_buffers[cpu_index(v->handles[0])];if(v->pixel_format!=0x34325258||v->pitches[0]!=b->pitch||v->width!=b->width||v->height!=b->height){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}cpu_fb_handles[fb_count]=v->handles[0];}
         v->fb_id=++next_fb;fbs[fb_count++]=v->fb_id;return 0;
     }
     if(request==DRM_IOCTL_MODE_RMFB){
         const uint32_t id=*(uint32_t *)arg;
         if(preview_fault==15){preview_fault=0;errno=EIO;return -1;}
         if(id==plane_values[0]){peer_bad(__func__,__LINE__);errno=EBUSY;return -1;}
-        for(unsigned i=0;i<fb_count;i++)if(fbs[i]==id){fbs[i]=fbs[--fb_count];return 0;}
+        for(unsigned i=0;i<fb_count;i++)if(fbs[i]==id){--fb_count;fbs[i]=fbs[fb_count];cpu_fb_handles[i]=cpu_fb_handles[fb_count];cpu_fb_handles[fb_count]=0;return 0;}
         peer_bad(__func__,__LINE__);errno=ENOENT;return -1;
     }
     if(request==DRM_IOCTL_GEM_CLOSE){
@@ -88,6 +92,7 @@ static int preview_ioctl(unsigned long request,void *arg){
         const uint64_t *values=(void *)(uintptr_t)v->prop_values_ptr;
         if(count>16){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}
         for(unsigned i=0;i<count;i++){if(properties[i]<100||properties[i]>=115){peer_bad(__func__,__LINE__);errno=EINVAL;return -1;}next[properties[i]-100]=values[i];}
+        for(unsigned f=0;f<fb_count;f++)if(fbs[f]==next[0]&&cpu_fb_handles[f]){const int i=cpu_index(cpu_fb_handles[f]);if(i<0||cpu_buffers[i].access||!cpu_buffers[i].writes){peer_bad(__func__,__LINE__);errno=EBUSY;return -1;}}
         if(v->flags&DRM_MODE_ATOMIC_TEST_ONLY){
             test_commits++;if(preview_fault==13&&next[0]){preview_fault=0;errno=EINVAL;return -1;}return 0;
         }

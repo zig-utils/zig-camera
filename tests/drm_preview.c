@@ -5,7 +5,10 @@ int main(void) {
     _Static_assert(sizeof(zc_drm_preview_config)==96,"config ABI");
     _Static_assert(sizeof(zc_drm_preview_state)==40,"state ABI");
     _Static_assert(sizeof(zc_drm_preview_queue_state)==56,"queue state ABI");
+    _Static_assert(sizeof(zc_drm_preview_storage_state)==48,"storage ABI");
+    zc_drm_preview_storage_state storage;memset(&storage,1,sizeof(storage));
     zc_preview *invalid=(void *)1;
+    assert(zc_drm_preview_storage_state_get(invalid,&storage)==ZC_UNSUPPORTED && storage.struct_size==0);
     zc_drm_preview_job *job=(void *)1;
     assert(zc_drm_preview_enable_async(invalid,0)==ZC_INVALID);
     assert(zc_drm_preview_enable_async(invalid,9)==ZC_INVALID);
@@ -18,9 +21,12 @@ int main(void) {
     zc_preview *out=(void *)1;
     assert(zc_preview_open_drm(&cfg,&out)==ZC_INVALID && !out);
     cfg.width=8;cfg.height=6;
+    assert(zc_preview_open_drm_rgb16(&cfg,&out)==ZC_INVALID && !out);
     memset(cfg.card,'a',sizeof(cfg.card));
     assert(zc_preview_open_drm(&cfg,&out)==ZC_INVALID && !out);
     memset(cfg.card,0,sizeof(cfg.card));strcpy(cfg.card,"/dev/null");
     for(int i=0;i<10;i++)assert(zc_preview_open_drm(&cfg,&out)==ZC_UNSUPPORTED && !out);
+    cfg.format=ZC_RGB48;
+    for(int i=0;i<10;i++)assert(zc_preview_open_drm_rgb16(&cfg,&out)==ZC_UNSUPPORTED && !out);
     return 0;
 }

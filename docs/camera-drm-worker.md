@@ -17,7 +17,8 @@ await camera.stopPreviewAsync()
 
 Open and initial empty-plane view setup are synchronous. Subsequent frame,
 view, background, drain and device-close operations run on the native worker.
-The legacy `drm`, SDL and headless backends keep their existing behavior.
+RGB16/BGR16 inputs additionally support an explicit
+[driver-buffer copy policy](drm-rgb16.md). The legacy `drm`, SDL and headless backends keep their existing behavior.
 The new asynchronous Camera methods also serialize SDL/headless transitions;
 they do not move SDL calls off the Bun thread.
 

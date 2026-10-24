@@ -13,6 +13,8 @@ pub const Owner = struct {
     width: u32,
     height: u32,
     format_code: u32,
+    copy_rgb16: bool = false,
+    copied_frames: u64 = 0,
     view: c.zc_preview_view,
     sources: [2]?*c.zc_frame_export = @splat(null),
     last_error: c_int = 0,
@@ -24,15 +26,18 @@ pub const Owner = struct {
     rejected: u64 = 0,
     cache_lock: std.Thread.Mutex = .{},
     cache: c.zc_drm_preview_state = std.mem.zeroes(c.zc_drm_preview_state),
+    storage_cache: c.zc_drm_preview_storage_state = std.mem.zeroes(c.zc_drm_preview_storage_state),
     fn busy(self: *Owner) bool {
         if (self.executor) |*worker| return (worker.snapshot() catch return true).outstanding != 0;
         return false;
     }
     fn publishState(self: *Owner) void {
         const value = liveState(self);
+        const storage = liveStorage(self);
         self.cache_lock.lock();
         defer self.cache_lock.unlock();
         self.cache = value;
+        self.storage_cache = storage;
     }
     fn geometry(self: *Owner, view: *const c.zc_preview_view, color: ?*const c.zc_color_space) !host.Geometry {
         if (view.flags & 8 != 0 or view.overlay_orientation != 1) return error.Unsupported;
@@ -65,7 +70,7 @@ pub const Owner = struct {
         var result: c_int = c.ZC_OK;
         for (0..2) |i| {
             if (self.device.gate.current == i + 1 or self.device.gate.candidate == i + 1) continue;
-            self.device.retire(i) catch |err| {
+            self.device.recycle(i) catch |err| {
                 if (result == c.ZC_OK) result = status(err);
             };
             if (self.sources[i]) |source| {
@@ -111,15 +116,15 @@ fn status(err: anyerror) c_int {
         else => c.ZC_IO,
     };
 }
-pub fn open(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview) c_int {
+pub fn open(cfg: *const c.zc_drm_preview_config, out: *?*c.zc_preview, copy_rgb16: bool) c_int {
     out.* = null;
     if (!format.valid(cfg.format)) return c.ZC_INVALID;
-    const fourcc = catalog.fourccForProcessed(format.name(cfg.format)) orelse return c.ZC_UNSUPPORTED;
+    const fourcc = if (copy_rgb16) catalog.fourcc("XR24") else catalog.fourccForProcessed(format.name(cfg.format)) orelse return c.ZC_UNSUPPORTED;
     const end = std.mem.indexOfScalar(u8, &cfg.card, 0) orelse return c.ZC_INVALID;
     const owner = A.create(Owner) catch return c.ZC_NOMEM;
     var view: c.zc_preview_view = undefined;
     @import("preview_view.zig").zc_default_preview_view(&view);
-    owner.* = .{ .width = cfg.width, .height = cfg.height, .format_code = cfg.format, .view = view };
+    owner.* = .{ .width = cfg.width, .height = cfg.height, .format_code = cfg.format, .copy_rgb16 = copy_rgb16, .view = view };
     // Reserve the owner slot before hardware preparation, without holding the
     // registry mutex across DRM calls. Public calls are externally serialized.
     mutex.lock();
@@ -194,7 +199,7 @@ pub fn show(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32) c_i
     if (info.buffer_count < 2) return c.ZC_UNSUPPORTED;
     const slot = owner.device.freeSlot() catch |err| return status(err);
     var source: ?*c.zc_frame_export = null;
-    const acquired = exports.zc_frame_export_open(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, &source);
+    const acquired = if (owner.copy_rgb16) exports.openNativeRead(camera, token, stream, &source) else exports.zc_frame_export_open(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, &source);
     if (acquired != c.ZC_OK) return acquired;
     owner.sources[slot] = source;
     const result = presentOwned(owner, slot, source.?);
@@ -207,6 +212,7 @@ fn presentOwned(owner: *Owner, slot: usize, source: *c.zc_frame_export) c_int {
     if (read != c.ZC_OK) return read;
     const input = exported.streams[0];
     if (input.width != owner.width or input.height != owner.height or !std.mem.eql(u8, std.mem.sliceTo(&input.format, 0), format.name(owner.format_code))) return c.ZC_INVALID;
+    if (owner.copy_rgb16) return presentCopied(owner, slot, source, &exported);
     var planes: [4]host.policy.Plane = undefined;
     if (input.plane_count > planes.len) return c.ZC_INVALID;
     for (exported.planes[0..input.plane_count], 0..) |plane, i| planes[i] = .{ .fd = plane.fd, .offset = plane.offset, .length = plane.length, .used = plane.bytes_used };
@@ -221,6 +227,60 @@ fn presentOwned(owner: *Owner, slot: usize, source: *c.zc_frame_export) c_int {
         return owner.last_error;
     };
     owner.current_color = exported.colors[0];
+    return c.ZC_OK;
+}
+fn presentCopied(owner: *Owner, slot: usize, source: *c.zc_frame_export, exported: *const c.zc_export_info) c_int {
+    var stream: c.zc_stream = undefined;
+    const rc = exports.nativeStream(source, &stream);
+    if (rc != c.ZC_OK) return rc;
+    const words = @import("stream_rgb.zig").wideView(stream) catch return c.ZC_INVALID;
+    const geometry = owner.geometry(&owner.view, &exported.colors[0]) catch |err| return status(err);
+    const target = owner.device.prepareCpu(slot, owner.width, owner.height) catch |err| {
+        owner.last_error = status(err);
+        return owner.last_error;
+    };
+    words.toPacked8(target.bytes, target.pitch, .bgra) catch {
+        owner.device.finishCpu(slot) catch return c.ZC_IO;
+        return c.ZC_INVALID;
+    };
+    owner.device.finishCpu(slot) catch return c.ZC_IO;
+    owner.copied_frames +|= 1;
+    // GPU scanout owns separate storage. Retire the input read fence now,
+    // before an uninterruptible flip wait, and never recycle it on DMA error.
+    owner.sources[slot] = null;
+    const cleanup = exports.zc_frame_export_close(source);
+    if (cleanup != c.ZC_OK) {
+        owner.device.poisoned = true;
+        return cleanup;
+    }
+    owner.device.present(slot, geometry) catch |err| {
+        owner.last_error = status(err);
+        return owner.last_error;
+    };
+    owner.current_color = exported.colors[0];
+    return c.ZC_OK;
+}
+fn liveStorage(owner: *Owner) c.zc_drm_preview_storage_state {
+    var value = std.mem.zeroes(c.zc_drm_preview_storage_state);
+    value.struct_size = @sizeOf(c.zc_drm_preview_storage_state);
+    value.input_format = owner.format_code;
+    value.scanout_format = if (owner.copy_rgb16) c.ZC_BGRX32 else owner.format_code;
+    value.copy_policy = @intFromBool(owner.copy_rgb16);
+    value.copied_frames = owner.copied_frames;
+    for (owner.device.slots) |slot| {
+        value.buffers += @intFromBool(slot.dumb != 0 or slot.cpu_fd >= 0 or slot.mapping != null);
+        value.cpu_active += @intFromBool(slot.cpu_access);
+        if (slot.mapping) |mapping| value.storage_bytes += mapping.len;
+    }
+    return value;
+}
+pub fn storageState(p: *c.zc_preview, out: *c.zc_drm_preview_storage_state) c_int {
+    const owner = find(p) orelse return c.ZC_UNSUPPORTED;
+    if (owner.executor != null) {
+        owner.cache_lock.lock();
+        defer owner.cache_lock.unlock();
+        out.* = owner.storage_cache;
+    } else out.* = liveStorage(owner);
     return c.ZC_OK;
 }
 pub fn background(p: *c.zc_preview) c_int {
@@ -279,7 +339,10 @@ pub fn close(p: *c.zc_preview) c_int {
     return c.ZC_OK;
 }
 fn closeResources(owner: *Owner) c_int {
-    if (owner.device.closed) return c.ZC_OK;
+    if (owner.device.closed) {
+        owner.device.finishClose() catch |err| return status(err);
+        return c.ZC_OK;
+    }
     owner.device.detach() catch |err| {
         owner.last_error = status(err);
         return owner.last_error;
@@ -433,7 +496,7 @@ pub fn showAsync(p: *c.zc_preview, camera: *c.zc_camera, token: u64, stream: u32
     const created = allocateJob(owner, .frame, &allocated);
     if (created != c.ZC_OK) return created;
     const self = allocated.?;
-    const acquired = exports.zc_frame_export_open(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, &self.source);
+    const acquired = if (owner.copy_rgb16) exports.openNativeRead(camera, token, stream, &self.source) else exports.zc_frame_export_open(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, &self.source);
     if (acquired != c.ZC_OK) {
         releaseJob(self);
         return acquired;

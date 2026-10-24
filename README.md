@@ -6,6 +6,11 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.112 adds [explicit RGB16 DRM display copies](docs/drm-rgb16.md) through
+shared Home word conversion and reusable driver-owned BGRX buffers. Async copies
+release camera inputs before waiting for the display flip, with storage telemetry
+and retryable GPU/CPU cleanup. Physical Pi acceptance remains open.
+
 Version 0.111 adds [Camera-owned native asynchronous DRM preview](docs/camera-drm-worker.md):
 explicit worker attachment, bounded display admission, async view/stream/drain/stop
 jobs and joined mode, recorder and recovery transitions. Physical Pi display

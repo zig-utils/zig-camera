@@ -24,9 +24,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: e6d336c643ec8a4e8bcd16dadf7f5e526f638e2e
+          ref: 61f16552303ad61d404d056df0849df0f173c170
           path: .home-kms-upstream
-          sparse-checkout: packages/video
+          sparse-checkout: |
+            packages/video
+            packages/image
           persist-credentials: false
       - name: Verify shared sources and portable catalog fault coverage
         shell: bash
@@ -35,7 +37,10 @@ jobs:
           for file in kms_catalog kms_discovery kms_discovery_host kms_discovery_test kms_scanout kms_scanout_host; do
             cmp ".home-kms-upstream/packages/video/src/display/$file.zig" "src/home/$file.zig"
           done
+          cmp .home-kms-upstream/packages/image/src/ops/rgb16_view.zig src/home/rgb16_view.zig
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" src/home/rgb16_view.zig
+            zig test -O "$mode" .home-kms-upstream/packages/image/src/ops/rgb16_view.zig
             zig test -lc -O "$mode" --dep video -Mroot=.home-kms-upstream/packages/video/tests/kms_exports.zig -Mvideo=.home-kms-upstream/packages/video/src/video.zig
             zig test -O "$mode" src/home/kms_scanout.zig
             zig test -O "$mode" .home-kms-upstream/packages/video/src/display/kms_scanout.zig

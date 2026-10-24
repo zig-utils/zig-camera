@@ -771,3 +771,14 @@ separate. Camera reuses the existing Home stdlib executor/KMS implementation
 and adds its application lifecycle coordination in Bun. No OS source is copied,
 modified, translated or executed. No unverified Pi register path is claimed as
 working camera/display hardware.
+
+## 0.112 CPU-converted scanout storage
+
+Re-fetched clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and rechecked
+ADR-MC3/MC5 plus framebuffer_double.home::page_flip. Kernel framebuffer addresses
+and bookkeeping do not allocate hosted Linux KMS buffers or provide dma-buf CPU
+coherency fences. The Home stdlib host therefore receives driver-owned CPU
+scanout storage and explicit word conversion, reused by camera. OS source stays
+Home; no kernel files are copied, modified, translated or executed. The OS
+hardware-plane design guides the ownership boundary and does not substitute for
+physical Pi scanout/color/performance acceptance.

@@ -11,8 +11,8 @@ import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './png-compositor'
 export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplayFormat,type DrmDiscoveryIssue,type DrmDisplayDiscovery} from './drm-discovery'
-import {openDrmPreview,readDrmPreviewState,type DrmPreviewOptions,type DrmPreviewState} from './drm-preview'
-export type {DrmPreviewOptions,DrmPreviewState} from './drm-preview'
+import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,type DrmPreviewOptions,type DrmPreviewState,type DrmPreviewStorageState} from './drm-preview'
+export type {DrmPreviewOptions,DrmPreviewState,DrmPreviewStorageState} from './drm-preview'
 export {DrmPreview,DrmPreviewCleanupError,type DrmPreviewSessionOptions} from './drm-preview-async'
 import {DrmPreview,DrmPreviewCleanupError} from './drm-preview-async'
 import {submitDrmPreviewFrame} from './drm-preview-frame'
@@ -719,6 +719,7 @@ export interface PreviewInfo extends PreviewViewOptions {
   backend: 'sdl' | 'headless' | 'drm' | 'drm-async'
   drm?:DrmPreviewOptions
   drmState?:DrmPreviewState
+  drmStorage?:DrmPreviewStorageState
   drmQueue?:DrmPreview['queueState']
   workerFrames?:Readonly<{offered:bigint;completed:bigint;skipped:bigint}>
   title: string
@@ -1929,8 +1930,8 @@ export class Camera {
         backend: this.previewConfiguration.backend,
         title: this.previewConfiguration.title,
         ...(this.previewConfiguration.drm?{drm:{...this.previewConfiguration.drm}}:{}),
-        ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle)}:{}),
-        ...(this.previewWorker&&!this.previewWorker.closed?{drmState:this.previewWorker.state,drmQueue:this.previewWorker.queueState}:{}),
+        ...(this.previewHandle&&this.previewConfiguration.backend==='drm'?{drmState:readDrmPreviewState(this.previewHandle),drmStorage:readDrmPreviewStorage(this.previewHandle)}:{}),
+        ...(this.previewWorker&&!this.previewWorker.closed?{drmState:this.previewWorker.state,drmStorage:this.previewWorker.storageState,drmQueue:this.previewWorker.queueState}:{}),
         ...(this.previewConfiguration.backend==='drm-async'?{workerFrames:Object.freeze({offered:this.previewOffered,completed:this.previewCompleted,skipped:this.previewSkipped})}:{}),
         ...(this.previewConfiguration.stream !== undefined
           ? { stream: this.previewConfiguration.stream }

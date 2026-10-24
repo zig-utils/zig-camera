@@ -47,7 +47,8 @@ static int fixture_open(int flags,mode_t mode) {
     opened++;return fd;
 }
 int close(int fd) {
-    if(fd<0 || atomic_load(&owned)!=fd)return (int)syscall(SYS_close,fd);
+    if(fd<0)return (int)syscall(SYS_close,fd);
+    if(atomic_load(&owned)!=fd){pthread_mutex_lock(&peer_mutex);int handled=0;const int result=cpu_close(fd,&handled);pthread_mutex_unlock(&peer_mutex);return handled?result:(int)syscall(SYS_close,fd);}
     pthread_mutex_lock(&peer_mutex);
     int expected=fd;
     if(fd>=0 && atomic_compare_exchange_strong(&owned,&expected,-1)){
@@ -56,6 +57,7 @@ int close(int fd) {
             int pending=0;
             if(syscall(SYS_ioctl,fd,FIONREAD,&pending)<0 || pending || plane_values[0] || (image_ever&&!retired_proof))peer_bad(__func__,__LINE__);
             if(event_writer>=0){(void)syscall(SYS_close,event_writer);event_writer=-1;}
+            cpu_card_closed();
             held_valid=0; /* A proved detach supersedes any withheld old event. */
         }
         if(preview_fault==16){preview_fault=0;(void)syscall(SYS_close,fd);pthread_mutex_unlock(&peer_mutex);errno=EIO;return -1;}
@@ -109,6 +111,7 @@ static int fixture_ioctl(unsigned long request,void *arg) {
 int ioctl(int fd,unsigned long request,...) {
     void *arg=NULL;
     if(request!=FIOCLEX && request!=FIONCLEX){va_list ap;va_start(ap,request);arg=va_arg(ap,void *);va_end(ap);}
+    pthread_mutex_lock(&peer_mutex);int cpu_handled=0;const int cpu_result=cpu_ioctl(fd,request,arg,&cpu_handled);pthread_mutex_unlock(&peer_mutex);if(cpu_handled)return cpu_result;
     const int current=atomic_load(&owned);
     if(current<0 || fd!=current)return (int)syscall(SYS_ioctl,fd,request,arg);
     pthread_mutex_lock(&peer_mutex);

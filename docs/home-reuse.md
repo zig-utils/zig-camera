@@ -2070,3 +2070,24 @@ is added. Camera's Bun FIFO serializes application transitions and pauses only
 display feed. The native source registry remains authoritative for image leases.
 No shared source change is needed for this attachment. Independent Linux peer
 checks extend the integration evidence; physical acceptance remains open.
+
+## 0.112 RGB16 display copies and driver storage
+
+Re-fetched Home 10203a0bd0beb877fa64d2eff6e7155fbab7b663. Existing rgb16_view
+already validated endian/layout words and high-byte RGB output; KMS imported
+external buffers but lacked CPU scanout allocations. Home
+a6db57d540736d93503f557187a0886b100ba6f3 adds checked RGB/BGR/RGBA/BGRA packed
+high-byte conversion and a two-slot driver-buffer pool to the shared KMS host.
+It validates driver extents, requires dumb-buffer/PRIME-export support, brackets
+mapped dma-buf writes with CPU fences, reuses only retired output storage and
+retains mappings/CPU fences for cleanup even after the private card FD is closed.
+
+Home 61f16552303ad61d404d056df0849df0f173c170 also poisons a reused driver buffer
+after a failed CPU START, preventing its return to the idle pool. Camera pins
+this revision and copies the shared RGB16 and six KMS source files verbatim. Its native
+consumer reuses read-map/catalog ownership without process-export staging FDs,
+then releases the input before waiting for scanout of the independent copy.
+Public C ABI and Bun telemetry make this precision/copy policy explicit. Pure
+helpers and the portable video root are checked on pinned/development Zig;
+Linux native ownership/pixel/fault acceptance uses the independent C peer.
+This does not establish physical Pi display support, sensor FPS or a speedup.

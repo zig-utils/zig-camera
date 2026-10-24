@@ -1,7 +1,7 @@
 import type {Frame} from './index'
 import {native as n,storage,view,ptr,outPointer,handle,check,cameraError,type Pointer} from './ffi'
 import {BunJob,snapshotJobOptions,type JobOptions} from './jobs'
-import {openDrmPreview,readDrmPreviewState,snapshotDrmPreview,type DrmPreviewOptions} from './drm-preview'
+import {openDrmPreview,readDrmPreviewState,readDrmPreviewStorage,snapshotDrmPreview,type DrmPreviewOptions} from './drm-preview'
 import {preparePreviewView,validatePreviewView,type PreviewViewOptions} from './preview-view'
 import {processedFormatCode,type ProcessedFormat} from './processed-format'
 import {submitDrmPreviewFrame} from './drm-preview-frame'
@@ -55,6 +55,7 @@ export class DrmPreview implements AsyncDisposable {
   get closed(){return !this.handle}
   get pendingJobs(){return this.nativeJobs.size}
   get state(){if(!this.handle)throw cameraError(-2,'closed DRM preview');return readDrmPreviewState(this.handle)}
+  get storageState(){if(!this.handle)throw cameraError(-2,'closed DRM preview');return readDrmPreviewStorage(this.handle)}
   get queueState(){
     if(!this.handle)throw cameraError(-2,'closed DRM preview')
     const data=storage(56),d=view(data);check(n.zc_drm_preview_queue_state_get(this.handle,ptr(data)))

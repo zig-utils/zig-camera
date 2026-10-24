@@ -17,7 +17,8 @@ display mode. This targets a console display with an available plane; desktop
 compositor/DRM leases and coordination between independent master FDs remain open.
 
 Supported processed inputs are RGB/BGR24, RGBX/BGRX32, YUV/YVU420, NV12/NV21 and
-the four packed 422 orders. Layouts preserve physical offsets and padded strides.
+the four packed 422 orders. RGB161616/BGR161616 additionally support an explicit
+[high-byte display-copy policy](drm-rgb16.md) through driver-owned storage. Layouts preserve physical offsets and padded strides.
 YUV requires named driver COLOR_ENCODING/COLOR_RANGE properties and negotiated
 601/709/2020 matrix/range. No gamut, transfer or HDR conversion is implied. Camera
 configuration rejects nonlinear processed modifiers. Other formats/modifiers,

@@ -819,6 +819,12 @@ typedef struct {uint32_t struct_size,retained_frames,uncertain,poisoned,device_c
 void zc_default_drm_preview_config(zc_drm_preview_config *);
 int zc_preview_open_drm(const zc_drm_preview_config *,zc_preview **);
 int zc_drm_preview_state_get(zc_preview *,zc_drm_preview_state *);
+/* Explicit RGB16/BGR16 -> opaque BGRX8 CPU copy policy. Normal open stays direct.
+ * Requires driver dumb allocation and PRIME export. Source words are high-byte
+ * reduced without transfer/gamut conversion; scanout owns two reusable buffers. */
+int zc_preview_open_drm_rgb16(const zc_drm_preview_config *,zc_preview **);
+typedef struct {uint32_t struct_size,input_format,scanout_format,copy_policy,buffers,cpu_active,reserved[2];uint64_t copied_frames,storage_bytes;} zc_drm_preview_storage_state;
+int zc_drm_preview_storage_state_get(zc_preview *,zc_drm_preview_storage_state *);
 /* Optional native serial worker; 1..8 outstanding operations, active included.
  * Synchronous mutation returns BUSY while work executes. State is the last
  * completed operation snapshot. Queued frame jobs retain exports before return.

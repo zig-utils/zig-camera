@@ -49,6 +49,8 @@ export const native = dlopen(library, {
   zc_drm_discovery_close:{args:[p],returns:v},
   zc_default_drm_preview_config:{args:[p],returns:v},
   zc_preview_open_drm:{args:[p,p],returns:i},
+  zc_preview_open_drm_rgb16:{args:[p,p],returns:i},
+  zc_drm_preview_storage_state_get:{args:[p,p],returns:i},
   zc_drm_preview_state_get:{args:[p,p],returns:i},
   zc_drm_preview_enable_async:{args:[p,u],returns:i},
   zc_drm_preview_queue_state_get:{args:[p,p],returns:i},

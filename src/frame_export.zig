@@ -79,10 +79,10 @@ fn cleanup(self: *Export, writeback: bool) c_int {
 }
 pub export fn zc_frame_export_open(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export) c_int {
     var cleanup_result: c_int = c.ZC_OK;
-    const result = openExport(camera, token, streams, flags, output, &cleanup_result);
+    const result = openExport(camera, token, streams, flags, output, &cleanup_result, true);
     return if (cleanup_result != c.ZC_OK) cleanup_result else result;
 }
-fn openExport(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export, cleanup_result: *c_int) c_int {
+fn openExport(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output: *?*c.zc_frame_export, cleanup_result: *c_int, publish_fds: bool) c_int {
     output.* = null;
     if (streams == 0 or streams & ~@as(u32, 7) != 0 or flags & ~@as(u32, c.ZC_EXPORT_WRITABLE) != 0) return c.ZC_INVALID;
     mutex.lock();
@@ -159,6 +159,10 @@ fn openExport(camera: *c.zc_camera, token: u64, streams: u32, flags: u32, output
     };
     for (sources[0..info.plane_count], 0..) |plane, i| {
         var output_plane = c.zc_export_plane{ .fd = -1, .flags = flags, .offset = plane.offset, .length = plane.length, .bytes_used = plane.bytes_used };
+        if (!publish_fds) {
+            self.info.planes[i] = output_plane;
+            continue;
+        }
         if (plane.fd >= 0) {
             self.descriptors[i] = shared.Fd.duplicate(plane.fd) catch return c.ZC_IO;
             output_plane.fd = self.descriptors[i].value;
@@ -240,4 +244,58 @@ pub export fn zc_frame_export_properties_copy(p: *const c.zc_frame_export, data:
     const catalog: *const catalogs.Catalog = @ptrCast(@alignCast(owner(p).catalog));
     const bytes = catalog.writer.finish() catch return c.ZC_INVALID;
     return @import("frame_properties.zig").copy(bytes, data, capacity, length);
+}
+
+/// Internal native consumer: retain the existing read map/catalog, without
+/// duplicating/staging pointer-free process FDs that this consumer never uses.
+pub fn openNativeRead(camera: *c.zc_camera, token: u64, stream: u32, out: *?*c.zc_frame_export) c_int {
+    var cleanup_result: c_int = c.ZC_OK;
+    if (stream != c.ZC_MAIN and stream != c.ZC_LORES) {
+        out.* = null;
+        return c.ZC_INVALID;
+    }
+    const rc = openExport(camera, token, @as(u32, 1) << @as(u5, @intCast(stream)), 0, out, &cleanup_result, false);
+    return if (cleanup_result != c.ZC_OK) cleanup_result else rc;
+}
+/// Borrowed only until export close; never exposed through the C/Bun ABI.
+pub fn nativeStream(p: *c.zc_frame_export, out: *c.zc_stream) c_int {
+    const self = owner(p);
+    if (self.info.stream_count != 1) return c.ZC_INVALID;
+    return core.zc_frame_map_get_stream(self.map, self.info.streams[0].stream, out);
+}
+
+test "native read consumer pins a camera map without staged files or pixel copies" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    var cfg: c.zc_config = undefined;
+    core.zc_default_config(&cfg);
+    cfg.width = 8;
+    cfg.height = 6;
+    cfg.buffer_count = 3;
+    var camera: ?*c.zc_camera = null;
+    try std.testing.expectEqual(c.ZC_OK, core.zc_open(&cfg, &camera));
+    defer _ = core.zc_close(camera.?);
+    try std.testing.expectEqual(c.ZC_OK, core.zc_start(camera.?));
+    defer _ = core.zc_stop(camera.?);
+    var frame: c.zc_frame = undefined;
+    try std.testing.expectEqual(c.ZC_OK, core.zc_acquire(camera.?, 0, &frame));
+    var source: ?*c.zc_frame_export = null;
+    try std.testing.expectEqual(c.ZC_OK, openNativeRead(camera.?, frame.token, c.ZC_MAIN, &source));
+    defer if (source) |value| {
+        _ = zc_frame_export_close(value);
+    };
+    try std.testing.expectEqual(c.ZC_OK, core.zc_release(camera.?, frame.token));
+    var info: c.zc_export_info = undefined;
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_export_info(source.?, &info));
+    try std.testing.expectEqual(@as(c_int, -1), info.planes[0].fd);
+    try std.testing.expectEqual(@as(u32, 0), info.flags & c.ZC_EXPORT_STAGED);
+    var stream: c.zc_stream = undefined;
+    try std.testing.expectEqual(c.ZC_OK, nativeStream(source.?, &stream));
+    try std.testing.expectEqual(frame.main.planes[0].data, stream.planes[0].data);
+    var stats: c.zc_stats = undefined;
+    try std.testing.expectEqual(c.ZC_OK, core.zc_get_stats(camera.?, &stats));
+    try std.testing.expectEqual(@as(u32, 1), stats.leased);
+    try std.testing.expectEqual(c.ZC_OK, zc_frame_export_close(source.?));
+    source = null;
+    try std.testing.expectEqual(c.ZC_OK, core.zc_get_stats(camera.?, &stats));
+    try std.testing.expectEqual(@as(u32, 0), stats.leased);
 }
