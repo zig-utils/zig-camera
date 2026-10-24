@@ -2,6 +2,7 @@
 import{strict as assert}from'node:assert'
 import{dlopen,FFIType,ptr}from'bun:ffi'
 import{Camera,DrmPreview,Recorder,type PreviewTransform,type PreviewOverlay}from'../../ts'
+import{native as n}from'../../ts/ffi'
 const path=process.env.ZC_KMS_FIXTURE
 if(process.platform!=='linux'||!path)throw Error('Linux two-plane DRM peer required')
 const peer=dlopen(path,{
@@ -110,6 +111,12 @@ try{
   peer.symbols.zkms_test_fault(0);await poisoned.close()
  }finally{peer.symbols.zkms_test_fault(0);await poisoned.close()}
  retired()
+ // A bootstrap snapshot must not expose the new overlay before scene publication.
+ const seed=n.zc_drm_preview_overlay_seed;let seeded=0
+ Object.assign(n,{zc_drm_preview_overlay_seed(...args:Parameters<typeof seed>){
+  const before=pair()[0],code=seed(...args)
+  if(!code){assert.equal(props()[0],0n);assert.equal(pair()[0],before);seeded++}return code
+ }})
  for(const backend of ['drm','drm-async'] as const){
   peer.symbols.zkms_test_scenario(40);const camera=new Camera({...options,lores:{width:4,height:2,rgb:true}})
   try{
@@ -126,16 +133,41 @@ try{
   }finally{peer.symbols.zkms_test_fault(0);await camera.close()}
   retired()
  }
+ assert.ok(seeded>=4);Object.assign(n,{zc_drm_preview_overlay_seed:seed})
+ // Fresh-owner recovery restores the retained immutable overlay independently.
+ for(const backend of ['drm','drm-async'] as const){
+  peer.symbols.zkms_test_scenario(40);const old=new Camera(options);let fresh:Camera|undefined
+  try{
+   old.startPreview({backend,drm:settings,stream:null});const input=rgba(5),expected=structuredClone(input)
+   if(backend==='drm')old.setOverlay(input);else await old.setOverlayAsync(input)
+   old.simulateDisconnect();input.data.fill(0)
+   fresh=await old.reconnect({initialDelayMs:0,maximumDelayMs:0,pollMs:2})
+   await fresh.captureMetadata();await fresh.drainPreviewAsync();assert.equal(fresh.previewInfo()?.drmOverlay?.configured,true)
+   assert.equal(fresh.previewInfo()?.drmOverlay?.visible,true)
+   await fresh.setPreviewStreamAsync('main');await fresh.captureMetadata();await fresh.drainPreviewAsync();pixels(expected)
+   await old.close();pixels(expected)
+  }finally{await fresh?.close();await old.close()}
+  retired()
+ }
  // Shared root and overlay are rebuilt during single/group recording modes.
  peer.symbols.zkms_test_scenario(40)
  const recordingCamera=new Camera(options),recorder=await Recorder.open({outputframe(){}},{width:8,height:6,codec:'mjpeg',fps:25})
  try{
   recordingCamera.startPreview({backend:'drm-async',drm:settings});let recording=recordingCamera.startRecording(recorder)
   await recordingCamera.setOverlayAsync(rgba());await until(()=>recording.stats().completed>=2n)
+  const before=display()[2]!;peer.symbols.zkms_test_fault(17)
+  await until(()=>display()[2]!>before&&!!recordingCamera.previewInfo()?.drmQueue?.active)
+  const completed=recording.stats().completed,skips=recordingCamera.previewInfo()!.workerFrames!.skipped
+  await recordingCamera.captureMetadata();await until(()=>recording.stats().completed>completed+2n)
+  assert.ok(recordingCamera.previewInfo()!.workerFrames!.skipped>skips)
+  const cancelled=recordingCamera.setOverlayAsync(rgba(7)),reason=Error('cancel Camera overlay behind active frame')
+  assert.equal(cancelled.cancel(reason),true);await assert.rejects(cancelled.wait(),error=>error===reason)
+  const change=recordingCamera.setOverlayAsync(rgba());await Bun.sleep(10);assert.equal(change.done,false)
+  peer.symbols.zkms_test_fault(0);await change
   recording=await recordingCamera.switchRecordingModeAsync(recorder,{width:12,height:8},{},{outputframe(){}});await until(()=>recording.stats().completed>=2n)
   pixels(rgba());const group=await recordingCamera.switchRecordingsModeAsync({width:10,height:8},[{recording,output:{outputframe(){}}}]);recording=group[0]!
   await until(()=>recording.stats().completed>=2n);await recordingCamera.drainPreviewAsync();pixels(rgba())
- }finally{await recordingCamera.close();await recorder.close()}
+ }finally{peer.symbols.zkms_test_fault(0);await recordingCamera.close();await recorder.close()}
  retired()
  console.log('Named two-plane blending, padded RGBA bytes, DMA fences, strict stacking, shared master, atomic geometry, bounded reuse, cancellation, unknown submission quarantine and camera/recorder mode restoration passed')
 }finally{peer.close()}

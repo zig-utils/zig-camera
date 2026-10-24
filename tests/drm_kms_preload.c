@@ -44,7 +44,7 @@ static int fixture_open(int flags,mode_t mode) {
     int expected=-1;
     if(!atomic_compare_exchange_strong(&owned,&expected,fd)){syscall(SYS_close,fd);if(pair[1]>=0)syscall(SYS_close,pair[1]);errno=EBUSY;return -1;}
     if(scenario>=10)event_writer=pair[1];
-    opened++;return fd;
+    last_cookie=0;opened++;return fd;
 }
 int close(int fd) {
     if(fd<0)return (int)syscall(SYS_close,fd);
