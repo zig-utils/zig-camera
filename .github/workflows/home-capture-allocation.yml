@@ -2,9 +2,9 @@ name: Home capture allocation ownership
 on:
   push:
     branches: [main]
-    paths: ['src/home/capture_allocation.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', '.github/workflows/home-capture-allocation.yml']
+    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
   pull_request:
-    paths: ['src/home/capture_allocation.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', '.github/workflows/home-capture-allocation.yml']
+    paths: ['src/home/capture_*.zig', 'src/home/lease_pool.zig', 'src/home/owned_admission.zig', 'src/capture_allocator.zig', 'tests/capture_backing*', '.github/workflows/home-capture-allocation.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: ac27dba288a22785aa062a197b81129cb01b6ef8
+          ref: 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395
           path: .home-allocation-upstream
           sparse-checkout: packages/video
           persist-credentials: false
@@ -32,12 +32,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in capture_allocation lease_pool owned_admission; do
+          for file in capture_allocation capture_backing capture_dma_heap capture_host lease_pool owned_admission; do
             cmp ".home-allocation-upstream/packages/video/src/core/$file.zig" "src/home/$file.zig"
           done
+          cmp .home-allocation-upstream/packages/video/tests/capture_backing_fixture.zig tests/capture_backing_fixture.zig
+          cmp .home-allocation-upstream/packages/video/tests/capture_backing_linux.c tests/capture_backing_linux.c
           zig fmt --check src/home/capture_allocation.zig
           for mode in Debug ReleaseSafe ReleaseFast; do
             zig test -O "$mode" src/home/capture_allocation.zig
             zig test -O "$mode" .home-allocation-upstream/packages/video/src/core/capture_allocation.zig
+            zig test -lc -O "$mode" src/home/capture_backing.zig
+            zig test -lc -O "$mode" .home-allocation-upstream/packages/video/src/core/capture_backing.zig
+            if [ "$RUNNER_OS" = Linux ] && [ '0.15.2' = '${{ matrix.zig }}' ]; then
+              zig test -lc -O "$mode" src/home/capture_dma_heap.zig
+              zig test -lc -O "$mode" .home-allocation-upstream/packages/video/src/core/capture_dma_heap.zig
+              zig build-obj -O "$mode" -fPIC -fcompiler-rt -lc --dep backing -Mroot=tests/capture_backing_fixture.zig -Mbacking=src/home/capture_host.zig -femit-bin=/tmp/capture-backing.o
+              cc -std=c11 -O2 -Wall -Wextra -Werror tests/capture_backing_linux.c /tmp/capture-backing.o -o /tmp/capture-backing
+              /tmp/capture-backing
+            fi
             zig test -O "$mode" --dep video -Mroot=.home-allocation-upstream/packages/video/tests/capture_allocation_exports.zig -Mvideo=.home-allocation-upstream/packages/video/src/video.zig
           done

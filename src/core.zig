@@ -14,6 +14,7 @@ comptime {
     _ = @import("recovery.zig");
     _ = @import("frame_channel.zig");
     _ = @import("process_session.zig");
+    _ = @import("capture_allocator.zig");
 }
 const driver = if (options.libcamera) @import("real.zig") else @import("synthetic.zig");
 const State = enum { idle, queued, ready, leased };
@@ -24,6 +25,7 @@ const Identity = @import("home/device_identity.zig").Identity(c.ZC_MAX_CAMERA_ID
 const CaptureFilter = @import("capture_filter.zig");
 const colors = @import("color_policy.zig");
 const Session = struct {
+    capture_allocator: ?*c.zc_capture_allocator = null,
     layout_backend: u32 = 0,
     identity: Identity = .{},
     properties: ?*@import("catalog.zig").Catalog = null,
@@ -289,17 +291,46 @@ pub export fn zc_align_camera_configuration(cfg: *const c.zc_config, pipeline: *
     return c.ZC_OK;
 }
 fn openPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, out: *?*c.zc_camera) c_int {
+    return openAllocatedPipeline(cfg, pipeline, processed, id, orientation, strict, null, out);
+}
+pub export fn zc_open_allocated_pipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: u32, id: ?[*]const u8, length: u32, allocation: *c.zc_capture_allocator, out: *?*c.zc_camera) c_int {
+    out.* = null;
+    if (id == null) {
+        if (length != 0) return c.ZC_INVALID;
+        return openAllocatedPipeline(cfg, pipeline, processed, null, orientation, strict, allocation, out);
+    }
+    if (length == 0 or length > c.ZC_MAX_CAMERA_ID or cfg.camera_index != 0) return c.ZC_INVALID;
+    const requested = Identity.init(id.?[0..length]) catch return c.ZC_INVALID;
+    return openAllocatedPipeline(cfg, pipeline, processed, requested.bytes(), orientation, strict, allocation, out);
+}
+pub export fn zc_camera_capture_allocator_get(camera: *c.zc_camera, out: *?*c.zc_capture_allocator) c_int {
+    const self = session(camera);
+    self.operation.lock();
+    defer self.operation.unlock();
+    out.* = self.capture_allocator;
+    return c.ZC_OK;
+}
+fn openAllocatedPipeline(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, id: ?[]const u8, orientation: u32, strict: u32, allocation: ?*c.zc_capture_allocator, out: *?*c.zc_camera) c_int {
     out.* = null;
     if (zc_check_camera_configuration(cfg, pipeline, processed, orientation, strict) != c.ZC_OK) return c.ZC_INVALID;
+    var allocation_pin: u64 = 0;
+    if (allocation) |handle| {
+        const pinned = @import("capture_allocator.zig").zc_capture_allocator_pin(handle, &allocation_pin);
+        if (pinned != c.ZC_OK) return pinned;
+    }
+    defer if (allocation) |handle| {
+        const unpinned = @import("capture_allocator.zig").zc_capture_allocator_unpin(handle, allocation_pin);
+        std.debug.assert(unpinned == c.ZC_OK);
+    };
     const layout_backend: u32 = if (options.libcamera) c.ZC_LIBCAMERA else c.ZC_SYNTHETIC;
     const layout_rc = @import("tuning_session.zig").beginLayout(layout_backend);
     if (layout_rc != c.ZC_OK) return layout_rc;
     var layout_owned = true;
     defer if (layout_owned) @import("tuning_session.zig").endLayout(layout_backend);
     const self = std.heap.c_allocator.create(Session) catch return c.ZC_NOMEM;
-    self.* = .{ .layout_backend = layout_backend, .config = cfg.*, .processed = processed.*, .pipeline_options = pipeline.*, .strict_orientation = strict != 0 };
+    self.* = .{ .capture_allocator = allocation, .layout_backend = layout_backend, .config = cfg.*, .processed = processed.*, .pipeline_options = pipeline.*, .strict_orientation = strict != 0 };
     var actual: u32 = 0;
-    const rc = if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
+    const rc = if (allocation) |handle| driver.openAllocated(cfg, pipeline, processed, orientation, strict != 0, &actual, id, handle, self, completed, &self.device, &self.info, &self.pipeline) else if (id) |selected| driver.openId(cfg, pipeline, processed, orientation, strict != 0, &actual, selected, self, completed, &self.device, &self.info, &self.pipeline) else driver.open(cfg, pipeline, processed, orientation, strict != 0, &actual, self, completed, &self.device, &self.info, &self.pipeline);
     if (rc != 0) {
         const disconnected = self.removed.load(.acquire);
         std.heap.c_allocator.destroy(self);
@@ -1217,6 +1248,10 @@ fn closeWithState(p: *c.zc_camera, out: ?*c.zc_device_state) c_int {
         self.operation.unlock();
         return rc;
     }
+    self.mutex.lock();
+    const discard = self.fatal != 0 or self.removed.load(.acquire);
+    self.mutex.unlock();
+    if (discard) driver.discardBuffers(self.device.?);
     driver.close(self.device.?);
     if (out) |state| {
         self.mutex.lock();
@@ -1238,6 +1273,54 @@ pub export fn zc_get_stats(p: *c.zc_camera, out: *c.zc_stats) c_int {
     out.* = self.stats;
     out.ready = @intCast(self.count);
     return c.ZC_OK;
+}
+test "persistent allocator retires failed CPU fences before reopening instead of reusing backing" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const allocation = @import("capture_allocator.zig");
+    for ([_]bool{ true, false }) |fail_begin| {
+        var settings: c.zc_capture_allocator_config = undefined;
+        allocation.zc_default_capture_allocator_config(&settings);
+        settings.max_entries = 1;
+        settings.max_bytes = 65536;
+        var owner: ?*c.zc_capture_allocator = null;
+        try t.expectEqual(c.ZC_OK, allocation.zc_capture_allocator_open(&settings, null, 0, &owner));
+        var cfg: c.zc_config = undefined;
+        zc_default_config(&cfg);
+        cfg.width = 32;
+        cfg.height = 24;
+        cfg.buffer_count = 2;
+        var pipeline: c.zc_pipeline_options = undefined;
+        zc_default_pipeline_options(&pipeline);
+        const processed = colors.defaults();
+        var camera: ?*c.zc_camera = null;
+        try t.expectEqual(c.ZC_OK, zc_open_allocated_pipeline(&cfg, &pipeline, &processed, 1, 0, null, 0, owner.?, &camera));
+        try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+        const device = session(camera.?).device.?;
+        var frame: c.zc_frame = undefined;
+        if (fail_begin) {
+            device.fail_sync_begin = true;
+            try t.expectEqual(c.ZC_IO, zc_acquire(camera.?, 1000, &frame));
+            device.fail_sync_begin = false;
+        } else {
+            try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 1000, &frame));
+            device.fail_sync_end = true;
+            try t.expectEqual(c.ZC_IO, zc_release(camera.?, frame.token));
+            device.fail_sync_end = false;
+        }
+        try t.expectEqual(c.ZC_OK, zc_close(camera.?));
+        var state: c.zc_capture_allocator_state = undefined;
+        try t.expectEqual(c.ZC_OK, allocation.zc_capture_allocator_state_get(owner.?, &state));
+        try t.expectEqual(@as(u32, 0), state.borrowed);
+        try t.expectEqual(@as(u32, 1), state.retiring);
+        try t.expectEqual(c.ZC_OK, zc_open_allocated_pipeline(&cfg, &pipeline, &processed, 1, 0, null, 0, owner.?, &camera));
+        try t.expectEqual(c.ZC_OK, allocation.zc_capture_allocator_state_get(owner.?, &state));
+        try t.expectEqual(@as(u64, 4), state.allocations);
+        try t.expectEqual(@as(u64, 1), state.retired);
+        try t.expectEqual(@as(u64, 0), state.reuses);
+        try t.expectEqual(c.ZC_OK, zc_close(camera.?));
+        try t.expectEqual(c.ZC_OK, allocation.zc_capture_allocator_close(owner.?));
+    }
 }
 pub export fn zc_get_control_info(p: *c.zc_camera, id: u32, out: *c.zc_control_info) c_int {
     const self = session(p);

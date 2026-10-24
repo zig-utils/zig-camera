@@ -33,6 +33,8 @@ import {
   type Pointer,
 } from './ffi'
 export interface ModeRequest {
+  /** Main thread pins this native owner until the worker settles. */
+  allocation?: Pointer
   /** Reconnection creates a separate owner. Never reopen a failed candidate as rollback. */
   fresh?: boolean
   disposeOnly?: boolean
@@ -154,9 +156,21 @@ self.onmessage = ({ data: request }) => {
     view(selected).setUint32(12, 0, true)
     const mainFormat =
       (restoring ? request.previousMainFormat : request.mainFormat) ?? 1
-    const processed = restoring ? request.previousProcessed : request.processed
+    let processed = restoring ? request.previousProcessed : request.processed
+    if (request.allocation && !processed) {
+      processed = storage(36)
+      n.zc_default_processed_options(ptr(processed))
+      view(processed).setUint32(4, mainFormat, true)
+    }
     check(
-      processed
+      request.allocation && processed
+        ? n.zc_open_allocated_pipeline(
+            ptr(selected),ptr(pipeline),ptr(processed),
+            (restoring ? request.previousOrientation : request.orientation) ?? 1,
+            (restoring ? request.previousStrictOrientation : request.strictOrientation) ? 1 : 0,
+            ptr(request.cameraId),request.cameraId.length,request.allocation,ptr(out),
+          )
+        : processed
         ? n.zc_open_id_processed_pipeline(
             ptr(selected),
             ptr(pipeline),

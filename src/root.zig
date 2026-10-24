@@ -105,9 +105,47 @@ pub const ApngCompositor = @import("home/apng_compositor.zig");
 pub const KmsDiscovery = @import("home/kms_discovery.zig");
 pub const KmsDiscoveryHost = @import("home/kms_discovery_host.zig");
 pub const KmsScanout = @import("home/kms_scanout.zig");
-/// Home ownership policy only; device allocation and camera attachment remain
-/// separate integration work. There is no persistent Camera allocator API yet.
+/// Portable policy beneath CaptureAllocator's owned persistent backing.
 pub const CaptureAllocationPolicy = @import("home/capture_allocation.zig");
+pub const CaptureAllocatorConfig = c.zc_capture_allocator_config;
+pub const CaptureAllocatorState = c.zc_capture_allocator_state;
+pub fn defaultCaptureAllocatorConfig() CaptureAllocatorConfig {
+    var out: CaptureAllocatorConfig = undefined;
+    @import("capture_allocator.zig").zc_default_capture_allocator_config(&out);
+    return out;
+}
+pub const CaptureAllocator = struct {
+    handle: ?*c.zc_capture_allocator,
+    pub fn init(config: CaptureAllocatorConfig, heap_path: ?[]const u8) Error!CaptureAllocator {
+        if (heap_path) |path| if (path.len > 4096) return error.Invalid;
+        var out: ?*c.zc_capture_allocator = null;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_open(&config, if (heap_path) |path| path.ptr else null, if (heap_path) |path| @intCast(path.len) else 0, &out));
+        return .{ .handle = out.? };
+    }
+    pub fn state(self: CaptureAllocator) Error!CaptureAllocatorState {
+        var out: CaptureAllocatorState = undefined;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_state_get(self.handle orelse return error.Stopped, &out));
+        return out;
+    }
+    pub fn pin(self: CaptureAllocator) Error!u64 {
+        var out: u64 = 0;
+        try check(@import("capture_allocator.zig").zc_capture_allocator_pin(self.handle orelse return error.Stopped, &out));
+        return out;
+    }
+    pub fn unpin(self: CaptureAllocator, token: u64) Error!void {
+        try check(@import("capture_allocator.zig").zc_capture_allocator_unpin(self.handle orelse return error.Stopped, token));
+    }
+    pub fn trim(self: CaptureAllocator) Error!void {
+        try check(@import("capture_allocator.zig").zc_capture_allocator_trim(self.handle orelse return error.Stopped));
+    }
+    /// Busy or cleanup failure retains the owner and handle for retry.
+    pub fn close(self: *CaptureAllocator) Error!void {
+        if (self.handle) |handle| {
+            try check(@import("capture_allocator.zig").zc_capture_allocator_close(handle));
+            self.handle = null;
+        }
+    }
+};
 test "public persistent allocation policy retains idle backing and retires exact generations" {
     const policy = CaptureAllocationPolicy;
     const layout = try policy.Layout.init("synthetic", &.{try policy.Stream.init(8, 4, 32, 128, 2, "BGR888", 0)});
@@ -122,6 +160,55 @@ test "public persistent allocation policy retains idle backing and retires exact
     try cache.release(reused.claim);
     try cache.finishRetirement(try cache.retireIdle(reused.slot));
     try std.testing.expect(cache.empty());
+}
+test "public persistent camera buffers survive maps camera overlap trim and compatible reopen" {
+    if (@import("options").libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    var settings = defaultCaptureAllocatorConfig();
+    settings.max_bytes = 65536;
+    settings.max_entries = 2;
+    var allocator = try CaptureAllocator.init(settings, null);
+    defer allocator.close() catch unreachable;
+    var cfg = defaultConfig();
+    cfg.width = 32;
+    cfg.height = 24;
+    cfg.buffer_count = 2;
+    cfg.raw = 1;
+    var pipeline = defaultPipelineOptions();
+    pipeline.lores_width = 16;
+    pipeline.lores_height = 8;
+    const old = try Camera.initAllocatedPipeline(cfg, pipeline, defaultProcessedOptions(), .{}, false, allocator, null);
+    try old.start();
+    var frame = try old.acquire(1000);
+    var mapped = try frame.mapStream(c.ZC_MAIN, false);
+    const memory = try mapped.plane(0);
+    const address = memory.ptr;
+    const value = memory[0];
+    try frame.release();
+    try t.expectError(error.Busy, old.deinit());
+    try t.expectError(error.Busy, allocator.close());
+    const replacement = try Camera.initAllocatedPipeline(cfg, pipeline, defaultProcessedOptions(), .{}, false, allocator, null);
+    try replacement.start();
+    var fresh = try replacement.acquire(1000);
+    try t.expect(address != fresh.value.main.planes[0].data);
+    try fresh.release();
+    try t.expectEqual(@as(u32, 2), (try allocator.state()).borrowed);
+    try t.expectEqual(@as(u64, 12), (try allocator.state()).allocations);
+    try replacement.deinit();
+    try allocator.trim();
+    try t.expectEqual(@as(u32, 1), (try allocator.state()).entries);
+    try t.expectEqual(value, (try mapped.plane(0))[0]);
+    try mapped.deinit();
+    try old.deinit();
+    const reused = try Camera.initAllocatedPipeline(cfg, pipeline, defaultProcessedOptions(), .{}, false, allocator, null);
+    try t.expectEqual(@as(u64, 12), (try allocator.state()).allocations);
+    try t.expectEqual(@as(u64, 1), (try allocator.state()).reuses);
+    try reused.deinit();
+    const pin = try allocator.pin();
+    try t.expectError(error.Busy, allocator.close());
+    try allocator.unpin(pin);
+    try allocator.trim();
+    try t.expectEqual(@as(u64, 0), (try allocator.state()).used_bytes);
 }
 pub const drm_preview = @import("drm_preview.zig");
 comptime {
@@ -258,6 +345,11 @@ pub fn alignConfiguration(config: Config, pipeline: c.zc_pipeline_options, proce
 }
 pub fn defaultProcessedOptions() ProcessedOptions {
     return color_policy.defaults();
+}
+pub fn defaultPipelineOptions() c.zc_pipeline_options {
+    var out: c.zc_pipeline_options = undefined;
+    core.zc_default_pipeline_options(&out);
+    return out;
 }
 pub fn colorSpacePreset(preset: u32) Error!c.zc_color_space {
     var out: c.zc_color_space = undefined;
@@ -404,6 +496,15 @@ pub const Camera = struct {
         var ptr: ?*c.zc_camera = null;
         try check(core.zc_open(&cfg, &ptr));
         return .{ .handle = ptr.? };
+    }
+    pub fn initAllocated(cfg: Config, allocator: CaptureAllocator) Error!Camera {
+        return initAllocatedPipeline(cfg, defaultPipelineOptions(), defaultProcessedOptions(), .{}, false, allocator, null);
+    }
+    pub fn initAllocatedPipeline(cfg: Config, opts: c.zc_pipeline_options, processed: ProcessedOptions, transform: ImageTransform, strict: bool, allocator: CaptureAllocator, id: ?[]const u8) Error!Camera {
+        if (id) |selected| if (selected.len > c.ZC_MAX_CAMERA_ID) return error.Invalid;
+        var out: ?*c.zc_camera = null;
+        try check(core.zc_open_allocated_pipeline(&cfg, &opts, &processed, transform.orientation(), @intFromBool(strict), if (id) |selected| selected.ptr else null, if (id) |selected| @intCast(selected.len) else 0, allocator.handle orelse return error.Stopped, &out));
+        return .{ .handle = out.? };
     }
     pub fn initWithOptions(cfg: Config, opts: c.zc_capture_options) Error!Camera {
         var ptr: ?*c.zc_camera = null;

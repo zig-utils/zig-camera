@@ -55,6 +55,33 @@ typedef struct {
     uint32_t struct_size, role, unpacked_raw, noise_reduction; /* NR: 0..4, UINT32_MAX = role default */
 } zc_capture_options;
 typedef struct zc_camera zc_camera;
+typedef struct zc_capture_allocator zc_capture_allocator;
+/* Persistent capture backing. backend must match this library. Synthetic uses
+ * ordinary owned RAM; libcamera uses Linux DMA heaps with no RAM fallback.
+ * max_entries: 1..16; max_bytes: 1..8 GiB (default 512 MiB). */
+typedef struct {
+    uint32_t struct_size,backend,max_entries,reserved;
+    uint64_t max_bytes;
+} zc_capture_allocator_config;
+typedef struct {
+    uint32_t struct_size,backend,max_entries,entries;
+    uint32_t borrowed,pins,retiring,reserved;
+    uint64_t max_bytes,used_bytes,high_bytes,preparations,reuses,retired;
+    uint64_t allocations,writable_maps,cleanup_errors;
+    int32_t last_errno;
+    uint32_t closing;
+} zc_capture_allocator_state;
+void zc_default_capture_allocator_config(zc_capture_allocator_config *);
+int zc_capture_allocator_open(const zc_capture_allocator_config *,const uint8_t *heap_path,uint32_t path_length,zc_capture_allocator **out);
+int zc_capture_allocator_state_get(zc_capture_allocator *,zc_capture_allocator_state *out);
+/* Pins keep the allocator alive across camera gaps and mode/open workers.
+ * Each successful pin must be unpinned exactly once, after the worker joins. */
+int zc_capture_allocator_pin(zc_capture_allocator *,uint64_t *out_pin);
+int zc_capture_allocator_unpin(zc_capture_allocator *,uint64_t pin);
+/* Trim only idle/pending-cleanup storage. Close is BUSY with loans or pins;
+ * IO failure retains the owner for retry. Serialize final close with new calls. */
+int zc_capture_allocator_trim(zc_capture_allocator *);
+int zc_capture_allocator_close(zc_capture_allocator *);
 /* Pipeline extensions preserve zc_config/zc_frame/zc_info ABI v1 layouts.
  * Explicit sensor selection requires both size and bit depth. Zero = automatic.
  * Lores: both dimensions zero disable; YUV420 requires even dimensions.
@@ -111,6 +138,10 @@ int zc_align_camera_configuration(const zc_config *,const zc_pipeline_options *,
  * backend adjustments against the format-normalized effective request. */
 int zc_open_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,zc_camera **out);
 int zc_open_id_processed_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,const uint8_t *id,uint32_t length,zc_camera **out);
+/* Null ID + zero length selects camera_index. Allocator backing is retained
+ * through every request/map/export lease and reused only after camera close. */
+int zc_open_allocated_pipeline(const zc_config *,const zc_pipeline_options *,const zc_processed_options *,uint32_t orientation,uint32_t strict_orientation,const uint8_t *id,uint32_t length,zc_capture_allocator *,zc_camera **out);
+int zc_camera_capture_allocator_get(zc_camera *,zc_capture_allocator **out_borrowed);
 /* flags: configured=1, strict=2, RGB-normalized=4, backend-adjusted=8.
  * Absent/unknown actual metadata counts as adjusted for configured requests.
  * main/lores only; requested/effective are absent for backend-default requests. */

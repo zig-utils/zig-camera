@@ -13,6 +13,15 @@ const library =
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
 export const libraryPath = resolve(library)
 export const native = dlopen(library, {
+  zc_default_capture_allocator_config:{args:[p],returns:v},
+  zc_capture_allocator_open:{args:[p,p,u,p],returns:i},
+  zc_capture_allocator_state_get:{args:[p,p],returns:i},
+  zc_capture_allocator_pin:{args:[p,p],returns:i},
+  zc_capture_allocator_unpin:{args:[p,n],returns:i},
+  zc_capture_allocator_trim:{args:[p],returns:i},
+  zc_capture_allocator_close:{args:[p],returns:i},
+  zc_open_allocated_pipeline:{args:[p,p,p,u,u,p,u,p,p],returns:i},
+  zc_camera_capture_allocator_get:{args:[p,p],returns:i},
   zc_rtp_hevc_profile: {args:[p,u,p],returns:i},
   zc_default_rtp_config: {args:[p],returns:v},
   zc_rtp_packetizer_open: {args:[p,p,n,p],returns:i},

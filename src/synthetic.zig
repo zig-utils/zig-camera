@@ -15,6 +15,9 @@ pub const Handle = struct {
     context: ?*anyopaque,
     callback: Callback,
     buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
+    capture_allocator: ?*c.zc_capture_allocator = null,
+    allocation_loan: u64 = 0,
+    allocation_dirty: bool = false,
     lores_buffers: [c.ZC_MAX_BUFFERS][]u8 = @splat(&.{}),
     pipeline: c.zc_pipeline_info = std.mem.zeroes(c.zc_pipeline_info),
     info: c.zc_info,
@@ -109,7 +112,24 @@ fn fillProcessed(buf: []u8, stream: c.zc_stream, transform: orientation.Transfor
         }
     }
 }
-pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, strict: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    return openWithAllocator(config, opts, processed, requested_orientation, strict, actual, context, callback, out, info, pipeline, null);
+}
+pub fn openAllocated(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, strict: bool, actual: *u32, id: ?[]const u8, allocation: *c.zc_capture_allocator, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info) c_int {
+    out.* = null;
+    if (id) |selected| if (!std.mem.eql(u8, selected, device_id)) return c.ZC_DEVICE;
+    return openWithAllocator(config, opts, processed, requested_orientation, strict, actual, context, callback, out, info, pipeline, allocation);
+}
+fn allocationBuffer(allocation: *c.zc_capture_allocator, loan: u64, stream: u32, buffer: usize) ![]u8 {
+    const allocator = @import("capture_allocator.zig");
+    var result: allocator.bridge.zci_allocation_buffer = undefined;
+    if (allocator.zci_capture_allocator_buffer(allocation, loan, stream, @intCast(buffer), 1, &result) != c.ZC_OK) return error.InvalidResource;
+    return @as([*]u8, @ptrCast(@constCast(result.data)))[0..@intCast(result.frame_bytes)];
+}
+fn allocationGeometry(stream: c.zc_stream, count: u32, bytes: u64) !@import("capture_allocator.zig").Home.policy.Stream {
+    return @import("capture_allocator.zig").Home.policy.Stream.init(stream.width, stream.height, stream.stride, bytes, count, std.mem.sliceTo(&stream.format, 0), 0);
+}
+fn openWithAllocator(config: *const c.zc_config, opts: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, requested_orientation: u32, _: bool, actual: *u32, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, pipeline: *c.zc_pipeline_info, allocation: ?*c.zc_capture_allocator) c_int {
     const tuning_rc = @import("tuning_session.zig").begin(c.ZC_SYNTHETIC);
     if (tuning_rc != c.ZC_OK) return tuning_rc;
     var tuning_owned = true;
@@ -184,8 +204,30 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         }
         _ = raw_format.writeName(&h.info.raw.format) catch unreachable;
     }
+    const main_bytes = @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 2 else 1);
+    const lores_bytes = @as(usize, h.pipeline.lores.stride) * h.pipeline.lores.height * @as(usize, if (@import("processed_format.zig").yuv420(opts.lores_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(opts.lores_format)) 2 else 1);
+    if (allocation) |owner| {
+        const allocator = @import("capture_allocator.zig");
+        var descriptors: [3]allocator.Home.policy.Stream = undefined;
+        var count: usize = 1;
+        descriptors[0] = allocationGeometry(h.info.main, config.buffer_count, main_bytes) catch unreachable;
+        if (opts.lores_width != 0) {
+            descriptors[count] = allocationGeometry(h.pipeline.lores, config.buffer_count, lores_bytes) catch unreachable;
+            count += 1;
+        }
+        if (config.raw != 0) {
+            descriptors[count] = allocationGeometry(h.info.raw, config.buffer_count, @as(u64, h.info.raw.stride) * h.info.raw.height) catch unreachable;
+            count += 1;
+        }
+        const borrowed = allocator.borrow(owner, device_id, descriptors[0..count], &h.allocation_loan);
+        if (borrowed != c.ZC_OK) {
+            close(h);
+            return borrowed;
+        }
+        h.capture_allocator = owner;
+    }
     for (0..config.buffer_count) |i| {
-        h.buffers[i] = Alloc.alloc(u8, @as(usize, stride) * height * @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 3 else 1) / @as(usize, if (@import("processed_format.zig").yuv420(main_format)) 2 else 1)) catch {
+        h.buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, 0, i) else Alloc.alloc(u8, main_bytes)) catch {
             close(h);
             return c.ZC_NOMEM;
         };
@@ -195,7 +237,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         };
         if (config.raw != 0) {
             const raw = h.info.raw;
-            h.raw_buffers[i] = Alloc.alloc(u8, @as(usize, raw.stride) * raw.height) catch {
+            h.raw_buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, if (opts.lores_width != 0) 2 else 1, i) else Alloc.alloc(u8, @as(usize, raw.stride) * raw.height)) catch {
                 close(h);
                 return c.ZC_NOMEM;
             };
@@ -235,8 +277,7 @@ pub fn open(config: *const c.zc_config, opts: *const c.zc_pipeline_options, proc
         }
         if (opts.lores_width != 0) {
             const l = h.pipeline.lores;
-            const rgb = !@import("processed_format.zig").yuv420(opts.lores_format);
-            h.lores_buffers[i] = Alloc.alloc(u8, @as(usize, l.stride) * l.height * @as(usize, if (rgb) 1 else 3) / @as(usize, if (rgb) 1 else 2)) catch {
+            h.lores_buffers[i] = (if (allocation) |owner| allocationBuffer(owner, h.allocation_loan, 1, i) else Alloc.alloc(u8, lores_bytes)) catch {
                 close(h);
                 return c.ZC_NOMEM;
             };
@@ -310,9 +351,13 @@ pub fn close(h: *Handle) void {
     refs.release(h.vendor_current);
     refs.release(h.vendor_saved);
     for (h.vendor_frames) |p| refs.release(p);
-    for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
-    for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
-    for (h.lores_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+    if (h.allocation_loan != 0) {
+        if (h.allocation_dirty) @import("capture_allocator.zig").zci_capture_allocator_discard(h.capture_allocator.?, h.allocation_loan) else @import("capture_allocator.zig").zci_capture_allocator_release(h.capture_allocator.?, h.allocation_loan);
+    } else {
+        for (h.buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+        for (h.raw_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+        for (h.lores_buffers[0..h.config.buffer_count]) |buf| Alloc.free(buf);
+    }
     if (h.tuning_held) @import("tuning_session.zig").end(c.ZC_SYNTHETIC);
     Alloc.destroy(h);
 }
@@ -321,8 +366,14 @@ pub fn sync(h: *Handle, _: u32, begin: bool) c_int {
         h.remove_on_sync_begin = false;
         disconnect(h);
     }
-    if ((begin and h.fail_sync_begin) or (!begin and h.fail_sync_end)) return c.ZC_IO;
+    if ((begin and h.fail_sync_begin) or (!begin and h.fail_sync_end)) {
+        h.allocation_dirty = true;
+        return c.ZC_IO;
+    }
     return c.ZC_OK;
+}
+pub fn discardBuffers(h: *Handle) void {
+    h.allocation_dirty = true;
 }
 pub fn queue(h: *Handle, index: u32) c_int {
     if (h.removed) return c.ZC_DISCONNECTED;
@@ -429,6 +480,7 @@ pub fn queue(h: *Handle, index: u32) c_int {
     return c.ZC_OK;
 }
 pub fn disconnect(h: *Handle) void {
+    h.allocation_dirty = true;
     if (h.removed) return;
     h.removed = true;
     h.callback(h.context, std.math.maxInt(u32), null, null, c.ZC_DISCONNECTED);

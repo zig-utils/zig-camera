@@ -1,6 +1,43 @@
 # Home reuse audit
 
-## Persistent capture allocation ownership foundation
+## 0.115 owned persistent capture backing
+
+Re-fetched Home ac27dba288a22785aa062a197b81129cb01b6ef8 and Home OS
+151269666bc09aa15a271f1c1f4603f681132e65 before publishing Home
+86f00f0e5a7015955f04324bec8635b84144c9eb. Inspected video ownership/cache/KMS
+hosts plus packages/drivers/src/dma.zig and packages/kernel/src/dma.zig. The driver
+helper allocates ordinary memory, casts pointers as physical addresses and marks
+simulated completion. The kernel helper similarly assumes allocator pointers are
+physical and uses x86 cache instructions. Neither is a Linux DMA heap provider
+or Pi coherency contract. Neither is imported or executed for hosted capture.
+
+The shared capture_backing Owner composes lease_pool/owned_admission with RAM
+and Linux DMA heap providers. It owns FD/maps, page-rounded budgets, partial
+preparation and retryable retirement. Separate RO/RW maps preserve read-only
+reopen permissions. Concurrent same-layout checkout prepares independent bounded
+backing while a disconnected old camera owns requests. The camera adapter owns
+SDK duplicate imports and closes them before returning the loan; frame gates/
+fences remain authoritative. Bun pins workers across camera gaps, cancellation,
+rollback, construction and dispatch failure. Several encoders share the camera
+loan rather than independently allocating camera backing.
+
+The coherency follow-up at 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395 retires borrowed backing
+after failed fences or device loss, without I/O in SDK destructors. Full entry
+charges survive until cleanup; bounded replacement admission joins pending
+retirement before fresh allocation. START/END failures and partial rollback
+cannot return the buffers to idle reuse. The independent peer also covers
+explicit discard and independent replacement backing.
+
+Portable policy/owner and root-export tests pass on pinned and Home development
+Zig in Debug/ReleaseSafe/ReleaseFast. Native C translation uses a separate pinned
+0.15.2 entry (as KMS does), since development Zig removed @cImport. Verbatim source
+and independent memfd peer comparisons are pinned in home-capture-allocation.yml.
+Local camera validation passes 592 native tests, retained map/export C ABI checks,
+and 13 Bun integration tests, including eight coordinated encoders. Linux peer/
+SDK import scenarios run in x86/ARM CI. Physical acceptance is open. No Home OS
+source is copied or run. See capture-allocator.md and home-os-reuse.md.
+
+## Persistent capture allocation ownership foundation (before 0.115)
 
 Inspected Home ac27dba288a22785aa062a197b81129cb01b6ef8 (based on clean fetched
 7d9ba7825b7dc2bf77d4fb37c331f38134e2d89b) and Home OS
@@ -22,8 +59,8 @@ existing allocation generations, so checkout sequence exhaustion cannot prevent
 retirement. Tests own actual byte allocations, inject every allocation failure,
 check 1,000 allocation-free reuse cycles, and retry partial physical cleanup.
 
-This does not yet change camera allocation: the real backend still uses the SDK
-allocator and modes still allocate on reopen. The remaining host must provide
+At this foundation commit, camera allocation still used the SDK allocator and
+modes allocated on reopen. The 0.115 host now supplies
 DMA heap FDs/imports, mappings/coherency, retryable physical cleanup, synthetic
 backing, public allocator handles and joined Bun/mode-worker pins. No physical
 DMA, camera throughput, Picamera2 speedup or allocator parity is claimed here.

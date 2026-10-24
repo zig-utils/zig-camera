@@ -3,6 +3,7 @@ import { snapshotColorSpace, prepareProcessedOptions } from './color-config'
 import { native as n, storage, ptr, view, cstring, check } from './ffi'
 import type { CameraOptions } from './index'
 import { snapshotTuning } from './tuning'
+import { captureAllocatorHandle } from './capture-allocator'
 export function copyConfiguration(options: CameraOptions): CameraOptions {
   const snapshot = { ...options }
   if (
@@ -136,12 +137,18 @@ export function cameraConfiguration(options: CameraOptions, preflight = false) {
     )
     orientation = encoded[0]
   }
-  const processed = prepareProcessedOptions(
+  const allocation = captureAllocatorHandle(options.allocator, options.simulate ?? false)
+  let processed = prepareProcessedOptions(
     mainFormat,
     pipeline,
     options.colorSpace,
     options.strictColorSpace,
   )
+  if (allocation && !processed) {
+    processed = storage(36)
+    n.zc_default_processed_options(ptr(processed))
+    view(processed).setUint32(4, mainFormat, true)
+  }
   // Series admission validates every mode before it owns the camera lifecycle.
   // Existing mode jobs keep reporting structural open failures on their jobs.
   if (preflight) {
@@ -162,6 +169,7 @@ export function cameraConfiguration(options: CameraOptions, preflight = false) {
     )
   }
   return {
+    allocation,
     config,
     pipeline,
     mainFormat,

@@ -6,6 +6,12 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.115 adds [persistent capture allocators](docs/capture-allocator.md) in
+Zig/C/Bun: bounded DMA heap or explicit synthetic backing, exact negotiated-layout
+reuse, retained request/map/export ownership, worker pins, recorder/group mode
+switching and independent reconnect allocations. Physical Pi heap/import/
+coherency and performance acceptance remain open.
+
 Version 0.114 adds [owned JPEG loading](docs/jpeg-loading.md) through Home's
 bounded sequential/progressive decoder, including sampling, restart markers,
 source ICC/Exif, async jobs and file reads shared with PNG admission.

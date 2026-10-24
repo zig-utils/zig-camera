@@ -3,15 +3,18 @@
 // Ownership, ready queues, leases and consumer policy live in Zig.
 #include "zig_camera.h"
 #include "zig_camera_catalog_bridge.h"
+#include "zig_camera_allocator_bridge.h"
 #include "imx708_control.hpp"
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
 #include <libcamera/orientation.h>
+#include <libcamera/base/unique_fd.h>
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <cerrno>
 #include <cstring>
 #include <array>
@@ -387,6 +390,7 @@ struct Device {
     std::shared_ptr<CallbackState> callbacks;
     bool loss_connected=false;
     void disconnected() {
+        allocation_dirty.store(true,std::memory_order_relaxed);
         if(!removed.exchange(true,std::memory_order_acq_rel) && callback)
             callback(context,UINT32_MAX,nullptr,nullptr,ZC_DISCONNECTED);
     }
@@ -394,6 +398,9 @@ struct Device {
     std::shared_ptr<Camera> camera;
     std::unique_ptr<CameraConfiguration> config;
     std::unique_ptr<FrameBufferAllocator> allocator;
+    zc_capture_allocator *capture_allocator=nullptr;
+    uint64_t allocation_loan=0;
+    std::vector<std::vector<std::unique_ptr<FrameBuffer>>> imported_buffers;
     std::vector<Slot> slots;
     zc_config requested{};
     zc_capture_options options{};
@@ -411,6 +418,7 @@ struct Device {
     ControlList desired;
     uint64_t control_revision=0;
     bool writable=false;
+    std::atomic<bool> allocation_dirty{false};
     int (*sync_call)(int,uint64_t)=cpuSync;
     const ControlId *controlId(uint32_t id) const {
         if(id==0 || id>=sizeof(controlNames)/sizeof(*controlNames))return nullptr;
@@ -481,7 +489,12 @@ struct Device {
         if (loss_connected) camera->disconnected.disconnect(callbacks.get());
         // Requests must be destroyed before the buffers they reference.
         slots.clear();
+        imported_buffers.clear();
         allocator.reset();
+        if(allocation_loan) {
+            if(allocation_dirty.load(std::memory_order_relaxed))zci_capture_allocator_discard(capture_allocator,allocation_loan);
+            else zci_capture_allocator_release(capture_allocator,allocation_loan);
+        }
         if (acquired) camera->release();
         camera.reset();
     }
@@ -517,10 +530,10 @@ struct Device {
         return ZC_OK;
     }
     uint32_t actual_orientation=ZC_ROTATE0;
-    int init(const zc_config &cfg, const zc_pipeline_options &pipe, const zc_processed_options &processed,uint32_t orientation,bool strict,void *ctx, Completion complete, const std::string *selected_id=nullptr) {
+    int init(const zc_config &cfg, const zc_pipeline_options &pipe, const zc_processed_options &processed,uint32_t orientation,bool strict,void *ctx, Completion complete, const std::string *selected_id=nullptr,zc_capture_allocator *capture_allocation=nullptr) {
         const auto &opts=pipe.capture;
         const auto main_format=processed.main_format;
-        requested = cfg; options = opts; context = ctx; callback = complete;
+        requested = cfg; options = opts; context = ctx; callback = complete;capture_allocator=capture_allocation;
         const int manager_rc=manager_lease.acquire();
         if(manager_rc)return manager_rc;
         if(selected_id) {
@@ -636,11 +649,42 @@ struct Device {
         if (cfg.frame_duration_us && !has(camera, controls::FrameDurationLimits)) return ZC_UNSUPPORTED;
         if (cfg.lens_position >= 0 && (!has(camera, controls::LensPosition) || !has(camera, controls::AfMode)))
             return ZC_UNSUPPORTED;
-        allocator = std::make_unique<FrameBufferAllocator>(camera);
         size_t count = ZC_MAX_BUFFERS;
-        for (auto &stream : *config) {
-            if (allocator->allocate(stream.stream()) < 0) return ZC_NOMEM;
-            count = std::min(count, allocator->buffers(stream.stream()).size());
+        if(capture_allocator) {
+            if(config->size()>3)return ZC_UNSUPPORTED;
+            std::array<zci_allocation_stream,3> descriptors{};
+            for(size_t s=0;s<config->size();s++) {
+                const auto &stream=config->at(s);
+                if(stream.bufferCount<2 || stream.bufferCount>ZC_MAX_BUFFERS || !stream.frameSize)return ZC_UNSUPPORTED;
+                auto &description=descriptors[s];
+                description.width=stream.size.width;description.height=stream.size.height;description.stride=stream.stride;
+                description.buffer_count=stream.bufferCount;description.frame_bytes=stream.frameSize;description.modifier=stream.pixelFormat.modifier();
+                const auto name=stream.pixelFormat.toString();if(name.size()>=sizeof(description.format))return ZC_UNSUPPORTED;
+                text(description.format,sizeof(description.format),name);
+                count=std::min(count,size_t(stream.bufferCount));
+            }
+            const auto id=camera->id();
+            const int borrowed=zci_capture_allocator_acquire(capture_allocator,reinterpret_cast<const uint8_t*>(id.data()),id.size(),descriptors.data(),config->size(),&allocation_loan);
+            if(borrowed)return borrowed;
+            imported_buffers.resize(config->size());
+            for(size_t s=0;s<config->size();s++)for(size_t i=0;i<config->at(s).bufferCount;i++) {
+                zci_allocation_buffer backing{};
+                const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,0,&backing);
+                if(found)return found;
+                if(backing.fd<0 || backing.frame_bytes>std::numeric_limits<unsigned int>::max())return ZC_UNSUPPORTED;
+                UniqueFD descriptor(fcntl(backing.fd,F_DUPFD_CLOEXEC,0));
+                if(!descriptor.isValid())return ZC_IO;
+                FrameBuffer::Plane plane;
+                plane.fd=SharedFD(std::move(descriptor));plane.offset=0;plane.length=backing.frame_bytes;
+                std::vector<FrameBuffer::Plane> planes;planes.push_back(std::move(plane));
+                imported_buffers[s].push_back(std::make_unique<FrameBuffer>(planes));
+            }
+        } else {
+            allocator = std::make_unique<FrameBufferAllocator>(camera);
+            for (auto &stream : *config) {
+                if (allocator->allocate(stream.stream()) < 0) return ZC_NOMEM;
+                count = std::min(count, allocator->buffers(stream.stream()).size());
+            }
         }
         if (count < 2 || count > ZC_MAX_BUFFERS) return ZC_DEVICE;
         info.backend = ZC_LIBCAMERA; info.buffer_count = count;
@@ -655,10 +699,20 @@ struct Device {
             slot.frame.main = info.main; slot.frame.raw = info.raw;slot.lores=pipeline.lores;
             for (size_t s = 0; s < config->size(); ++s) {
                 auto *stream = config->at(s).stream();
-                auto *buffer = allocator->buffers(stream)[i].get();
+                auto *buffer = capture_allocator ? imported_buffers[s][i].get() : allocator->buffers(stream)[i].get();
                 if (slot.request->addBuffer(stream, buffer) < 0) return ZC_DEVICE;
-                const int rc = map(buffer, this->stream(slot,s), slot);
-                if (rc) return rc;
+                if(capture_allocator) {
+                    zci_allocation_buffer backing{};
+                    const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,0,&backing);
+                    if(found)return found;
+                    auto &target=this->stream(slot,s);target.plane_count=1;
+                    auto &plane=target.planes[0];plane.data=backing.data;plane.length=backing.frame_bytes;
+                    plane.fd=buffer->planes()[0].fd.get();plane.offset=0;
+                    slot.fds[slot.fd_count++]=plane.fd;
+                } else {
+                    const int rc = map(buffer, this->stream(slot,s), slot);
+                    if (rc) return rc;
+                }
             }
         }
         info.main.plane_count = slots[0].frame.main.plane_count;
@@ -678,10 +732,12 @@ struct Device {
             const auto &metadata = buffer->metadata();
             auto &stream = this->stream(slots[index],s);
             if (metadata.status != FrameMetadata::FrameSuccess || metadata.planes().size() != stream.plane_count) {
+                allocation_dirty.store(true,std::memory_order_relaxed);
                 callback(context, index, nullptr, nullptr,ZC_DEVICE); return;
             }
             for (size_t p = 0; p < stream.plane_count; ++p) {
                 if (metadata.planes()[p].bytesused > stream.planes[p].length) {
+                    allocation_dirty.store(true,std::memory_order_relaxed);
                     callback(context, index, nullptr, nullptr,ZC_DEVICE); return;
                 }
                 stream.planes[p].bytes_used = metadata.planes()[p].bytesused;
@@ -761,9 +817,11 @@ struct Device {
         for (size_t i = 0; i < slot.fd_count; ++i) {
             const int rc=sync_call(slot.fds[i],(begin ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END)|access);
             if (rc < 0) {
+                allocation_dirty.store(true,std::memory_order_relaxed);
                 if (begin) {
                     for (size_t j = 0; j < i; ++j) {
-                        (void)sync_call(slot.fds[j],DMA_BUF_SYNC_END|access);
+                        if(sync_call(slot.fds[j],DMA_BUF_SYNC_END|access)<0)
+                            allocation_dirty.store(true,std::memory_order_relaxed);
                     }
                 }
                 if (begin) return ZC_IO;
@@ -775,6 +833,19 @@ struct Device {
     }
     int enableWritable() {
         if(started)return ZC_STATE;
+        if(capture_allocator) {
+            // Prepare all separate write maps before changing any published read
+            // descriptor. Failed preparation retains RO pointers and capability.
+            std::array<std::array<const uint8_t*,3>,ZC_MAX_BUFFERS> prepared{};
+            for(size_t i=0;i<slots.size();i++)for(size_t s=0;s<config->size();s++) {
+                zci_allocation_buffer backing{};
+                const int found=zci_capture_allocator_buffer(capture_allocator,allocation_loan,s,i,1,&backing);
+                if(found)return found;
+                prepared[i][s]=backing.data;
+            }
+            for(size_t i=0;i<slots.size();i++)for(size_t s=0;s<config->size();s++)stream(slots[i],s).planes[0].data=prepared[i][s];
+            writable=true;return ZC_OK;
+        }
         for(auto &slot:slots)for(auto &map:slot.mappings) {
             // Partial permission upgrades are harmless on failure: writable
             // access remains disabled and all public read pointers stay const.
@@ -806,9 +877,21 @@ extern "C" int zcd_open(const zc_config *cfg, const zc_pipeline_options *opts,co
     } catch (const std::bad_alloc &) { return ZC_NOMEM; }
       catch (...) { return ZC_DEVICE; }
 }
+extern "C" int zcd_open_allocated(const zc_config *cfg,const zc_pipeline_options *opts,const zc_processed_options *processed,uint32_t orientation,bool strict,uint32_t *actual,const uint8_t *id,uint32_t length,zc_capture_allocator *allocation,void *ctx,Completion cb,Device **out,zc_info *info,zc_pipeline_info *pipeline) {
+    *out=nullptr;
+    try {
+        auto device=std::make_unique<Device>();
+        std::string selected;
+        if(id)selected.assign(reinterpret_cast<const char*>(id),length);
+        const int rc=device->init(*cfg,*opts,*processed,orientation,strict,ctx,cb,id?&selected:nullptr,allocation);
+        if(rc)return rc;
+        *info=device->info;*pipeline=device->pipeline;*actual=device->actual_orientation;*out=device.release();return ZC_OK;
+    } catch(const std::bad_alloc&){return ZC_NOMEM;}catch(...){return ZC_DEVICE;}
+}
 extern "C" int zcd_start(Device *device) { try { return device->start(); } catch (...) { return ZC_DEVICE; } }
 extern "C" int zcd_queue(Device *device, uint32_t index) { try { return device->queue(index); } catch (...) { return ZC_DEVICE; } }
 extern "C" int zcd_sync(Device *device, uint32_t index, bool begin) { return device->sync(index, begin); }
+extern "C" void zcd_discard_buffers(Device *device) { device->allocation_dirty.store(true,std::memory_order_relaxed); }
 extern "C" int zcd_enable_writable(Device *device) { return device->enableWritable(); }
 extern "C" int zcd_stop(Device *device) {
     if (!device->started) {device->pending.clear();return ZC_OK;}

@@ -335,6 +335,9 @@ import {
   cameraIdentity,
 } from './config'
 import type { ModeRequest, ModeResponse, ModeRequestHook } from './mode-worker'
+import { CaptureAllocator } from './capture-allocator'
+export { CaptureAllocator } from './capture-allocator'
+export type { CaptureAllocatorOptions, CaptureAllocatorState } from './capture-allocator'
 export { BunJob, JobCancelledError, type JobOptions } from './jobs'
 import {
   native as n,
@@ -594,9 +597,14 @@ function runModeWorker(
   request: ModeRequest,
   onHook?: (request: ModeRequestHook) => void,
 ): Promise<ModeResponse> {
-  return new Promise((resolve, reject) => {
+  let allocationPin: BigUint64Array | undefined
+  return new Promise<ModeResponse>((resolve, reject) => {
     let worker: Worker
     try {
+      if (request.allocation) {
+        allocationPin = new BigUint64Array(1)
+        check(n.zc_capture_allocator_pin(request.allocation, ptr(allocationPin)), 'pin mode allocator')
+      }
       worker = new Worker(new URL('./mode-worker.ts', import.meta.url).href)
     } catch (error) {
       reject(error)
@@ -650,6 +658,9 @@ function runModeWorker(
       worker.terminate()
       reject(error)
     }
+  }).finally(() => {
+    if (request.allocation && allocationPin?.[0])
+      check(n.zc_capture_allocator_unpin(request.allocation, allocationPin[0]), 'unpin mode allocator')
   })
 }
 
@@ -736,6 +747,8 @@ export interface PreviewOverlay {
   stride?: number
 }
 export interface CameraOptions {
+  /** Keep bounded backing across compatible camera/mode reopens. */
+  allocator?: CaptureAllocator
   /** Snapshot before manager startup. Held across mode jobs; conflicts reject. */
   tuning?: TuningSource
   /** Main processed stream. Defaults to RGB byte order BGR888. */
@@ -2117,6 +2130,7 @@ export class Camera {
     this.configuration = copyConfiguration(options)
     const {
       config: cfg,
+      allocation,
       pipeline,
       mainFormat,
       processed,
@@ -2137,7 +2151,12 @@ export class Camera {
         this.started = admission.started
       } else {
         check(
-          processed
+          allocation && processed
+            ? n.zc_open_allocated_pipeline(
+                ptr(cfg),ptr(pipeline),ptr(processed),orientation,strictOrientation ? 1 : 0,
+                cameraId ? ptr(cameraId) : null,cameraId?.length ?? 0,allocation,ptr(out),
+              )
+            : processed
             ? cameraId
               ? n.zc_open_id_processed_pipeline(
                   ptr(cfg),
@@ -5318,6 +5337,9 @@ export class Camera {
     ) as BunJob<ReturnType<Frame['metadata']>>
   }
   private validateModeTuning(target: CameraOptions) {
+    if (target.allocator !== undefined && target.allocator !== this.configuration.allocator)
+      throw new CameraError(-1, 'mode must retain capture allocator')
+    target.allocator = this.configuration.allocator
     if (
       target.tuning !== undefined &&
       target.tuning !== this.configuration.tuning

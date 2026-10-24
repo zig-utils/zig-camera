@@ -15,6 +15,8 @@ pub extern fn zcd_enable_writable(*Handle) c_int;
 pub const enableWritable = zcd_enable_writable;
 pub const stop = zcd_stop;
 pub const close = zcd_close;
+pub extern fn zcd_discard_buffers(*Handle) void;
+pub const discardBuffers = zcd_discard_buffers;
 
 pub extern fn zcd_metadata(*Handle, u32, *c.zc_raw_metadata) c_int;
 pub const metadata = zcd_metadata;
@@ -42,6 +44,10 @@ pub fn openId(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, p
     return zcd_open_id(cfg, pipeline, processed, orientation, strict, actual, id.ptr, @intCast(id.len), context, callback, out, info, negotiated);
 }
 pub const cameraId = zcd_camera_id;
+pub extern fn zcd_open_allocated(*const c.zc_config, *const c.zc_pipeline_options, *const c.zc_processed_options, u32, bool, *u32, ?[*]const u8, u32, *c.zc_capture_allocator, ?*anyopaque, Callback, *?*Handle, *c.zc_info, *c.zc_pipeline_info) c_int;
+pub fn openAllocated(cfg: *const c.zc_config, pipeline: *const c.zc_pipeline_options, processed: *const c.zc_processed_options, orientation: u32, strict: bool, actual: *u32, id: ?[]const u8, allocation: *c.zc_capture_allocator, context: ?*anyopaque, callback: Callback, out: *?*Handle, info: *c.zc_info, negotiated: *c.zc_pipeline_info) c_int {
+    return zcd_open_allocated(cfg, pipeline, processed, orientation, strict, actual, if (id) |value| value.ptr else null, if (id) |value| @intCast(value.len) else 0, allocation, context, callback, out, info, negotiated);
+}
 
 pub const PreparedControls = opaque {};
 pub extern fn zcd_prepare_native_controls(*Handle, [*]const @import("native_controls.zig").Input, u32, *const @import("catalog.zig").Sink, *?*PreparedControls) c_int;

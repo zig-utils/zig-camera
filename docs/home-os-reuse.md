@@ -16,6 +16,21 @@ shared package and composes its existing leases/admission. Device allocation and
 Camera/Bun integration remain open. No OS code was copied, modified, translated
 or executed; no hardware or speedup acceptance is inferred from this audit.
 
+## 0.115 hosted capture allocation
+
+Re-fetched ~/Code/Home/os at 151269666bc09aa15a271f1c1f4603f681132e65 and
+rechecked ADR-MC3, camera.home and drivers/dma.home. The fixed camera allocation
+and stub capture, and ISA 8237 physical channel/16 MB/64 KB constraints, do not
+provide Linux DMA heap allocation, SDK FrameBuffer imports or userspace coherency.
+Home compiler packages/drivers and packages/kernel DMA helpers also use placeholder
+physical pointer assumptions; neither replaces the hosted kernel UAPI.
+
+The shared persistent owner/provider therefore improves Home video, while camera
+owns SDK imports, request/map/export lifetimes and worker pins. This follows MC3's
+shared-stdlib boundary. No OS code is copied, modified, translated or run. The
+independent Linux memfd peer and system SDK tests validate hosted ownership and
+cleanup; they do not establish physical Pi DMA, coherence or FPS.
+
 | Source | Observed implementation | Reuse decision |
 | --- | --- | --- |
 | docs/adr/ADR-MC3-media-stdlib.md | Accepted architecture places codec/container/image implementation in Home stdlib; OS consumes bindings and keeps OS source in Home | Improve shared Home packages, keep Zig helpers out of the OS tree |

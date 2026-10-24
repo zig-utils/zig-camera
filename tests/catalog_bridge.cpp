@@ -280,9 +280,11 @@ int main() {
     assert(sync_calls[2].second==(DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW));
     sync_calls.clear();fail_sync_fd=8;
     assert(access.sync(0,true)==ZC_IO && sync_calls.size()==3);
+    assert(access.allocation_dirty.load());
     assert(sync_calls[2].first==7 && sync_calls[2].second==(DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW));
     sync_calls.clear();fail_sync_fd=7;
     assert(access.sync(0,false)==ZC_IO && sync_calls.size()==2);
+    assert(access.allocation_dirty.load());
     fail_sync_fd=-1;
     Device denied;denied.slots.resize(1);
     Mapping invalid;invalid.length=4096;

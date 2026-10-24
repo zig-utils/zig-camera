@@ -1,9 +1,8 @@
 # Persistent capture allocation policy
 
-The Zig root exposes `CaptureAllocationPolicy`, vendored verbatim from Home
-ac27dba288a22785aa062a197b81129cb01b6ef8. Camera allocation currently remains
-unchanged: there is no persistent Camera allocator handle or Bun allocator API.
-The host integration is outstanding, as tracked in parity-plan.md.
+The Zig root exposes `CaptureAllocationPolicy`; Camera uses it through the owned
+`CaptureAllocator` host described in capture-allocator.md. The source is vendored
+verbatim from Home 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395.
 
 `core/capture_allocation.zig` supplies bounded ownership policy for a host's
 persistent camera buffers. It reuses `owned_admission.Registry` for exact byte
@@ -29,8 +28,14 @@ and mapping, then call `publish` to become `borrowed`. A reused checkout is alre
 `borrowed` and requires no physical allocation. The host releases its claim only
 after every request, frame, exported descriptor and CPU mapping using that
 allocation has retired. `release` changes the entry to `idle`, keeping all backing
-bytes charged. One layout has one exclusive borrower; request-level sharing
-belongs to the camera's existing retained-frame lease pool.
+bytes charged. One entry has one exclusive borrower; request-level sharing
+belongs to the camera's existing retained-frame lease pool. Ordinary `checkout`
+rejects a busy matching layout. Explicit `checkoutConcurrent` may reserve an
+independent entry for the same layout when every matching entry is busy, for
+example while a disconnected camera still owns frames and its replacement opens.
+It prefers available matching idle storage even if an earlier match is busy.
+Every such allocation stays within the same entry/byte bounds and never shares
+backing with an active borrower. Retirement remains entry-generation checked.
 
 Eviction is explicit. `oldestIdle` selects the oldest released idle entry;
 `retireIdle` makes it unavailable and returns a retirement ticket. Cleanup destroys
@@ -51,7 +56,9 @@ The byte ledger is a backing-storage bound, not a total process-RSS bound. Fixed
 policy storage and host resource descriptors are additional bounded overhead.
 The policy does not implement a DMA heap allocator, libcamera buffer import,
 read/write mappings, coherency fences, worker pinning or a public camera allocator
-API. Those hosts must implement and test the corresponding ownership boundaries
+API. `capture_backing.zig` now supplies owned RAM and Linux DMA heap resources;
+see capture-allocator.md. Camera hosts must implement and test their remaining
+SDK/request/worker ownership boundaries
 before claiming persistent camera-allocation support or physical speedups.
 
 Run the standalone suite, including imported ownership tests:

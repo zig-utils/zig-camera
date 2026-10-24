@@ -771,3 +771,16 @@ packages/video/src/core/capture_allocation.zig at
 ac27dba288a22785aa062a197b81129cb01b6ef8, under the MIT license above. It reuses
 the existing verbatim lease_pool and owned_admission modules. This is portable
 ownership policy, not a Home OS kernel or Linux DMA heap allocator.
+
+Home persistent capture backing (0.115):
+- src/home/capture_allocation.zig, capture_backing.zig, capture_dma_heap.zig and
+  capture_host.zig are verbatim packages/video/src/core sources at
+  86f00f0e5a7015955f04324bec8635b84144c9eb.
+- tests/capture_backing_fixture.zig and capture_backing_linux.c are verbatim
+  packages/video/tests sources from the same revision.
+- Existing lease_pool and owned_admission remain verbatim.
+The Home MIT license above applies. Home OS source is not copied.
+
+The capture policy/owner and independent fixtures additionally include failed-
+coherency discard and cleanup-before-replacement from Home 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395,
+under the same MIT license. Failed-fence backing is never cached as reusable.

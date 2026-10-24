@@ -25,6 +25,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libgif-dev libtiff-dev liblcms2-dev libexif-dev libdrm-dev
           echo "GIF_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+      - name: Verify Linux DMA heap ownership and system libcamera buffer imports
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zig-out
+          cat > zig-out/capture-allocator-options.zig <<'EOF'
+          pub const libcamera = true;
+          EOF
+          for mode in Debug ReleaseSafe; do
+            zig build-obj -O "$mode" -fPIC -fcompiler-rt -lc -I include --dep options -Mroot=src/capture_allocator.zig -Moptions=zig-out/capture-allocator-options.zig -femit-bin=zig-out/capture-allocator-fixture.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -c tests/capture_backing_linux.c -o zig-out/capture-allocator-peer.o
+            c++ -std=c++17 -O2 -Wall -Wextra -Werror -I include tests/capture_allocator_import.cpp zig-out/capture-allocator-fixture.o zig-out/capture-allocator-peer.o $(pkg-config --cflags --libs libcamera) -o zig-out/capture-allocator-sdk-test
+            ./zig-out/capture-allocator-sdk-test
+          done
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
         run: |
@@ -72,6 +87,8 @@ jobs:
         run: |
           cc -Wall -Wextra -Werror -Iinclude tests/abi.c -Lzig-out/lib -lzigcamera -o zig-out/abi-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/abi-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/capture_allocator.c -Lzig-out/lib -lzigcamera -o zig-out/capture-allocator-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/capture-allocator-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/frame_export.c -Lzig-out/lib -lzigcamera -o zig-out/frame-export-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/frame-export-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/frame_channel.c -Lzig-out/lib -lzigcamera -o zig-out/frame-channel-test
