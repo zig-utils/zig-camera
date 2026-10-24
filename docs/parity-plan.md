@@ -1,5 +1,10 @@
 # Picamera2 capability parity worklist
 
+Version 0.108 adds Picamera2-style read-only DRM device discovery through shared
+Home KMS catalogs and C/Bun APIs; see drm-discovery.md. It does not implement DRM
+scanout, plane ownership/imports or physical display acceptance. Those preview
+requirements and the full capability families below remain in scope.
+
 Version 0.107 adds bounded sequential APNG display canvases through shared Home
 integer compositing and C/Bun ownership; see png-compositing.md. Additional image
 formats/operations, asynchronous compositing and other animation/color semantics

@@ -24,6 +24,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Additional Home adaptations and reusable modules:
+- src/home/kms_catalog.zig, kms_discovery.zig, kms_discovery_host.zig and
+  kms_discovery_test.zig are verbatim Home video display helpers at
+  89c34efbad589a538b86d6fb07d989be17637393, under the MIT license above.
 - src/home/catalog_envelope.zig is verbatim Home video exact nested HCAT
   snapshots at a7987b68f0b0648f33594ca32acfeb7d214c8b9c (implementation introduced
   at 0804c17f111cb0dc4184e8cbef948615cdb3ed29). Camera owns property

@@ -6,6 +6,10 @@ AVC/HEVC/AAC adapters, containers and bounded media queues. No FFmpeg or Python
 runtime, bindings, test scripts or build scripts are used by this project.
 Physical camera performance and image quality have **not been measured**.
 
+Version 0.108 adds [read-only Linux DRM/KMS display discovery](docs/drm-discovery.md)
+through shared Home catalog/query helpers, with connector/mode/format identities,
+explicit per-card failures and owned C/Bun results. DRM rendering remains open.
+
 Version 0.107 adds [bounded APNG display compositing](docs/png-compositing.md):
 native RGBA8/16 alpha/disposal handling, owned Bun display frames and joined
 iterator cleanup, backed by a new shared Home image primitive.

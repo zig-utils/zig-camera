@@ -10,6 +10,7 @@ export {
 import { retainSensorLayout, type HdrModeValue } from './sensor-hdr'
 export {decodePng,decodePngAsync,loadPngAsync,DecodedPng,type PngDecodeLimits,type PngDecodeMetadata,type DecodedPngFrame} from './png-decode'
 export {PngCompositor,type PngCompositeOptions,type CompositedPngFrame} from './png-compositor'
+export {listDrmDisplays,type DrmDiscoveryOptions,type DrmDisplay,type DrmDisplayFormat,type DrmDiscoveryIssue,type DrmDisplayDiscovery} from './drm-discovery'
 import {
   prepareApng,
   runApng,

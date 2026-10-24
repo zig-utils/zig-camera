@@ -1981,3 +1981,30 @@ all allocator failures. Camera adds C ABI and encoded-APNG/Bun integration,
 excluded posters, two-dimensional disposal, exact partial-alpha words, iterator
 termination and shared saturation. These are software ownership/sample tests,
 not physical camera or performance measurements. See png-compositing.md.
+
+## 0.108 KMS display discovery
+
+Inspected Home 24733f83b0a09b8b8edc733967bf2c7d7ed0d025 and the video package's
+`drm/drm.zig`: that module parses media encryption metadata, not Linux Direct
+Rendering Manager devices. `packages/drivers/src/framebuffer.zig` owns a supplied
+kernel framebuffer address and spinlock; it cannot discover hosted Linux KMS
+connectors or own temporary POSIX query descriptors. Existing Home viewport/
+orientation and camera retained-frame helpers remain relevant to future rendering
+and are not duplicated in a catalog-only feature.
+
+Added Home `packages/video/src/display/{kms_catalog,kms_discovery,kms_discovery_host,
+kms_discovery_test}.zig` at 89c34efbad589a538b86d6fb07d989be17637393, with video
+root exports and documented bounds. Camera vendors all four files verbatim. The
+portable collector validates bounded topology/format unions with an injected
+query owner; the pinned Linux host uses public kernel UAPI headers and libc
+ioctls. No libdrm runtime, camera allocation or kernel register driver is imported.
+Card FDs retire before a catalog escapes; failed cards roll back independently.
+Camera projects the result to bounded C owners and frozen Bun objects using the
+existing Home reservation registry and camera processed-format name table.
+
+Pure fault/mask/name/format tests pass both compiler versions and safety modes;
+the native host cross-compiles for Linux x86/ARM including glibc and musl ioctl
+request ABI differences. Camera CI also drives real adapter entry points with
+an isolated independent C UAPI peer built from system libdrm headers. This checks
+protocol/projection/ownership and explicit failures, not actual display scanout.
+DRM preview/plane allocation/imports and physical acceptance remain open.

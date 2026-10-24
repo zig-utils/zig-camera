@@ -102,6 +102,15 @@ pub const ImageResample = @import("home/pixel_resample.zig");
 pub const ImageOrthogonal = @import("home/oriented_pixels.zig");
 pub const PngDecoder = @import("home/png_decoder.zig");
 pub const ApngCompositor = @import("home/apng_compositor.zig");
+pub const KmsDiscovery = @import("home/kms_discovery.zig");
+pub const KmsDiscoveryHost = @import("home/kms_discovery_host.zig");
+pub const drm_discovery = @import("drm_discovery.zig");
+comptime {
+    _ = drm_discovery;
+}
+test {
+    _ = @import("home/kms_discovery_test.zig");
+}
 pub const sensor_layout = @import("sensor_layout.zig");
 pub const imx708 = @import("imx708.zig");
 comptime {

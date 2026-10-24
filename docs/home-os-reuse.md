@@ -719,3 +719,20 @@ media algorithms in Home stdlib; the checked two-canvas APNG renderer therefore
 lands in Home's image package and is reused by camera. Kernel display/device
 ownership remains separate. No Home OS files are changed, copied or executed;
 this audit provides no physical display/GPU/camera acceptance.
+
+## 0.108 hosted KMS catalog audit
+
+Re-fetched clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and inspected
+ADR-MC5 plus `kernel/src/drivers/framebuffer.home`, `framebuffer_double.home` and
+the existing compositor boundary. ADR-MC5 assigns HVS hardware planes and kernel
+mode setting to Home OS; it explicitly distinguishes architectural bandwidth
+arithmetic and unverified Pi register paths from working hardware evidence.
+Those Home kernel framebuffer pointers, dirty regions and swap/IRQ ownership do
+not implement hosted Linux connector/CRTC/plane enumeration or POSIX FD cleanup.
+
+The Linux read-only catalog therefore lands in Home stdlib video's hosted display
+helpers and is reused verbatim by camera, following the ADR-MC3/MC5 boundary.
+It queries public Linux UAPI identities and changes only its own temporary
+client-capability visibility, without master acquisition or device modesets.
+No Home OS files are copied, modified or executed. Actual DRM rendering and Pi
+display/stride/modifier/color acceptance still require implementations/evidence.

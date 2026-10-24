@@ -23,7 +23,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libgif-dev libtiff-dev liblcms2-dev libexif-dev
+          sudo apt-get install -y libcamera-dev libjpeg-dev pkg-config libsdl2-dev libraw-bin mkvtoolnix libx264-dev libx265-dev libopenh264-dev libde265-dev libasound2-dev libfaad-dev zlib1g-dev libpng-dev libgif-dev libtiff-dev liblcms2-dev libexif-dev libdrm-dev
           echo "GIF_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
       - name: macOS image compression dependency
         if: runner.os == 'macOS'
@@ -83,6 +83,12 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/png-image-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/apng_compositor.c -Lzig-out/lib -lzigcamera -o zig-out/apng-compositor-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/apng-compositor-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/drm_discovery.c -Lzig-out/lib -lzigcamera -o zig-out/drm-discovery-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/drm-discovery-test
+          if [ "$RUNNER_OS" = Linux ]; then
+            cc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared $(pkg-config --cflags libdrm) tests/drm_kms_preload.c -o zig-out/drm-kms-preload.so
+            env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-kms.ts
+          fi
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/rtp.c -Lzig-out/lib -lzigcamera -o zig-out/rtp-abi-test

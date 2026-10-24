@@ -809,6 +809,35 @@ const char *zc_status_string(int status);
 /* Optional SDL preview. Create/show/close on the same main/UI thread. show returns
  * 1 for a window-close request, 0 success, negative status for errors. */
 typedef struct zc_preview zc_preview;
+/* Read-only Linux KMS discovery. Fixed limits: 64 cards, 256 displays, 64
+ * connectors, 32 CRTCs, 128 encoders/planes/modes and 256 union formats. NULL
+ * card scans /dev/dri/card0..63; exact paths have 1..63 non-NUL bytes. Missing
+ * automatic nodes are normal; other failures are explicit issues. Per-card
+ * failures discard that card's records. Resource ID lists are rechecked, but
+ * this is not an atomic hardware snapshot. No master, modeset or buffer import.
+ * Four snapshot owners sharing an 8-MiB budget, no queue. Temporary FDs close before
+ * return. Unsupported platforms return ZC_UNSUPPORTED and NULL. Serialize
+ * access/close. Unknown FOURCC values survive; processed format UINT32_MAX means
+ * no recognized camera format. Formats advertise compatibility, not ownership,
+ * modifier/color/stride acceptance or proof of scanout. close(NULL) is safe. */
+typedef struct zc_drm_discovery zc_drm_discovery;
+enum { ZC_DRM_CONNECTED=1,ZC_DRM_DISCONNECTED=2,ZC_DRM_UNKNOWN=3 };
+enum { ZC_DRM_ATOMIC=1,ZC_DRM_UNIVERSAL_PLANES=2 };
+enum { ZC_DRM_OPEN=1,ZC_DRM_RESOURCES=2,ZC_DRM_ENCODER=3,ZC_DRM_CRTC=4,ZC_DRM_PLANES=5,ZC_DRM_PLANE=6,ZC_DRM_CONNECTOR=7,ZC_DRM_RECHECK=8 };
+enum { ZC_DRM_SYSTEM=1,ZC_DRM_LIMIT=2,ZC_DRM_RACE=3,ZC_DRM_INVALID_TOPOLOGY=4 };
+typedef struct { uint32_t struct_size,display_count,issue_count,cards_tried,cards_opened,reserved[3]; } zc_drm_discovery_info;
+typedef struct {
+    uint32_t struct_size,connector_id,connector_type,connector_type_id,status,current_crtc_id;
+    uint32_t active_width,active_height,default_width,default_height,physical_width_mm,physical_height_mm;
+    uint32_t flags,crtc_count,format_count,reserved;
+    char card[64],name[32];uint32_t crtcs[32],formats[256],processed_formats[256];
+} zc_drm_display_info;
+typedef struct { uint32_t struct_size,stage;int32_t error_number;uint32_t reason;char card[64]; } zc_drm_discovery_issue;
+int zc_drm_discover(const char *card,zc_drm_discovery **out);
+int zc_drm_discovery_info_get(zc_drm_discovery *,zc_drm_discovery_info *);
+int zc_drm_discovery_display_get(zc_drm_discovery *,uint32_t index,zc_drm_display_info *);
+int zc_drm_discovery_issue_get(zc_drm_discovery *,uint32_t index,zc_drm_discovery_issue *);
+void zc_drm_discovery_close(zc_drm_discovery *);
 /* Copy active RGB pixels into an owned tightly packed buffer; caller keeps lease. */
 /* RGB16 copies normalize to little-endian R,G,B words; other source formats reject. */
 int zc_copy_rgb16(const zc_frame *,uint8_t *,uint64_t);
