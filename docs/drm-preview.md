@@ -38,11 +38,13 @@ aliases share an explicit reference table so one framebuffer cannot close a
 handle still owned by another. Detach restores the original plane properties
 and waits for completion before sources return to the camera.
 
-Bun's existing asynchronous camera pump feeds this backend. Native calls remain
+Bun's existing Camera-owned asynchronous pump feeds this backend. Its native calls remain
 synchronous consumer operations, outside camera-manager callbacks. Each event
 wait has a configured timeout (1..60000 ms) and 64-event budget; kernel ioctls
-themselves are not wall-clock bounded. A dedicated asynchronous display worker
-remains open. Preview failure suspends feed; independent recording can continue
+themselves are not wall-clock bounded. The independent `DrmPreview` consumer now
+provides a [native asynchronous worker](drm-async.md). Automatic worker attachment
+to this Camera-owned pump/mode/lifecycle remains open. Preview failure suspends
+feed; independent recording can continue
 when sufficient unleased camera buffers remain.
 
 Mode admission detaches the preview's retained source before checking camera
