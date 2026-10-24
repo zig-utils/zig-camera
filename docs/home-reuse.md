@@ -1879,3 +1879,29 @@ hosted socket ownership. Neither is copied into the Bun host. Home OS remains
 151269666bc09aa15a271f1c1f4603f681132e65 (clean fetched main): kernel UDP queues and
 the AirPlay RTSP control module do not provide this hosted transport. No OS source
 is copied, changed or executed. See socket-output.md for ownership/transport limits.
+
+## Supervised process outputs (0.104)
+
+Home main 6b9c9000460501866cecaa809b5f65bba2254987 adds the allocation-free caller-owned
+ByteTail, strict process_output_wire framing and optional standalone POSIX output
+host. Camera copies tail/wire verbatim and adapts only the host's flattened wire
+import. The portable helpers/public exports pass Debug/ReleaseSafe on pinned Zig
+0.15.2 and current 0.18-dev.470; the native ABI host uses 0.15.2. Both Linux CPU
+host executables cross-compile, with native execution in CI. Exact-copy consumer
+checks pin that revision.
+
+Inspected packages/basics/src/process.zig, video/src/io/pipe.zig and existing
+camera process-pool supervision. Home basics already drains stdout/stderr
+concurrently but targets a different I/O/compiler API and bounded whole captures.
+Video's pipe wrappers do not provide process-group startup/cancel/exit proof.
+The new shared host therefore owns a standalone fork/exec boundary, private
+control fd, exec confirmation, monotonic grace, unreaped-leader group termination
+and Linux adopted-child joins. The new tail provides bounded binary diagnostics
+without allocating on append or confusing raw bytes with text.
+
+Camera reuses its native output mailbox and Home send-progress cursor through a
+shared Bun transport engine for socket/process sinks. No external codec/muxer dependency or
+OS source is introduced. Source argv/env snapshots, stdout/stderr drains, child
+exit and all borrowed bytes remain joined through cancellation. Full parity,
+escaped/hard-killed-supervisor policies and all hardware/performance acceptance
+remain open; see process-output.md.

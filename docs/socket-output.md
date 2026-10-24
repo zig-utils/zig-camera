@@ -100,3 +100,8 @@ builds/tests pass and logs are retained. Shared Home progress/public API tests
 pass Debug/ReleaseSafe on Zig 0.15.2 and 0.18.0-dev.470. The camera compiler stays
 pinned to 0.15.2. Raw and RTP restart admission also rejects the interval before
 a previous close promise has completely settled.
+
+Version 0.104 shares the transport lifecycle and its 16 active/preparing slots
+with ProcessSink. Raw video gating is shared as well; duplicate starts cannot
+reset an active output's codec/keyframe state. Socket factory contracts and
+TCP/UDP framing remain unchanged.

@@ -653,3 +653,14 @@ allocation-free send-progress primitive is therefore implemented in Home video
 stdlib and copied verbatim into camera; hosted queues remain in camera's native
 mailbox and Bun owns OS sockets. No Home OS source is copied, changed or executed;
 no kernel declaration establishes physical networking or Pi capture acceptance.
+
+The 0.104 process-output audit fetches unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65 and inspects CLAUDE.md, ADR-MC3,
+kernel/src/ipc/pipe.home and kernel/src/core/process.home. Its finite kernel pipe
+and PCB/PGID tables are useful ownership references, not a hosted Bun media stdin
+sink, exec handshake or POSIX child-group wait owner. Home basics process I/O and
+video pipe wrappers were checked too. The bounded tail/wire and standalone host
+are implemented in Home video stdlib, while camera retains native queue ownership
+and Bun transport hooks. No OS source is copied, changed or executed. Kernel
+process declarations do not supply Pi capture, microphone sync or process-output
+performance acceptance evidence.

@@ -1,9 +1,12 @@
 pub const rtp = @import("rtp.zig");
 pub const socket_output = @import("socket_output.zig");
+pub const process_output = @import("process_output.zig");
+pub const ByteTail = process_output.Tail;
 pub const SocketWriteCursor = socket_output.Home.Cursor;
 comptime {
     _ = rtp;
     _ = socket_output;
+    _ = process_output;
 }
 pub const processed_format = @import("processed_format.zig");
 pub const RelativeDelay = @import("home/relative_delay.zig").Delay;

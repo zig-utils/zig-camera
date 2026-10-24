@@ -11,6 +11,7 @@ const p = t.ptr,
 const library =
   process.env.ZIG_CAMERA_LIBRARY ??
   resolve(import.meta.dir, `../zig-out/lib/libzigcamera.${suffix}`)
+export const libraryPath = resolve(library)
 export const native = dlopen(library, {
   zc_rtp_hevc_profile: {args:[p,u,p],returns:i},
   zc_default_rtp_config: {args:[p],returns:v},
@@ -283,6 +284,10 @@ export const native = dlopen(library, {
   zc_socket_write_init: { args: [n, u, u, p], returns: i },
   zc_socket_write_next: { args: [p, p, p], returns: i },
   zc_socket_write_accept: { args: [p, u], returns: i },
+  zc_byte_tail_init: { args: [n, p], returns: i },
+  zc_byte_tail_append: { args: [p, p, n, p, n], returns: i },
+  zc_byte_tail_copy: { args: [p, p, n, p, n, p], returns: i },
+  zc_process_output_decode: { args: [p, u, p], returns: i },
   zc_preparation_job_abort_pending: { args: [p], returns: i },
   zc_video_prepare_held: { args: [p, n, p, p, u, p], returns: i },
   zc_preparation_job_publish: { args: [p], returns: i },

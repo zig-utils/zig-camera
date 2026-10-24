@@ -1073,6 +1073,17 @@ typedef struct { uint32_t struct_size,datagram,chunk_bytes,reserved;uint64_t tot
 int zc_socket_write_init(uint64_t total,uint32_t chunk_bytes,uint32_t datagram,zc_socket_write_cursor *);
 int zc_socket_write_next(const zc_socket_write_cursor *,uint64_t *offset,uint32_t *size);
 int zc_socket_write_accept(zc_socket_write_cursor *,uint32_t accepted);
+/* Caller-owned fixed diagnostic tail; arena length must equal capacity and
+ * remains borrowed. Max capacity 1 MiB, input chunks 16 MiB. No overlapping
+ * input/arena/output. Query copy with NULL/0, short/error copies do not write.
+ * Caller serializes; init failure zeroes state. Counts include discarded bytes. */
+typedef struct { uint32_t struct_size,reserved;uint64_t capacity,head,length,total; } zc_byte_tail_state;
+int zc_byte_tail_init(uint64_t capacity,zc_byte_tail_state *);
+int zc_byte_tail_append(zc_byte_tail_state *,uint8_t *arena,uint64_t arena_length,const uint8_t *,uint64_t length);
+int zc_byte_tail_copy(const zc_byte_tail_state *,const uint8_t *arena,uint64_t arena_length,uint8_t *,uint64_t capacity,uint64_t *length);
+enum { ZC_PROCESS_OUTPUT_READY=1,ZC_PROCESS_OUTPUT_RESULT=2,ZC_PROCESS_OUTPUT_PROBLEM=3 };
+typedef struct { uint32_t struct_size,kind,status,reserved;uint64_t supervisor_pid,consumer_pid; } zc_process_output_message;
+int zc_process_output_decode(const uint8_t *,uint32_t length,zc_process_output_message *);
 /* Prepare a fresh file, force a keyframe, move at the next encoded key. No input
  * duplication/loss across a successful split. stats.split_pending tracks commit. */
 int zc_video_split(zc_recorder *,const char *path);

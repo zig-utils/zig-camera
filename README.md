@@ -345,3 +345,8 @@ SDP, cancellation, recovery and circular snapshot integration.
 [Raw socket outputs](docs/socket-output.md) send elementary JPEG/AVC/HEVC over
 bounded TCP/UDP with joined cancellation and partial-write/deadline handling.
 `SocketSink` also carries Home Matroska A/V through `MuxedOutput` without seeking.
+
+[Supervised process outputs](docs/process-output.md) pipe Home media to explicit
+Bun/Zig consumer argv with bounded diagnostics, producer backpressure, joined
+process-group cancellation and parent-exit handling. `ProcessOutput` sends raw
+video; `MuxedOutput(new ProcessSink(...), 'mkv')` carries timestamped Home A/V.

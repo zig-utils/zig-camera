@@ -1,6 +1,7 @@
 export { RtpPacketizer, rtpTimestamp, rtcpSenderReport, rtpHevcProfile, type RtpPacketizerOptions, type RtpCodec, type RtpFormat, type RtcpSenderReport } from "./rtp"
 export { RtpOutput, type RtpOutputOptions, type RtpSocketFactory, type RtpDatagramSocket, type RtpSocketHandlers } from "./rtp-output"
 export { SocketSink, SocketOutput, type SocketSinkOptions, type SocketTransport, type SocketTransportHandlers, type SocketTransportFactory } from './socket-output'
+export {ProcessSink,ProcessOutput,ProcessOutputError,type ProcessSinkOptions,type DiagnosticTail} from './process-output'
 export {
   IMX708, SensorHdrError, HdrMode,
   type SensorHdrState, type SensorHdrBackend, type Imx708Options, type HdrModeValue,

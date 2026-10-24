@@ -87,6 +87,9 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/rtp-abi-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/socket_output.c -Lzig-out/lib -lzigcamera -o zig-out/socket-output-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/socket-output-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/process_output.c -Lzig-out/lib -lzigcamera -o zig-out/process-output-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/process-output-test
+          test -x zig-out/bin/zig-camera-output-host
           bun tests/ts/check-sensor-hdr-cli.ts zig-out/bin/zig-camera
           bun test tests/ts
           bun test tests/ts/processes.test.ts -t 'worker failure and deadline' --rerun-each 10

@@ -1,3 +1,4 @@
+import {simpleBlocks} from './matroska-receiver'
 import { expect, test } from 'bun:test'
 import { createServer, type Socket } from 'node:net'
 import { once } from 'node:events'
@@ -71,32 +72,6 @@ test('Home Matroska TCP streaming retains synchronized PCM audio and complete vi
   }catch(e){if(process.env.ZC_MEDIA_FAILURE_DIR){mkdirSync(process.env.ZC_MEDIA_FAILURE_DIR,{recursive:true});writeFileSync(join(directory,'received.bin'),Buffer.concat(server.chunks));cpSync(directory,join(process.env.ZC_MEDIA_FAILURE_DIR,`socket-${Date.now()}`),{recursive:true})}throw e}
   finally{await recorder?.close();await camera.close();await sink.close();await server.close();rmSync(directory,{recursive:true,force:true})}
 })
-// Independent EBML receiver parser: only recurse through Segment/Cluster;
-// parse track VINT, signed block time and payload from actual received bytes.
-function simpleBlocks(bytes:Buffer){
-  const blocks:{track:number;timeMs:number;data:Buffer}[]=[]
-  function vint(at:number,id=false):{value:number;end:number;unknown:boolean}{
-    let width=1;while(width<=8 && !(bytes[at] & (1<<(8-width))))width++
-    if(width>8 || at+width>bytes.length)throw Error('truncated EBML VINT')
-    const mask=(1<<(8-width))-1
-    let value=id?bytes[at]:bytes[at]&mask,unknown=!id && value===mask
-    for(let i=1;i<width;i++){value=value*256+bytes[at+i];unknown &&= bytes[at+i]===255}
-    if(!unknown&&!Number.isSafeInteger(value))throw Error('oversized EBML value')
-    return {value,end:at+width,unknown}
-  }
-  function walk(at:number,end:number,cluster=0){
-    while(at<end){const id=vint(at,true),size=vint(id.end),stop=size.unknown?end:size.end+size.value
-      if(stop>end||stop<=at)throw Error('invalid EBML element')
-      if(id.value===0x18538067||id.value===0x1f43b675)walk(size.end,stop,0)
-      else if(id.value===0xe7){cluster=0;for(let i=size.end;i<stop;i++)cluster=cluster*256+bytes[i]}
-      else if(id.value===0xa3){const track=vint(size.end);if(track.end+3>stop)throw Error('short SimpleBlock')
-        if(bytes[track.end+2]&6)throw Error('unexpected lacing')
-        blocks.push({track:track.value,timeMs:cluster+bytes.readInt16BE(track.end),data:bytes.subarray(track.end+3,stop)})}
-      at=stop
-    }
-  }
-  walk(0,bytes.length);return blocks
-}
 test('raw socket failures isolate and async recovery preserves every healthy recording frame',async()=>{
   const marker=Error('broken stream'),camera=new Camera({simulate:true,width:32,height:24,fifo:true})
   let healthy=0,badClosed=0;const recovered:Buffer[]=[]

@@ -77,6 +77,13 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "camera", .module = mod }},
     }) });
     b.installArtifact(exe);
+    const output_host = b.addExecutable(.{ .name = "zig-camera-output-host", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/process_output_host_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.installArtifact(output_host);
     const run = b.addRunArtifact(exe);
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run the capture CLI").dependOn(&run.step);

@@ -1,0 +1,58 @@
+name: Home process output
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/byte_tail.zig', 'src/home/process_output*.zig', 'src/process_output*.zig', 'ts/process-output.ts', 'ts/transport-sink.ts', 'ts/elementary-output.ts', 'tests/process_output.c', 'tests/ts/process-output.test.ts', 'tests/fixtures/process-output*.ts', '.github/workflows/home-process-output.yml']
+  pull_request:
+    paths: ['src/home/byte_tail.zig', 'src/home/process_output*.zig', 'src/process_output*.zig', 'ts/process-output.ts', 'ts/transport-sink.ts', 'ts/elementary-output.ts', 'tests/process_output.c', 'tests/ts/process-output.test.ts', 'tests/fixtures/process-output*.ts', '.github/workflows/home-process-output.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  output:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 6b9c9000460501866cecaa809b5f65bba2254987
+          path: .home-process-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact upstream tail framing and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/byte_tail.zig .home-process-upstream/packages/video/src/core/byte_tail.zig
+          cmp src/home/process_output_wire.zig .home-process-upstream/packages/video/src/core/process_output_wire.zig
+          sed 's#../core/process_output_wire.zig#process_output_wire.zig#' .home-process-upstream/packages/video/src/io/process_output_host.zig > /tmp/process-output-host.zig
+          cmp src/home/process_output_host.zig /tmp/process-output-host.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" src/home/byte_tail.zig
+            zig test -lc -O "$mode" src/home/process_output_wire.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-process-upstream/packages/video/tests/process_output.zig -Mvideo=.home-process-upstream/packages/video/src/video.zig
+          done
+      - name: Install pinned Bun for native host acceptance
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s 'bun-v1.4.3'
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Native ABI and standalone POSIX supervisor
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig test -lc -Iinclude -O Debug src/process_output.zig
+          zig test -lc -Iinclude -O ReleaseSafe src/process_output.zig
+          zig build-exe -lc -O ReleaseSafe src/process_output_host_main.zig -femit-bin=process-output-host
+          bun .home-process-upstream/packages/video/tests/process_output_host.ts "$PWD/process-output-host"
