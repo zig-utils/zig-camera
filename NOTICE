@@ -784,3 +784,8 @@ The Home MIT license above applies. Home OS source is not copied.
 The capture policy/owner and independent fixtures additionally include failed-
 coherency discard and cleanup-before-replacement from Home 2f4a6a7ac3a8d229d5f7b16f91a69f33c69e8395,
 under the same MIT license. Failed-fence backing is never cached as reusable.
+
+- src/home/pixel_composite.zig is verbatim Home image native-precision alpha
+  composition at d02f7b2398b5959169d1b01e3013dd068f7e43b6. apng_compositor.zig
+  reuses that implementation with only sibling import paths adapted. The Home
+  MIT attribution/license above applies; Home OS source is not copied.

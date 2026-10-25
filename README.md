@@ -8,6 +8,9 @@ Physical camera performance and image quality have **not been measured**.
 
 
 
+Version 0.119 adds [owned image compositing](docs/image-compositing.md): clipped
+straight RGBA8/16 source/over, explicit color policy and copied-input async jobs.
+
 Version 0.118 adds [multi-object capture planes](docs/capture-planes.md):
 linear planar/semi-planar imports and factories, per-object budgets/maps/fences,
 exact new factory loans, unchanged logical geometry and retained cleanup.

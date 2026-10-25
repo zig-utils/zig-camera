@@ -1,11 +1,11 @@
 import {native as n, ptr, storage, view, check, handle, outPointer, CameraError, type Pointer} from './ffi'
 import {BunJob} from './jobs'
 export interface ImageJobLimits {
-  /** Copied physical pixels and metadata; default 64 MiB, maximum 256 MiB. */
+  /** Copied source pixels and metadata; default 64 MiB, maximum 256 MiB. */
   maxInputBytes?: number
-  /** Encoded result ceiling; default 64 MiB, maximum 256 MiB. */
+  /** Result ceiling (encoded bytes or composed pixels); default 64 MiB, maximum 256 MiB. */
   maxOutputBytes?: number
-  /** Live codec allocations including native zlib workspace/result; default 128 MiB. */
+  /** Live codec/pixel allocations including native workspace/result; default 128 MiB. */
   maxWorkingBytes?: number
 }
 export function prepareImageJobLimits(source: ImageJobLimits) {

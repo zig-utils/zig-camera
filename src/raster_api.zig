@@ -198,3 +198,64 @@ test "orthogonal raster ABI validates full spans caps and overlap before writing
     try t.expect(std.mem.allEqual(u8, &output, 73));
     try t.expect(std.mem.allEqual(u8, &data, 33));
 }
+
+const composite = @import("home/pixel_composite.zig");
+pub export fn zc_default_raster_composite_options(out: *c.zc_raster_composite_options) void {
+    out.* = .{ .struct_size = @sizeOf(c.zc_raster_composite_options), .blend = 0, .x = 0, .y = 0, .bits = 0, .big_endian = 0, .opacity = 65535, .reserved = 0 };
+}
+fn compositeOptions(supplied: ?*const c.zc_raster_composite_options) !composite.Options {
+    var defaults: c.zc_raster_composite_options = undefined;
+    zc_default_raster_composite_options(&defaults);
+    const value = supplied orelse &defaults;
+    if (value.struct_size != @sizeOf(c.zc_raster_composite_options) or value.blend > 1 or (value.bits != 0 and value.bits != 8 and value.bits != 16) or value.big_endian > 1 or value.opacity > 65535 or value.reserved != 0) return error.InvalidOptions;
+    return .{ .x = value.x, .y = value.y, .blend = @enumFromInt(value.blend), .bits = @intCast(value.bits), .endian = if (value.big_endian == 1) .big else .little, .opacity = @intCast(value.opacity) };
+}
+pub export fn zc_raster_composite(base: ?*const c.zc_raster, overlay: ?*const c.zc_raster, supplied: ?*const c.zc_raster_composite_options, output: ?[*]u8, capacity: u64, length: *u64) c_int {
+    length.* = 0;
+    const options = compositeOptions(supplied) catch |err| return still.status(err);
+    const background = read(base) catch |err| return still.status(err);
+    const foreground = read(overlay) catch |err| return still.status(err);
+    const plan = composite.Plan.init(background, foreground, options, maximum) catch |err| return still.status(err);
+    length.* = plan.bytes;
+    const dest = output orelse return if (capacity == 0) c.ZC_OK else c.ZC_INVALID;
+    if (capacity < plan.bytes) return c.ZC_INVALID;
+    composite.into(background, foreground, options, dest[0..plan.bytes], plan.row_bytes, maximum, .{}) catch |err| return still.status(err);
+    return c.ZC_OK;
+}
+pub export fn zc_raster_composite_async(base: ?*const c.zc_raster, overlay: ?*const c.zc_raster, supplied: ?*const c.zc_raster_composite_options, limits: ?*const c.zc_image_job_limits, output: *?*c.zc_image_job) c_int {
+    output.* = null;
+    const options = compositeOptions(supplied) catch |err| return still.status(err);
+    const background = read(base) catch |err| return still.status(err);
+    const foreground = read(overlay) catch |err| return still.status(err);
+    return @import("image_job.zig").submitComposite(background, foreground, options, limits, output);
+}
+
+test "composite ABI sizes defaults malformed options short outputs and aliases reject without writes" {
+    const t = std.testing;
+    try t.expectEqual(@as(usize, 32), @sizeOf(c.zc_raster_composite_options));
+    var input: [32]u8 = @splat(9);
+    var pixels = c.zc_raster{ .struct_size = @sizeOf(c.zc_raster), .width = 2, .height = 2, .format = 0, .bits = 8, .big_endian = 0, .stride = 2, .length = input.len, .data = &input };
+    var options: c.zc_raster_composite_options = undefined;
+    zc_default_raster_composite_options(&options);
+    try t.expectEqual(@as(u32, 65535), options.opacity);
+    var size: u64 = 99;
+    try t.expectEqual(c.ZC_OK, zc_raster_composite(&pixels, &pixels, null, null, 0, &size));
+    try t.expectEqual(@as(u64, 16), size);
+    var out: [20]u8 = @splat(73);
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, &out, 15, &size));
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, input[1..].ptr, 16, &size));
+    options.opacity = 65536;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, &out, out.len, &size));
+    try t.expectEqual(@as(u64, 0), size);
+    zc_default_raster_composite_options(&options);
+    options.reserved = 1;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, &out, out.len, &size));
+    options.reserved = 0;
+    options.blend = 2;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, &out, out.len, &size));
+    options.blend = 0;
+    pixels.length = 3;
+    try t.expectEqual(c.ZC_INVALID, zc_raster_composite(&pixels, &pixels, &options, &out, out.len, &size));
+    for (input) |v| try t.expectEqual(@as(u8, 9), v);
+    for (out) |v| try t.expectEqual(@as(u8, 73), v);
+}

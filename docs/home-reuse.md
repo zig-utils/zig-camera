@@ -1,5 +1,25 @@
 # Home reuse audit
 
+## 0.119 owned raster alpha compositing
+
+Rechecked Home cb17d36d553ad644ee2ad1da03c6a024d4b40a19: PixelView already
+provides checked gray/RGB/RGBA native-word access, and APNG has exact integer
+source-over. The older artistic Blend/Compose API uses 8-bit colors and floating
+opacity. Home [d02f7b2398b5959169d1b01e3013dd068f7e43b6](https://github.com/home-lang/home/commit/d02f7b2398b5959169d1b01e3013dd068f7e43b6)
+extracts shared source-over into PixelComposite and adds checked clipped
+source/source-over with one final color/alpha rounding, explicit 16-bit opacity,
+mixed precision/endian and caller/owned output. APNG reuses the primitive while
+retaining its smaller full-opacity integer weights. Its public image export is
+checked on development Zig; all 13 standalone/APNG tests pass on both compilers
+in Debug, ReleaseSafe and ReleaseFast, including an independent u256 reference.
+
+Camera copies PixelComposite verbatim and adapts only APNG import paths, pinning
+both comparisons in CI. Existing image-job admission, preparation gates, copied
+inputs, Budget and joined workers now handle two-raster raw output. Bun image
+owners retain background provenance and explicit color interpretation. No second
+image pool, codec or executor is added. Color conversion, GPU/physical behavior
+and the remaining parity families stay open.
+
 ## 0.118.2 initial process configuration ownership
 
 Rechecked pinned Home cb17d36d553ad644ee2ad1da03c6a024d4b40a19 and its

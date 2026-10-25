@@ -905,6 +905,22 @@ int zc_apng_compositor_copy(zc_apng_compositor *,uint8_t *,uint64_t capacity,uin
 void zc_apng_compositor_reset(zc_apng_compositor *);
 void zc_apng_compositor_close(zc_apng_compositor *);
 
+/* Straight-alpha encoded-sample composition. Signed offsets clip the overlay to
+ * the base canvas. Tight RGBA output; bits=0 selects greater input precision,
+ * otherwise 8/16; big_endian=0/1. Opacity is 0..65535. No color conversion.
+ * Borrowed sync sources; query with NULL/0. Invalid options/spans/aliasing write
+ * no output. Async copies both tight source rasters before returning, shares
+ * image-job input/output/workspace quotas and returns raw RGBA in its blob. */
+enum { ZC_COMPOSITE_OVER=0, ZC_COMPOSITE_SOURCE=1 };
+typedef struct {
+    uint32_t struct_size,blend;
+    int32_t x,y;
+    uint32_t bits,big_endian,opacity,reserved;
+} zc_raster_composite_options;
+void zc_default_raster_composite_options(zc_raster_composite_options *);
+int zc_raster_composite(const zc_raster *base,const zc_raster *overlay,const zc_raster_composite_options *,uint8_t *data,uint64_t capacity,uint64_t *length);
+int zc_raster_composite_async(const zc_raster *base,const zc_raster *overlay,const zc_raster_composite_options *,const zc_image_job_limits *,zc_image_job **out);
+
 int zc_raster_convert(const zc_raster *,uint32_t format,uint32_t bits,uint32_t big_endian,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_crop(const zc_raster *,uint32_t x,uint32_t y,uint32_t width,uint32_t height,uint8_t *data,uint64_t capacity,uint64_t *length);
 int zc_raster_pixel16(const zc_raster *,uint32_t x,uint32_t y,uint16_t rgba[4]);

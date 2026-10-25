@@ -4,6 +4,8 @@ const c = @import("abi.zig").c;
 const still = @import("still.zig");
 const rgb = @import("stream_rgb.zig");
 const pixel = @import("home/pixel_view.zig");
+const composite = @import("home/pixel_composite.zig");
+const Composite = struct { overlay: pixel.View, options: composite.Options };
 const files = @import("image_file.zig");
 const Gate = @import("home/preparation_gate.zig").Gate;
 const Budget = @import("home/budget_allocator.zig").Budget;
@@ -20,6 +22,7 @@ const Job = struct {
     data: []u8,
     frame: c.zc_frame,
     raster: ?pixel.View = null,
+    composition: ?Composite = null,
     color: c.zc_color_space,
     raw: c.zc_raw_metadata,
     scalar: c.zc_metadata,
@@ -40,6 +43,10 @@ const Job = struct {
         return !cancelled and (self.file == null or !files.cancelled(self.file.?));
     }
     fn encodeBytes(self: *Job, a: std.mem.Allocator) ![]u8 {
+        if (self.composition) |operation| {
+            const result = try composite.copied(a, self.raster.?, operation.overlay, operation.options, self.output_limit, .{ .context = self, .active = continuing });
+            return @constCast(result.view.data);
+        }
         const metadata = if (self.metadata) |*value| value else null;
         const profile = if (self.profile) |*value| value else null;
         if (self.raster) |source| return still.encodeRasterMetadata(a, source, &self.options, profile, @import("exif.zig").bytes(metadata));
@@ -49,6 +56,10 @@ const Job = struct {
         defer source.deinit(a);
         if (!self.checkpoint()) return error.Cancelled;
         return still.encodeModel(a, &source.frame, if (self.options.format == c.ZC_IMAGE_DNG) &self.raw else null, self.model, &self.options, profile, generated orelse @import("exif.zig").bytes(metadata));
+    }
+    fn continuing(context: ?*anyopaque) bool {
+        const self: *Job = @ptrCast(@alignCast(context.?));
+        return self.checkpoint();
     }
     fn encode(self: *Job) c_int {
         if (!self.checkpoint()) return c.ZC_CANCELLED;
@@ -105,18 +116,25 @@ pub fn submit(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata
     return submitModel(frame, color, raw, scalar, catalog, model, options, profile, metadata, supplied, file, out);
 }
 pub fn submitModel(frame: c.zc_frame, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
-    return submitOwned(frame, null, color, raw, scalar, catalog, model, options, profile, metadata, supplied, file, out);
+    return submitOwned(frame, null, color, raw, scalar, catalog, model, options, profile, metadata, supplied, file, out, null);
 }
 pub fn submitRaster(source: pixel.View, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, limits: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
-    return submitOwned(std.mem.zeroes(c.zc_frame), source, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, null, options, profile, metadata, limits, file, out);
+    return submitOwned(std.mem.zeroes(c.zc_frame), source, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, null, options, profile, metadata, limits, file, out, null);
 }
-fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job) c_int {
+pub fn submitComposite(base: pixel.View, overlay: pixel.View, options: composite.Options, limits: ?*const c.zc_image_job_limits, out: *?*c.zc_image_job) c_int {
+    const ignored = c.zc_image_options{ .struct_size = @sizeOf(c.zc_image_options), .format = c.ZC_IMAGE_PNG, .quality = 90, .png_compression = 0, .png_filter = 0 };
+    return submitOwned(std.mem.zeroes(c.zc_frame), base, std.mem.zeroes(c.zc_color_space), std.mem.zeroes(c.zc_raw_metadata), std.mem.zeroes(c.zc_metadata), &.{}, null, &ignored, null, null, limits, null, out, .{ .overlay = overlay, .options = options });
+}
+fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, raw: c.zc_raw_metadata, scalar: c.zc_metadata, catalog: []const u8, model: ?[]const u8, options: *const c.zc_image_options, profile: ?*const c.zc_image_profile, metadata: ?*const c.zc_image_exif, supplied: ?*const c.zc_image_job_limits, file: ?*c.zc_image_file, out: *?*c.zc_image_job, composition: ?Composite) c_int {
     out.* = null;
     var defaults: c.zc_image_job_limits = undefined;
     zc_default_image_job_limits(&defaults);
     const limits = supplied orelse &defaults;
     if (limits.struct_size != @sizeOf(c.zc_image_job_limits) or limits.reserved != 0) return c.ZC_INVALID;
     inline for (.{ limits.max_input_bytes, limits.max_output_bytes, limits.max_working_bytes }) |limit| if (limit == 0 or limit > cap) return c.ZC_INVALID;
+    if (composition) |operation| {
+        _ = composite.Plan.init(raster.?, operation.overlay, operation.options, @intCast(limits.max_output_bytes)) catch |err| return still.status(err);
+    }
     const selected = if (options.format == c.ZC_IMAGE_DNG) frame.raw else frame.main;
     var size: usize = 0;
     var row_bytes: usize = 0;
@@ -129,6 +147,12 @@ fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, 
             if (plane.data == null or plane.bytes_used > plane.length or plane.bytes_used > cap) return c.ZC_INVALID;
             size = std.math.add(usize, size, @intCast(plane.bytes_used)) catch return c.ZC_INVALID;
         }
+    }
+    var overlay_row: usize = 0;
+    if (composition) |operation| {
+        overlay_row = operation.overlay.validate() catch |err| return still.status(err);
+        const overlay_bytes = std.math.mul(usize, overlay_row, operation.overlay.height) catch return c.ZC_INVALID;
+        size = std.math.add(usize, size, overlay_bytes) catch return c.ZC_INVALID;
     }
     const profile_bytes: []const u8 = if (profile != null and profile.?.data != null) profile.?.data[0..@intCast(profile.?.length)] else &.{};
     const exif_bytes = @import("exif.zig").bytes(metadata) orelse &.{};
@@ -167,6 +191,13 @@ fn submitOwned(frame: c.zc_frame, raster: ?pixel.View, color: c.zc_color_space, 
             const bytes = copy(data, &offset, plane.data[0..@intCast(plane.bytes_used)]);
             dest.* = .{ .data = bytes.ptr, .length = bytes.len, .bytes_used = bytes.len, .fd = -1 };
         }
+    }
+    if (composition) |operation| {
+        self.composition = operation;
+        const begin = offset;
+        for (0..operation.overlay.height) |y| _ = copy(data, &offset, operation.overlay.row(y, overlay_row));
+        self.composition.?.overlay.data = data[begin..offset];
+        self.composition.?.overlay.stride = overlay_row;
     }
     const icc = copy(data, &offset, profile_bytes);
     if (profile) |p| {
@@ -379,4 +410,69 @@ test "native PNG workspace budget and output ceiling reject with complete cleanu
     var rejected: ?*c.zc_image_job = @ptrFromInt(1);
     try t.expectEqual(c.ZC_INVALID, testSubmit(testFrame(&pixels), &limits, &rejected));
     try t.expect(rejected == null);
+}
+
+test "composite jobs copy both tight rasters before returning and share input output workspace limits" {
+    const t = std.testing;
+    var base_data: [16]u8 = .{ 7, 9, 73, 73, 73, 11, 13, 73, 73, 73, 73, 73, 73, 73, 73, 73 };
+    var source_data = [_]u8{ 0x12, 0x34, 0x80, 0x01, 0xfe, 0xdc, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+    const base = pixel.View{ .data = &base_data, .width = 2, .height = 2, .stride = 5, .format = .gray };
+    const overlay = pixel.View{ .data = &source_data, .width = 2, .height = 1, .stride = 12, .format = .rgb, .bits = 16, .endian = .big };
+    const options = composite.Options{ .y = 1, .opacity = 32768, .endian = .big };
+    var expected = try composite.copied(A, base, overlay, options, 32, .{});
+    defer expected.deinit();
+    var limits = testLimits();
+    limits.max_input_bytes = 16;
+    limits.max_output_bytes = 32;
+    var owner: ?*c.zc_image_job = null;
+    try t.expectEqual(c.ZC_OK, submitComposite(base, overlay, options, &limits, &owner));
+    defer testCleanup(owner);
+    @memset(&base_data, 99);
+    @memset(&source_data, 99);
+    const state = try testWait(owner.?);
+    try t.expectEqual(c.ZC_OK, state.result);
+    try t.expectEqual(@as(u64, 16), state.input_bytes);
+    try t.expectEqual(@as(u64, 32), state.output_bytes);
+    try t.expectEqual(@as(u64, 32), state.working_peak);
+    var blob: ?*c.zc_image_blob = null;
+    try t.expectEqual(c.ZC_OK, zc_image_job_take_blob(owner.?, &blob));
+    const result: *still.Blob = @ptrCast(@alignCast(blob.?));
+    defer {
+        A.free(result.bytes);
+        A.destroy(result);
+    }
+    try t.expectEqualSlices(u8, expected.view.data, result.bytes);
+    limits.max_input_bytes = 15;
+    var rejected: ?*c.zc_image_job = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_INVALID, submitComposite(base, overlay, options, &limits, &rejected));
+    try t.expect(rejected == null);
+    limits.max_input_bytes = 16;
+    limits.max_output_bytes = 31;
+    try t.expectEqual(c.ZC_INVALID, submitComposite(base, overlay, options, &limits, &rejected));
+    try t.expect(rejected == null);
+    limits.max_output_bytes = 32;
+    limits.max_working_bytes = 31;
+    try t.expectEqual(c.ZC_OK, submitComposite(base, overlay, options, &limits, &rejected));
+    defer testCleanup(rejected);
+    const denied = try testWait(rejected.?);
+    try t.expectEqual(c.ZC_NOMEM, denied.result);
+    try t.expectEqual(@as(u64, 1), denied.budget_denials);
+    try t.expectEqual(@as(u64, 0), denied.output_bytes);
+}
+test "composites use the existing four-owner image admission and cancelled ready results cannot publish" {
+    const t = std.testing;
+    const base = pixel.View{ .data = &.{ 17, 129, 255, 128 }, .width = 1, .height = 1, .stride = 4, .format = .rgba };
+    var owners: [4]?*c.zc_image_job = @splat(null);
+    defer for (owners) |owner| testCleanup(owner);
+    for (&owners) |*owner| try t.expectEqual(c.ZC_OK, submitComposite(base, base, .{}, &testLimits(), owner));
+    for (owners) |owner| try t.expectEqual(c.ZC_OK, (try testWait(owner.?)).result);
+    var rejected: ?*c.zc_image_job = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_BUSY, submitRaster(base, &testOptions(), null, null, &testLimits(), null, &rejected));
+    try t.expect(rejected == null);
+    try t.expectEqual(@as(c_int, 1), zc_image_job_cancel(owners[0].?));
+    try t.expectEqual(c.ZC_CANCELLED, zc_image_job_take_blob(owners[0].?, &rejected));
+    try t.expect(rejected == null);
+    try t.expectEqual(c.ZC_OK, zc_image_job_close(owners[0]));
+    owners[0] = null;
+    try t.expectEqual(c.ZC_OK, submitRaster(base, &testOptions(), null, null, &testLimits(), null, &owners[0]));
 }

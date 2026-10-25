@@ -111,6 +111,7 @@ pub const ApngEncoder = @import("home/apng_encoder.zig");
 pub const GifEncoder = @import("home/gif_encoder.zig");
 pub const ImagePixels = @import("home/pixel_view.zig");
 pub const ImageResample = @import("home/pixel_resample.zig");
+pub const ImageComposite = @import("home/pixel_composite.zig");
 pub const ImageOrthogonal = @import("home/oriented_pixels.zig");
 pub const PngDecoder = @import("home/png_decoder.zig");
 pub const ApngCompositor = @import("home/apng_compositor.zig");
@@ -890,6 +891,13 @@ pub const FrameChannel = struct {
         return cookie;
     }
 };
+/// Copies both rasters synchronously, composes on a joined worker and returns
+/// tight raw RGBA bytes via takeBlob. Precision/geometry follow ImageComposite.
+pub fn compositeImageAsync(base: ImagePixels.View, overlay: ImagePixels.View, options: ImageComposite.Options, limits: ?*const c.zc_image_job_limits) Error!ImageEncodeJob {
+    var out: ?*c.zc_image_job = null;
+    try check(@import("image_job.zig").submitComposite(base, overlay, options, limits, &out));
+    return .{ .handle = out };
+}
 pub fn defaultImageJobLimits() c.zc_image_job_limits {
     var limits: c.zc_image_job_limits = undefined;
     @import("image_job.zig").zc_default_image_job_limits(&limits);

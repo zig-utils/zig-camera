@@ -21,6 +21,8 @@ import { withStagedImageFile } from './staged-image'
 import {prepareImageJobLimits,runImageJob,type ImageJobLimits} from './native-image-job'
 import {prepareImageOutput,writeImageOutput,type ImageOutput} from './image-output'
 import type { decodeMetadata } from './metadata'
+import {snapshotCompositeOptions,compositeDescriptor,type ImageCompositeOptions} from './image-composite'
+export type {ImageCompositeOptions} from './image-composite'
 export type RasterFormat = 'gray' | 'rgb' | 'rgba'
 export type RasterEndian = 'little' | 'big'
 export interface ImageRaster {
@@ -397,6 +399,33 @@ export class CapturedImage implements Disposable {
   }
   transpose() {
     return this.transform({ transpose: true })
+  }
+  private compositePlan(overlay:CapturedImage,selected:ReturnType<typeof snapshotCompositeOptions>) {
+    if(!(overlay instanceof CapturedImage))throw new TypeError('composite overlay must be an owned image')
+    const background=this.descriptor(),foreground=overlay.descriptor()
+    const a=this.sourceColor?.value,b=overlay.sourceColor?.value
+    const knownA=a?.present===true,knownB=b?.present===true
+    if(selected.policy==='requireSame'&&(knownA!==knownB||(knownA&&knownB&&(a!.primaries!==b!.primaries||a!.transfer!==b!.transfer||a!.ycbcrEncoding!==b!.ycbcrEncoding||a!.range!==b!.range))))throw new RangeError('composite color descriptions differ; convert externally or explicitly assumeSame')
+    const bits=selected.bits??Math.max(this.bits,overlay.bits) as 8|16,endian=selected.endian??this.endian
+    const info=Object.freeze({width:this.width,height:this.height,format:'rgba' as const,bits,endian,stride:this.width*4*(bits/8)})
+    return {background,foreground,config:compositeDescriptor(selected,bits,endian),info,color:this.sourceColor,metadata:this.sourceMetadata}
+  }
+  /** Independent straight RGBA result in encoded sample space, with clipped overlay. */
+  composite(overlay:CapturedImage,options:ImageCompositeOptions={}) {
+    const selected=snapshotCompositeOptions(options),prepared=this.compositePlan(overlay,selected),size=new BigUint64Array(1)
+    check(n.zc_raster_composite(ptr(prepared.background.data),ptr(prepared.foreground.data),ptr(prepared.config),null,0n,ptr(size)),'image composite')
+    const bytes=storage(Number(size[0]))
+    check(n.zc_raster_composite(ptr(prepared.background.data),ptr(prepared.foreground.data),ptr(prepared.config),ptr(bytes),BigInt(bytes.length),ptr(size)),'image composite')
+    return new CapturedImage(bytes,prepared.info,prepared.color,prepared.metadata)
+  }
+  /** Both sources copy during admission; cancellation joins the existing native worker. */
+  compositeAsync(overlay:CapturedImage,options:ImageCompositeOptions & ImageJobLimits & JobOptions<CapturedImage>={}) {
+    const selected=snapshotCompositeOptions(options),limits=prepareImageJobLimits(options),admitted=snapshotJobOptions(options,30000),prepared=this.compositePlan(overlay,selected),deadline=Date.now()+(admitted.timeoutMs??Infinity)
+    const job=new BunJob<CapturedImage>(async current=>{
+      const bytes=await runImageJob(out=>n.zc_raster_composite_async(ptr(prepared.background.data),ptr(prepared.foreground.data),ptr(prepared.config),ptr(limits),out),current,deadline)
+      current.seal();return new CapturedImage(bytes!,prepared.info,prepared.color,prepared.metadata)
+    },()=>{},admitted)
+    void job.start();return job
   }
   resize(width: number, height: number, options: ImageResizeOptions = {}) {
     integer(width, 1, 0x7fffffff)

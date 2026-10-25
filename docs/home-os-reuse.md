@@ -1,5 +1,15 @@
 # Home OS media reuse audit
 
+## 0.119 straight-alpha raster composition
+
+Rechecked Home OS 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3/MC5 and
+compositor.home::color_blend. Its opaque-target RGB arithmetic floors 8-bit
+channels and does not implement native-word straight RGBA ownership. Home stdlib
+image therefore receives the shared compositor, reusing its APNG/PixelView
+math; camera consumes it with existing image-job admission and owned results.
+No kernel code is copied, modified, translated or executed. This is software
+image evidence, not GPU or physical Pi acceptance.
+
 ## 0.118.2 process configuration ownership
 
 Rechecked Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and the already

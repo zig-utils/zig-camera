@@ -121,6 +121,8 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/encoded-file-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/image_job.c -Lzig-out/lib -lzigcamera -o zig-out/image-job-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/image-job-test
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/image_composite.c -Lzig-out/lib -lzigcamera -o zig-out/image-composite-test
+          LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib ./zig-out/image-composite-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/png_image.c -Lzig-out/lib -lzigcamera -o zig-out/png-image-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/png-image-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/jpeg_decode.c -Lzig-out/lib -lzigcamera -o zig-out/jpeg-decode-test

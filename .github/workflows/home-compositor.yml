@@ -1,10 +1,10 @@
-name: Home APNG compositor
+name: Home raster and APNG compositing
 on:
   push:
     branches: [main]
-    paths: ['src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
+    paths: ['src/home/pixel_composite.zig', 'src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'src/raster_api.zig', 'src/image_job.zig', 'tests/image_composite.c', 'tests/ts/image-composite.test.ts', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
   pull_request:
-    paths: ['src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
+    paths: ['src/home/pixel_composite.zig', 'src/home/apng_compositor.zig', 'src/home/pixel_view.zig', 'src/apng_compositor.zig', 'src/raster_api.zig', 'src/image_job.zig', 'tests/image_composite.c', 'tests/ts/image-composite.test.ts', 'tests/apng_compositor.c', 'tests/ts/png-compositor.test.ts', '.github/workflows/home-compositor.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 24733f83b0a09b8b8edc733967bf2c7d7ed0d025
+          ref: d02f7b2398b5959169d1b01e3013dd068f7e43b6
           path: .home-compositor-upstream
           sparse-checkout: packages/image
           persist-credentials: false
@@ -32,10 +32,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sed 's|formats/pixel_view.zig|pixel_view.zig|' .home-compositor-upstream/packages/image/src/apng_compositor.zig > /tmp/home-compositor.zig
+          sed -e 's|formats/pixel_view.zig|pixel_view.zig|' -e 's|formats/pixel_composite.zig|pixel_composite.zig|' .home-compositor-upstream/packages/image/src/apng_compositor.zig > /tmp/home-compositor.zig
           cmp /tmp/home-compositor.zig src/home/apng_compositor.zig
           cmp .home-compositor-upstream/packages/image/src/formats/pixel_view.zig src/home/pixel_view.zig
-          for mode in Debug ReleaseSafe; do
+          cmp .home-compositor-upstream/packages/image/src/formats/pixel_composite.zig src/home/pixel_composite.zig
+          for mode in Debug ReleaseSafe ReleaseFast; do
             zig test -O "$mode" src/home/apng_compositor.zig
             zig test -O "$mode" .home-compositor-upstream/packages/image/src/apng_compositor.zig
           done
+          if [ "${{ matrix.zig }}" = master ]; then
+            zig test -lc --dep image -Mroot=.home-compositor-upstream/packages/image/tests/pixel_composite_exports.zig -Mimage=.home-compositor-upstream/packages/image/src/image.zig
+          fi
