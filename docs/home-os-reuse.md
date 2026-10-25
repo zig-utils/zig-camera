@@ -1,5 +1,15 @@
 # Home OS media reuse audit
 
+## 0.118 compact hosted capture metadata
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3
+and ipc/msgqueue.home. Its inline kernel message slots do not own hosted FD
+resources or retryable user mappings. The shared Home video owner therefore
+keeps its primary resource inline and allocates extra metadata only for actual
+multi-plane imports, retaining that metadata through failed cleanup. No Home OS
+source is copied, modified, translated or executed. This host memory improvement
+does not establish Pi frame rate or hardware acceptance.
+
 ## 0.118 physical plane ownership audit
 
 Rechecked Home OS origin/main 151269666bc09aa15a271f1c1f4603f681132e65 and its

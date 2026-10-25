@@ -1,5 +1,23 @@
 # Home reuse audit
 
+## 0.118.1 compact capture ownership
+
+Rechecked Home 8b50d2da7b04661ec52ab8871bf28c70ea732be0 and its existing
+provider allocator, allocation admission and retirement paths. Home
+[cb17d36d553ad644ee2ad1da03c6a024d4b40a19](https://github.com/home-lang/home/commit/cb17d36d553ad644ee2ad1da03c6a024d4b40a19)
+keeps primary resources inline and allocates bounded extra plane metadata only
+after multi-plane admission. Failed cleanup retains that metadata until every
+object retires. Managed and one-plane imports need no metadata allocation; an
+injected failure test verifies this and that multi-plane allocation failure
+unwinds admission before provider preparation. All 38 shared ownership tests
+pass on both compilers in Debug, ReleaseSafe and ReleaseFast. Camera vendors the
+source verbatim, explicitly supplies its native allocator and pins comparisons.
+
+For the 16-slot RAM owner on local aarch64, fixed size changes from 1,668,592 to
+415,232 bytes. This is host metadata evidence, not physical Pi performance.
+The repeatable Bun setup benchmark alternates explicit library builds, preserving
+raw rows without camera/frame throughput claims.
+
 ## 0.118 physical capture objects and component windows
 
 Rechecked Home b97e5fd55c73ec994314b683327ee2303bd9db23, capture_backing,

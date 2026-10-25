@@ -106,7 +106,7 @@ pub export fn zc_capture_allocator_open(config: *const c.zc_capture_allocator_co
         std.heap.c_allocator.destroy(self);
         return status(failure);
     } else .{ .allocator = std.heap.c_allocator };
-    self.* = .{ .owner = .{ .managed = Owner.init(provider, @intCast(config.max_bytes), config.max_entries) catch unreachable } };
+    self.* = .{ .owner = .{ .managed = Owner.initWithAllocator(provider, @intCast(config.max_bytes), config.max_entries, std.heap.c_allocator) catch unreachable } };
     self.root_pin = self.pins.acquire(0) catch unreachable;
     out.* = self.handle();
     return c.ZC_OK;
@@ -127,7 +127,7 @@ pub export fn zc_capture_allocator_open_imported(config: *const c.zc_capture_all
     if (!linux or config.backend != backend) return c.ZC_UNSUPPORTED;
     if (comptime linux) {
         const self = std.heap.c_allocator.create(Pool) catch return c.ZC_NOMEM;
-        self.* = .{ .owner = .{ .imported = ImportedOwner.init(.{ .dma_buf = options.libcamera }, @intCast(config.max_bytes), config.max_entries) catch unreachable } };
+        self.* = .{ .owner = .{ .imported = ImportedOwner.initWithAllocator(.{ .dma_buf = options.libcamera }, @intCast(config.max_bytes), config.max_entries, std.heap.c_allocator) catch unreachable } };
         self.root_pin = self.pins.acquire(0) catch unreachable;
         out.* = self.handle();
         return c.ZC_OK;

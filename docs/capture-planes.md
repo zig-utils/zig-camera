@@ -89,3 +89,20 @@ counts, planar pixel parity, writable views, non-staged export, producer snapsho
 SCM_RIGHTS processing and temporary mode restoration. Physical Pi allocation,
 device layout acceptance, CPU/GPU coherency and throughput still require hardware.
 This does not establish full Picamera2 parity or a measured speedup.
+
+Version 0.118.1 keeps the primary resource inline and allocates extra metadata
+only for frames with multiple planes, after admission. The record survives
+failed cleanup until all of its objects retire. Managed and one-plane imported
+frames do not allocate metadata. Camera supplies its native allocator explicitly;
+Home tests inject every metadata and provider allocation failure.
+
+Measure setup separately from capture with explicit preserved shared libraries:
+
+```sh
+bun bench/capture-allocator-setup.ts /absolute/before-library /absolute/after-library > setup-rows.jsonl
+```
+
+The JSON lines retain all 21 timing rows, 100 operations per row and 100 warmup
+operations per candidate, plus host/Bun details. Candidate order rotates per
+trial. These measurements open and close a managed allocator without a camera
+or frame; they do not establish sensor throughput or a Picamera2 speedup.
