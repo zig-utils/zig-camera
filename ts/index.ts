@@ -1,3 +1,5 @@
+export {SynchronizedFrames,SynchronizedCaptureCleanupError,type SynchronizedCaptureOptions} from './synchronized-capture'
+import {prepareSynchronizedCapture,runSynchronizedCapture,type SynchronizedFrames,type SynchronizedCaptureOptions} from './synchronized-capture'
 export {decodeJpeg,decodeJpegAsync,loadJpegAsync,DecodedJpeg,type JpegDecodeLimits,type JpegDecodeMetadata,type JpegColorModel} from './jpeg-decode'
 export { ListeningSocketSink, ListeningSocketOutput, type ListeningSocketSinkOptions, type ListeningEndpoint } from './listening-output'
 export { RtpPacketizer, rtpTimestamp, rtcpSenderReport, rtpHevcProfile, type RtpPacketizerOptions, type RtpCodec, type RtpFormat, type RtcpSenderReport } from "./rtp"
@@ -1107,6 +1109,7 @@ export class Frame {
     const name = cstring(path)
     check(n.zc_save_dng(this.camera.handle, this.token, ptr(name)))
   }
+  get closed() { return this.released }
   release() {
     if (this.released) return
     const code = n.zc_release(this.camera.handle, this.token)
@@ -2046,6 +2049,7 @@ export class Camera {
   private timer?: ReturnType<typeof setTimeout>
   private pumping = false
   private requests: CaptureRequest[] = []
+  private synchronizedCaptureJob?: BunJob<SynchronizedFrames>
   private imageFileJobs = new Set<BunJob<ReturnType<Frame['metadata']>>>()
   private requestCallbacks: Readonly<RequestCallbacks> = Object.freeze({})
   private lastRequestCallbackError?: RequestCallbackError
@@ -2480,6 +2484,7 @@ export class Camera {
     if (this.hasRequestCallbacks) this.ensurePump()
   }
   acquire(timeoutMs = 0) {
+    if (this.synchronizedCaptureJob && !this.synchronizedCaptureJob.done) throw new CameraError(-4, 'synchronized capture active')
     if (
       (this.captureFilesJob && !this.captureFilesJob.done) ||
       (this.pngCaptureJob && !this.pngCaptureJob.done)
@@ -3466,6 +3471,42 @@ export class Camera {
     )
     void job.start()
     return job
+  }
+  /** Collect a bounded, same-host first-pixel timestamp intersection. */
+  static captureSynchronizedRequestsAsync(cameras: readonly Camera[], options: SynchronizedCaptureOptions = {}): BunJob<SynchronizedFrames> {
+    guardRequestCallback()
+    guardOutputHook()
+    if (!Array.isArray(cameras)) throw new TypeError('synchronized cameras must be an array')
+    const count = cameras.length
+    if (!Number.isInteger(count) || count < 2 || count > 8) throw new RangeError('synchronized camera count must be 2..8')
+    const members: Camera[] = Array.from({ length: count }, (_, index) => cameras[index])
+    if (members.length < 2 || members.length > 8 || new Set(members).size !== members.length || members.some(camera => !(camera instanceof Camera))) throw new TypeError('synchronized cameras must be distinct Camera instances')
+    const plan = prepareSynchronizedCapture(options, members.length, captureClockNs)
+    const validate = () => {
+      const simulated = members[0].configuration.simulate ?? false
+      for (const camera of members) {
+        camera.assertOpen()
+        camera.ensureConnected()
+        if ((camera.configuration.simulate ?? false) !== simulated) throw new CameraError(-8, 'synchronized cameras must share a backend clock domain')
+        if (camera.modeJobs.size + camera.requests.length >= 32) throw new CameraError(-4, 'synchronized camera queue')
+        if (camera.hasPendingModes() || camera.focusJobs || camera.focusCaptureActive || camera.requests.length || camera.modeActive || camera.sessionRecoveryActive || camera.pendingPreviewJobs() || (camera.captureFilesJob && !camera.captureFilesJob.done) || (camera.pngCaptureJob && !camera.pngCaptureJob.done)) throw new CameraError(-4, 'synchronized camera jobs active')
+      }
+    }
+    validate()
+    const ports = members.map(camera => ({capture: (selection: CaptureOptions<Frame>, owner: BunJob<SynchronizedFrames>) => camera.submitCapture<Frame>((frame: Frame) => frame, selection, (frame: Frame) => frame.release(), true, owner)}))
+    const job = new BunJob<SynchronizedFrames>(current => runSynchronizedCapture(ports, plan, current), () => {
+      for (const camera of members) {
+        camera.modeJobs.delete(job)
+        if (camera.synchronizedCaptureJob === job) camera.synchronizedCaptureJob = undefined
+      }
+    }, plan.job)
+    try { validate() } catch (error) { job.cancel(error); throw error }
+    for (const camera of members) { camera.modeJobs.add(job); camera.synchronizedCaptureJob = job }
+    void job.start()
+    return job
+  }
+  static captureSynchronizedRequests(cameras: readonly Camera[], options: SynchronizedCaptureOptions = {}) {
+    return Camera.captureSynchronizedRequestsAsync(cameras, options).wait()
   }
   captureRequestAsync(options: CaptureOptions<Frame> = {}) {
     return this.submitCapture(
@@ -5439,6 +5480,7 @@ export class Camera {
       throw new CameraError(-1, 'mode must retain camera/backend')
   }
   private checkModeAdmission(owner?: object) {
+    if (this.synchronizedCaptureJob && !this.synchronizedCaptureJob.done && owner !== this.synchronizedCaptureJob) throw new CameraError(-4, 'synchronized capture active')
     this.ensureConnected()
     if(this.pendingPreviewJobs())throw new CameraError(-4,'preview jobs pending')
     if (

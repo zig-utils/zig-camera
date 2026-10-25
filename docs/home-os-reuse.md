@@ -1,5 +1,19 @@
 # Home OS media reuse audit
 
+## 0.120 candidate matching and shared kernel boundary
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3,
+drivers/camera.home and ipc/msgqueue.home. camera_capture explicitly remains a
+size-returning stub. Its fixed kernel message storage does not own hosted
+libcamera requests, sensor timestamp domains or cross-camera cancellation.
+
+The reusable allocation-free matching policy therefore improves Home video,
+with a retained-function freestanding aarch64 link probe on both selected Zig
+compilers. Hosted camera grouping reuses native Home-backed leases and existing
+Bun capture/mode job ownership. No Home OS source is copied, modified, translated
+or executed. Neither the link probe nor synthetic timing is physical Pi camera,
+sensor synchronization or performance evidence.
+
 ## 0.119.1 shared media compatibility audit
 
 Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 at

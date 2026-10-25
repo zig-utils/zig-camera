@@ -458,6 +458,14 @@ typedef struct {
  uint64_t after_ns,last_event;
 } zc_capture_filter;
 int zc_capture_filter_init(zc_capture_filter *,uint32_t drop_frames,uint32_t flags,uint64_t after_ns);
+/* Same-clock first-pixel timestamps, 2..8 streams. Masked candidates must be
+ * released/replaced by the caller; no sensor or clock synchronization is done.
+ * Invalid arguments preserve output. Equality at tolerance qualifies. */
+typedef struct {
+    uint32_t struct_size,replace_mask;
+    uint64_t earliest_ns,latest_ns,skew_ns;
+} zc_frame_match;
+int zc_match_frame_timestamps(const uint64_t *,uint32_t count,uint64_t tolerance_ns,zc_frame_match *);
 /* Linux BOOTTIME, Darwin virtual-camera MONOTONIC; never wall-clock time. */
 int zc_capture_clock_ns(uint64_t *out);
 /* Relative idle delay in one caller-supplied monotonic ns domain. Queries update

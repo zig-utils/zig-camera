@@ -2,9 +2,9 @@ name: Home capture synchronization
 on:
   push:
     branches: [main]
-    paths: ['src/home/frame_barrier.zig', 'src/capture_filter.zig', 'include/zig_camera.h', '.github/workflows/home-capture-sync.yml']
+    paths: ['src/home/frame_barrier.zig', 'src/home/frame_match.zig', 'src/frame_match.zig', 'ts/synchronized-capture.ts', 'tests/frame_match.c', 'tests/ts/synchronized-capture.test.ts', 'src/capture_filter.zig', 'include/zig_camera.h', '.github/workflows/home-capture-sync.yml']
   pull_request:
-    paths: ['src/home/frame_barrier.zig', 'src/capture_filter.zig', 'include/zig_camera.h', '.github/workflows/home-capture-sync.yml']
+    paths: ['src/home/frame_barrier.zig', 'src/home/frame_match.zig', 'src/frame_match.zig', 'ts/synchronized-capture.ts', 'tests/frame_match.c', 'tests/ts/synchronized-capture.test.ts', 'src/capture_filter.zig', 'include/zig_camera.h', '.github/workflows/home-capture-sync.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +21,28 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 90172471547e0b8884cdda2cddacec42442d2299
+          path: .home-frame-match-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact upstream timestamp intersection and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp src/home/frame_match.zig .home-frame-match-upstream/packages/video/src/core/frame_match.zig
+          cmp src/home/frame_barrier.zig .home-frame-match-upstream/packages/video/src/core/frame_barrier.zig
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            zig test -lc -O "$mode" src/home/frame_match.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-frame-match-upstream/packages/video/tests/frame_match_exports.zig -Mvideo=.home-frame-match-upstream/packages/video/src/video.zig
+          done
+      - name: Link actual shared policy for freestanding aarch64
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build-exe -target aarch64-freestanding -fno-entry --export=home_frame_match -O ReleaseSafe --dep match -Mroot=.home-frame-match-upstream/packages/video/tests/frame_match_freestanding.zig -Mmatch=src/home/frame_match.zig -femit-bin="$RUNNER_TEMP/home-frame-match.elf"
       - name: Request-local readiness, drops and exact timing
         shell: bash
         run: |
@@ -34,3 +56,5 @@ jobs:
           set -euo pipefail
           zig test -lc -I include -O Debug src/capture_filter.zig
           zig test -lc -I include -O ReleaseSafe src/capture_filter.zig
+          zig test -lc -I include -O Debug src/frame_match.zig
+          zig test -lc -I include -O ReleaseSafe src/frame_match.zig

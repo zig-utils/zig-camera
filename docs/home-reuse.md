@@ -1,5 +1,29 @@
 # Home reuse audit
 
+## 0.120 bounded same-clock multi-camera candidates
+
+Rechecked Home 7f627cc595998756db5fe3f8bc0367a36fe7da43, video frame_barrier,
+pts_clock, capture backing/leases and media pipeline execution. Request-local
+readiness/freshness and caller-owned retained leases already exist; they do not
+select an intersection of candidates from independent streams. Home
+[90172471547e0b8884cdda2cddacec42442d2299](https://github.com/home-lang/home/commit/90172471547e0b8884cdda2cddacec42442d2299)
+adds an allocation-free two-through-eight timestamp decision, exact inclusive
+skew and caller-order replacement masks. Widened pairwise and exhaustive tuple
+references cover the discard rule; public Video exports and the four helper
+tests pass both selected compilers in all three optimization modes. A retained
+export links without libc or a heap for freestanding aarch64 on both compilers.
+The link probe does not boot or execute Home OS.
+
+Camera copies the policy verbatim, adds its small guarded C ABI projection and
+reuses existing native retained Frame tokens, capture filters, Bun jobs, shared
+request pumps and mode/stop ownership. No second native capture queue or camera
+manager is introduced. The group holds one candidate per camera, reserves all
+members before dispatch, bounds matching/child/callback owners and joins failure,
+stop and cancellation before dropping reservations. Failed releases retain
+unconsumed wrappers for explicit retry. Independent C reference tests validate
+28,672 tuples. Sensor clock/exposure and sustained multi-camera behavior require
+physical acceptance; matching timestamps alone is not sensor synchronization.
+
 ## 0.119.1 reproducible shared-media checks
 
 Rechecked Home [7f627cc595998756db5fe3f8bc0367a36fe7da43](https://github.com/home-lang/home/commit/7f627cc595998756db5fe3f8bc0367a36fe7da43).

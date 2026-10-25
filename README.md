@@ -8,6 +8,11 @@ Physical camera performance and image quality have **not been measured**.
 
 
 
+Version 0.120 adds [timestamp-matched multi-camera capture](docs/synchronized-capture.md):
+bounded same-host request groups, backend readiness, retained results and joined
+cancellation/stop/cleanup. Physical synchronization and the other parity families
+remain open.
+
 Version 0.119.1 pins reproducible Home helper checks and includes shared media
 compiler compatibility and RTMP header corrections in the [reuse audit](docs/home-reuse.md).
 

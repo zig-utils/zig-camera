@@ -1,3 +1,7 @@
+pub const FrameMatcher = @import("frame_match.zig").Home;
+comptime {
+    _ = @import("frame_match.zig");
+}
 pub const rtp = @import("rtp.zig");
 pub const socket_output = @import("socket_output.zig");
 pub const process_output = @import("process_output.zig");

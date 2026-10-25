@@ -789,3 +789,8 @@ under the same MIT license. Failed-fence backing is never cached as reusable.
   composition at d02f7b2398b5959169d1b01e3013dd068f7e43b6. apng_compositor.zig
   reuses that implementation with only sibling import paths adapted. The Home
   MIT attribution/license above applies; Home OS source is not copied.
+
+- src/home/frame_match.zig is verbatim Home video core/frame_match.zig at
+  90172471547e0b8884cdda2cddacec42442d2299. The Home MIT license above applies.
+  It selects bounded same-clock candidate replacement masks without owning
+  frames or clocks; no Home OS source is copied.
