@@ -20,7 +20,7 @@ export fn home_pixel_resize(format: u32, bits: u32, big: u32, filter: u32, sw: u
         const hi: u8 = @truncate(x * 37 + y * 53 + ch * 79 + (x * y) % 251);
         const lo: u8 = @truncate(x * 17 + y * 29 + ch * 43);
         const at = 1 + y * stride + (x * kind.channels() + ch) * (bits / 8);
-        if (bits == 8) source[at] = hi else std.mem.writeInt(u16, source[at..][0..2], @as(u16, hi) << 8 | lo, endian);
+        if (bits == 8) source[at] = hi else std.mem.writeInt(u16, source[at..][0..2], (@as(u16, hi) << 8) | lo, endian);
     };
     const result = resize.resize(a, .{ .data = source[1..], .width = sw, .height = sh, .stride = stride, .format = kind, .bits = @intCast(bits), .endian = endian }, dw, dh, @enumFromInt(filter), .{}) catch return -4;
     output.* = @constCast(result.view.data.ptr);

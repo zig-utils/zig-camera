@@ -19,7 +19,7 @@ export fn home_pixel_orient(format: u32, bits: u32, big: u32, orientation: u32, 
         const hi: u8 = @truncate(x * 37 + y * 53 + ch * 79 + (x * y) % 251);
         const lo: u8 = @truncate(x * 17 + y * 29 + ch * 43);
         const at = 1 + y * stride + (x * channels + ch) * (bits / 8);
-        if (bits == 8) data[at] = hi else std.mem.writeInt(u16, data[at..][0..2], @as(u16, hi) << 8 | lo, if (big == 1) .big else .little);
+        if (bits == 8) data[at] = hi else std.mem.writeInt(u16, data[at..][0..2], (@as(u16, hi) << 8) | lo, if (big == 1) .big else .little);
     };
     const result = oriented.copy(a, .{ .data = data[1..], .width = width, .height = height, .stride = stride, .format = @enumFromInt(format), .bits = @intCast(bits), .endian = if (big == 1) .big else .little }, transform) catch return -4;
     output.* = @constCast(result.view.data.ptr);

@@ -8,6 +8,9 @@ Physical camera performance and image quality have **not been measured**.
 
 
 
+Version 0.119.1 pins reproducible Home helper checks and includes shared media
+compiler compatibility and RTMP header corrections in the [reuse audit](docs/home-reuse.md).
+
 Version 0.119 adds [owned image compositing](docs/image-compositing.md): clipped
 straight RGBA8/16 source/over, explicit color policy and copied-input async jobs.
 
@@ -295,7 +298,9 @@ covers a subset of the native ABI; see [coverage and gaps](docs/parity.md).
 
 ## Build
 
-Use **Zig 0.15.2** and **Bun 1.4.3**. On 64-bit Raspberry Pi OS:
+Use **Zig 0.15.2** and **Bun 1.4.3**. Portable Home helper CI also checks the
+exact development compiler recorded in `.zigdevversion`; it does not change the
+production toolchain. On 64-bit Raspberry Pi OS:
 
 ```sh
 sudo apt update

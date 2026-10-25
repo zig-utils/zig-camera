@@ -1,5 +1,25 @@
 # Home reuse audit
 
+## 0.119.1 reproducible shared-media checks
+
+Rechecked Home [7f627cc595998756db5fe3f8bc0367a36fe7da43](https://github.com/home-lang/home/commit/7f627cc595998756db5fe3f8bc0367a36fe7da43).
+All 14 upstream checkouts now pin this coherent revision; all 42 existing
+verbatim/adapted workflow comparisons match. Production stays on Zig 0.15.2.
+The 30 portable helper matrices pin 0.18.0-dev.567+7f0281900 rather than a
+moving nightly, preserving development-only public-package import checks.
+Explicit operator grouping preserves prior byte packing and PCM phase math in
+Home and the copied helpers; camera reference fixtures receive the same syntax
+correction. Home public Image/Video imports and nine current-development
+APNG/compositor, palette and PCM mode runs pass locally.
+
+Home [5b6e623eaecbb820e46591e4dc55e3c396c33b38](https://github.com/home-lang/home/commit/5b6e623eaecbb820e46591e4dc55e3c396c33b38)
+separately fixes RTMP extended chunk IDs: combine both little-endian bytes before
+adding 64. ID 512 previously decoded as 256. Exhaustive valid IDs 2..65599 across
+four header formats, invalid IDs, truncated input and short output pass on
+production and both development snapshots in all three optimization modes.
+Camera CI adds these exact-source tests alongside the forward-MP4 public root;
+this does not add an RTMP recording output or claim protocol conformance.
+
 ## 0.119 owned raster alpha compositing
 
 Rechecked Home cb17d36d553ad644ee2ad1da03c6a024d4b40a19: PixelView already

@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
-        zig: ['0.15.2', master]
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 4a5d30540bd6b483c634ddd86de4fe27bef32115
+          ref: 7f627cc595998756db5fe3f8bc0367a36fe7da43
           path: .home-sensor-upstream
           sparse-checkout: packages/video
           persist-credentials: false

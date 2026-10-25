@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
-        zig: ['0.15.2', master]
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: d02f7b2398b5959169d1b01e3013dd068f7e43b6
+          ref: 7f627cc595998756db5fe3f8bc0367a36fe7da43
           path: .home-compositor-upstream
           sparse-checkout: packages/image
           persist-credentials: false
@@ -40,6 +40,6 @@ jobs:
             zig test -O "$mode" src/home/apng_compositor.zig
             zig test -O "$mode" .home-compositor-upstream/packages/image/src/apng_compositor.zig
           done
-          if [ "${{ matrix.zig }}" = master ]; then
+          if [ "${{ matrix.zig }}" != "0.15.2" ]; then
             zig test -lc --dep image -Mroot=.home-compositor-upstream/packages/image/tests/pixel_composite_exports.zig -Mimage=.home-compositor-upstream/packages/image/src/image.zig
           fi

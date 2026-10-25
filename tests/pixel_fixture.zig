@@ -18,7 +18,7 @@ export fn home_pixel_convert(sf: u32, sb: u32, se: u32, tf: u32, tb: u32, te: u3
         const hi: u8 = @truncate(x * 37 + y * 53 + ch * 79 + (x * y) % 251);
         const lo: u8 = @truncate(x * 17 + y * 29 + ch * 43);
         const at = 1 + y * stride + (x * format.channels() + ch) * (sb / 8);
-        if (sb == 8) source[at] = hi else std.mem.writeInt(u16, source[at..][0..2], @as(u16, hi) << 8 | lo, if (se == 1) .big else .little);
+        if (sb == 8) source[at] = hi else std.mem.writeInt(u16, source[at..][0..2], (@as(u16, hi) << 8) | lo, if (se == 1) .big else .little);
     };
     const result = pixel.Owned.copy(a, .{ .data = source[1..], .width = width, .height = height, .stride = stride, .format = format, .bits = @intCast(sb), .endian = if (se == 1) .big else .little }, @enumFromInt(tf), @intCast(tb), if (te == 1) .big else .little) catch return -4;
     output.* = @constCast(result.view.data.ptr);

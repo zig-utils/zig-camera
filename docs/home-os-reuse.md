@@ -1,5 +1,16 @@
 # Home OS media reuse audit
 
+## 0.119.1 shared media compatibility audit
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 at
+~/Code/Home/os, ADR-MC3/MC5, media/video_decoder.home and compositor.home.
+ADR-MC3 places reusable codecs in Home stdlib and requires corpus evidence.
+Placeholder decoder success returns and unverified Pi register paths cannot
+replace hosted codec/container tests. The operator-grouping and RTMP fixes
+therefore improve Home image/video; camera checks their exact revision on both
+production and pinned development Zig. No OS kernel code is copied, modified,
+translated or executed. Physical Pi and GPU acceptance remain open.
+
 ## 0.119 straight-alpha raster composition
 
 Rechecked Home OS 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3/MC5 and

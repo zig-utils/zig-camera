@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
-        zig: ['0.15.2', 'master']
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -36,16 +36,16 @@ jobs:
             /tmp/home-orientation
           done
       - name: Check out exact upstream Image implementation for public API tests
-        if: matrix.zig == 'master'
+        if: matrix.zig != '0.15.2'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 3d06866b74de1516625f070e96b7a4dc3bcdb01e
+          ref: 7f627cc595998756db5fe3f8bc0367a36fe7da43
           path: .home-orthogonal-upstream
           sparse-checkout: packages/image
           persist-credentials: false
       - name: Upstream Image precision palette and animation ownership
-        if: matrix.zig == 'master'
+        if: matrix.zig != '0.15.2'
         shell: bash
         run: |
           set -euo pipefail

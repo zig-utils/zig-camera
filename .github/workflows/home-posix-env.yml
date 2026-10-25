@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
-        zig: ['0.15.2', 'master']
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -33,16 +33,16 @@ jobs:
           zig build-exe --dep posix_env -Mroot=tests/home_env_no_libc.zig -Mposix_env=src/home/posix_env.zig -femit-bin="$RUNNER_TEMP/home-env-no-libc"
           "$RUNNER_TEMP/home-env-no-libc"
       - name: Read exact Home public wrapper revision
-        if: matrix.zig == 'master'
+        if: matrix.zig != '0.15.2'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 3888e242056533d2da2e0c082129354885d920ec
+          ref: 7f627cc595998756db5fe3f8bc0367a36fe7da43
           path: home-env-upstream
           sparse-checkout: packages/env
           persist-credentials: false
       - name: Public Linux/libc and long-value regression on current Home toolchain
-        if: matrix.zig == 'master'
+        if: matrix.zig != '0.15.2'
         shell: bash
         run: |
           set -euo pipefail
