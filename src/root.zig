@@ -1,3 +1,7 @@
+pub const CnnOutputs = @import("cnn_outputs.zig").Home;
+comptime {
+    _ = @import("cnn_outputs.zig");
+}
 pub const FrameMatcher = @import("frame_match.zig").Home;
 comptime {
     _ = @import("frame_match.zig");

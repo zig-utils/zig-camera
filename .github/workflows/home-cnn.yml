@@ -1,0 +1,54 @@
+name: Home CNN output tensors
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/cnn_outputs.zig', 'src/home/tensor_layout.zig', 'src/home/typed_catalog.zig', 'src/cnn_outputs.zig', 'tests/cnn_outputs.c', 'ts/cnn-outputs.ts', '.github/workflows/home-cnn.yml']
+  pull_request:
+    paths: ['src/home/cnn_outputs.zig', 'src/home/tensor_layout.zig', 'src/home/typed_catalog.zig', 'src/cnn_outputs.zig', 'tests/cnn_outputs.c', 'ts/cnn-outputs.ts', '.github/workflows/home-cnn.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tensors:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: 7f857166f3786a8e7102ad5dc702a4d7dbe75436
+          path: .home-cnn-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact upstream tensor decoder and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for helper in cnn_outputs tensor_layout typed_catalog; do
+            cmp "src/home/$helper.zig" ".home-cnn-upstream/packages/video/src/core/$helper.zig"
+          done
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            zig test -lc -O "$mode" src/home/cnn_outputs.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-cnn-upstream/packages/video/tests/cnn_outputs_exports.zig -Mvideo=.home-cnn-upstream/packages/video/src/video.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-cnn-upstream/packages/video/tests/tensor_layout_exports.zig -Mvideo=.home-cnn-upstream/packages/video/src/video.zig
+          done
+      - name: Link actual decoder and row permutation for freestanding aarch64
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build-exe -target aarch64-freestanding -fno-entry --export=home_cnn_row_major -O ReleaseSafe --dep cnn -Mroot=.home-cnn-upstream/packages/video/tests/cnn_outputs_freestanding.zig -Mcnn=src/home/cnn_outputs.zig -femit-bin="$RUNNER_TEMP/home-cnn-row-major.elf"
+      - name: Canonical camera C ABI on the pinned camera compiler
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig test -lc -I include -O Debug src/cnn_outputs.zig
+          zig test -lc -I include -O ReleaseSafe src/cnn_outputs.zig

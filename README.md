@@ -8,6 +8,11 @@ Physical camera performance and image quality have **not been measured**.
 
 
 
+Version 0.121 adds [owned CNN output tensors](docs/cnn-outputs.md):
+selective request snapshots, checked column/row storage and retained capture
+context in C/Zig/Bun. Firmware/network loading, ROI/input tensors, model
+postprocessing and physical IMX500 acceptance remain open.
+
 Version 0.120 adds [timestamp-matched multi-camera capture](docs/synchronized-capture.md):
 bounded same-host request groups, backend readiness, retained results and joined
 cancellation/stop/cleanup. Physical synchronization and the other parity families

@@ -23,6 +23,12 @@ typedef struct {
     int (*begin)(void *, const zcd_catalog_record *);
     int (*value)(void *, const zcd_catalog_value *);
     int (*end)(void *);
+    /* Metadata-list preselection: 1 keeps, 0 skips before visiting a value,
+     * negative propagates an error. No callback or pointer is retained. */
+    int (*select)(void *, const zcd_catalog_record *);
+    /* Zero retains the standard 4 MiB per-value ceiling. Zig validates any
+     * larger caller-owned snapshot budget before constructing this sink. */
+    uint64_t max_value_bytes;
 } zcd_catalog_sink;
 typedef struct {
     zcd_catalog_record record;

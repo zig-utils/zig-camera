@@ -209,6 +209,12 @@ template<class T> int beginCatalog(const zcd_catalog_sink &s, const T *id, uint3
     }
     if constexpr (HasEnumerators<T>::value) if(id)r.flags|=64;
     r.flags|=extra_flags;
+    if(s.select) {
+        const int selected=s.select(s.context,&r);
+        if(selected<0)return selected;
+        if(selected==0)return 1; // Internal metadata-list skip, never a public status.
+        if(selected!=1)return ZC_INVALID;
+    }
     return s.begin(s.context,&r);
 }
 template<class T> void component(std::vector<uint8_t> &data, T field) {
@@ -227,7 +233,8 @@ template<class T> void geometryValues(const ControlValue &v, std::vector<uint8_t
     }
 }
 int catalogValue(const zcd_catalog_sink &s, uint32_t role, const ControlValue &v, const std::string &label="") {
-    if(v.numElements()>UINT32_MAX || v.data().size()>4*1024*1024)return ZC_BUSY;
+    const uint64_t limit=s.max_value_bytes ? s.max_value_bytes : 4*1024*1024;
+    if(v.numElements()>UINT32_MAX || v.data().size()>limit)return ZC_BUSY;
     const uint16_t endian=1;
     zcd_catalog_value out{};out.role=role;out.kind=portableType(v.type());out.native_type=v.type();
     out.flags=(v.isArray()?1:0)|(*reinterpret_cast<const uint8_t *>(&endian)?2:0);
@@ -235,7 +242,7 @@ int catalogValue(const zcd_catalog_sink &s, uint32_t role, const ControlValue &v
     std::vector<uint8_t> packed;
     if(out.kind==7 || out.kind==8 || out.kind==11) {
         const size_t width=out.kind==7 ? 16 : 8;
-        if(out.count>(4*1024*1024)/width)return ZC_BUSY;
+        if(out.count>limit/width)return ZC_BUSY;
         packed.reserve(size_t(out.count)*width);
         if(out.kind==7)geometryValues<Rectangle>(v,packed);
         else if(out.kind==8)geometryValues<Size>(v,packed);
@@ -263,7 +270,9 @@ int catalogList(const zcd_catalog_sink &s, const ControlList &list, uint32_t gro
     for(const auto &entry:list) {
         const ControlId *id=nullptr;
         if(ids){const auto found=ids->find(entry.first);if(found!=ids->end())id=found->second;}
-        int rc=beginCatalog(s,id,group,entry.first,entry.second.type());if(rc)return rc;
+        int rc=beginCatalog(s,id,group,entry.first,entry.second.type());
+        if(rc==1)continue;
+        if(rc)return rc;
         rc=catalogValue(s,0,entry.second);if(rc)return rc;
         rc=s.end(s.context);if(rc)return rc;
     }

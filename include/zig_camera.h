@@ -541,6 +541,26 @@ int zc_restore_native_controls(zc_camera *,const uint8_t *,uint64_t,uint64_t bas
 int zc_camera_properties(zc_camera *, zc_catalog **out);
 int zc_camera_controls(zc_camera *, zc_catalog **out);
 int zc_frame_metadata_catalog(zc_camera *, uint64_t token, zc_catalog **out);
+/* CNN-only owned metadata snapshot; 4..64 MiB float-payload ceiling, multiple
+ * of four. Skips unrelated values and remains valid after source retirement. */
+int zc_frame_cnn_catalog(zc_camera *,uint64_t token,uint64_t max_output_bytes,zc_catalog **out);
+/* CNN values are contiguous float32. Tensor geometry counts elements; offset
+ * is relative to the complete output. Default column order matches the RPi
+ * exported metadata; explicit row order reorders values and strides together. */
+enum { ZC_CNN_COLUMN_MAJOR=0,ZC_CNN_ROW_MAJOR=1 };
+typedef struct { uint32_t count,rank;uint64_t offset;uint32_t shape[16];uint64_t strides[16]; } zc_cnn_tensor;
+typedef struct {
+    uint32_t struct_size,present,tensor_count,frame_count;
+    uint32_t network_name_length,order;
+    uint64_t value_count;
+    uint8_t network_name[64];
+    zc_cnn_tensor tensors[16];
+} zc_cnn_outputs_info;
+/* NULL/0 output queries the descriptor. Errors preserve descriptor and output
+ * values. Output may not alias source bytes or the output descriptor. */
+int zc_decode_cnn_outputs(const uint8_t *info,uint64_t info_length,const uint8_t *values,uint64_t values_length,uint32_t big_endian,uint32_t order,uint64_t max_output_bytes,zc_cnn_outputs_info *,float *output,uint64_t capacity);
+int zc_cnn_catalog_outputs(const zc_catalog *,uint32_t order,uint64_t max_output_bytes,zc_cnn_outputs_info *,float *output,uint64_t capacity);
+int zc_cnn_tensor_row_major(const zc_cnn_tensor *,uint32_t source_order,const float *source,uint64_t count,float *output,uint64_t capacity);
 /* Owned request-time recipe/negotiated configuration, <=64 KiB, HCAT kind 7.
  * Full metadata additionally carries these reserved groups, vendor zig-camera.
  * Startup hints are distinct from per-frame applied controls/metadata. */

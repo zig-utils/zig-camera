@@ -1,3 +1,5 @@
+export {CnnTensor,CnnOutputs,decodeCnnOutputs,type CnnOutputOptions,type CnnStorageOrder} from './cnn-outputs'
+import {prepareCnnOptions,copyFrameCnnOutputs,type CnnOutputOptions} from './cnn-outputs'
 export {SynchronizedFrames,SynchronizedCaptureCleanupError,type SynchronizedCaptureOptions} from './synchronized-capture'
 import {prepareSynchronizedCapture,runSynchronizedCapture,type SynchronizedFrames,type SynchronizedCaptureOptions} from './synchronized-capture'
 export {decodeJpeg,decodeJpegAsync,loadJpegAsync,DecodedJpeg,type JpegDecodeLimits,type JpegDecodeMetadata,type JpegColorModel} from './jpeg-decode'
@@ -1041,6 +1043,13 @@ export class Frame {
     const data = storage(96)
     check(n.zc_get_frame_metadata(this.camera.handle, this.token, ptr(data)))
     return decodeMetadata(data)
+  }
+  cnnOutputs(options:CnnOutputOptions={}) {
+    const settings=prepareCnnOptions(options)
+    this.open()
+    const capture=this.metadata()
+    this.open()
+    return copyFrameCnnOutputs(this.camera.handle,this.token,settings,capture)
   }
   synchronization() {
     this.open()

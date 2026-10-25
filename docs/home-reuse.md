@@ -1,5 +1,24 @@
 # Home reuse audit
 
+## 0.121 checked CNN tensor layouts and selective metadata
+
+Inspected Home video interop/RawFrameData, typed_catalog, image region/viewport
+geometry and runtime archive support. The existing image-layout enums do not
+validate arbitrary column-major NPU tensor metadata. Home 7f857166f3786a8e7102ad5dc702a4d7dbe75436
+adds allocation-free rank-16 layout/stride validation, exact typed-array catalog
+selection and a bounded CNN info/value decoder. RawFrameData now checks zero
+geometry and allocation size overflow before allocation. Camera copies
+cnn_outputs.zig, tensor_layout.zig and the upgraded typed_catalog.zig verbatim.
+The public Video exports and both selected compilers are tested independently.
+
+The schema follows actual Raspberry Pi libcamera controller.h at
+c682979b50695b93526adb1e66db33743484b63b (712-byte 16×16), with exact-length
+compatibility for the documented 264-byte 8×8 packet. No image axis inference,
+raw NPU decoding, firmware success or physical throughput is implied. Native
+selection avoids the ordinary 4 MiB catalog ceiling and skips unrelated values
+before copying; the float payload is capped at 64 MiB. Home owns format math,
+Zig owns catalogs/leases and Bun owns copied views and capture context.
+
 ## 0.120 bounded same-clock multi-camera candidates
 
 Rechecked Home 7f627cc595998756db5fe3f8bc0367a36fe7da43, video frame_barrier,

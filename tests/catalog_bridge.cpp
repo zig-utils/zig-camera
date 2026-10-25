@@ -174,7 +174,35 @@ int main() {
     assert(!sameBayerLayout("SRGGB12","SBGGR12_CSI2P"));
     assert(!sameBayerLayout("SRGGB12","SFOOO12"));
     Captured out;
-    const zcd_catalog_sink sink{&out,record,value,end};
+    const zcd_catalog_sink sink{&out,record,value,end,nullptr,0};
+    {
+        // Real SDK ControlValue storage larger than the ordinary catalog cap.
+        const std::vector<float> floats(5*1024*1024/sizeof(float),1.25f);
+        const ControlValue large(Span<const float>(floats.data(),floats.size()));
+        assert(catalogValue(sink,0,large)==ZC_BUSY);
+        auto extended=sink;extended.max_value_bytes=8*1024*1024;
+        assert(catalogValue(extended,0,large)==ZC_OK);
+        assert(out.bytes.size()==5*1024*1024 && read<float>(out.bytes)==1.25f);
+        extended.max_value_bytes=4*1024*1024;
+        assert(catalogValue(extended,0,large)==ZC_BUSY);
+        ControlList oversized(controls::controls);
+        oversized.set(controls::ColourGains.id(),large);
+        assert(catalogList(sink,oversized)==ZC_BUSY);
+        auto selected=sink;
+        selected.select=[](void *,const zcd_catalog_record *r)->int {
+            return std::string(r->name,r->name_length)=="ColourGains"?0:1;
+        };
+        out.records=out.values=out.ends=0;
+        assert(catalogList(selected,oversized)==ZC_OK);
+        assert(out.records==0 && out.values==0 && out.ends==0);
+        oversized.set(controls::SensorTimestamp,int64_t(42));
+        assert(catalogList(selected,oversized)==ZC_OK);
+        assert(out.records==1 && out.values==1 && out.ends==1);
+        selected.select=[](void *,const zcd_catalog_record *)->int{return ZC_IO;};
+        assert(catalogList(selected,oversized)==ZC_IO);
+        selected.select=[](void *,const zcd_catalog_record *)->int{return 2;};
+        assert(catalogList(selected,oversized)==ZC_INVALID);
+    }
     extraType(sink,out,uint16_t(43210),9);
     extraType(sink,out,uint32_t(0xffffffff),10);
     extraType(sink,out,Point(-2,7),11);

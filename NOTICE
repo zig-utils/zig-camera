@@ -794,3 +794,9 @@ under the same MIT license. Failed-fence backing is never cached as reusable.
   90172471547e0b8884cdda2cddacec42442d2299. The Home MIT license above applies.
   It selects bounded same-clock candidate replacement masks without owning
   frames or clocks; no Home OS source is copied.
+
+CNN tensor layout/decoder and exact typed metadata selection are copied from
+home-lang/home packages/video/src/core/{tensor_layout,cnn_outputs,typed_catalog}.zig
+at 7f857166f3786a8e7102ad5dc702a4d7dbe75436, under the Home MIT license reproduced above.
+Raspberry Pi CNN descriptor layouts are interface facts checked against the
+upstream libcamera producer, credited in docs/cnn-outputs.md.

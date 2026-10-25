@@ -955,3 +955,15 @@ work in Home stdlib and requires corpus evidence. The bounded JPEG decoder and
 independent reference corpus therefore improve Home's image package and are
 consumed by camera. No Home OS kernel code is copied, modified, translated or
 executed; the OS remains Home. This audit is not physical hardware acceptance.
+
+## 0.121 inference tensor ownership audit
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 at
+~/Code/Home/os: kernel/src/ml/tensor.home, tensor_ops.home and
+drivers/camera.home. Kernel tensors have eight axes and row-major byte strides;
+the camera capture entry still returns a size stub. Their raw allocator/GPU
+ownership cannot own hosted libcamera request metadata or validate sixteen-axis
+column-major inference output. Following ADR-MC3, reusable checked layout and
+metadata decoding improve Home's shared video package and are consumed by
+camera. Kernel sources remain Home and are not copied, translated, modified or
+executed. These software checks are not IMX500 hardware acceptance.

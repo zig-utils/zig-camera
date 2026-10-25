@@ -3044,6 +3044,98 @@ pub export fn zc_camera_controls(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
 pub export fn zc_frame_metadata_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
     return cameraCatalog(p, 4, token, out);
 }
+/// Caller-owned CNN-only snapshot. Scalar/configuration catalogs keep their
+/// existing ceiling; this path skips unrelated large values before copying.
+pub export fn zc_frame_cnn_catalog(p: *c.zc_camera, token: u64, max_output_bytes: u64, out: *?*c.zc_catalog) c_int {
+    return cnnCatalog(p, token, max_output_bytes, out, driver.catalog);
+}
+fn cnnCatalog(p: *c.zc_camera, token: u64, max_output_bytes: u64, out: *?*c.zc_catalog, comptime visit: anytype) c_int {
+    out.* = null;
+    if (max_output_bytes < 4 or max_output_bytes > 64 * 1024 * 1024 or max_output_bytes % 4 != 0) return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    const result = catalogs.Catalog.createWithLimit(c.ZC_CATALOG_METADATA, @intCast(max_output_bytes + 65536)) catch |err| return catalogs.status(err);
+    var success = false;
+    defer if (!success) result.destroy();
+    var filter: catalogs.NameFilter = .{ .catalog = result, .names = &.{ "CnnOutputTensorInfo", "CnnOutputTensor" }, .kinds = &.{ .byte, .f32 }, .forbidden_flags = 1, .max_value_bytes = @max(max_output_bytes, 1024), .value_limits = &.{ 1024, max_output_bytes } };
+    const sink = filter.sink();
+    const rc = visit(self.device.?, c.ZC_CATALOG_METADATA, index, &sink);
+    if (rc != c.ZC_OK) return rc;
+    _ = filter.finish() catch |err| return catalogs.status(err);
+    out.* = result.ptr();
+    success = true;
+    return c.ZC_OK;
+}
+
+test "CNN snapshots own selected tensors across frame and session retirement" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const fixture = struct {
+        fn visit(_: *driver.Handle, kind: u32, _: u32, sink: *const catalogs.Sink) c_int {
+            if (kind != c.ZC_CATALOG_METADATA) return c.ZC_INVALID;
+            var info: [712]u8 = @splat(0);
+            @memcpy(info[0..3], "cnn");
+            std.mem.writeInt(u32, info[64..68], 1, .little);
+            std.mem.writeInt(u32, info[68..72], 6, .little);
+            std.mem.writeInt(u32, info[72..76], 2, .little);
+            std.mem.writeInt(u16, info[76..78], 2, .little);
+            std.mem.writeInt(u16, info[78..80], 3, .little);
+            info[708] = 27;
+            const values = [_]f32{ 0, 1, 2, 3, 4, 5 };
+            const names = [_][]const u8{ "CnnOutputTensorInfo", "CnnOutputTensor" };
+            const payloads = [_][]const u8{ &info, std.mem.sliceAsBytes(&values) };
+            for (names, payloads, 0..) |name, data, i| {
+                const record: catalogs.bridge.zcd_catalog_record = .{ .name = name.ptr, .name_length = name.len, .vendor = "rpi", .vendor_length = 3, .kind = if (i == 0) 2 else 5, .flags = 2 };
+                var rc = sink.begin.?(sink.context, &record);
+                if (rc != 0) return rc;
+                const value: catalogs.bridge.zcd_catalog_value = .{ .kind = record.kind, .count = if (i == 0) 712 else 6, .flags = 1 | (if (@import("builtin").cpu.arch.endian() == .little) @as(u32, 2) else 0), .data = data.ptr, .length = data.len };
+                rc = sink.value.?(sink.context, &value);
+                if (rc != 0) return rc;
+                rc = sink.end.?(sink.context);
+                if (rc != 0) return rc;
+            }
+            return c.ZC_OK;
+        }
+    };
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 2;
+    cfg.height = 2;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    var active = true;
+    defer if (active) {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    };
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var snapshot: ?*c.zc_catalog = null;
+    try t.expectEqual(c.ZC_OK, cnnCatalog(camera.?, frame.token, 24, &snapshot, fixture.visit));
+    defer catalogs.zc_catalog_close(snapshot);
+    var refs: u32 = 0;
+    try t.expectEqual(c.ZC_OK, zc_frame_references(camera.?, frame.token, &refs));
+    try t.expectEqual(@as(u32, 1), refs);
+    var rejected: ?*c.zc_catalog = @ptrFromInt(1);
+    try t.expectEqual(c.ZC_BUSY, cnnCatalog(camera.?, frame.token, 4, &rejected, fixture.visit));
+    try t.expect(rejected == null);
+    try t.expectEqual(c.ZC_INVALID, zc_frame_cnn_catalog(camera.?, frame.token, 3, &rejected));
+    try t.expect(rejected == null);
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try t.expectEqual(c.ZC_STALE, cnnCatalog(camera.?, frame.token, 24, &rejected, fixture.visit));
+    try t.expect(rejected == null);
+    try t.expectEqual(c.ZC_OK, zc_stop(camera.?));
+    try t.expectEqual(c.ZC_OK, zc_close(camera.?));
+    active = false;
+    var header: c.zc_cnn_outputs_info = undefined;
+    var output: [6]f32 = undefined;
+    try t.expectEqual(c.ZC_OK, @import("cnn_outputs.zig").zc_cnn_catalog_outputs(snapshot, 1, 24, &header, &output, 6));
+    try t.expectEqualSlices(f32, &.{ 0, 2, 4, 1, 3, 5 }, &output);
+    try t.expectEqual(@as(u32, 27), header.frame_count);
+}
 
 test "session property cache and request envelopes own exact independent backend catalogs" {
     if (options.libcamera) return error.SkipZigTest;
