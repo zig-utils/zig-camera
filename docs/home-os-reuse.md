@@ -967,3 +967,16 @@ column-major inference output. Following ADR-MC3, reusable checked layout and
 metadata decoding improve Home's shared video package and are consumed by
 camera. Kernel sources remain Home and are not copied, translated, modified or
 executed. These software checks are not IMX500 hardware acceptance.
+
+## 0.122 request-local inference geometry and KPI
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65,
+kernel/src/ml/tensor.home, tensor_ops.home, drivers/camera.home and media
+entry points. Tensor strides and kernel camera/framebuffer ownership do not
+implement hosted request-local ScalerCrop/ROI projection or Raspberry Pi CNN
+metadata counters. The camera capture entry remains a size-return stub.
+Following ADR-MC3, checked geometry and exact counter decoding improve Home's
+shared video package and are consumed verbatim by camera. The portable link
+probe retains actual normalized projection and KPI code without a heap/libc;
+it does not run an OS driver. No kernel code is copied, translated, modified or
+executed; Home OS remains Home. Physical IMX500 geometry/timing remains open.

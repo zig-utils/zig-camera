@@ -1,5 +1,27 @@
 # Home reuse audit
 
+## 0.122 sensor inference projection and exact KPI
+
+Rechecked Home ee5616cb9b6bd937bb46b0df15e5479c4c9c698c: image ops/region.zig, viewport.zig and
+orientation.zig; video typed_catalog and CNN output layouts. Region's unsigned
+clamp and viewport's half-open edge rounding cannot represent signed/empty
+libcamera intersections or its separately rounded origin and extent scales.
+The new shared video inference_region policy therefore implements this exact
+protocol sequence with widened endpoint arithmetic and checked products. It
+adds normalized boxes and centered aspect crops without owning a device.
+
+Shared cnn_kpi reuses typed_catalog.findValue for exact signed int32[2]
+selection. Raw counters remain available alongside Picamera2's signed /1000
+view because the upstream YAML and helper disagree about units. The libcamera
+IPA exports the sensor's uint32 fields through int32 controls; no silent sign
+coercion or independently calibrated time is claimed. Camera copies both
+helpers verbatim. All three optimization modes and public exports pass both
+selected compilers; retained normalized projection, aspect and KPI functions
+link for freestanding ARM64 without libc or a heap. That probe does not boot
+or execute Home OS. Camera owns only C projection, request leases, selective
+8-byte KPI snapshots and copied Bun geometry. System libcamera peers validate
+the actual rectangle semantics; physical NPU/crop timing remains acceptance.
+
 ## 0.121 checked CNN tensor layouts and selective metadata
 
 Inspected Home video interop/RawFrameData, typed_catalog, image region/viewport

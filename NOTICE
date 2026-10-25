@@ -800,3 +800,8 @@ home-lang/home packages/video/src/core/{tensor_layout,cnn_outputs,typed_catalog}
 at 7f857166f3786a8e7102ad5dc702a4d7dbe75436, under the Home MIT license reproduced above.
 Raspberry Pi CNN descriptor layouts are interface facts checked against the
 upstream libcamera producer, credited in docs/cnn-outputs.md.
+
+Sensor inference region projection and CNN KPI decoding are copied from
+home-lang/home packages/video/src/core/{inference_region,cnn_kpi}.zig at
+ee5616cb9b6bd937bb46b0df15e5479c4c9c698c, under the Home MIT license above. Interface sequence
+and primary Raspberry Pi/libcamera sources are credited in docs/inference-regions.md.

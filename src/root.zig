@@ -1,3 +1,9 @@
+pub const InferenceRegion = @import("inference_region.zig").Home;
+pub const CnnKpi = @import("cnn_kpi.zig").Home;
+comptime {
+    _ = @import("inference_region.zig");
+    _ = @import("cnn_kpi.zig");
+}
 pub const CnnOutputs = @import("cnn_outputs.zig").Home;
 comptime {
     _ = @import("cnn_outputs.zig");

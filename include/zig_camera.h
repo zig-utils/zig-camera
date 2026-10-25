@@ -561,6 +561,27 @@ typedef struct {
 int zc_decode_cnn_outputs(const uint8_t *info,uint64_t info_length,const uint8_t *values,uint64_t values_length,uint32_t big_endian,uint32_t order,uint64_t max_output_bytes,zc_cnn_outputs_info *,float *output,uint64_t capacity);
 int zc_cnn_catalog_outputs(const zc_catalog *,uint32_t order,uint64_t max_output_bytes,zc_cnn_outputs_info *,float *output,uint64_t capacity);
 int zc_cnn_tensor_row_major(const zc_cnn_tensor *,uint32_t source_order,const float *source,uint64_t count,float *output,uint64_t capacity);
+/* Stateless staged sensor/raw/scaler/ISP projection. Flags: ROI=1. Geometry
+ * and results are values; no camera/model owner is retained. Errors preserve
+ * caller outputs. Normalized coordinates are four doubles in y0,x0,y1,x1 order.
+ * Empty rectangles may retain anchors outside the canvas, as in libcamera. */
+typedef struct { uint32_t width,height; } zc_inference_size;
+typedef struct { int32_t x,y;uint32_t width,height; } zc_inference_rect;
+typedef struct {
+    uint32_t struct_size,flags;
+    zc_inference_size full_sensor,sensor_output,isp_output;
+    zc_inference_rect scaler_crop,roi;
+} zc_inference_geometry;
+int zc_inference_project(const zc_inference_geometry *,const zc_inference_rect *,zc_inference_rect *);
+int zc_inference_convert(const zc_inference_geometry *,const double *yxyx,zc_inference_rect *);
+int zc_inference_roi(const zc_inference_geometry *,zc_inference_rect *);
+int zc_inference_aspect(const zc_inference_size *,const zc_inference_size *,zc_inference_rect *);
+/* Signed counters exactly as the libcamera int32[2] control. The double view
+ * follows Picamera2's /1000 conversion; it is not independently calibrated time. */
+typedef struct {uint32_t struct_size,present;int32_t dnn_raw,dsp_raw;double picamera_dnn_ms,picamera_dsp_ms;} zc_cnn_kpi_info;
+int zc_decode_cnn_kpi(const uint8_t *,uint64_t length,uint32_t big_endian,zc_cnn_kpi_info *);
+int zc_cnn_kpi_catalog(const zc_catalog *,zc_cnn_kpi_info *);
+int zc_frame_cnn_kpi(zc_camera *,uint64_t token,zc_cnn_kpi_info *);
 /* Owned request-time recipe/negotiated configuration, <=64 KiB, HCAT kind 7.
  * Full metadata additionally carries these reserved groups, vendor zig-camera.
  * Startup hints are distinct from per-frame applied controls/metadata. */

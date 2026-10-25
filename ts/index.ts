@@ -1,3 +1,7 @@
+export {InferenceProjection,inferenceAspectCrop,type InferenceGeometry,type FrameInferenceOptions} from './inference-region'
+import {prepareFrameInference,frameInference,type FrameInferenceOptions} from './inference-region'
+export {decodeCnnKpi,type CnnKpiInfo} from './cnn-kpi'
+import {frameCnnKpi} from './cnn-kpi'
 export {CnnTensor,CnnOutputs,decodeCnnOutputs,type CnnOutputOptions,type CnnStorageOrder} from './cnn-outputs'
 import {prepareCnnOptions,copyFrameCnnOutputs,type CnnOutputOptions} from './cnn-outputs'
 export {SynchronizedFrames,SynchronizedCaptureCleanupError,type SynchronizedCaptureOptions} from './synchronized-capture'
@@ -1043,6 +1047,14 @@ export class Frame {
     const data = storage(96)
     check(n.zc_get_frame_metadata(this.camera.handle, this.token, ptr(data)))
     return decodeMetadata(data)
+  }
+  cnnKpi() { this.open();return frameCnnKpi(this.camera.handle,this.token) }
+  inferenceProjection(options:FrameInferenceOptions={}) {
+    const settings=prepareFrameInference(options)
+    this.open()
+    const metadata=this.metadata(),configuration=this.configuration(),properties=settings.fullSensor?undefined:this.properties()
+    this.open()
+    return frameInference(configuration,metadata,properties,settings)
   }
   cnnOutputs(options:CnnOutputOptions={}) {
     const settings=prepareCnnOptions(options)

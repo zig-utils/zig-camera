@@ -65,6 +65,7 @@ Software validation includes shared Home compiler/optimization matrices,
 independent C layout/permutation references, native retained-snapshot ownership,
 real system SDK ControlValue traversal, Bun lifetime/failure/bounds tests and
 the complete synthetic media suite. Fixtures are not physical IMX500 evidence.
-Firmware/network loading, intrinsics, input tensor export/injection, ROI mapping,
-KPI interpretation, model-specific postprocessing and physical camera acceptance
-remain required for full IMX500 parity.
+Version 0.122 adds [coordinate projection and exact KPI views](inference-regions.md).
+Firmware/network loading, intrinsics, input tensor export/injection, hardware ROI
+updates, model-specific postprocessing and physical camera acceptance remain
+required for full IMX500 parity.

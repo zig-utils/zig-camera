@@ -123,6 +123,8 @@ jobs:
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/image-job-test
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iinclude tests/frame_match.c -Lzig-out/lib -lzigcamera -o zig-out/frame-match-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/frame-match-test
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iinclude tests/inference_region.c -Lzig-out/lib -lzigcamera -o zig-out/inference-region-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/inference-region-test
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iinclude tests/cnn_outputs.c -Lzig-out/lib -lzigcamera -o zig-out/cnn-outputs-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/cnn-outputs-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/image_composite.c -Lzig-out/lib -lzigcamera -o zig-out/image-composite-test
@@ -295,6 +297,8 @@ jobs:
           zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
           c++ -std=c++17 -pthread -Wall -Wextra -Werror -Iinclude tests/catalog_bridge.cpp $(pkg-config --cflags --libs libcamera) -Lzig-out/lib -lzigcamera -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/catalog-bridge-test
           ./zig-out/catalog-bridge-test
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude tests/inference_geometry_sdk.cpp $(pkg-config --cflags --libs libcamera) -Lzig-out/lib -lzigcamera -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/inference-geometry-sdk-test
+          ./zig-out/inference-geometry-sdk-test
           ./zig-out/bin/zig-camera list
           bun tests/ts/native-smoke.ts
       - name: Retain independent decoder failure evidence

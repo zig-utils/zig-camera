@@ -1,0 +1,56 @@
+name: Home inference geometry and KPI
+on:
+  push:
+    branches: [main]
+    paths: ['src/home/inference_region.zig', 'src/home/cnn_kpi.zig', 'src/inference_region.zig', 'src/cnn_kpi.zig', 'tests/inference_region.c', 'tests/inference_geometry_sdk.cpp', 'ts/inference-region.ts', 'ts/cnn-kpi.ts', 'tests/ts/inference-region.test.ts', '.github/workflows/home-inference.yml']
+  pull_request:
+    paths: ['src/home/inference_region.zig', 'src/home/cnn_kpi.zig', 'src/inference_region.zig', 'src/cnn_kpi.zig', 'tests/inference_region.c', 'tests/inference_geometry_sdk.cpp', 'ts/inference-region.ts', 'ts/cnn-kpi.ts', 'tests/ts/inference-region.test.ts', '.github/workflows/home-inference.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  projection:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', '0.18.0-dev.567+7f0281900']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: home-lang/home
+          ref: ee5616cb9b6bd937bb46b0df15e5479c4c9c698c
+          path: .home-inference-upstream
+          sparse-checkout: packages/video
+          persist-credentials: false
+      - name: Exact upstream projection counters and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for helper in inference_region cnn_kpi; do
+            cmp "src/home/$helper.zig" ".home-inference-upstream/packages/video/src/core/$helper.zig"
+          done
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            zig test -lc -O "$mode" src/home/inference_region.zig
+            zig test -lc -O "$mode" src/home/cnn_kpi.zig
+            zig test -lc -O "$mode" --dep video -Mroot=.home-inference-upstream/packages/video/tests/inference_region_exports.zig -Mvideo=.home-inference-upstream/packages/video/src/video.zig
+          done
+      - name: Link actual normalized projection aspect and KPI for freestanding aarch64
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build-exe -target aarch64-freestanding -fno-entry --export=home_inference_convert --export=home_inference_aspect --export=home_cnn_kpi_milliseconds -O ReleaseSafe --dep region --dep kpi -Mroot=.home-inference-upstream/packages/video/tests/inference_region_freestanding.zig -Mregion=src/home/inference_region.zig -Mkpi=src/home/cnn_kpi.zig -femit-bin="$RUNNER_TEMP/home-inference.elf"
+      - name: Canonical camera C ABI on the pinned camera compiler
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -I include -O "$mode" src/inference_region.zig
+            zig test -lc -I include -O "$mode" src/cnn_kpi.zig
+          done

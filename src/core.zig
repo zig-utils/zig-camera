@@ -3044,10 +3044,76 @@ pub export fn zc_camera_controls(p: *c.zc_camera, out: *?*c.zc_catalog) c_int {
 pub export fn zc_frame_metadata_catalog(p: *c.zc_camera, token: u64, out: *?*c.zc_catalog) c_int {
     return cameraCatalog(p, 4, token, out);
 }
+pub export fn zc_frame_cnn_kpi(p: *c.zc_camera, token: u64, destination: ?*c.zc_cnn_kpi_info) c_int {
+    return frameKpi(p, token, destination, driver.catalog);
+}
+fn frameKpi(p: *c.zc_camera, token: u64, destination: ?*c.zc_cnn_kpi_info, comptime visit: anytype) c_int {
+    const out = destination orelse return c.ZC_INVALID;
+    const self = session(p);
+    self.operation.lock();
+    defer self.operation.unlock();
+    const index = self.leaseIndex(token) orelse return c.ZC_STALE;
+    const result = catalogs.Catalog.createWithLimit(c.ZC_CATALOG_METADATA, 4096) catch |err| return catalogs.status(err);
+    defer result.destroy();
+    var filter: catalogs.NameFilter = .{ .catalog = result, .names = &.{"CnnKpiInfo"}, .kinds = &.{.i32}, .forbidden_flags = 1, .max_value_bytes = 8 };
+    const sink = filter.sink();
+    const rc = visit(self.device.?, c.ZC_CATALOG_METADATA, index, &sink);
+    if (rc != c.ZC_OK) return rc;
+    const bytes = filter.finish() catch |err| return catalogs.status(err);
+    const value = @import("home/cnn_kpi.zig").Info.fromCatalog(bytes) catch return c.ZC_INVALID;
+    out.* = @import("cnn_kpi.zig").descriptor(value);
+    return c.ZC_OK;
+}
 /// Caller-owned CNN-only snapshot. Scalar/configuration catalogs keep their
 /// existing ceiling; this path skips unrelated large values before copying.
 pub export fn zc_frame_cnn_catalog(p: *c.zc_camera, token: u64, max_output_bytes: u64, out: *?*c.zc_catalog) c_int {
     return cnnCatalog(p, token, max_output_bytes, out, driver.catalog);
+}
+
+test "request-local KPI queries select tiny counters without copying unrelated tensor bytes" {
+    if (options.libcamera) return error.SkipZigTest;
+    const t = std.testing;
+    const fixture = struct {
+        fn visit(_: *driver.Handle, _: u32, _: u32, sink: *const catalogs.Sink) c_int {
+            const ignored: catalogs.bridge.zcd_catalog_record = .{ .name = "CnnOutputTensor", .name_length = 15, .kind = 5, .flags = 2 };
+            // Even backends without preselection can skip unrelated borrowed
+            // values without touching their storage. The SDK skips earlier.
+            var rc = sink.begin.?(sink.context, &ignored);
+            if (rc != 0) return rc;
+            rc = sink.value.?(sink.context, null);
+            if (rc != 0) return rc;
+            rc = sink.end.?(sink.context);
+            if (rc != 0) return rc;
+            const record: catalogs.bridge.zcd_catalog_record = .{ .name = "CnnKpiInfo", .name_length = 10, .vendor = "rpi", .vendor_length = 3, .kind = 3, .flags = 2 };
+            rc = sink.begin.?(sink.context, &record);
+            if (rc != 0) return rc;
+            const raw = [_]u8{ 0x88, 0x13, 0, 0, 0xe8, 3, 0, 0 };
+            const value: catalogs.bridge.zcd_catalog_value = .{ .kind = 3, .count = 2, .flags = 3, .data = &raw, .length = 8 };
+            rc = sink.value.?(sink.context, &value);
+            if (rc != 0) return rc;
+            return sink.end.?(sink.context);
+        }
+    };
+    var cfg: c.zc_config = undefined;
+    zc_default_config(&cfg);
+    cfg.width = 2;
+    cfg.height = 2;
+    var camera: ?*c.zc_camera = null;
+    try t.expectEqual(c.ZC_OK, zc_open(&cfg, &camera));
+    defer {
+        _ = zc_stop(camera.?);
+        _ = zc_close(camera.?);
+    }
+    try t.expectEqual(c.ZC_OK, zc_start(camera.?));
+    var frame: c.zc_frame = undefined;
+    try t.expectEqual(c.ZC_OK, zc_acquire(camera.?, 0, &frame));
+    var kpi: c.zc_cnn_kpi_info = undefined;
+    try t.expectEqual(c.ZC_OK, frameKpi(camera.?, frame.token, &kpi, fixture.visit));
+    try t.expectEqual(@as(i32, 5000), kpi.dnn_raw);
+    const saved = kpi;
+    try t.expectEqual(c.ZC_OK, zc_release(camera.?, frame.token));
+    try t.expectEqual(c.ZC_STALE, frameKpi(camera.?, frame.token, &kpi, fixture.visit));
+    try t.expectEqualDeep(saved, kpi);
 }
 fn cnnCatalog(p: *c.zc_camera, token: u64, max_output_bytes: u64, out: *?*c.zc_catalog, comptime visit: anytype) c_int {
     out.* = null;

@@ -1,5 +1,11 @@
 # Picamera2 capability parity worklist
 
+Version 0.122 adds [request-local inference geometry and KPI](inference-regions.md):
+staged ROI/scaler projection, centered aspect crops, owned main/lores plans and
+exact inference counters with the Picamera2 conversion. Firmware/network loading,
+hardware ROI updates, input tensors, model postprocessing and physical acceptance
+remain open alongside the other parity families.
+
 Version 0.121 adds [owned CNN output tensors](cnn-outputs.md):
 selective request snapshots, checked column/row storage and retained capture
 context in C/Zig/Bun. Firmware/network loading, ROI/input tensors, model
