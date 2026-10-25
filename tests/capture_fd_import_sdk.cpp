@@ -66,7 +66,8 @@ static void planar_objects() {
             if(scenario==3)assert(!starts && !ends);
         } else {
             assert(result==ZC_OK && starts==5 && ends==5 && state(pool).allocations==5 && state(pool).used_bytes==8192*5);
-            for(int fd:originals)assert(!close(fd));originals.clear();
+            for (int fd : originals) { assert(!close(fd)); }
+            originals.clear();
             uint64_t loan=0;assert(!zci_capture_allocator_acquire(pool,reinterpret_cast<const uint8_t*>("planar"),6,&stream,1,&loan));
             for(unsigned i=0;i<2;i++) {
                 zci_allocation_frame read{},write{};assert(!zci_capture_allocator_frame(pool,loan,0,i,0,&read));
