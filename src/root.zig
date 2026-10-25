@@ -1,3 +1,7 @@
+pub const IMX500 = @import("imx500.zig");
+comptime {
+    _ = IMX500;
+}
 pub const InferenceRegion = @import("inference_region.zig").Home;
 pub const CnnKpi = @import("cnn_kpi.zig").Home;
 comptime {

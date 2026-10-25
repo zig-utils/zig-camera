@@ -1,3 +1,4 @@
+export {IMX500,Imx500Error,Imx500ConstructionError,type Imx500Options,type Imx500State} from './imx500'
 export {InferenceProjection,inferenceAspectCrop,type InferenceGeometry,type FrameInferenceOptions} from './inference-region'
 import {prepareFrameInference,frameInference,type FrameInferenceOptions} from './inference-region'
 export {decodeCnnKpi,type CnnKpiInfo} from './cnn-kpi'

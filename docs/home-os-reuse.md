@@ -980,3 +980,17 @@ shared video package and are consumed verbatim by camera. The portable link
 probe retains actual normalized projection and KPI code without a heap/libc;
 it does not run an OS driver. No kernel code is copied, translated, modified or
 executed; Home OS remains Home. Physical IMX500 geometry/timing remains open.
+
+## 0.123 hosted inference device controls
+
+Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65 at
+~/Code/Home/os, including kernel/src/drivers/camera.home and ml/tensor.home,
+tensor_ops.home and media entry points. The camera entry still returns a size
+stub; its kernel allocator/tensor ownership has no hosted V4L2 IMX500 ROI or
+volatile-ID implementation to reuse. Following ADR-MC3, generic observed-control
+transactions and checked ROI encoding improve Home's shared video package.
+Camera reuses those helpers and its existing exact sensor-node/discovery logic;
+Zig owns pinned hosted descriptors and bounded admission. The C++ shim only
+uses actual Linux V4L2 types/syscalls. No Home OS source is copied, modified,
+translated or executed. Cache/restart peers are software evidence; physical
+IMX500 application, firmware/model behavior and performance remain open.

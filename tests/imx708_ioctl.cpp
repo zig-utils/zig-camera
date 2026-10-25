@@ -38,7 +38,9 @@ int main(){
     }
     fault=0;current=1;
     for(uint32_t op=0;op<4;op++){
-        interrupts=1;const int before=calls;assert(zc_sensor::control(0,op,&value,&error,fake)==ZC_OK&&calls==before+2&&error==0);
+        interrupts=1;const int before=calls;const int rc=zc_sensor::control(0,op,&value,&error,fake);
+        if(op<2)assert(rc==ZC_OK&&calls==before+2&&error==0);
+        else assert(rc==ZC_IO&&calls==before+1&&error==EINTR);
     }
     const int before=calls;assert(zc_sensor::control(0,4,&value,&error,fake)==ZC_INVALID&&calls==before);
     puts("IMX708 ioctl system ABI, fd zero, query validation, errno and EINTR handling passed");

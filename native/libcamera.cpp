@@ -6,6 +6,7 @@
 #include "zig_camera_allocator_bridge.h"
 #include "capture_buffers.hpp"
 #include "imx708_control.hpp"
+#include "imx500_control.hpp"
 #include <libcamera/libcamera.h>
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
@@ -1326,3 +1327,6 @@ extern "C" int zcd_imx708_mutate(const uint8_t *id,uint32_t length,void *context
     const int cleanup=guard.finish();
     return result==ZC_OK?cleanup:result;
 }
+
+extern "C" int zcd_imx500_query(int fd,uint32_t id,zc_imx500_control_info *out,int32_t *error){return zc_imx500_io::query(fd,id,out,error);}
+extern "C" int zcd_imx500_transfer(int fd,uint32_t id,uint32_t write,const uint32_t *input,uint32_t *out,int32_t *error){return zc_imx500_io::transfer(fd,id,write!=0,input,out,error);}

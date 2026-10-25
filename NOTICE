@@ -702,7 +702,7 @@ Home bounded PNG/APNG decoding (0.100):
   Final PNG metadata validation 207d20242d3dbaec74b9888f70b9f516521f55de enforces the RGB cICP
   matrix and PNG Exif header structure; the camera copy includes this follow-up.
 
-src/home/manager_gate.zig, sensor_node.zig and boolean_control.zig are copied
+src/home/manager_gate.zig and sensor_node.zig are copied
 verbatim from home-lang/home packages/video/src/core at revision
 4a5d30540bd6b483c634ddd86de4fe27bef32115, under the MIT license above.
 
@@ -805,3 +805,11 @@ Sensor inference region projection and CNN KPI decoding are copied from
 home-lang/home packages/video/src/core/{inference_region,cnn_kpi}.zig at
 ee5616cb9b6bd937bb46b0df15e5479c4c9c698c, under the Home MIT license above. Interface sequence
 and primary Raspberry Pi/libcamera sources are credited in docs/inference-regions.md.
+
+src/home/{observed_control,boolean_control,imx500_roi}.zig are copied verbatim
+from home-lang/home packages/video/src/core at revision
+f310a0c86d7d5b18f1b77b1d618650ef907065e4, under the Home MIT license above.
+IMX500 V4L2 interface facts were independently inspected in Raspberry Pi Linux
+5bd564aaa8dc4b1b8ed11733c19ec8ece63a72cc drivers/media/i2c/imx500.c; no kernel
+implementation is copied. Home OS 151269666bc09aa15a271f1c1f4603f681132e65
+is a read-only architecture reference; its Home kernel remains unchanged.

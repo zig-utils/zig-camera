@@ -15,7 +15,8 @@ inline int control(int fd,uint32_t operation,uint32_t *out,int32_t *system_error
     int rc;
     if(operation==0){
         v4l2_queryctrl query{};query.id=V4L2_CID_WIDE_DYNAMIC_RANGE;
-        do{rc=call(fd,VIDIOC_QUERYCTRL,&query);}while(rc<0&&errno==EINTR);
+        unsigned attempts=0;
+        do{rc=call(fd,VIDIOC_QUERYCTRL,&query);}while(rc<0&&errno==EINTR&&++attempts<8);
         if(rc<0){*system_error=errno;return status(errno);}
         if(query.id!=V4L2_CID_WIDE_DYNAMIC_RANGE||query.type!=V4L2_CTRL_TYPE_BOOLEAN||query.minimum!=0||query.maximum!=1||query.step!=1||query.default_value<0||query.default_value>1||(query.flags&(V4L2_CTRL_FLAG_DISABLED|V4L2_CTRL_FLAG_READ_ONLY|V4L2_CTRL_FLAG_WRITE_ONLY)))return ZC_UNSUPPORTED;
         *out=query.flags;return ZC_OK;
@@ -24,7 +25,8 @@ inline int control(int fd,uint32_t operation,uint32_t *out,int32_t *system_error
     v4l2_control value{};value.id=V4L2_CID_WIDE_DYNAMIC_RANGE;
     const auto request=operation==1?VIDIOC_G_CTRL:VIDIOC_S_CTRL;
     if(operation!=1)value.value=operation==3?1:0;
-    do{rc=call(fd,request,&value);}while(rc<0&&errno==EINTR);
+    unsigned attempts=0;
+    do{rc=call(fd,request,&value);}while(operation==1&&rc<0&&errno==EINTR&&++attempts<8);
     if(rc<0){*system_error=errno;return status(errno);}
     if(value.value!=0&&value.value!=1)return ZC_DEVICE;
     *out=static_cast<uint32_t>(value.value);return ZC_OK;

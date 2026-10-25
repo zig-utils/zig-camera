@@ -397,6 +397,26 @@ int zc_imx708_camera_id(zc_imx708 *,uint8_t *,uint64_t capacity,uint64_t *length
 int zc_imx708_get_hdr_mode(zc_imx708 *,zc_sensor_hdr_state *);
 int zc_imx708_set_hdr_mode(zc_imx708 *,uint32_t enabled,zc_sensor_hdr_state *);
 int zc_imx708_close(zc_imx708 *);
+/* Independent pinned IMX500 control descriptor. Cached ROI is not proof of
+ * per-frame hardware application. Close preserves the kernel's cached state. */
+typedef struct zc_imx500 zc_imx500;
+typedef struct {uint32_t struct_size,flags;int64_t minimum,maximum;uint64_t step;int64_t default_value;} zc_imx500_control_info;
+enum {ZC_IMX500_PREVIOUS=1,ZC_IMX500_CURRENT=2,ZC_IMX500_SAVED=4,ZC_IMX500_WRITE_ATTEMPTED=8,ZC_IMX500_WRITE_SUCCEEDED=16,ZC_IMX500_CHANGED=32,ZC_IMX500_SYNTHETIC=64,ZC_IMX500_CAPABILITIES=128,ZC_IMX500_PREVIOUS_ROI=256,ZC_IMX500_CURRENT_ROI=512,ZC_IMX500_SAVED_ROI=1024,ZC_IMX500_STATE=2048};
+typedef struct {
+    uint32_t struct_size,backend,flags;int32_t system_errno;
+    uint64_t revision;
+    zc_imx500_control_info control;
+    uint32_t previous[4],current[4],saved[4];
+    int32_t previous_roi[4],current_roi[4],saved_roi[4];
+} zc_imx500_state;
+int zc_imx500_open(uint32_t backend,uint32_t index,const uint8_t *id,uint32_t length,zc_imx500 **out);
+int zc_imx500_camera_id(zc_imx500 *,uint8_t *,uint64_t capacity,uint64_t *length);
+int zc_imx500_get_roi(zc_imx500 *,zc_imx500_state *);
+int zc_imx500_set_roi(zc_imx500 *,int32_t x,int32_t y,uint32_t width,uint32_t height,zc_imx500_state *);
+int zc_imx500_set_aspect(zc_imx500 *,uint32_t width,uint32_t height,zc_imx500_state *);
+int zc_imx500_restore_roi(zc_imx500 *,zc_imx500_state *);
+int zc_imx500_device_id(zc_imx500 *,uint32_t output[4]);
+int zc_imx500_close(zc_imx500 *);
 
 /* Typed bounded runtime controls. IDs map to libcamera names in docs/controls.md.
  * Query support/ranges; a batch is validated atomically and staged for the next

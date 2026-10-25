@@ -148,6 +148,8 @@ jobs:
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-wide.ts
             env LD_PRELOAD="$PWD/zig-out/drm-kms-preload.so" ZC_KMS_FIXTURE="$PWD/zig-out/drm-kms-preload.so" bun tests/ts/check-drm-overlay.ts
           fi
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iinclude tests/imx500_controls.c -Lzig-out/lib -lzigcamera -o zig-out/imx500-controls-test
+          env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/imx500-controls-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/sensor_hdr.c -Lzig-out/lib -lzigcamera -o zig-out/sensor-hdr-test
           env LD_LIBRARY_PATH=zig-out/lib DYLD_LIBRARY_PATH=zig-out/lib zig-out/sensor-hdr-test
           cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/rtp.c -Lzig-out/lib -lzigcamera -o zig-out/rtp-abi-test
@@ -293,6 +295,10 @@ jobs:
           bun test tests/ts/sensor-raw.test.ts tests/ts/rgb16.test.ts tests/ts/yuv422-layouts.test.ts tests/ts/yuv420-layouts.test.ts tests/ts/packed-rgb.test.ts tests/ts/request-stop.test.ts tests/ts/image-exif.test.ts tests/ts/still-images.test.ts tests/ts/image-profiles.test.ts tests/ts/staged-files.test.ts tests/ts/stream-images.test.ts tests/ts/main-format.test.ts tests/ts/color-config.test.ts
           ./zig-out/bin/zig-camera capture --simulate --width 65 --height 33 --warmup 0 --output zig-out/test.jpg
           ZC_JPEG_DECODER="$PWD/zig-out/decode-jpeg" bun tests/ts/check-media.ts zig-out
+          for sensor in imx708 imx500; do
+            c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -Inative "tests/${sensor}_ioctl.cpp" -o "zig-out/${sensor}-ioctl-test"
+            "zig-out/${sensor}-ioctl-test"
+          done
           zig build test -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true
           zig build -Dlibcamera=true -Djpeg=true -Dcodecs=true -Daudio=true -Daac=true -Dpreview=true -Doptimize=ReleaseSafe
           c++ -std=c++17 -pthread -Wall -Wextra -Werror -Iinclude tests/catalog_bridge.cpp $(pkg-config --cflags --libs libcamera) -Lzig-out/lib -lzigcamera -Wl,-rpath,"$PWD/zig-out/lib" -o zig-out/catalog-bridge-test

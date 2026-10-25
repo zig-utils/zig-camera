@@ -2,9 +2,9 @@ name: Home sensor controls
 on:
   push:
     branches: [main]
-    paths: ['src/home/manager_gate.zig', 'src/home/sensor_node.zig', 'src/home/boolean_control.zig', 'src/sensor_layout.zig', 'src/imx708*.zig', 'native/imx708_control.hpp', 'tests/imx708_ioctl.cpp', '.github/workflows/home-sensor-controls.yml']
+    paths: ['src/home/manager_gate.zig', 'src/home/sensor_node.zig', 'src/home/boolean_control.zig', 'src/home/observed_control.zig', 'src/home/imx500_roi.zig', 'src/home/inference_region.zig', 'src/sensor_layout.zig', 'src/imx708*.zig', 'src/imx500*.zig', 'src/sensor_device.zig', 'src/sensor_discovery.zig', 'native/imx500_control.hpp', 'tests/imx500_ioctl.cpp', 'tests/imx500_controls.c', 'tests/ts/imx500-controls.test.ts', 'ts/imx500.ts', 'native/imx708_control.hpp', 'tests/imx708_ioctl.cpp', '.github/workflows/home-sensor-controls.yml']
   pull_request:
-    paths: ['src/home/manager_gate.zig', 'src/home/sensor_node.zig', 'src/home/boolean_control.zig', 'src/sensor_layout.zig', 'src/imx708*.zig', 'native/imx708_control.hpp', 'tests/imx708_ioctl.cpp', '.github/workflows/home-sensor-controls.yml']
+    paths: ['src/home/manager_gate.zig', 'src/home/sensor_node.zig', 'src/home/boolean_control.zig', 'src/home/observed_control.zig', 'src/home/imx500_roi.zig', 'src/home/inference_region.zig', 'src/sensor_layout.zig', 'src/imx708*.zig', 'src/imx500*.zig', 'src/sensor_device.zig', 'src/sensor_discovery.zig', 'native/imx500_control.hpp', 'tests/imx500_ioctl.cpp', 'tests/imx500_controls.c', 'tests/ts/imx500-controls.test.ts', 'ts/imx500.ts', 'native/imx708_control.hpp', 'tests/imx708_ioctl.cpp', '.github/workflows/home-sensor-controls.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,15 +25,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for mode in Debug ReleaseSafe; do
-            for helper in manager_gate sensor_node boolean_control; do
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            for helper in manager_gate sensor_node boolean_control observed_control imx500_roi inference_region; do
               zig test -O "$mode" "src/home/$helper.zig"
             done
           done
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: home-lang/home
-          ref: 7f627cc595998756db5fe3f8bc0367a36fe7da43
+          ref: f310a0c86d7d5b18f1b77b1d618650ef907065e4
           path: .home-sensor-upstream
           sparse-checkout: packages/video
           persist-credentials: false
@@ -41,18 +41,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for helper in manager_gate sensor_node boolean_control; do
+          for helper in manager_gate sensor_node boolean_control observed_control imx500_roi inference_region; do
             cmp "src/home/$helper.zig" ".home-sensor-upstream/packages/video/src/core/$helper.zig"
           done
-          for mode in Debug ReleaseSafe; do
-            zig test -O "$mode" --dep video -Mroot=.home-sensor-upstream/packages/video/tests/sensor_helpers.zig -Mvideo=.home-sensor-upstream/packages/video/src/video.zig
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            for target in sensor_helpers imx500_roi_exports; do
+              zig test -O "$mode" --dep video -Mroot=".home-sensor-upstream/packages/video/tests/$target.zig" -Mvideo=.home-sensor-upstream/packages/video/src/video.zig
+            done
           done
+      - name: Freestanding actual ROI and generic payload transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build-exe -target aarch64-freestanding -fno-entry --export=home_imx500_roi_encode --export=home_observed_payload -O ReleaseSafe --dep roi --dep observed -Mroot=.home-sensor-upstream/packages/video/tests/imx500_roi_freestanding.zig -Mroi=src/home/imx500_roi.zig -Mobserved=src/home/observed_control.zig -femit-bin="$RUNNER_TEMP/home-imx500.elf"
       - name: Logical native scope ownership on camera compiler
         if: matrix.zig == '0.15.2'
         shell: bash
         run: |
           set -euo pipefail
-          for mode in Debug ReleaseSafe; do
+          for mode in Debug ReleaseSafe ReleaseFast; do
             zig test -O "$mode" -lc -Iinclude src/sensor_layout.zig
           done
       - name: Linux ioctl ABI without physical camera
@@ -60,3 +67,5 @@ jobs:
         run: |
           c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -Inative tests/imx708_ioctl.cpp -o /tmp/imx708-ioctl-test
           /tmp/imx708-ioctl-test
+          c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -Inative tests/imx500_ioctl.cpp -o /tmp/imx500-ioctl-test
+          /tmp/imx500-ioctl-test

@@ -8,6 +8,11 @@ Physical camera performance and image quality have **not been measured**.
 
 
 
+Version 0.123 adds [pinned IMX500 inference controls](docs/imx500-controls.md):
+exact sensor selection, cached absolute/aspect ROI, device IDs, explicit saved
+restoration and owned failure observations in C/Zig/Bun. Firmware/network
+loading, input tensors, model postprocessing and physical acceptance remain open.
+
 Version 0.122 adds [request-local inference geometry and KPI](docs/inference-regions.md):
 staged ROI/scaler projection, centered aspect crops, owned main/lores plans and
 exact inference counters with the Picamera2 conversion. Firmware/network loading,

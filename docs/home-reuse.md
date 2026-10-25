@@ -2466,3 +2466,26 @@ its original tolerance. Source comparisons and both x86 code generators are
 checked in Camera CI. Home repository Actions are disabled (dispatch returned
 HTTP 422); its settings are unchanged and the pinned-source Camera matrix
 provides the cross-platform verification.
+
+## 0.123 shared observed controls and active-array ROI
+
+Rechecked Home ee5616cb9b6bd937bb46b0df15e5479c4c9c698c, including
+video/core boolean_control, inference_region, device_identity, sensor_node,
+manager_gate and capture helpers. Home f310a0c86d7d5b18f1b77b1d618650ef907065e4
+extracts the existing boolean single-write/readback policy into generic
+observed_control, preserving boolean callers. The IMX500 four-word transaction
+reuses that policy instead of adding a second error/retry implementation.
+Shared imx500_roi reuses widened inference-region intersections, checked bounds
+and the kernel full-sensor sentinel. Camera vendors all three helpers verbatim.
+
+Camera also extracts its existing hosted exact sensor discovery and pinned
+sysfs/character-device association for both IMX708 and IMX500; no kernel or
+camera-manager owner is imported from Home OS. Read/query EINTR retries are
+bounded at eight, and both sensor write shims now preserve exactly one write
+attempt, including interruption. The independent system-header peers exercise
+these semantics. Home helpers and public old/new APIs pass 24 commands across
+production/development Zig and Debug/ReleaseSafe/ReleaseFast, with actual ROI
+encoding and generic array transactions retained in both freestanding links.
+Home Actions remain disabled; Camera pins exact source/public-API matrix checks.
+Physical device, firmware/network, model and frame-application validation remain
+open. See home-os-reuse.md and imx500-controls.md for ownership limits.
