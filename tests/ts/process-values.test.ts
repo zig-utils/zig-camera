@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test'
-import {encodeProcessValue,decodeProcessValue} from '../../ts/process-values'
+import {encodeProcessValue,encodeProcessCameraValue,decodeProcessValue} from '../../ts/process-values'
 test('bounded process snapshots preserve cycles numeric aliases maps dates and one getter scan',()=>{
   const buffer=new ArrayBuffer(32),words=new Uint16Array(buffer,4,3),bytes=new Uint8Array(buffer,6,2)
   words[1]=54321
@@ -22,4 +22,20 @@ test('process graph and byte limits reject before serialization accepts unbounde
   expect(()=>encodeProcessValue('x'.repeat(3000),1024)).toThrow('budget')
   expect(()=>decodeProcessValue(new Uint8Array(65),64)).toThrow()
   const detached=new ArrayBuffer(8);detached.transfer();expect(()=>encodeProcessValue(detached,1024)).toThrow()
+})
+
+test('camera configuration projection preserves bounded graph aliases and never reads native allocator getters',()=>{
+  class Owner {}
+  const owner=new Owner(),options:any={width:32,get allocator(){throw Error('native owner getter read')}}
+  options.self=options
+  const initial={camera:{options},context:{recipe:options}}
+  const copy=decodeProcessValue(encodeProcessCameraValue(initial,4096,options),4096) as any
+  expect(copy.camera.options.width).toBe(32)
+  expect(Object.hasOwn(copy.camera.options,'allocator')).toBe(false)
+  expect(copy.camera.options.self).toBe(copy.camera.options)
+  expect(copy.context.recipe).toBe(copy.camera.options)
+  expect(()=>encodeProcessCameraValue({camera:{options},context:owner},4096,options)).toThrow('custom process instances')
+  expect(()=>encodeProcessValue({allocator:owner},4096)).toThrow('custom process instances')
+  const large={allocator:owner,width:'x'.repeat(2048)}
+  expect(()=>encodeProcessCameraValue({camera:{options:large}},128,large)).toThrow('byte budget')
 })

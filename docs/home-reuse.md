@@ -1,5 +1,15 @@
 # Home reuse audit
 
+## 0.118.2 initial process configuration ownership
+
+Rechecked pinned Home cb17d36d553ad644ee2ad1da03c6a024d4b40a19 and its
+capture/IO ownership boundary. Allocator ownership stays in the hosted parent;
+existing Home-backed descriptor exports and ACK retirement pin frame storage.
+Camera improves its existing bounded Bun graph serializer to omit only the
+initial options' allocator, retaining graph aliases/cycles and all other custom
+instance rejection and byte/node limits. No new media codec, allocator or IPC
+transport is introduced; the exact Home source pin stays unchanged.
+
 ## 0.118.1 compact capture ownership
 
 Rechecked Home 8b50d2da7b04661ec52ab8871bf28c70ea732be0 and its existing

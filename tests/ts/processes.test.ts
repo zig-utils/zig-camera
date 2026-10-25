@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test'
-import {Camera,ProcessPool,ProcessRemoteError,ProcessWorkerError,type BunJob} from '../../ts'
+import {Camera,CaptureAllocator,ProcessPool,ProcessRemoteError,ProcessWorkerError,type BunJob} from '../../ts'
 import {mkdtempSync,rmSync,existsSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -272,3 +272,25 @@ for(const format of ['BGR888','RGB888','XBGR8888','XRGB8888','YUV420','YVU420','
       }
     }finally{await pool.close();await c.close()}
   })
+
+test('initial camera configuration omits native allocation ownership while exported frames retain it',async()=>{
+  const allocator=new CaptureAllocator({simulate:true,maxEntries:1,maxBytes:65536})
+  const c=new Camera({simulate:true,fifo:true,width:18,height:10,buffers:2,allocator})
+  let pool:ProcessPool|undefined
+  try{
+    pool=await ProcessPool.open({module,camera:c})
+    c.start();using frame=c.acquire()
+    const result=await pool.submit<any>(frame,{})
+    expect(result.initial.camera.options.allocator).toBeUndefined()
+    expect(Object.hasOwn(result.initial.camera.options,'allocator')).toBe(false)
+    expect(result.initial.camera.options.width).toBe(18)
+    expect(result.initial.camera.id).toBe(c.cameraId)
+    expect(result.sequence).toBe(frame.sequence)
+    expect(c.options.allocator).toBe(allocator)
+    expect(allocator.state.borrowed).toBe(1)
+    await pool.close();pool=undefined
+    expect(allocator.state.borrowed).toBe(1)
+    frame.release();await c.close()
+    expect(allocator.state.borrowed).toBe(0)
+  }finally{await pool?.close();await c.close();allocator.close()}
+})

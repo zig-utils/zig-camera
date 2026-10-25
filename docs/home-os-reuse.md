@@ -1,5 +1,14 @@
 # Home OS media reuse audit
 
+## 0.118.2 process configuration ownership
+
+Rechecked Home OS 151269666bc09aa15a271f1c1f4603f681132e65 and the already
+audited kernel IPC/hosted-media boundary. Kernel message slots cannot transfer
+a parent application's allocator owner. Camera keeps that owner in the parent
+and reuses existing descriptor exports/ACKs for frame lifetime. Only its copied
+initial process configuration omits the owner. OS source stays unchanged and
+Home; no kernel code is copied, translated or executed.
+
 ## 0.118 compact hosted capture metadata
 
 Rechecked clean Home OS 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3

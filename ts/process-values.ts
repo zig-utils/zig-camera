@@ -12,6 +12,15 @@ const dataBuffer = get(DataView.prototype,'buffer'), dataOffset = get(DataView.p
 const constructors = new Map<string, any>(['Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array','BigInt64Array','BigUint64Array','Float16Array','Float32Array','Float64Array'].map(name=>[name,(globalThis as any)[name]]))
 const bigintLimit = 1n << 4096n
 export function encodeProcessValue(value: unknown, maximum: number): Uint8Array {
+  return encodeValue(value, maximum)
+}
+/** Initial camera recipes carry configuration, never their parent native owner.
+ * Project inside the bounded graph traversal to preserve cycles/aliases and
+ * avoid evaluating the omitted allocator property. Other instances still reject. */
+export function encodeProcessCameraValue(value: unknown, maximum: number, cameraOptions: unknown): Uint8Array {
+  return encodeValue(value, maximum, cameraOptions)
+}
+function encodeValue(value: unknown, maximum: number, cameraOptions?: unknown): Uint8Array {
   if (!Number.isSafeInteger(maximum) || maximum < 64 || maximum > 256*1024*1024) throw new RangeError('invalid process value limit')
   let used=0, nodes=0
   const seen=new Map<object,any>()
@@ -68,7 +77,10 @@ export function encodeProcessValue(value: unknown, maximum: number): Uint8Array 
     if(keys.length>4096)throw new RangeError('process object exceeds graph bounds')
     const result=array?new Array((value as unknown[]).length):Object.create(null)
     seen.set(value,result)
-    for(const key of keys){charge(key.length*4+32);Object.defineProperty(result,key,{value:copy(Reflect.get(value,key),depth+1),enumerable:true,writable:true,configurable:true})}
+    for(const key of keys){
+      if(value===cameraOptions && key==='allocator')continue
+      charge(key.length*4+32);Object.defineProperty(result,key,{value:copy(Reflect.get(value,key),depth+1),enumerable:true,writable:true,configurable:true})
+    }
     return result
   }
   const bytes=serialize(copy(value),{binaryType:'nodebuffer'})

@@ -201,3 +201,10 @@ ownership can retire before disk I/O while pool admission and drains still cover
 publication and callbacks. This handles child termination without a child-owned
 temporary for the managed output. Arbitrary child side effects, direct descriptor
 streaming, file-like destinations and parent-crash durability remain separate.
+
+Version 0.118.2 omits `allocator` from the initial camera options copied to a
+process. The allocator remains an owner in the parent; descriptor export/ACK
+retirement retains frame storage independently. The projection occurs inside
+the existing bounded graph copy, preserving recipe aliases/cycles without
+evaluating an allocator getter. Other custom instances and all graph/byte limits
+keep their existing checks. `camera.options` in the parent retains its allocator.

@@ -7,7 +7,7 @@ import { native as n, ptr, storage, view, check, outPointer, handle, cstring, Ca
 import { BunJob, snapshotJobOptions, JobCancelledError, type JobOptions } from './jobs'
 import { armDeadline } from './deadline'
 import { withStagedImageFile } from './staged-image'
-import { encodeProcessValue, decodeProcessValue } from './process-values'
+import { encodeProcessValue, encodeProcessCameraValue, decodeProcessValue } from './process-values'
 export type { ProcessValue } from './process-values'
 export interface ProcessWorkerContext {
   initial:unknown
@@ -79,8 +79,9 @@ function snapshot(options:ProcessPoolOptions):Snapshot{
   const url=module instanceof URL?new URL(module.href):module.startsWith('file:')?new URL(module):pathToFileURL(resolve(module))
   if(url.protocol!=='file:')throw new TypeError('process module must be local')
   const selected={module:url.href,workers:integer(workers,1,8,'process workers'),items:integer(items,1,32,'process task limit'),bytes:integer(bytes,1,512*1024*1024,'process byte limit'),argsLimit:integer(argsLimit,64,16*1024*1024,'process argument limit'),resultLimit:integer(resultLimit,64,256*1024*1024,'process result limit'),startup:duration(startup,'process startup timeout'),shutdown:duration(shutdown,'process shutdown timeout'),timeout:timeout===null?null:duration(timeout,'process timeout')}
-  const initial=camera?{context,camera:{id:camera.cameraId,options:camera.options,properties:camera.properties(),info:camera.info(),orientation:camera.orientation()}}:context
-  return {...selected,context:encodeProcessValue(initial,4*1024*1024)}
+  const cameraOptions=camera?.options
+  const initial=camera?{context,camera:{id:camera.cameraId,options:cameraOptions,properties:camera.properties(),info:camera.info(),orientation:camera.orientation()}}:context
+  return {...selected,context:encodeProcessCameraValue(initial,4*1024*1024,cameraOptions)}
 }
 export class ProcessWorkerError extends Error {
   exitCode?:number
